@@ -56,10 +56,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = RadioBrowserProvider(mass, manifest, config)
-
-    await prov.handle_async_init()
-    return prov
+    return RadioBrowserProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -237,7 +234,7 @@ class RadioBrowserProvider(MusicProvider):
             return False
         self.logger.debug("Adding radio %s to stored radios", item.item_id)
         stored_radios = [*stored_radios, item.item_id]
-        await self.mass.config.set_provider_config_value(
+        self.mass.config.set_raw_provider_config_value(
             self.instance_id, CONF_STORED_RADIOS, stored_radios
         )
         return True
@@ -251,7 +248,7 @@ class RadioBrowserProvider(MusicProvider):
             return False
         self.logger.debug("Removing radio %s from stored radios", prov_item_id)
         stored_radios = [x for x in stored_radios if x != prov_item_id]
-        await self.mass.config.set_provider_config_value(
+        self.mass.config.set_raw_provider_config_value(
             self.instance_id, CONF_STORED_RADIOS, stored_radios
         )
         return True

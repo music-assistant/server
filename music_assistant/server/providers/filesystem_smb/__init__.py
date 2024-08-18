@@ -49,10 +49,7 @@ async def setup(
     if not share or "/" in share or "\\" in share:
         msg = "Invalid share name"
         raise LoginFailed(msg)
-    prov = SMBFileSystemProvider(mass, manifest, config)
-    await prov.handle_async_init()
-    await prov.check_write_access()
-    return prov
+    return SMBFileSystemProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -151,6 +148,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         except Exception as err:
             msg = f"Connection failed for the given details: {err}"
             raise LoginFailed(msg) from err
+
+        await self.check_write_access()
 
     async def unload(self) -> None:
         """

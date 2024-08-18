@@ -49,9 +49,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = HomeAssistant(mass, manifest, config)
-    await prov.handle_async_init()
-    return prov
+    return HomeAssistant(mass, manifest, config)
 
 
 async def get_config_entries(

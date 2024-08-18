@@ -131,9 +131,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = AirplayProvider(mass, manifest, config)
-    await prov.handle_async_init()
-    return prov
+    return AirplayProvider(mass, manifest, config)
 
 
 async def get_config_entries(

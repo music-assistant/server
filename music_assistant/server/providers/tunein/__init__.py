@@ -43,14 +43,7 @@ async def setup(
         msg = "Username is invalid"
         raise LoginFailed(msg)
 
-    prov = TuneInProvider(mass, manifest, config)
-    if "@" in config.get_value(CONF_USERNAME):
-        prov.logger.warning(
-            "Email address detected instead of username, "
-            "it is advised to use the tunein username instead of email."
-        )
-    await prov.handle_async_init()
-    return prov
+    return TuneInProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -90,6 +83,11 @@ class TuneInProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=2)
+        if "@" in self.config.get_value(CONF_USERNAME):
+            self.logger.warning(
+                "Email address detected instead of username, "
+                "it is advised to use the tunein username instead of email."
+            )
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""

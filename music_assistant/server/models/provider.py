@@ -50,6 +50,9 @@ class Provider:
         # should not be overridden in normal circumstances
         return self.instance_id if self.manifest.multi_instance else self.domain
 
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
+
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
 

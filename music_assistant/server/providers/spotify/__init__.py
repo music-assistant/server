@@ -22,6 +22,7 @@ from music_assistant.common.models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
+    SetupFailedError,
 )
 from music_assistant.common.models.media_items import (
     Album,
@@ -61,9 +62,7 @@ if TYPE_CHECKING:
 
 CONF_CLIENT_ID = "client_id"
 CONF_ACTION_AUTH = "auth"
-CONF_ACCESS_TOKEN = "access_token"
 CONF_REFRESH_TOKEN = "refresh_token"
-CONF_AUTH_EXPIRES_AT = "expires_at"
 CONF_ACTION_CLEAR_AUTH = "clear_auth"
 SCOPE = [
     "playlist-read",
@@ -115,9 +114,10 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = SpotifyProvider(mass, manifest, config)
-    await prov.handle_async_init()
-    return prov
+    if not config.get_value(CONF_REFRESH_TOKEN):
+        msg = "Re-Authentication required"
+        raise SetupFailedError(msg)
+    return SpotifyProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -167,15 +167,12 @@ async def get_config_entries(
             "https://accounts.spotify.com/api/token", data=params
         ) as response:
             result = await response.json()
-            values[CONF_ACCESS_TOKEN] = result["access_token"]
             values[CONF_REFRESH_TOKEN] = result["refresh_token"]
-            values[CONF_AUTH_EXPIRES_AT] = int(time.time() + result["expires_in"])
 
-    auth_required = values.get(CONF_REFRESH_TOKEN) is None
+    auth_required = values.get(CONF_REFRESH_TOKEN) in (None, "")
 
     if auth_required:
         values[CONF_CLIENT_ID] = None
-        values[CONF_ACCESS_TOKEN] = None
         label_text = (
             "You need to authenticate to Spotify. Click the authenticate button below "
             "to start the authentication process which will open in a new (popup) window, "
@@ -193,27 +190,12 @@ async def get_config_entries(
             label=label_text,
         ),
         ConfigEntry(
-            key=CONF_ACCESS_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            label=CONF_ACCESS_TOKEN,
-            hidden=True,
-            value=values.get(CONF_ACCESS_TOKEN) if values else None,
-        ),
-        ConfigEntry(
             key=CONF_REFRESH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label=CONF_REFRESH_TOKEN,
             hidden=True,
             required=True,
             value=values.get(CONF_REFRESH_TOKEN) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_AUTH_EXPIRES_AT,
-            type=ConfigEntryType.INTEGER,
-            label=CONF_AUTH_EXPIRES_AT,
-            hidden=True,
-            default_value=0,
-            value=values.get(CONF_AUTH_EXPIRES_AT) if values else None,
         ),
         ConfigEntry(
             key=CONF_CLIENT_ID,
@@ -258,6 +240,9 @@ class SpotifyProvider(MusicProvider):
         await self.get_librespot_binary()
         # try login which will raise if it fails
         await self.login()
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -541,6 +526,8 @@ class SpotifyProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
+        # make sure that the token is still valid by just requesting it
+        await self.login()
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
@@ -554,7 +541,6 @@ class SpotifyProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        # make sure that the token is still valid by just requesting it
         auth_info = await self.login()
         librespot = await self.get_librespot_binary()
         args = [
@@ -772,54 +758,36 @@ class SpotifyProvider(MusicProvider):
         if self._auth_info and (self._auth_info["expires_at"] > (time.time() - 120)):
             return self._auth_info
 
+        # request new access token using the refresh token
         if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN)):
             raise LoginFailed("Authentication required")
 
-        expires_at = self.config.get_value(CONF_AUTH_EXPIRES_AT) or 0
-        access_token = self.config.get_value(CONF_ACCESS_TOKEN)
-
-        if expires_at < (time.time() - 300):
-            # refresh token
-            client_id = self.config.get_value(CONF_CLIENT_ID) or app_var(2)
-            params = {
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": client_id,
-            }
-            async with self.mass.http_session.post(
-                "https://accounts.spotify.com/api/token", data=params
-            ) as response:
-                if response.status != 200:
-                    err = await response.text()
-                    if "revoked" in err:
-                        # clear refresh token if it's invalid
-                        self.mass.config.set_raw_provider_config_value(
-                            self.instance_id, CONF_REFRESH_TOKEN, None
-                        )
-                    raise LoginFailed(f"Failed to refresh access token: {err}")
-                data = await response.json()
-                access_token = data.get("access_token") or access_token
-                refresh_token = data.get("refresh_token") or refresh_token
-                expires_at = int(data["expires_in"] + time.time())
-                self.logger.debug("Successfully refreshed access token")
-
-        self._auth_info = auth_info = {
-            "access_token": access_token,
+        client_id = self.config.get_value(CONF_CLIENT_ID) or app_var(2)
+        params = {
+            "grant_type": "refresh_token",
             "refresh_token": refresh_token,
-            "expires_at": expires_at,
+            "client_id": client_id,
         }
+        async with self.mass.http_session.post(
+            "https://accounts.spotify.com/api/token", data=params
+        ) as response:
+            if response.status != 200:
+                err = await response.text()
+                if "revoked" in err:
+                    # clear refresh token if it's invalid
+                    self.mass.config.set_raw_provider_config_value(
+                        self.instance_id, CONF_REFRESH_TOKEN, ""
+                    )
+                raise LoginFailed(f"Failed to refresh access token: {err}")
+            auth_info = await response.json()
+            auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
+            self.logger.debug("Successfully refreshed access token")
 
-        # make sure that our updated creds get stored in config
-        await self.mass.config.set_provider_config_value(
-            self.instance_id, CONF_REFRESH_TOKEN, refresh_token
+        # make sure that our updated creds get stored in memory + config config
+        self._auth_info = auth_info
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True
         )
-        await self.mass.config.set_provider_config_value(
-            self.instance_id, CONF_ACCESS_TOKEN, access_token
-        )
-        await self.mass.config.set_provider_config_value(
-            self.instance_id, CONF_AUTH_EXPIRES_AT, expires_at
-        )
-
         # get logged-in user info
         if not self._sp_user:
             self._sp_user = userinfo = await self._get_data("me", auth_info=auth_info)
@@ -871,6 +839,11 @@ class SpotifyProvider(MusicProvider):
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
 
+            # handle token expired, raise ResourceTemporarilyUnavailable
+            # so it will be retried (and the token refreshed)
+            if response.status == 401:
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
+
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
@@ -912,6 +885,11 @@ class SpotifyProvider(MusicProvider):
                 raise ResourceTemporarilyUnavailable(
                     "Spotify Rate Limiter", backoff_time=backoff_time
                 )
+            # handle token expired, raise ResourceTemporarilyUnavailable
+            # so it will be retried (and the token refreshed)
+            if response.status == 401:
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
+
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
@@ -932,6 +910,10 @@ class SpotifyProvider(MusicProvider):
                 raise ResourceTemporarilyUnavailable(
                     "Spotify Rate Limiter", backoff_time=backoff_time
                 )
+            # handle token expired, raise ResourceTemporarilyUnavailable
+            # so it will be retried (and the token refreshed)
+            if response.status == 401:
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
