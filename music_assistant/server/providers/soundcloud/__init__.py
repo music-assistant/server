@@ -57,9 +57,7 @@ async def setup(
     if not config.get_value(CONF_CLIENT_ID) or not config.get_value(CONF_AUTHORIZATION):
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
-    prov = SoundcloudMusicProvider(mass, manifest, config)
-    await prov.handle_async_init()
-    return prov
+    return SoundcloudMusicProvider(mass, manifest, config)
 
 
 async def get_config_entries(

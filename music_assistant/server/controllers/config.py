@@ -27,7 +27,11 @@ from music_assistant.common.models.config_entries import (
     ProviderConfig,
 )
 from music_assistant.common.models.enums import EventType, PlayerState, ProviderType
-from music_assistant.common.models.errors import InvalidDataError, PlayerUnavailableError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    PlayerUnavailableError,
+    ProviderUnavailableError,
+)
 from music_assistant.constants import (
     CONF_CORE,
     CONF_PLAYERS,
@@ -299,16 +303,6 @@ class ConfigController:
         if not existing:
             return
         self.remove(conf_key)
-
-    async def set_provider_config_value(
-        self, instance_id: str, key: str, value: ConfigValueType
-    ) -> None:
-        """Set single ProviderConfig value."""
-        config = await self.get_provider_config(instance_id)
-        config.update({key: value})
-        config.validate()
-        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
-        self.set(conf_key, config.to_raw())
 
     @api_command("config/players")
     async def get_player_configs(
@@ -609,7 +603,7 @@ class ConfigController:
         )
 
     def set_raw_provider_config_value(
-        self, provider_instance: str, key: str, value: ConfigValueType
+        self, provider_instance: str, key: str, value: ConfigValueType, encrypted: bool = False
     ) -> None:
         """
         Set (raw) single config(entry) value for a provider.
@@ -620,6 +614,12 @@ class ConfigController:
             # only allow setting raw values if main entry exists
             msg = f"Invalid provider_instance: {provider_instance}"
             raise KeyError(msg)
+        if encrypted:
+            value = self.encrypt_string(value)
+        # also update the cached value in the provider itself
+        if not (prov := self.mass.get_provider(provider_instance, return_unavailable=True)):
+            raise ProviderUnavailableError(provider_instance)
+        prov.config.values[key].value = value
         self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value)
 
     def set_raw_core_config_value(self, core_module: str, key: str, value: ConfigValueType) -> None:

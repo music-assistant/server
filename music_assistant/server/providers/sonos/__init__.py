@@ -100,7 +100,6 @@ async def setup(
         logging.getLogger("soco").setLevel(logging.DEBUG)
     else:
         logging.getLogger("soco").setLevel(prov.logger.level + 10)
-    await prov.handle_async_init()
     return prov
 
 

@@ -124,9 +124,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = TidalProvider(mass, manifest, config)
-    await prov.handle_async_init()
-    return prov
+    return TidalProvider(mass, manifest, config)
 
 
 async def tidal_auth_url(auth_helper: AuthenticationHelper, quality: str) -> str:
@@ -349,7 +347,7 @@ class TidalProvider(MusicProvider):
                 self.mass.config.set_raw_provider_config_value(
                     self.instance_id, CONF_REFRESH_TOKEN, None
                 )
-                raise LoginFailed("Credentials, expired, you need to re-setup")
+                raise LoginFailed("Credentials expired, you need to re-setup")
             raise
 
     @property
@@ -644,17 +642,19 @@ class TidalProvider(MusicProvider):
             refresh_token=str(self.config.get_value(CONF_REFRESH_TOKEN)),
             expiry_time=datetime.fromisoformat(str(self.config.get_value(CONF_EXPIRY_TIME))),
         )
-        await self.mass.config.set_provider_config_value(
+        self.mass.config.set_raw_provider_config_value(
             self.config.instance_id,
             CONF_AUTH_TOKEN,
             self._tidal_session.access_token,
+            encrypted=True,
         )
-        await self.mass.config.set_provider_config_value(
+        self.mass.config.set_raw_provider_config_value(
             self.config.instance_id,
             CONF_REFRESH_TOKEN,
             self._tidal_session.refresh_token,
+            encrypted=True,
         )
-        await self.mass.config.set_provider_config_value(
+        self.mass.config.set_raw_provider_config_value(
             self.config.instance_id,
             CONF_EXPIRY_TIME,
             self._tidal_session.expiry_time.isoformat(),

@@ -47,9 +47,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = FullyKioskProvider(mass, manifest, config)
-    await prov.handle_async_init()
-    return prov
+    return FullyKioskProvider(mass, manifest, config)
 
 
 async def get_config_entries(

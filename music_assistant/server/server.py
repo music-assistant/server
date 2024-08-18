@@ -606,6 +606,11 @@ class MusicAssistant:
         except TimeoutError as err:
             msg = f"Provider {domain} did not load within 30 seconds"
             raise SetupFailedError(msg) from err
+
+        self._providers[provider.instance_id] = provider
+        # run async setup
+        await provider.handle_async_init()
+
         # if we reach this point, the provider loaded successfully
         LOGGER.info(
             "Loaded %s provider %s",
@@ -613,7 +618,7 @@ class MusicAssistant:
             conf.name or conf.domain,
         )
         provider.available = True
-        self._providers[provider.instance_id] = provider
+
         self.create_task(provider.loaded_in_mass())
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())

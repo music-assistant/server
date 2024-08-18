@@ -99,9 +99,7 @@ async def setup(
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
 
-    prov = PlexProvider(mass, manifest, config)
-    await prov.handle_async_init()
-    return prov
+    return PlexProvider(mass, manifest, config)
 
 
 async def get_config_entries(  # noqa: PLR0915
