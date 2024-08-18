@@ -29,13 +29,7 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant.common.models.media_items import (
-    BrowseFolder,
-    MediaItemImage,
-    MediaItemType,
-    SearchResults,
-    UniqueList,
-)
+from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
@@ -1007,7 +1001,7 @@ class MusicController(CoreController):
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
 
-        if prev_version <= 4:
+        if prev_version <= 5:
             # unhandled schema version
             # we do not try to handle more complex migrations
             self.logger.warning(
@@ -1030,55 +1024,6 @@ class MusicController(CoreController):
             # recreate missing tables
             await self.__create_database_tables()
             return
-
-        if prev_version <= 5:
-            # mark all provider mappings as available to recover from the bug
-            # that caused some items to be marked as unavailable
-            await self.database.execute(f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET available = 1")
-            for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
-                await self.database.execute(
-                    f"UPDATE {ctrl.db_table} SET provider_mappings = "
-                    "replace (provider_mappings, '\"available\":false', '\"available\":true')"
-                )
-
-        if prev_version <= 5:
-            # migrate images to lookup key
-            unique_provs = ("filesystem", "jellyfin", "plex", "opensubsonic")
-            for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
-                async for media_item in ctrl.iter_library_items():
-                    if not media_item.metadata or not media_item.metadata.images:
-                        continue
-                    changes = False
-                    images: UniqueList[MediaItemImage] = UniqueList()
-                    for item_img in media_item.metadata.images:
-                        if "--" not in item_img.provider:
-                            images.append(item_img)
-                            continue
-                        if item_img.provider.startswith(unique_provs):
-                            images.append(item_img)
-                            continue
-                        images.append(
-                            MediaItemImage(
-                                type=item_img.type,
-                                path=item_img.path,
-                                provider=item_img.provider.split("--")[0],
-                                remotely_accessible=item_img.remotely_accessible,
-                            )
-                        )
-                        changes = True
-                    if changes:
-                        media_item.metadata.images = images
-                        try:
-                            await ctrl.update_item_in_library(media_item.item_id, media_item, True)
-                        except Exception as err:
-                            self.logger.warning(
-                                "Error while migrating %s: %s",
-                                media_item.item_id,
-                                str(err),
-                                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-                            )
-                            with suppress(MediaNotFoundError):
-                                await ctrl.remove_item_from_library(media_item.item_id)
 
         # save changes
         await self.database.commit()
