@@ -565,7 +565,7 @@ async def get_hls_substream(
         charset = resp.charset or "utf-8"
         master_m3u_data = await resp.text(charset)
     substreams = parse_m3u(master_m3u_data)
-    if any(x for x in substreams if x.length):
+    if any(x for x in substreams if x.length and not x.key):
         # this is already a substream!
         return PlaylistItem(
             path=url,
