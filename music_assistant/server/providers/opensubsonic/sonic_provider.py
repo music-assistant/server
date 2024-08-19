@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import TYPE_CHECKING
 
 from libopensonic.connection import Connection as SonicConnection
@@ -119,9 +118,7 @@ class OpenSonicProvider(MusicProvider):
                     self._seek_support = True
                     break
         except OSError:
-            logging.getLogger("libopensonic").info(
-                "Server does not support transcodeOffset, seeking in player provider"
-            )
+            self.logger.info("Server does not support transcodeOffset, seeking in player provider")
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
