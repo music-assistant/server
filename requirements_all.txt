@@ -25,7 +25,7 @@ music-assistant-frontend==2.8.2
 orjson==3.10.7
 pillow==10.4.0
 pkce==1.0.3
-plexapi==4.15.15
+plexapi==4.15.16
 py-opensonic==5.1.1
 PyChromecast==14.0.1
 pycryptodome==3.20.0
