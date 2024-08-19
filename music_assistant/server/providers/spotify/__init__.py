@@ -755,7 +755,7 @@ class SpotifyProvider(MusicProvider):
     async def login(self) -> dict:
         """Log-in Spotify and return Auth/token info."""
         # return existing token if we have one in memory
-        if self._auth_info and (self._auth_info["expires_at"] > (time.time() - 120)):
+        if self._auth_info and (self._auth_info["expires_at"] > (time.time() - 300)):
             return self._auth_info
 
         # request new access token using the refresh token
@@ -783,7 +783,7 @@ class SpotifyProvider(MusicProvider):
             auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
             self.logger.debug("Successfully refreshed access token")
 
-        # make sure that our updated creds get stored in memory + config config
+        # make sure that our updated creds get stored in memory + config
         self._auth_info = auth_info
         self.mass.config.set_raw_provider_config_value(
             self.instance_id, CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True
