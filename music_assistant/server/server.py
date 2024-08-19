@@ -744,6 +744,8 @@ class MusicAssistant:
         for prov in self._providers.values():
             if not prov.manifest.mdns_discovery:
                 continue
+            if not prov.available:
+                continue
             if service_type in prov.manifest.mdns_discovery:
                 self.create_task(process_mdns_state_change(prov))
 

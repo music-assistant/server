@@ -95,6 +95,11 @@ class FullyKioskProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # set-up fullykiosk logging
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("fullykiosk").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("fullykiosk").setLevel(self.logger.level + 10)
         self._fully = FullyKiosk(
             self.mass.http_session,
             self.config.get_value(CONF_IP_ADDRESS),
@@ -107,11 +112,6 @@ class FullyKioskProvider(PlayerProvider):
         except Exception as err:
             msg = f"Unable to start the FullyKiosk connection ({err!s}"
             raise SetupFailedError(msg) from err
-        # set-up fullykiosk logging
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("fullykiosk").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("fullykiosk").setLevel(self.logger.level + 10)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""

@@ -561,7 +561,6 @@ class MetaDataController(CoreController):
 
     async def _update_track_metadata(self, track: Track, force_refresh: bool = False) -> None:
         """Get/update rich metadata for a track."""
-        self.logger.debug("Updating metadata for Track %s", track.name)
         unique_keys: set[str] = set()
         # collect metadata from all (online) music/metadata providers
         # NOTE: we only allow this every REFRESH_INTERVAL and a max amount of calls per day
@@ -572,6 +571,7 @@ class MetaDataController(CoreController):
             and ((time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
             and (track.mbid or track.artists or track.album)
         ):
+            self.logger.debug("Updating metadata for Track %s", track.name)
             self._online_slots_available -= 1
             # set timestamp, used to determine when this function was last called
             track.metadata.last_refresh = int(time())

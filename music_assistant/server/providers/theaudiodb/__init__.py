@@ -169,7 +169,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         for album_artist in album.artists:
             # make sure to include the version in the album name
             album_name = f"{album.name} {album.version}" if album.version else album.name
-            result = await self._get_data("searchalbum.php?", s=album_artist.name, a=album)
+            result = await self._get_data("searchalbum.php?", s=album_artist.name, a=album_name)
             if result and result.get("album"):
                 for item in result["album"]:
                     # some safety checks
