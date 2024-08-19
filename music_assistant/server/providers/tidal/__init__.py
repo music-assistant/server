@@ -699,7 +699,9 @@ class TidalProvider(MusicProvider):
                     item_id=str(artist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{BROWSE_URL}/artist/{artist_id}",
+                    # NOTE: don't use the /browse endpoint as it's
+                    # not working for musicbrainz lookups
+                    url=f"https://tidal.com/artist/{artist_id}",
                 )
             },
         )
@@ -736,7 +738,7 @@ class TidalProvider(MusicProvider):
                     audio_format=AudioFormat(
                         content_type=ContentType.FLAC,
                     ),
-                    url=f"{BROWSE_URL}/album/{album_id}",
+                    url=f"https://tidal.com/album/{album_id}",
                     available=album_obj.available,
                 )
             },
@@ -799,7 +801,7 @@ class TidalProvider(MusicProvider):
                         content_type=ContentType.FLAC,
                         bit_depth=24 if track_obj.is_HiRes else 16,
                     ),
-                    url=f"{BROWSE_URL}/track/{track_id}",
+                    url=f"https://tidal.com/track/{track_id}",
                     available=track_obj.available,
                 )
             },

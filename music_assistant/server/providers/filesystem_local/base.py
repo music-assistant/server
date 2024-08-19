@@ -50,13 +50,12 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.compare import compare_strings, create_safe_string
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import AudioTags, parse_tags, split_items
 from music_assistant.server.models.music_provider import MusicProvider
 
-from .helpers import get_album_dir, get_artist_dir, get_disc_dir
+from .helpers import get_album_dir, get_artist_dir
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -804,6 +803,7 @@ class FileSystemProviderBase(MusicProvider):
         for index, track_artist_str in enumerate(tags.artists):
             artist = await self._create_artist_itemmapping(
                 track_artist_str,
+                album_or_track_dir=file_item.path,
                 sort_name=(
                     tags.artist_sort_names[index] if index < len(tags.artist_sort_names) else None
                 ),
@@ -855,19 +855,19 @@ class FileSystemProviderBase(MusicProvider):
         track.metadata.chapters = UniqueList(tags.chapters)
         return track
 
-    @use_cache(300)
+    # @use_cache(300)
     async def _create_artist_itemmapping(
         self,
         name: str,
-        album_path: str | None = None,
+        album_or_track_dir: str | None = None,
         sort_name: str | None = None,
         mbid: str | None = None,
     ) -> ItemMapping:
         """Create ItemMapping for a track/album artist."""
         artist_path = None
-        if album_path:
-            # try to find (album)artist folder based on album path
-            artist_path = get_artist_dir(album_path=album_path, artist_name=name)
+        if album_or_track_dir:
+            # try to find (album)artist folder based on track or album path
+            artist_path = get_artist_dir(album_or_track_dir=album_or_track_dir, artist_name=name)
         if not artist_path:
             # check if we have an artist folder for this artist at root level
             safe_artist_name = create_safe_string(name, lowercase=False, replace_space=False)
@@ -886,6 +886,8 @@ class FileSystemProviderBase(MusicProvider):
                     if prov_mapping.url:
                         artist_path = prov_mapping.url
                         break
+                if artist_path:
+                    break
 
         return ItemMapping(
             media_type=MediaType.ARTIST,
@@ -903,11 +905,11 @@ class FileSystemProviderBase(MusicProvider):
         """Parse Album metadata from Track tags."""
         assert track_tags.album
         # work out if we have an album and/or disc folder
-        # disc_dir is the folder level where the tracks are located
+        # track_dir is the folder level where the tracks are located
         # this may be a separate disc folder (Disc 1, Disc 2 etc) underneath the album folder
         # or this is an album folder with the disc attached
-        disc_dir = get_disc_dir(track_path, track_tags.album, track_tags.disc)
-        album_dir = get_album_dir(track_path, track_tags.album, disc_dir)
+        track_dir = os.path.dirname(track_path)
+        album_dir = get_album_dir(track_dir, track_tags.album)
 
         # album artist(s)
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -915,7 +917,7 @@ class FileSystemProviderBase(MusicProvider):
             for index, album_artist_str in enumerate(track_tags.album_artists):
                 artist = await self._create_artist_itemmapping(
                     album_artist_str,
-                    album_path=album_dir,
+                    album_or_track_dir=album_dir,
                     sort_name=(
                         track_tags.album_artist_sort_names[index]
                         if index < len(track_tags.album_artist_sort_names)
@@ -950,7 +952,9 @@ class FileSystemProviderBase(MusicProvider):
                 )
                 album_artists = UniqueList(
                     [
-                        await self._create_artist_itemmapping(name=track_artist_str)
+                        await self._create_artist_itemmapping(
+                            name=track_artist_str, album_or_track_dir=album_dir
+                        )
                         for track_artist_str in track_tags.artists
                     ]
                 )
@@ -1008,8 +1012,7 @@ class FileSystemProviderBase(MusicProvider):
         if not full_metadata:
             return album
 
-        extra_path = os.path.dirname(track_path) if (track_path and not album_dir) else None
-        for folder_path in (disc_dir, album_dir, extra_path):
+        for folder_path in (track_dir, album_dir):
             if not folder_path or not await self.exists(folder_path):
                 continue
             nfo_file = os.path.join(folder_path, "album.nfo")
@@ -1048,9 +1051,9 @@ class FileSystemProviderBase(MusicProvider):
 
         return album
 
-    async def _get_local_images(self, folder: str) -> list[MediaItemImage]:
+    async def _get_local_images(self, folder: str) -> UniqueList[MediaItemImage]:
         """Return local images found in a given folderpath."""
-        images = []
+        images: UniqueList[MediaItemImage] = UniqueList()
         async for item in self.listdir(folder):
             if "." not in item.path or item.is_dir:
                 continue

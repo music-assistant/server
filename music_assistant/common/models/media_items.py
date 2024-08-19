@@ -173,7 +173,7 @@ class MediaItemImage(DataClassDictMixin):
 
     def __hash__(self) -> int:
         """Return custom hash."""
-        return hash((self.type.value, self.path))
+        return hash((self.type.value, self.provider, self.path))
 
     def __eq__(self, other: object) -> bool:
         """Check equality of two items."""
@@ -238,7 +238,7 @@ class MediaItemMetadata(DataClassDictMixin):
                 continue
             cur_val = getattr(self, fld.name)
             if isinstance(cur_val, list) and isinstance(new_val, list):
-                new_val = merge_lists(cur_val, new_val)
+                new_val = UniqueList(merge_lists(cur_val, new_val))
                 setattr(self, fld.name, new_val)
             elif isinstance(cur_val, set) and isinstance(new_val, set | list | tuple):
                 cur_val.update(new_val)

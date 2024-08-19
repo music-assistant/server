@@ -515,6 +515,7 @@ class MusicController(CoreController):
 
         Destructive! Will remove the item and all dependants.
         """
+        self.mass.metadata.stop_metadata_scanner()
         ctrl = self.get_controller(media_type)
         item = await ctrl.get_library_item(library_item_id)
         # remove from all providers
@@ -810,6 +811,7 @@ class MusicController(CoreController):
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""
+        self.mass.metadata.stop_metadata_scanner()
         if provider_instance.startswith(("filesystem", "jellyfin", "plex", "opensubsonic")):
             # removal of a local provider can become messy very fast due to the relations
             # such as images pointing at the files etc. so we just reset the whole db

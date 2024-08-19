@@ -16,25 +16,19 @@ from mashumaro.exceptions import MissingField
 from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.enums import ExternalID, ProviderFeature
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    MediaNotFoundError,
-    ResourceTemporarilyUnavailable,
-)
+from music_assistant.common.models.errors import InvalidDataError, ResourceTemporarilyUnavailable
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from music_assistant.common.models.config_entries import (
         ConfigEntry,
         ConfigValueType,
         ProviderConfig,
     )
-    from music_assistant.common.models.media_items import Album, Artist, Track
+    from music_assistant.common.models.media_items import Album, Track
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -213,33 +207,6 @@ class MusicbrainzProvider(MetadataProvider):
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
 
-    async def get_musicbrainz_artist_id(
-        self, artist: Artist, ref_albums: Iterable[Album], ref_tracks: Iterable[Track]
-    ) -> str | None:
-        """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
-        if artist.mbid:
-            return artist.mbid
-        # try with (strict) ref track(s), using recording id
-        for ref_track in ref_tracks:
-            if mb_artist := await self.get_artist_details_by_track(artist.name, ref_track):
-                return mb_artist.id
-        # try with (strict) ref album(s), using releasegroup id
-        for ref_album in ref_albums:
-            if mb_artist := await self.get_artist_details_by_album(artist.name, ref_album):
-                return mb_artist.id
-        # last restort: track matching by name
-        for ref_track in ref_tracks:
-            if not ref_track.album:
-                continue
-            if result := await self.search(
-                artistname=artist.name,
-                albumname=ref_track.album.name,
-                trackname=ref_track.name,
-                trackversion=ref_track.version,
-            ):
-                return result[0].id
-        return None
-
     async def search(
         self, artistname: str, albumname: str, trackname: str, trackversion: str | None = None
     ) -> tuple[MusicBrainzArtist, MusicBrainzReleaseGroup, MusicBrainzRecording] | None:
@@ -404,7 +371,7 @@ class MusicbrainzProvider(MetadataProvider):
         if not ref_track.mbid:
             return None
         result = None
-        with suppress(InvalidDataError, MediaNotFoundError):
+        with suppress(InvalidDataError):
             result = await self.get_recording_details(ref_track.mbid)
         if not (result and result.artist_credit):
             return None
@@ -415,6 +382,21 @@ class MusicbrainzProvider(MetadataProvider):
                 for alias in artist_credit.artist.aliases or []:
                     if compare_strings(alias.name, artistname, strict):
                         return artist_credit.artist
+        return None
+
+    async def get_artist_details_by_resource_url(
+        self, resource_url: str
+    ) -> MusicBrainzArtist | None:
+        """
+        Get musicbrainz artist details by providing a resource URL (e.g. Spotify share URL).
+
+        MusicBrainzArtist object that is returned does not contain the optional data.
+        """
+        if result := await self.get_data("url", resource=resource_url, inc="artist-rels"):
+            for relation in result.get("relations", []):
+                if not (artist := relation.get("artist")):
+                    continue
+                return MusicBrainzArtist.from_dict(replace_hyphens(artist))
         return None
 
     @use_cache(86400 * 30)
@@ -436,8 +418,8 @@ class MusicbrainzProvider(MetadataProvider):
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
-            # handle 404 not found, convert to MediaNotFoundError
+            # handle 404 not found
             if response.status in (400, 401, 404):
-                raise MediaNotFoundError(f"{endpoint} not found")
+                return None
             response.raise_for_status()
             return await response.json(loads=json_loads)

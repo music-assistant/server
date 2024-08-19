@@ -62,13 +62,13 @@ class CoreController:
 
     def _set_logger(self, log_level: str | None = None) -> None:
         """Set the logger settings."""
-        self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.{self.domain}")
+        mass_logger = logging.getLogger(MASS_LOGGER_NAME)
+        self.logger = mass_logger.getChild(self.domain)
         if log_level is None:
             log_level = self.mass.config.get_raw_core_config_value(
                 self.domain, CONF_LOG_LEVEL, "GLOBAL"
             )
         if log_level == "GLOBAL":
-            mass_logger = logging.getLogger(MASS_LOGGER_NAME)
             self.logger.setLevel(mass_logger.level)
         else:
             self.logger.setLevel(log_level)
