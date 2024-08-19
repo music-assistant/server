@@ -246,7 +246,7 @@ class MusicAssistant:
         if prov := self._providers.get(provider_instance_or_domain):
             if return_unavailable or prov.available:
                 return prov
-            if not prov.is_streaming_provider:
+            if not getattr(prov, "is_streaming_provider", None):
                 # no need to lookup other instances because this provider has unique data
                 return None
             provider_instance_or_domain = prov.domain

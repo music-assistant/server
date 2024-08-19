@@ -27,11 +27,13 @@ class Provider:
         self.mass = mass
         self.manifest = manifest
         self.config = config
-        self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.providers.{self.domain}")
+        mass_logger = logging.getLogger(MASS_LOGGER_NAME)
+        self.logger = mass_logger.getChild(self.domain)
         log_level = config.get_value(CONF_LOG_LEVEL)
         if log_level == "GLOBAL":
-            mass_logger = logging.getLogger(MASS_LOGGER_NAME)
             self.logger.setLevel(mass_logger.level)
+        else:
+            self.logger.setLevel(log_level)
         if logging.getLogger().level > self.logger.level:
             # if the root logger's level is higher, we need to adjust that too
             logging.getLogger().setLevel(self.logger.level)

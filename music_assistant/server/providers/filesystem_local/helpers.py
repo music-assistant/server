@@ -7,41 +7,43 @@ import os
 from music_assistant.server.helpers.compare import compare_strings
 
 
-def get_artist_dir(album_path: str, artist_name: str) -> str | None:
-    """Look for (Album)Artist directory in path of album."""
-    parentdir = os.path.dirname(album_path)
-    dirname = parentdir.rsplit(os.sep)[-1]
-    if compare_strings(artist_name, dirname, False):
-        return parentdir
-    return None
-
-
-def get_disc_dir(track_path: str, album_name: str, disc_number: int | None) -> str | None:
-    """Look for disc directory in path of album/tracks."""
-    parentdir = os.path.dirname(track_path)
-    dirname = parentdir.rsplit(os.sep)[-1]
-    dirname_lower = dirname.lower()
-    if disc_number and compare_strings(f"disc {disc_number}", dirname, False):
-        return parentdir
-    if dirname_lower.startswith(album_name.lower()) and "disc" in dirname_lower:
-        return parentdir
-    if dirname_lower.startswith(album_name.lower()) and dirname_lower.endswith(str(disc_number)):
-        return parentdir
-    return None
-
-
-def get_album_dir(track_path: str, album_name: str, disc_dir: str | None) -> str | None:
-    """Return album/parent directory of a track."""
-    parentdir = os.path.dirname(track_path)
-    # account for disc sublevel by ignoring 1 level if needed
-    for _ in range(2 if disc_dir else 1):
+def get_artist_dir(album_or_track_dir: str, artist_name: str) -> str | None:
+    """Look for (Album)Artist directory in path of a track (or album)."""
+    parentdir = os.path.dirname(album_or_track_dir)
+    # account for disc or album sublevel by ignoring (max) 2 levels if needed
+    for _ in range(3):
         dirname = parentdir.rsplit(os.sep)[-1]
-        dirname_lower = dirname.lower()
+        if compare_strings(artist_name, dirname, False):
+            # literal match
+            return parentdir
+        parentdir = os.path.dirname(parentdir)
+    return None
+
+
+def get_album_dir(track_dir: str, album_name: str) -> str | None:
+    """Return album/parent directory of a track."""
+    parentdir = track_dir
+    # account for disc sublevel by ignoring 1 level if needed
+    for _ in range(2):
+        dirname = parentdir.rsplit(os.sep)[-1]
         if compare_strings(album_name, dirname, False):
+            # literal match
             return parentdir
-        if album_name in dirname_lower:
+        if compare_strings(album_name, dirname.split(" - ")[-1], False):
+            # account for ArtistName - AlbumName format in the directory name
             return parentdir
-        if dirname_lower in album_name:
+        if compare_strings(album_name, dirname.split("(")[0], False):
+            # account for ArtistName - AlbumName (Version) format in the directory name
+            return parentdir
+        if compare_strings(album_name.split("(")[0], dirname, False):
+            # account for AlbumName (Version) format in the album name
+            return parentdir
+        if compare_strings(album_name.split("(")[0], dirname.split(" - ")[-1], False):
+            # account for ArtistName - AlbumName (Version) format
+            return parentdir
+        if len(album_name) > 8 and album_name in dirname:
+            # dirname contains album name
+            # (could potentially lead to false positives, hence the length check)
             return parentdir
         parentdir = os.path.dirname(parentdir)
     return None

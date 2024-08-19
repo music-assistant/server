@@ -24,10 +24,7 @@ from tidalapi.exceptions import MetadataNotAvailable, ObjectNotFound, TooManyReq
 from tidalapi.media import Stream as TidalStream
 
 from music_assistant.common.models.enums import MediaType
-from music_assistant.common.models.errors import (
-    MediaNotFoundError,
-    ResourceTemporarilyUnavailable,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 
 DEFAULT_LIMIT = 50
 LOGGER = logging.getLogger(__name__)
@@ -115,13 +112,15 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
             msg = "Tidal API rate limit reached"
             raise ResourceTemporarilyUnavailable(msg)
         else:
-            all_albums = []
-            albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
-            eps_singles = artist_obj.get_ep_singles(limit=DEFAULT_LIMIT)
-            compilations = artist_obj.get_other(limit=DEFAULT_LIMIT)
-            all_albums.extend(albums)
-            all_albums.extend(eps_singles)
-            all_albums.extend(compilations)
+            all_albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
+            # extend with EPs and singles
+            all_albums.extend(artist_obj.get_ep_singles(limit=DEFAULT_LIMIT))
+            # extend with compilations
+            # note that the Tidal API gives back really strange results here so
+            # filter on either various artists or the artist id
+            for album in artist_obj.get_other(limit=DEFAULT_LIMIT):
+                if album.artist.id == artist_obj.id or album.artist.name == "Various Artists":
+                    all_albums.append(album)
             return all_albums
 
     return await asyncio.to_thread(inner)
