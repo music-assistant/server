@@ -842,6 +842,7 @@ class SpotifyProvider(MusicProvider):
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
+                self._auth_info = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
             # handle 404 not found, convert to MediaNotFoundError
@@ -865,6 +866,11 @@ class SpotifyProvider(MusicProvider):
                 raise ResourceTemporarilyUnavailable(
                     "Spotify Rate Limiter", backoff_time=backoff_time
                 )
+            # handle token expired, raise ResourceTemporarilyUnavailable
+            # so it will be retried (and the token refreshed)
+            if response.status == 401:
+                self._auth_info = None
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
@@ -888,6 +894,7 @@ class SpotifyProvider(MusicProvider):
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
+                self._auth_info = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
             # handle temporary server error
@@ -913,6 +920,7 @@ class SpotifyProvider(MusicProvider):
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
+                self._auth_info = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
             # handle temporary server error
             if response.status in (502, 503):
