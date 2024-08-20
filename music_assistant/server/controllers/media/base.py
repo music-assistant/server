@@ -20,12 +20,7 @@ from music_assistant.common.models.media_items import (
     Track,
     media_from_dict,
 )
-from music_assistant.constants import (
-    DB_TABLE_ARTISTS,
-    DB_TABLE_PLAYLOG,
-    DB_TABLE_PROVIDER_MAPPINGS,
-    MASS_LOGGER_NAME,
-)
+from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
 from music_assistant.server.helpers.compare import compare_media_item
 
 if TYPE_CHECKING:
@@ -35,7 +30,7 @@ if TYPE_CHECKING:
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 
-JSON_KEYS = ("artists", "album", "metadata", "provider_mappings", "external_ids")
+JSON_KEYS = ("artists", "album", "metadata", "provider_mappings", "external_ids", "albums")
 
 SORT_KEYS = {
     "name": "name COLLATE NOCASE ASC",
@@ -54,9 +49,10 @@ SORT_KEYS = {
     "year_desc": "year DESC",
     "position": "position ASC",
     "position_desc": "position DESC",
+    "artist_name": "artists.name COLLATE NOCASE ASC",
+    "artist_name_desc": "artists.name COLLATE NOCASE DESC",
     "random": "RANDOM()",
-    "random_play_count": "random(), play_count ASC",
-    "random_fast": "play_count ASC",  # this one is handled with a special query
+    "random_play_count": "RANDOM(), play_count ASC",
 }
 
 
@@ -70,12 +66,21 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
-        self.base_query = (
-            f"SELECT DISTINCT {self.db_table}.* FROM {self.db_table} "
-            f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} ON "
-            f"{DB_TABLE_PROVIDER_MAPPINGS}.item_id = {self.db_table}.item_id "
-            f"AND media_type = '{self.media_type}'"
-        )
+        self.base_query = f"""
+        SELECT
+            {self.db_table}.*,
+            (SELECT JSON_GROUP_ARRAY(
+                json_object(
+                'item_id', provider_mappings.provider_item_id,
+                    'provider_domain', provider_mappings.provider_domain,
+                        'provider_instance', provider_mappings.provider_instance,
+                        'available', provider_mappings.available,
+                        'audio_format', json(provider_mappings.audio_format),
+                        'url', provider_mappings.url,
+                        'details', provider_mappings.details
+                )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
+                    AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
+            FROM {self.db_table} """  # noqa: E501
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
         # register (base) api handlers
         self.api_base = api_base = f"{self.media_type}s"
@@ -128,7 +133,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             if compare_media_item(item, cur_item):
                 return cur_item.item_id
         # search by (exact) name match
-        query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
+        query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
         query_params = {"name": item.name, "sort_name": item.sort_name}
         async for db_item in self.iter_library_items(
             extra_query=query, extra_query_params=query_params
@@ -208,12 +213,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         extra_query_params: dict[str, Any] | None = None,
     ) -> list[ItemCls]:
         """Get in-database items."""
-        # create special performant random query
-        if order_by == "random_fast" and not extra_query:
-            extra_query = (
-                f"{self.db_table}.rowid > (ABS(RANDOM()) % "
-                f"(SELECT max({self.db_table}.rowid) FROM {self.db_table}))"
-            )
         return await self._get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -221,7 +220,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             offset=offset,
             order_by=order_by,
             provider=provider,
-            extra_query=extra_query,
+            extra_query_parts=[extra_query] if extra_query else None,
             extra_query_params=extra_query_params,
         )
 
@@ -243,7 +242,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
-                extra_query=extra_query,
+                extra_query_parts=[extra_query] if extra_query else None,
                 extra_query_params=extra_query_params,
             )
             for item in next_items:
@@ -393,13 +392,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self, external_id: str, external_id_type: ExternalID | None = None
     ) -> ItemCls | None:
         """Get the library item for the given external id."""
-        query = f"WHERE {self.db_table}.external_ids LIKE :external_id_str"
+        query = f"{self.db_table}.external_ids LIKE :external_id_str"
         if external_id_type:
             external_id_str = f'%"{external_id_type}","{external_id}"%'
         else:
             external_id_str = f'%"{external_id}"%'
         for item in await self._get_library_items_by_query(
-            extra_query=query, extra_query_params={"external_id_str": external_id_str}
+            extra_query_parts=[query], extra_query_params={"external_id_str": external_id_str}
         ):
             return item
         return None
@@ -426,23 +425,27 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         assert provider_instance_id_or_domain != "library"
         assert provider_domain != "library"
         assert provider_instance != "library"
+        subquery_parts: list[str] = []
+        query_params: dict[str, Any] = {}
         if provider_instance:
             query_params = {"prov_id": provider_instance}
-            query = "provider_mappings.provider_instance = :prov_id"
+            subquery_parts.append("provider_mappings.provider_instance = :prov_id")
         elif provider_domain:
             query_params = {"prov_id": provider_domain}
-            query = "provider_mappings.provider_domain = :prov_id"
+            subquery_parts.append("provider_mappings.provider_domain = :prov_id")
         else:
             query_params = {"prov_id": provider_instance_id_or_domain}
-            query = (
+            subquery_parts.append(
                 "(provider_mappings.provider_instance = :prov_id "
                 "OR provider_mappings.provider_domain = :prov_id)"
             )
         if provider_item_id:
-            query += " AND provider_mappings.provider_item_id = :item_id"
+            subquery_parts.append("provider_mappings.provider_item_id = :item_id")
             query_params["item_id"] = provider_item_id
+        subquery = f"SELECT item_id FROM provider_mappings WHERE {' AND '.join(subquery_parts)}"
+        query = f"WHERE {self.db_table}.item_id IN ({subquery})"
         return await self._get_library_items_by_query(
-            limit=limit, offset=offset, extra_query=query, extra_query_params=query_params
+            limit=limit, offset=offset, extra_query_parts=[query], extra_query_params=query_params
         )
 
     async def iter_library_items_by_prov_id(
@@ -688,42 +691,42 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         offset: int = 0,
         order_by: str | None = None,
         provider: str | None = None,
-        extra_query: str | None = None,
+        extra_query_parts: list[str] | None = None,
         extra_query_params: dict[str, Any] | None = None,
+        extra_join_parts: list[str] | None = None,
     ) -> list[ItemCls]:
-        """Fetch MediaItem records from database given a custom (WHERE) clause."""
+        """Fetch MediaItem records from database by building the query."""
         sql_query = self.base_query
         query_params = extra_query_params or {}
-        query_parts: list[str] = []
-        # handle basic search on name
+        query_parts: list[str] = extra_query_parts or []
+        join_parts: list[str] = extra_join_parts or []
+        # create special performant random query
+        if order_by and order_by.startswith("random"):
+            query_parts.append(
+                f"{self.db_table}.item_id in "
+                f"(SELECT item_id FROM {self.db_table} ORDER BY RANDOM() LIMIT {limit})"
+            )
+        # handle search
         if search:
-            # handle combined artist + title search
-            if self.media_type in (MediaType.ALBUM, MediaType.TRACK) and " - " in search:
-                artist_str, title_str = search.split(" - ", 1)
-                query_parts.append(
-                    f"({self.db_table}.name LIKE :search_title "
-                    f"AND {DB_TABLE_ARTISTS}.name LIKE :search_artist)"
-                )
-                query_params["search_title"] = f"%{title_str}%"
-                query_params["search_artist"] = f"%{artist_str}%"
-            else:
-                query_params["search"] = f"%{search}%"
-                query_parts.append(f"{self.db_table}.name LIKE :search")
+            query_params["search"] = f"%{search}%"
+            query_parts.append(f"{self.db_table}.name LIKE :search")
         # handle favorite filter
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             query_params["favorite"] = favorite
         # handle provider filter
         if provider:
-            query_parts.append(f"{DB_TABLE_PROVIDER_MAPPINGS}.provider_instance = :provider")
-            query_params["provider"] = provider
-        # handle extra/custom query
-        if extra_query:
-            # prevent duplicate where statement
-            if extra_query.lower().startswith("where "):
-                extra_query = extra_query[5:]
-            query_parts.append(extra_query)
-        # concetenate all where queries
+            join_parts.append(
+                f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
+                f"AND provider_mappings.media_type = '{self.media_type.value}' "
+                f"AND (provider_mappings.provider_instance = '{provider}' "
+                f"OR provider_mappings.provider_domain = '{provider}')"
+            )
+        # prevent duplicate where statement
+        query_parts = [x[5:] if x.lower().startswith("where ") else x for x in query_parts]
+        # concetenate all join and/or where queries
+        if join_parts:
+            sql_query += f' {" ".join(join_parts)} '
         if query_parts:
             sql_query += " WHERE " + " AND ".join(query_parts)
         # build final query
@@ -770,14 +773,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     "details": provider_mapping.details,
                 },
             )
-        provider_mappings = {x for x in provider_mappings if x.provider_instance is not None}
-        # we (temporary?) duplicate the provider mappings in a separate column of the media
-        # item's table, because the json_group_array query is superslow
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {"provider_mappings": serialize_to_json(provider_mappings)},
-        )
 
     @staticmethod
     def _parse_db_row(db_row: Mapping) -> dict[str, Any]:
@@ -793,6 +788,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             if not (raw_value := db_row_dict[key]):
                 continue
             db_row_dict[key] = json_loads(raw_value)
+
+        # copy albums --> album
+        if albums := db_row_dict.get("albums"):
+            db_row_dict["album"] = albums[0]
+            db_row_dict["disc_number"] = albums[0]["disc_number"]
+            db_row_dict["track_number"] = albums[0]["disc_number"]
 
         # copy album image to itemmapping single image
         if (album := db_row_dict.get("album")) and (images := album.get("images")):

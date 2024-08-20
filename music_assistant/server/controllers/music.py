@@ -29,7 +29,12 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
+from music_assistant.common.models.media_items import (
+    BrowseFolder,
+    ItemMapping,
+    MediaItemType,
+    SearchResults,
+)
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
@@ -67,7 +72,7 @@ DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 6
+DB_SCHEMA_VERSION: Final[int] = 7
 
 
 class MusicController(CoreController):
@@ -526,20 +531,31 @@ class MusicController(CoreController):
         await ctrl.remove_item_from_library(library_item_id)
 
     @api_command("music/library/add_item")
-    async def add_item_to_library(self, item: str | MediaItemType) -> MediaItemType:
+    async def add_item_to_library(
+        self, item: str | MediaItemType, overwrite_existing: bool = False
+    ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
         if isinstance(item, str):
             item = await self.get_item_by_uri(item)
+        if isinstance(item, ItemMapping):
+            item = await self.get_item(
+                item.media_type,
+                item.item_id,
+                item.provider,
+            )
+        # add to provider(s) library first
+        for prov_mapping in item.provider_mappings:
+            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            if provider.library_edit_supported(item.media_type):
+                prov_item = item
+                prov_item.provider = prov_mapping.provider_instance
+                prov_item.item_id = prov_mapping.item_id
+                await provider.library_add(prov_item)
+        # add (or overwrite) to library
         ctrl = self.get_controller(item.media_type)
-        # add to provider's library first
-        provider = self.mass.get_provider(item.provider)
-        if provider.library_edit_supported(item.media_type):
-            await provider.library_add(item)
-        # ensure a full item
-        item = await ctrl.get(item.item_id, item.provider)
-        library_item = await ctrl.add_item_to_library(item)
+        library_item = await ctrl.add_item_to_library(item, overwrite_existing)
         # perform full metadata scan (and provider match)
-        await self.mass.metadata.update_metadata(library_item)
+        await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
@@ -942,6 +958,15 @@ class MusicController(CoreController):
         self.database = DatabaseConnection(db_path)
         await self.database.setup()
 
+        # tracks = await self.database.get_rows(DB_TABLE_TRACKS)
+        # for idx in range(1000):
+        #     for track_row in tracks:
+        #         track = dict(track_row)
+        #         del track["item_id"]
+        #         track["name"] = f'{track["name"]} {idx}'
+        #         await self.database.insert(DB_TABLE_TRACKS, track)
+        #     await self.database.commit()
+
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
         try:
@@ -1027,6 +1052,25 @@ class MusicController(CoreController):
             await self.__create_database_tables()
             return
 
+        if prev_version <= 6:
+            # remove redundant artists and provider_mappings columns
+            for table in (DB_TABLE_TRACKS, DB_TABLE_ALBUMS, DB_TABLE_ARTISTS, DB_TABLE_RADIOS):
+                for column in ("artists", "provider_mappings"):
+                    try:
+                        await self.database.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+                    except Exception as err:
+                        if "no such column" in str(err):
+                            continue
+                        raise
+            # add cache_checksum column to playlists
+            try:
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN cache_checksum TEXT DEFAULT ''"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
         # save changes
         await self.database.commit()
 
@@ -1085,10 +1129,7 @@ class MusicController(CoreController):
                     [play_count] INTEGER DEFAULT 0,
                     [last_played] INTEGER DEFAULT 0,
                     [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    [timestamp_modified] INTEGER,
-
-                    [artists] json DEFAULT '[]',
-                    [provider_mappings] json DEFAULT '[]'
+                    [timestamp_modified] INTEGER
                 );"""
         )
         await self.database.execute(
@@ -1103,9 +1144,7 @@ class MusicController(CoreController):
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
-
-            [provider_mappings] json DEFAULT '[]'
+            [timestamp_modified] INTEGER
             );"""
         )
         await self.database.execute(
@@ -1122,10 +1161,7 @@ class MusicController(CoreController):
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
-
-            [artists] json DEFAULT '[]',
-            [provider_mappings] json DEFAULT '[]'
+            [timestamp_modified] INTEGER
             );"""
         )
         await self.database.execute(
@@ -1136,15 +1172,14 @@ class MusicController(CoreController):
             [sort_name] TEXT NOT NULL,
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
+            [cache_checksum] TEXT DEFAULT '',
             [favorite] BOOLEAN DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
-
-            [provider_mappings] json DEFAULT '[]'
+            [timestamp_modified] INTEGER
             );"""
         )
         await self.database.execute(
@@ -1159,9 +1194,7 @@ class MusicController(CoreController):
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
-
-            [provider_mappings] json DEFAULT '[]'
+            [timestamp_modified] INTEGER
             );"""
         )
         await self.database.execute(

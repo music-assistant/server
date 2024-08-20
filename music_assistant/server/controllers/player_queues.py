@@ -172,7 +172,7 @@ class PlayerQueuesController(CoreController):
                 key=CONF_DEFAULT_ENQUEUE_OPTION_RADIO,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Track item(s).",
+                label="Default enqueue option for Radio item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
             ),

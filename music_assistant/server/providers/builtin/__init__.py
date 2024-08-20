@@ -527,7 +527,7 @@ class BuiltinProvider(MusicProvider):
     async def _get_builtin_playlist_random_favorite_tracks(self) -> list[Track]:
         result: list[Track] = []
         res = await self.mass.music.tracks.library_items(
-            favorite=True, limit=250000, order_by="random"
+            favorite=True, limit=250000, order_by="random_play_count"
         )
         for idx, item in enumerate(res, 1):
             item.position = idx
@@ -536,7 +536,7 @@ class BuiltinProvider(MusicProvider):
 
     async def _get_builtin_playlist_random_tracks(self) -> list[Track]:
         result: list[Track] = []
-        res = await self.mass.music.tracks.library_items(limit=500, order_by="random_fast")
+        res = await self.mass.music.tracks.library_items(limit=500, order_by="random_play_count")
         for idx, item in enumerate(res, 1):
             item.position = idx
             result.append(item)
@@ -544,9 +544,7 @@ class BuiltinProvider(MusicProvider):
 
     async def _get_builtin_playlist_random_album(self) -> list[Track]:
         result: list[Track] = []
-        for random_album in await self.mass.music.albums.library_items(
-            limit=1, order_by="random_fast"
-        ):
+        for random_album in await self.mass.music.albums.library_items(limit=1, order_by="random"):
             tracks = await self.mass.music.albums.tracks(
                 random_album.item_id, random_album.provider
             )
@@ -558,7 +556,7 @@ class BuiltinProvider(MusicProvider):
     async def _get_builtin_playlist_random_artist(self) -> list[Track]:
         result: list[Track] = []
         for random_artist in await self.mass.music.artists.library_items(
-            limit=1, order_by="random_fast"
+            limit=1, order_by="random"
         ):
             tracks = await self.mass.music.artists.tracks(
                 random_artist.item_id, random_artist.provider

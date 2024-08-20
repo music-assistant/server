@@ -225,17 +225,13 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                query = (
-                    f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id "
-                    "AND (provider_domain = :prov_id "
-                    "OR provider_instance = :prov_id)"
+                artist_id = db_artist.item_id
+                subquery = (
+                    f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {artist_id}"
                 )
-                query_params = {
-                    "artist_id": db_artist.item_id,
-                    "prov_id": provider_instance_id_or_domain,
-                }
+                query = f"tracks.item_id in ({subquery})"
                 return await self.mass.music.tracks._get_library_items_by_query(
-                    extra_query=query, extra_query_params=query_params
+                    extra_query_parts=[query], provider=provider_instance_id_or_domain
                 )
         # store (serializable items) in cache
         if prov.is_streaming_provider:
@@ -247,9 +243,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Track]:
         """Return all tracks for an artist in the library/db."""
-        return await self.mass.music.tracks._get_library_items_by_query(
-            extra_query=f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = {item_id}",
-        )
+        subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {item_id}"
+        query = f"tracks.item_id in ({subquery})"
+        return await self.mass.music.tracks._get_library_items_by_query(extra_query_parts=[query])
 
     async def get_provider_artist_albums(
         self,
@@ -279,17 +275,13 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                query = (
-                    f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = :artist_id "
-                    "AND (provider_domain = :prov_id "
-                    "OR provider_instance = :prov_id)"
+                artist_id = db_artist.item_id
+                subquery = (
+                    f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {artist_id}"
                 )
-                query_params = {
-                    "prov_id": provider_instance_id_or_domain,
-                    "artist_id": db_artist.item_id,
-                }
+                query = f"albums.item_id in ({subquery})"
                 return await self.mass.music.albums._get_library_items_by_query(
-                    extra_query=query, extra_query_params=query_params
+                    extra_query_parts=[query], provider=provider_instance_id_or_domain
                 )
 
         # store (serializable items) in cache
@@ -302,8 +294,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Album]:
         """Return all in-library albums for an artist."""
-        query = f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {item_id}"
-        return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
+        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {item_id}"
+        query = f"albums.item_id in ({subquery})"
+        return await self.mass.music.albums._get_library_items_by_query(extra_query_parts=[query])
 
     async def _add_library_item(self, item: Artist | ItemMapping) -> int:
         """Add a new item record to the database."""

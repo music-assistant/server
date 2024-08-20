@@ -286,6 +286,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "external_ids": serialize_to_json(item.external_ids),
+                "cache_checksum": item.cache_checksum,
             },
         )
         db_id = new_item["item_id"]
@@ -317,6 +318,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
+                "cache_checksum": update.cache_checksum
+                if overwrite
+                else update.cache_checksum or cur_item.cache_checksum,
             },
         )
         # update/set provider_mappings table
