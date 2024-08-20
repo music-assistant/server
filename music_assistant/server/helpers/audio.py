@@ -465,8 +465,8 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     - bool if the URL represents a ICY (radio) stream.
     - bool uf the URL represents a HLS stream/playlist.
     """
-    cache_key = f"RADIO_RESOLVED_{url}"
-    if cache := await mass.cache.get(cache_key):
+    cache_base_key = "resolved_radio"
+    if cache := await mass.cache.get(url, base_key=cache_base_key):
         return cache
     is_hls = False
     is_icy = False
@@ -509,7 +509,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
 
     result = (resolved_url, is_icy, is_hls)
     cache_expiration = 3600 * 3
-    await mass.cache.set(cache_key, result, expiration=cache_expiration)
+    await mass.cache.set(url, result, expiration=cache_expiration, base_key=cache_base_key)
     return result
 
 

@@ -511,10 +511,15 @@ class Music:
             library_item_id=library_item_id,
         )
 
-    async def add_item_to_library(self, item: str | MediaItemType) -> MediaItemType:
+    async def add_item_to_library(
+        self, item: str | MediaItemType, overwrite_existing: bool = False
+    ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
         return cast(
-            MediaItemType, await self.client.send_command("music/library/add_item", item=item)
+            MediaItemType,
+            await self.client.send_command(
+                "music/library/add_item", item=item, overwrite_existing=overwrite_existing
+            ),
         )
 
     async def refresh_item(

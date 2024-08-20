@@ -10,7 +10,7 @@
       "request": "launch",
       "module": "music_assistant",
       "justMyCode": false,
-      "args": ["--log-level", "info"],
+      "args": ["--log-level", "debug"],
       "env": { "PYTHONDEVMODE": "1" }
     },
     {

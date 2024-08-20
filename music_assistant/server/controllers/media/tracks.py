@@ -5,6 +5,7 @@ from __future__ import annotations
 import urllib.parse
 from collections.abc import Iterable
 from contextlib import suppress
+from typing import Any
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import MediaType, ProviderFeature
@@ -25,8 +26,6 @@ from music_assistant.common.models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
-    DB_TABLE_ARTISTS,
-    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
@@ -51,28 +50,39 @@ class TracksController(MediaControllerBase[Track]):
     def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
-        self.base_query = f"""
-        SELECT DISTINCT
-            {self.db_table}.*,
-            CASE WHEN albums.item_id IS NULL THEN NULL ELSE
-            json_object(
-                'item_id', {DB_TABLE_ALBUMS}.item_id,
+        self.base_query = """
+        SELECT
+            tracks.*,
+            (SELECT JSON_GROUP_ARRAY(
+                json_object(
+                'item_id', provider_mappings.provider_item_id,
+                    'provider_domain', provider_mappings.provider_domain,
+                        'provider_instance', provider_mappings.provider_instance,
+                        'available', provider_mappings.available,
+                        'audio_format', json(provider_mappings.audio_format),
+                        'url', provider_mappings.url,
+                        'details', provider_mappings.details
+                )) FROM provider_mappings WHERE provider_mappings.item_id = tracks.item_id AND media_type = 'track') AS provider_mappings,
+
+            (SELECT JSON_GROUP_ARRAY(
+                json_object(
+                'item_id', artists.item_id,
                 'provider', 'library',
-                'name', {DB_TABLE_ALBUMS}.name,
-                'sort_name', {DB_TABLE_ALBUMS}.sort_name,
-                'version', {DB_TABLE_ALBUMS}.version,
-                'images',  json_extract({DB_TABLE_ALBUMS}.metadata, '$.images'),
-                'media_type', 'album') END as album,
-            CASE WHEN {DB_TABLE_ALBUM_TRACKS}.disc_number IS NULL THEN 0 ELSE {DB_TABLE_ALBUM_TRACKS}.disc_number END as disc_number,
-            CASE WHEN {DB_TABLE_ALBUM_TRACKS}.track_number IS NULL THEN 0 ELSE {DB_TABLE_ALBUM_TRACKS}.track_number END as track_number
-        FROM {self.db_table}
-        LEFT JOIN {DB_TABLE_ALBUM_TRACKS} on {DB_TABLE_ALBUM_TRACKS}.track_id = {self.db_table}.item_id
-        LEFT JOIN {DB_TABLE_ALBUMS} on {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id
-        LEFT JOIN {DB_TABLE_TRACK_ARTISTS} on {DB_TABLE_TRACK_ARTISTS}.track_id = {self.db_table}.item_id
-        LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id
-        LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} ON
-            {DB_TABLE_PROVIDER_MAPPINGS}.item_id = {self.db_table}.item_id AND media_type = '{self.media_type}'
-        """  # noqa: E501
+                    'name', artists.name,
+                    'sort_name', artists.sort_name,
+                    'media_type', 'artist'
+                )) FROM artists JOIN track_artists on track_artists.track_id = tracks.item_id  WHERE artists.item_id = track_artists.artist_id) AS artists,
+            (SELECT JSON_GROUP_ARRAY(
+                json_object(
+                'item_id', albums.item_id,
+                'provider', 'library',
+                    'name', albums.name,
+                    'sort_name', albums.sort_name,
+                    'media_type', 'album',
+                    'disc_number', album_tracks.disc_number,
+                    'track_number', album_tracks.track_number
+                )) FROM albums JOIN album_tracks on album_tracks.track_id = tracks.item_id  WHERE albums.item_id = album_tracks.album_id) AS albums
+            FROM tracks"""  # noqa: E501
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/track_versions", self.versions)
@@ -236,8 +246,8 @@ class TracksController(MediaControllerBase[Track]):
             f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} "
             f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {item_id}"
         )
-        query = f"WHERE {DB_TABLE_ALBUMS}.item_id in ({subquery})"
-        return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
+        query = f"{DB_TABLE_ALBUMS}.item_id in ({subquery})"
+        return await self.mass.music.albums._get_library_items_by_query(extra_query_parts=[query])
 
     async def match_providers(self, db_track: Track) -> None:
         """Try to find matching track on all providers for the provided (database) track_id.
@@ -486,13 +496,6 @@ class TracksController(MediaControllerBase[Track]):
         for artist in artists:
             mapping = await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
             artist_mappings.append(mapping)
-        # we (temporary?) duplicate the artist mappings in a separate column of the media
-        # item's table, because the json_group_array query is superslow
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {"artists": serialize_to_json(artist_mappings)},
-        )
 
     async def _set_track_artist(
         self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
@@ -519,3 +522,63 @@ class TracksController(MediaControllerBase[Track]):
             },
         )
         return ItemMapping.from_item(db_artist)
+
+    async def _get_library_items_by_query(
+        self,
+        favorite: bool | None = None,
+        search: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+        order_by: str | None = None,
+        provider: str | None = None,
+        extra_query_parts: list[str] | None = None,
+        extra_query_params: dict[str, Any] | None = None,
+        extra_join_parts: list[str] | None = None,
+    ) -> list[Track]:
+        """Fetch MediaItem records from database by building the query."""
+        extra_query_params = extra_query_params or {}
+        extra_query_parts: list[str] = extra_query_parts or []
+        extra_join_parts: list[str] = extra_join_parts or []
+        if search and " - " in search:
+            # handle combined artist + title search
+            artist_str, title_str = search.split(" - ", 1)
+            search = None
+            extra_query_parts.append("tracks.name LIKE :search_title")
+            extra_query_params["search_title"] = f"%{title_str}%"
+            # use join with artists table to filter on artist name
+            extra_join_parts.append(
+                "JOIN track_artists ON track_artists.track_id = tracks.item_id "
+                "JOIN artists ON artists.item_id = track_artists.artist_id "
+                "AND artists.name LIKE :search_artist"
+            )
+            extra_query_params["search_artist"] = f"%{artist_str}%"
+        result = await super()._get_library_items_by_query(
+            favorite=favorite,
+            search=search,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            provider=provider,
+            extra_query_parts=extra_query_parts,
+            extra_query_params=extra_query_params,
+            extra_join_parts=extra_join_parts,
+        )
+        if search and len(result) < 25 and not offset:
+            # append artist items to result
+            extra_join_parts.append(
+                "JOIN track_artists ON track_artists.track_id = tracks.item_id "
+                "JOIN artists ON artists.item_id = track_artists.artist_id "
+                "AND artists.name LIKE :search_artist"
+            )
+            extra_query_params["search_artist"] = f"%{search}%"
+            return result + await super()._get_library_items_by_query(
+                favorite=favorite,
+                search=None,
+                limit=limit,
+                order_by=order_by,
+                provider=provider,
+                extra_query_parts=extra_query_parts,
+                extra_query_params=extra_query_params,
+                extra_join_parts=extra_join_parts,
+            )
+        return result

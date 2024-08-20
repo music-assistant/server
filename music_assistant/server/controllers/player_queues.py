@@ -15,6 +15,7 @@ from music_assistant.common.models.config_entries import (
     ConfigValueType,
 )
 from music_assistant.common.models.enums import (
+    CacheCategory,
     ConfigEntryType,
     EventType,
     MediaType,
@@ -172,7 +173,7 @@ class PlayerQueuesController(CoreController):
                 key=CONF_DEFAULT_ENQUEUE_OPTION_RADIO,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Track item(s).",
+                label="Default enqueue option for Radio item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
             ),
@@ -1032,8 +1033,10 @@ class PlayerQueuesController(CoreController):
             # save items in cache
             self.mass.create_task(
                 self.mass.cache.set(
-                    f"queue.items.{queue_id}",
+                    "items",
                     [x.to_cache() for x in self._queue_items[queue_id]],
+                    category=CacheCategory.PLAYER_QUEUE_STATE,
+                    base_key=queue_id,
                 )
             )
 
@@ -1042,8 +1045,10 @@ class PlayerQueuesController(CoreController):
         # save state
         self.mass.create_task(
             self.mass.cache.set(
-                f"queue.state.{queue_id}",
+                "state",
                 queue.to_cache(),
+                category=CacheCategory.PLAYER_QUEUE_STATE,
+                base_key=queue_id,
             )
         )
 

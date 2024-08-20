@@ -737,8 +737,8 @@ class AppleMusicProvider(MusicProvider):
         self, license_url: str, key_id: str, uri: str, item_id: str
     ) -> str:
         """Get the decryption key for a song."""
-        cache_key = f"{self.instance_id}.decryption_key.{key_id}"
-        if decryption_key := await self.mass.cache.get(cache_key):
+        cache_key = f"decryption_key.{item_id}"
+        if decryption_key := await self.mass.cache.get(cache_key, base_key=self.instance_id):
             self.logger.debug("Decryption key for %s found in cache.", item_id)
             return decryption_key
         pssh = self._get_pssh(key_id)
@@ -759,7 +759,11 @@ class AppleMusicProvider(MusicProvider):
             raise MediaNotFoundError("Unable to get decryption key for song %s.", item_id)
         cdm.close(session_id)
         decryption_key = key.key.hex()
-        self.mass.create_task(self.mass.cache.set(cache_key, decryption_key, expiration=7200))
+        self.mass.create_task(
+            self.mass.cache.set(
+                cache_key, decryption_key, expiration=7200, base_key=self.instance_id
+            )
+        )
         return decryption_key
 
     def _get_pssh(self, key_id: bytes) -> PSSH:

@@ -754,7 +754,7 @@ class MetaDataController(CoreController):
         self._online_slots_available = MAX_ONLINE_CALLS_PER_RUN
         timestamp = int(time() - 60 * 60 * 24 * 30)
         query = (
-            f"WHERE json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL "
+            f"json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') < {timestamp}"
         )
         for artist in await self.mass.music.artists.library_items(
@@ -763,7 +763,7 @@ class MetaDataController(CoreController):
             await self._update_artist_metadata(artist)
 
         query = (
-            f"WHERE json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
+            f"json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {timestamp}"
         )
         for album in await self.mass.music.albums.library_items(
@@ -772,7 +772,7 @@ class MetaDataController(CoreController):
             await self._update_album_metadata(album)
 
         query = (
-            f"WHERE json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
+            f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {timestamp}"
         )
         for playlist in await self.mass.music.playlists.library_items(
@@ -781,7 +781,7 @@ class MetaDataController(CoreController):
             await self._update_playlist_metadata(playlist)
 
         query = (
-            f"WHERE json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') ISNULL "
+            f"json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') ISNULL "
             f"OR json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') < {timestamp}"
         )
         for track in await self.mass.music.tracks.library_items(

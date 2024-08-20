@@ -25,6 +25,7 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     AlbumType,
+    CacheCategory,
     ConfigEntryType,
     ExternalID,
     ImageType,
@@ -897,13 +898,18 @@ class TidalProvider(MusicProvider):
         self, item_id: str, url: str, force_refresh: bool = False
     ) -> AudioTags:
         """Retrieve (cached) mediainfo for track."""
-        cache_key = f"{self.instance_id}.media_info.{item_id}"
+        cache_category = CacheCategory.MEDIA_INFO
+        cache_base_key = self.lookup_key
         # do we have some cached info for this url ?
-        cached_info = await self.mass.cache.get(cache_key)
+        cached_info = await self.mass.cache.get(
+            item_id, category=cache_category, base_key=cache_base_key
+        )
         if cached_info and not force_refresh:
             media_info = AudioTags.parse(cached_info)
         else:
             # parse info with ffprobe (and store in cache)
             media_info = await parse_tags(url)
-            await self.mass.cache.set(cache_key, media_info.raw)
+            await self.mass.cache.set(
+                item_id, media_info.raw, category=cache_category, base_key=cache_base_key
+            )
         return media_info
