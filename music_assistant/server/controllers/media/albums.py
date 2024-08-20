@@ -8,7 +8,7 @@ from random import choice, random
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import serialize_to_json
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.enums import CacheCategory, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -275,23 +275,37 @@ class AlbumsController(MediaControllerBase[Album]):
         if prov is None:
             return []
         # prefer cache items (if any) - for streaming providers only
-        cache_key = f"{prov.lookup_key}.albumtracks.{item_id}"
+        cache_category = CacheCategory.MUSIC_ALBUM_TRACKS
+        cache_base_key = prov.lookup_key
+        cache_key = item_id
         if (
             prov.is_streaming_provider
-            and (cache := await self.mass.cache.get(cache_key)) is not None
+            and (
+                cache := await self.mass.cache.get(
+                    cache_key, category=cache_category, base_key=cache_base_key
+                )
+            )
+            is not None
         ):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = await prov.get_album_tracks(item_id)
         # store (serializable items) in cache
         if prov.is_streaming_provider:
-            self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
+            self.mass.create_task(
+                self.mass.cache.set(cache_key, [x.to_dict() for x in items]),
+                category=cache_category,
+                base_key=cache_base_key,
+            )
         for item in items:
             # if this is a complete track object, pre-cache it as
             # that will save us an (expensive) lookup later
             if item.image and item.artist_str and item.album and prov.domain != "builtin":
                 await self.mass.cache.set(
-                    f"provider_item.track.{prov.lookup_key}.{item_id}", item.to_dict()
+                    f"track.{item_id}",
+                    item.to_dict(),
+                    category=CacheCategory.MUSIC_PROVIDER_ITEM,
+                    base_key=prov.lookup_key,
                 )
         return items
 

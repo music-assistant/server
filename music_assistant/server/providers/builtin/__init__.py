@@ -14,6 +14,7 @@ import shortuuid
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import (
+    CacheCategory,
     ConfigEntryType,
     ContentType,
     ImageType,
@@ -493,16 +494,21 @@ class BuiltinProvider(MusicProvider):
 
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
+        cache_category = CacheCategory.MEDIA_INFO
+        cache_base_key = self.lookup_key
         # do we have some cached info for this url ?
-        cache_key = f"{self.instance_id}.media_info.{url}"
-        cached_info = await self.mass.cache.get(cache_key)
+        cached_info = await self.mass.cache.get(
+            url, category=cache_category, base_key=cache_base_key
+        )
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
         # parse info with ffprobe (and store in cache)
         media_info = await parse_tags(url)
         if "authSig" in url:
             media_info.has_cover_image = False
-        await self.mass.cache.set(cache_key, media_info.raw)
+        await self.mass.cache.set(
+            url, media_info.raw, category=cache_category, base_key=cache_base_key
+        )
         return media_info
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:

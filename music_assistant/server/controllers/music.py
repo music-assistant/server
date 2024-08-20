@@ -16,6 +16,7 @@ from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
+    CacheCategory,
     ConfigEntryType,
     EventType,
     MediaType,
@@ -323,10 +324,15 @@ class MusicController(CoreController):
 
         # prefer cache items (if any)
         media_types_str = ",".join(media_types)
-        cache_key = f"{prov.instance_id}.search.{search_query}.{limit}.{media_types_str}"
-        cache_key += "".join(x for x in media_types)
+        cache_category = CacheCategory.MUSIC_SEARCH
+        cache_base_key = prov.lookup_key
+        cache_key = f"{search_query}.{limit}.{media_types_str}"
 
-        if prov.is_streaming_provider and (cache := await self.mass.cache.get(cache_key)):
+        if prov.is_streaming_provider and (
+            cache := await self.mass.cache.get(
+                cache_key, category=cache_category, base_key=cache_base_key
+            )
+        ):
             return SearchResults.from_dict(cache)
         # no items in cache - get listing from provider
         result = await prov.search(
@@ -337,7 +343,13 @@ class MusicController(CoreController):
         # store (serializable items) in cache
         if prov.is_streaming_provider:
             self.mass.create_task(
-                self.mass.cache.set(cache_key, result.to_dict(), expiration=86400 * 7)
+                self.mass.cache.set(
+                    cache_key,
+                    result.to_dict(),
+                    expiration=86400 * 7,
+                    category=cache_category,
+                    base_key=cache_base_key,
+                )
             )
         return result
 

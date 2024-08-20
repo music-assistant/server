@@ -744,7 +744,7 @@ class AirplayProvider(PlayerProvider):
         mass_player.volume_level = volume_level
         self.mass.players.update(player_id)
         # store last state in cache
-        await self.mass.cache.set(f"{CACHE_KEY_PREV_VOLUME}.{player_id}", volume_level)
+        await self.mass.cache.set(player_id, volume_level, base_key=CACHE_KEY_PREV_VOLUME)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
@@ -868,7 +868,7 @@ class AirplayProvider(PlayerProvider):
         if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
             return
-        if not (volume := await self.mass.cache.get(f"{CACHE_KEY_PREV_VOLUME}.{player_id}")):
+        if not (volume := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_VOLUME)):
             volume = FALLBACK_VOLUME
         mass_player = Player(
             player_id=player_id,

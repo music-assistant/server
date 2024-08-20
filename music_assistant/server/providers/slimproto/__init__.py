@@ -517,7 +517,7 @@ class SlimprotoProvider(PlayerProvider):
             await slimplayer.power(powered)
             # store last state in cache
             await self.mass.cache.set(
-                f"{CACHE_KEY_PREV_STATE}.{player_id}", (powered, slimplayer.volume_level)
+                player_id, (powered, slimplayer.volume_level), base_key=CACHE_KEY_PREV_STATE
             )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
@@ -526,7 +526,7 @@ class SlimprotoProvider(PlayerProvider):
             await slimplayer.volume_set(volume_level)
             # store last state in cache
             await self.mass.cache.set(
-                f"{CACHE_KEY_PREV_STATE}.{player_id}", (slimplayer.powered, volume_level)
+                player_id, (slimplayer.powered, volume_level), base_key=CACHE_KEY_PREV_STATE
             )
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:

@@ -8,7 +8,7 @@ from random import choice, random
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import serialize_to_json
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.enums import CacheCategory, ProviderFeature
 from music_assistant.common.models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -210,15 +210,32 @@ class ArtistsController(MediaControllerBase[Artist]):
         if prov is None:
             return []
         # prefer cache items (if any) - for streaming providers
-        cache_key = f"{prov.lookup_key}.artist_toptracks.{item_id}"
+        cache_category = CacheCategory.MUSIC_ARTIST_TRACKS
+        cache_base_key = prov.lookup_key
+        cache_key = item_id
         if (
             prov.is_streaming_provider
-            and (cache := await self.mass.cache.get(cache_key)) is not None
+            and (
+                cache := await self.mass.cache.get(
+                    cache_key, category=cache_category, base_key=cache_base_key
+                )
+            )
+            is not None
         ):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         if ProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
             items = await prov.get_artist_toptracks(item_id)
+            for item in items:
+                # if this is a complete track object, pre-cache it as
+                # that will save us an (expensive) lookup later
+                if item.image and item.artist_str and item.album and prov.domain != "builtin":
+                    await self.mass.cache.set(
+                        f"track.{item_id}",
+                        item.to_dict(),
+                        category=CacheCategory.MUSIC_PROVIDER_ITEM,
+                        base_key=prov.lookup_key,
+                    )
         else:
             # fallback implementation using the db
             if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
@@ -235,7 +252,14 @@ class ArtistsController(MediaControllerBase[Artist]):
                 )
         # store (serializable items) in cache
         if prov.is_streaming_provider:
-            self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
+            self.mass.create_task(
+                self.mass.cache.set(
+                    cache_key,
+                    [x.to_dict() for x in items],
+                    category=cache_category,
+                    base_key=cache_base_key,
+                )
+            )
         return items
 
     async def get_library_artist_tracks(
@@ -259,10 +283,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         if prov is None:
             return []
         # prefer cache items (if any)
-        cache_key = f"{prov.lookup_key}.artist_albums.{item_id}"
+        cache_category = CacheCategory.MUSIC_ARTIST_ALBUMS
+        cache_base_key = prov.lookup_key
+        cache_key = item_id
         if (
             prov.is_streaming_provider
-            and (cache := await self.mass.cache.get(cache_key)) is not None
+            and (
+                cache := await self.mass.cache.get(
+                    cache_key, category=cache_category, base_key=cache_base_key
+                )
+            )
+            is not None
         ):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -286,7 +317,14 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         # store (serializable items) in cache
         if prov.is_streaming_provider:
-            self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
+            self.mass.create_task(
+                self.mass.cache.set(
+                    cache_key,
+                    [x.to_dict() for x in items],
+                    category=cache_category,
+                    base_key=cache_base_key,
+                )
+            )
         return items
 
     async def get_library_artist_albums(

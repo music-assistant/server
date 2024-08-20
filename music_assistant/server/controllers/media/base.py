@@ -10,7 +10,13 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from music_assistant.common.helpers.json import json_loads, serialize_to_json
-from music_assistant.common.models.enums import EventType, ExternalID, MediaType, ProviderFeature
+from music_assistant.common.models.enums import (
+    CacheCategory,
+    EventType,
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+)
 from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
@@ -290,9 +296,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return []
 
         # prefer cache items (if any)
-        cache_key = f"{prov.lookup_key}.search.{self.media_type.value}.{search_query}.{limit}"
-        cache_key = cache_key.lower().replace(" ", "").strip()
-        if (cache := await self.mass.cache.get(cache_key)) is not None:
+        cache_category = CacheCategory.MUSIC_SEARCH
+        cache_base_key = prov.lookup_key
+        cache_key = f"{search_query}.{limit}.{self.media_type.value}"
+        if (
+            cache := await self.mass.cache.get(
+                cache_key, category=cache_category, base_key=cache_base_key
+            )
+        ) is not None:
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         searchresult = await prov.search(
@@ -313,7 +324,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # store (serializable items) in cache
         if prov.is_streaming_provider:  # do not cache filesystem results
             self.mass.create_task(
-                self.mass.cache.set(cache_key, [x.to_dict() for x in items], expiration=86400 * 7)
+                self.mass.cache.set(
+                    cache_key,
+                    [x.to_dict() for x in items],
+                    expiration=86400 * 7,
+                    category=cache_category,
+                    base_key=cache_base_key,
+                ),
             )
         return items
 
@@ -492,13 +509,22 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return await self.get_library_item(item_id)
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
-        cache_key = f"provider_item.{self.media_type.value}.{provider.lookup_key}.{item_id}"
-        if not force_refresh and (cache := await self.mass.cache.get(cache_key)):
+
+        cache_category = CacheCategory.MUSIC_PROVIDER_ITEM
+        cache_base_key = provider.lookup_key
+        cache_key = f"{self.media_type.value}.{item_id}"
+        if not force_refresh and (
+            cache := await self.mass.cache.get(
+                cache_key, category=cache_category, base_key=cache_base_key
+            )
+        ):
             return self.item_cls.from_dict(cache)
         if provider := self.mass.get_provider(provider_instance_id_or_domain):
             with suppress(MediaNotFoundError):
                 if item := await provider.get_item(self.media_type, item_id):
-                    await self.mass.cache.set(cache_key, item.to_dict())
+                    await self.mass.cache.set(
+                        cache_key, item.to_dict(), category=cache_category, base_key=cache_base_key
+                    )
                     return item
         # if we reach this point all possibilities failed and the item could not be found.
         # There is a possibility that the (streaming) provider changed the id of the item
