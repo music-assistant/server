@@ -970,15 +970,6 @@ class MusicController(CoreController):
         self.database = DatabaseConnection(db_path)
         await self.database.setup()
 
-        # tracks = await self.database.get_rows(DB_TABLE_TRACKS)
-        # for idx in range(1000):
-        #     for track_row in tracks:
-        #         track = dict(track_row)
-        #         del track["item_id"]
-        #         track["name"] = f'{track["name"]} {idx}'
-        #         await self.database.insert(DB_TABLE_TRACKS, track)
-        #     await self.database.commit()
-
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
         try:
