@@ -7,5 +7,6 @@
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/builtin/",
   "multi_instance": false,
-  "builtin": true
+  "builtin": true,
+  "allow_disable": false
 }
