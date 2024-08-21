@@ -1218,12 +1218,16 @@ class PlayerQueuesController(CoreController):
         # player does not support enqueue next feature.
         # we wait for the player to stop after it reaches the end of the track
         if (
-            (not queue.flow_mode or queue.repeat_mode == RepeatMode.ALL)
+            (not queue.flow_mode or queue.repeat_mode in (RepeatMode.ALL, RepeatMode.ONE))
             # we have a couple of guards here to prevent the player starting
             # playback again when its stopped outside of MA's control
             and queue.stream_finished
             and queue.end_of_track_reached
             and queue.state == PlayerState.IDLE
+            and self._get_next_index(queue.queue_id, queue.current_index, allow_repeat=False)
+            is None
+            and self._get_next_index(queue.queue_id, queue.current_index, allow_repeat=True)
+            is not None
         ):
             queue.stream_finished = None
             self.mass.create_task(_enqueue_next(queue.current_index, False))
