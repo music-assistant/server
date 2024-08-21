@@ -5,7 +5,7 @@ from __future__ import annotations
 import urllib.parse
 from typing import TYPE_CHECKING, cast
 
-from music_assistant.common.models.enums import ImageType, MediaType
+from music_assistant.common.models.enums import AlbumType, ImageType, MediaType
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -124,6 +124,7 @@ class Music:
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | None = None,
+        album_types: list[AlbumType] | None = None,
     ) -> list[Album]:
         """Get Albums listing from the server."""
         return [
@@ -135,6 +136,7 @@ class Music:
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
+                album_types=album_types,
             )
         ]
 

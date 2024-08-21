@@ -235,6 +235,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         favorite: bool | None = None,
         search: str | None = None,
         order_by: str = "sort_name",
+        provider: str | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
     ) -> AsyncGenerator[ItemCls, None]:
@@ -242,13 +243,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 500
         offset: int = 0
         while True:
-            next_items = await self._get_library_items_by_query(
+            next_items = await self.library_items(
                 favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
-                extra_query_parts=[extra_query] if extra_query else None,
+                provider=provider,
+                extra_query=extra_query,
                 extra_query_params=extra_query_params,
             )
             for item in next_items:

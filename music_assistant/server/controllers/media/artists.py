@@ -83,20 +83,21 @@ class ArtistsController(MediaControllerBase[Artist]):
         album_artists_only: bool = False,
     ) -> list[Artist]:
         """Get in-database (album) artists."""
+        extra_query_params: dict[str, Any] = extra_query_params or {}
+        extra_query_parts: list[str] = [extra_query] if extra_query else []
         if album_artists_only:
-            artist_query = (
+            extra_query_parts.append(
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"from {DB_TABLE_ALBUM_ARTISTS})"
             )
-            extra_query = f"{extra_query} AND {artist_query}" if extra_query else artist_query
-        return await super().library_items(
+        return await self._get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
             offset=offset,
             order_by=order_by,
             provider=provider,
-            extra_query=extra_query,
+            extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
         )
 

@@ -103,6 +103,98 @@ class AlbumsController(MediaControllerBase[Album]):
         album.artists = album_artists
         return album
 
+    async def library_items(
+        self,
+        favorite: bool | None = None,
+        search: str | None = None,
+        limit: int = 500,
+        offset: int = 0,
+        order_by: str = "sort_name",
+        provider: str | None = None,
+        extra_query: str | None = None,
+        extra_query_params: dict[str, Any] | None = None,
+        album_types: list[AlbumType] | None = None,
+    ) -> list[Artist]:
+        """Get in-database albums."""
+        extra_query_params: dict[str, Any] = extra_query_params or {}
+        extra_query_parts: list[str] = [extra_query] if extra_query else []
+        extra_join_parts: list[str] = []
+        # optional album type filter
+        if album_types:
+            extra_query_parts.append("albums.album_type IN :album_types")
+            extra_query_params["album_types"] = [x.value for x in album_types]
+        if order_by and "artist_name" in order_by:
+            # join artist table to allow sorting on artist name
+            extra_join_parts.append(
+                "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                "JOIN artists ON artists.item_id = album_artists.artist_id "
+            )
+            artist_table_joined = True
+        if search and " - " in search:
+            # handle combined artist + title search
+            artist_str, title_str = search.split(" - ", 1)
+            search = None
+            extra_query_parts.append("albums.name LIKE :search_title")
+            extra_query_params["search_title"] = f"%{title_str}%"
+            # use join with artists table to filter on artist name
+            extra_join_parts.append(
+                "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                "JOIN artists ON artists.item_id = album_artists.artist_id "
+                "AND artists.name LIKE :search_artist"
+                if not artist_table_joined
+                else "AND artists.name LIKE :search_artist"
+            )
+            artist_table_joined = True
+            extra_query_params["search_artist"] = f"%{artist_str}%"
+        result = await self._get_library_items_by_query(
+            favorite=favorite,
+            search=search,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            provider=provider,
+            extra_query_parts=extra_query_parts,
+            extra_query_params=extra_query_params,
+            extra_join_parts=extra_join_parts,
+        )
+        if search and len(result) < 25 and not offset:
+            # append artist items to result
+            extra_join_parts.append(
+                "JOIN album_artists ON album_artists.album_id = albums.item_id "
+                "JOIN artists ON artists.item_id = album_artists.artist_id "
+                "AND artists.name LIKE :search_artist"
+                if not artist_table_joined
+                else "AND artists.name LIKE :search_artist"
+            )
+            extra_query_params["search_artist"] = f"%{search}%"
+            return result + await self._get_library_items_by_query(
+                favorite=favorite,
+                search=None,
+                limit=limit,
+                order_by=order_by,
+                provider=provider,
+                extra_query_parts=extra_query_parts,
+                extra_query_params=extra_query_params,
+                extra_join_parts=extra_join_parts,
+            )
+        return result
+
+    async def library_count(
+        self, favorite_only: bool = False, album_types: list[AlbumType] | None = None
+    ) -> int:
+        """Return the total number of items in the library."""
+        sql_query = f"SELECT item_id FROM {self.db_table}"
+        query_parts: list[str] = []
+        query_params: dict[str, Any] = {}
+        if favorite_only:
+            query_parts.append("favorite = 1")
+        if album_types:
+            query_parts.append("albums.album_type IN :album_types")
+            query_params["album_types"] = [x.value for x in album_types]
+        if query_parts:
+            sql_query += f" WHERE {' AND '.join(query_parts)}"
+        return await self.mass.music.database.get_count_from_query(sql_query, query_params)
+
     async def remove_item_from_library(self, item_id: str | int) -> None:
         """Delete record from the database."""
         db_id = int(item_id)  # ensure integer
@@ -451,76 +543,3 @@ class AlbumsController(MediaControllerBase[Album]):
                     db_album.name,
                     provider.name,
                 )
-
-    async def _get_library_items_by_query(
-        self,
-        favorite: bool | None = None,
-        search: str | None = None,
-        limit: int = 500,
-        offset: int = 0,
-        order_by: str | None = None,
-        provider: str | None = None,
-        extra_query_parts: list[str] | None = None,
-        extra_query_params: dict[str, Any] | None = None,
-        extra_join_parts: list[str] | None = None,
-    ) -> list[Album]:
-        """Fetch MediaItem records from database by building the query."""
-        extra_query_params = extra_query_params or {}
-        extra_query_parts: list[str] = extra_query_parts or []
-        extra_join_parts: list[str] = extra_join_parts or []
-        artist_table_joined = False
-        if order_by and "artist_name" in order_by:
-            # join artist table to allow sorting on artist name
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
-            )
-            artist_table_joined = True
-        if search and " - " in search:
-            # handle combined artist + title search
-            artist_str, title_str = search.split(" - ", 1)
-            search = None
-            extra_query_parts.append("albums.name LIKE :search_title")
-            extra_query_params["search_title"] = f"%{title_str}%"
-            # use join with artists table to filter on artist name
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
-                "AND artists.name LIKE :search_artist"
-                if not artist_table_joined
-                else "AND artists.name LIKE :search_artist"
-            )
-            artist_table_joined = True
-            extra_query_params["search_artist"] = f"%{artist_str}%"
-        result = await super()._get_library_items_by_query(
-            favorite=favorite,
-            search=search,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
-            provider=provider,
-            extra_query_parts=extra_query_parts,
-            extra_query_params=extra_query_params,
-            extra_join_parts=extra_join_parts,
-        )
-        if search and len(result) < 25 and not offset:
-            # append artist items to result
-            extra_join_parts.append(
-                "JOIN album_artists ON album_artists.album_id = albums.item_id "
-                "JOIN artists ON artists.item_id = album_artists.artist_id "
-                "AND artists.name LIKE :search_artist"
-                if not artist_table_joined
-                else "AND artists.name LIKE :search_artist"
-            )
-            extra_query_params["search_artist"] = f"%{search}%"
-            return result + await super()._get_library_items_by_query(
-                favorite=favorite,
-                search=None,
-                limit=limit,
-                order_by=order_by,
-                provider=provider,
-                extra_query_parts=extra_query_parts,
-                extra_query_params=extra_query_params,
-                extra_join_parts=extra_join_parts,
-            )
-        return result
