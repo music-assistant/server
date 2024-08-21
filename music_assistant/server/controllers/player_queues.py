@@ -570,6 +570,7 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         if queue := self.get(queue_id):
+            queue.resume_pos = queue.corrected_elapsed_time
             queue.stream_finished = None
             queue.end_of_track_reached = None
         # forward the actual command to the player controller
@@ -598,6 +599,8 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
+        if queue := self._queues.get(queue_id):
+            queue.resume_pos = queue.corrected_elapsed_time
         # forward the actual command to the player controller
         await self.mass.players.cmd_pause(queue_id)
 
@@ -692,7 +695,7 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         queue_items = self._queue_items[queue_id]
         resume_item = queue.current_item
-        resume_pos = queue.elapsed_time
+        resume_pos = queue.resume_pos
 
         if not resume_item and queue.current_index is not None and len(queue_items) > 0:
             resume_item = self.get_item(queue_id, queue.current_index)
@@ -723,6 +726,7 @@ class PlayerQueuesController(CoreController):
     ) -> None:
         """Play item at index (or item_id) X in queue."""
         queue = self._queues[queue_id]
+        queue.resume_pos = 0
         if isinstance(index, str):
             index = self.index_by_id(queue_id, index)
         queue_item = self.get_item(queue_id, index)
