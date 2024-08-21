@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 
-JSON_KEYS = ("artists", "album", "metadata", "provider_mappings", "external_ids", "albums")
+JSON_KEYS = ("artists", "track_album", "metadata", "provider_mappings", "external_ids")
 
 SORT_KEYS = {
     "name": "name COLLATE NOCASE ASC",
@@ -815,13 +815,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 continue
             db_row_dict[key] = json_loads(raw_value)
 
-        # copy albums --> album
-        if albums := db_row_dict.get("albums"):
-            db_row_dict["album"] = albums[0]
-            db_row_dict["disc_number"] = albums[0]["disc_number"]
-            db_row_dict["track_number"] = albums[0]["disc_number"]
-
-        # copy album image to itemmapping single image
-        if (album := db_row_dict.get("album")) and (images := album.get("images")):
-            db_row_dict["album"]["image"] = next((x for x in images if x["type"] == "thumb"), None)
+        # copy track_album --> album
+        if track_album := db_row_dict.get("track_album"):
+            db_row_dict["album"] = track_album
+            db_row_dict["disc_number"] = track_album["disc_number"]
+            db_row_dict["track_number"] = track_album["disc_number"]
+            # copy album image to itemmapping single image
+            if images := track_album.get("images"):
+                db_row_dict["album"]["image"] = next(
+                    (x for x in images if x["type"] == "thumb"), None
+                )
         return db_row_dict
