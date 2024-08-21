@@ -113,7 +113,7 @@ class FFMpeg(AsyncProcess):
             else:
                 clean_args.append(arg)
         args_str = " ".join(clean_args)
-        self.logger.debug("starting ffmpeg with args: %s", args_str)
+        self.logger.log(VERBOSE_LOG_LEVEL, "starting ffmpeg with args: %s", args_str)
 
     async def start(self) -> None:
         """Perform Async init of process."""
