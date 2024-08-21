@@ -697,8 +697,8 @@ class AirplayProvider(PlayerProvider):
                 )
 
             # Python is not suitable for realtime audio streaming so we do the actual streaming
-            # of (RAOP) audio using a small executable written in C based on libraop to do the actual
-            # timestamped playback, which reads pcm audio from stdin
+            # of (RAOP) audio using a small executable written in C based on libraop to do
+            # the actual timestamped playback, which reads pcm audio from stdin
             # and we can send some interactive commands using a named pipe.
 
             # setup RaopStream for player and its sync childs

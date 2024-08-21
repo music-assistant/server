@@ -447,7 +447,7 @@ class SnapCastProvider(PlayerProvider):
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
 
-    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:  # noqa: PLR0915
         """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
