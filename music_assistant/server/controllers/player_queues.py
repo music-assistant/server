@@ -1224,10 +1224,6 @@ class PlayerQueuesController(CoreController):
             and queue.stream_finished
             and queue.end_of_track_reached
             and queue.state == PlayerState.IDLE
-            and self._get_next_index(queue.queue_id, queue.current_index, allow_repeat=False)
-            is None
-            and self._get_next_index(queue.queue_id, queue.current_index, allow_repeat=True)
-            is not None
         ):
             queue.stream_finished = None
             self.mass.create_task(_enqueue_next(queue.current_index, False))
