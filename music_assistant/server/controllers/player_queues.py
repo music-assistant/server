@@ -766,10 +766,17 @@ class PlayerQueuesController(CoreController):
         queue_id = player.player_id
         queue = None
         # try to restore previous state
-        if prev_state := await self.mass.cache.get(f"queue.state.{queue_id}"):
+        if prev_state := await self.mass.cache.get(
+            "state", category=CacheCategory.PLAYER_QUEUE_STATE, base_key=queue_id
+        ):
             try:
                 queue = PlayerQueue.from_cache(prev_state)
-                prev_items = await self.mass.cache.get(f"queue.items.{queue_id}", default=[])
+                prev_items = await self.mass.cache.get(
+                    "items",
+                    default=[],
+                    category=CacheCategory.PLAYER_QUEUE_STATE,
+                    base_key=queue_id,
+                )
                 queue_items = [QueueItem.from_cache(x) for x in prev_items]
             except Exception as err:
                 self.logger.warning(
