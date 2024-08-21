@@ -538,6 +538,9 @@ class MusicController(CoreController):
         # remove from all providers
         for provider_mapping in item.provider_mappings:
             if prov_controller := self.mass.get_provider(provider_mapping.provider_instance):
+                # we simply try to remove it on the provider library
+                # NOTE that the item may not be in the provider's library at all
+                # so we need to be a bit forgiving here
                 with suppress(NotImplementedError):
                     await prov_controller.library_remove(provider_mapping.item_id, item.media_type)
         await ctrl.remove_item_from_library(library_item_id)

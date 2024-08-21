@@ -11,6 +11,7 @@ from urllib.parse import unquote
 
 import yt_dlp
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
+from ytmusicapi.exceptions import YTMusicServerError
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
@@ -433,20 +434,24 @@ class YoutubeMusicProvider(MusicProvider):
         """Remove an item from the library."""
         await self._check_oauth_token()
         result = False
-        if media_type == MediaType.ARTIST:
-            result = await library_add_remove_artist(
-                headers=self._headers, prov_artist_id=prov_item_id, add=False
-            )
-        elif media_type == MediaType.ALBUM:
-            result = await library_add_remove_album(
-                headers=self._headers, prov_item_id=prov_item_id, add=False
-            )
-        elif media_type == MediaType.PLAYLIST:
-            result = await library_add_remove_playlist(
-                headers=self._headers, prov_item_id=prov_item_id, add=False
-            )
-        elif media_type == MediaType.TRACK:
-            raise NotImplementedError
+        try:
+            if media_type == MediaType.ARTIST:
+                result = await library_add_remove_artist(
+                    headers=self._headers, prov_artist_id=prov_item_id, add=False
+                )
+            elif media_type == MediaType.ALBUM:
+                result = await library_add_remove_album(
+                    headers=self._headers, prov_item_id=prov_item_id, add=False
+                )
+            elif media_type == MediaType.PLAYLIST:
+                result = await library_add_remove_playlist(
+                    headers=self._headers, prov_item_id=prov_item_id, add=False
+                )
+            elif media_type == MediaType.TRACK:
+                raise NotImplementedError
+        except YTMusicServerError as err:
+            # YTM raises if trying to remove an item that is not in the library
+            raise NotImplementedError(err) from err
         return result
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
