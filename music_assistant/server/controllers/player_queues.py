@@ -707,7 +707,9 @@ class PlayerQueuesController(CoreController):
 
         if resume_item is not None:
             resume_pos = resume_pos if resume_pos > 10 else 0
-            fade_in = fade_in if fade_in is not None else resume_pos > 0
+            queue_player = self.mass.players.get(queue_id)
+            if fade_in is None and not queue_player.powered:
+                fade_in = resume_pos > 0
             if resume_item.media_type == MediaType.RADIO:
                 # we're not able to skip in online radio so this is pointless
                 resume_pos = 0
@@ -841,7 +843,7 @@ class PlayerQueuesController(CoreController):
             # queue is active and player has one of our tracks loaded, update state
             if item_id := self._parse_player_current_item_id(queue_id, player.current_item_id):
                 queue.current_index = self.index_by_id(queue_id, item_id)
-            if player.state == PlayerState.PLAYING:
+            if player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
                 queue.elapsed_time = int(player.corrected_elapsed_time)
                 queue.elapsed_time_last_updated = player.elapsed_time_last_updated
 
