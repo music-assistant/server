@@ -191,7 +191,7 @@ class FFMpeg(AsyncProcess):
         except Exception as err:
             # make sure we dont swallow any exceptions and we bail out
             # once our audio source fails.
-            if isinstance(err, asyncio.CancelledError):
+            if not isinstance(err, asyncio.CancelledError):
                 self.logger.exception(err)
                 await self.close(True)
 
