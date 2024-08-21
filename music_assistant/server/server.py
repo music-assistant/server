@@ -592,11 +592,9 @@ class MusicAssistant:
 
         # handle dependency on other provider
         if prov_manifest.depends_on and not self.get_provider(prov_manifest.depends_on):
-            msg = (
-                f"Provider {domain} depends on {prov_manifest.depends_on} "
-                "which is not (yet) available."
-            )
-            raise SetupFailedError(msg)
+            # we can safely ignore this completely as the setup will be retried later
+            # automatically when the dependency is loaded
+            return
 
         # try to setup the module
         prov_mod = await load_provider_module(domain, prov_manifest.requirements)
