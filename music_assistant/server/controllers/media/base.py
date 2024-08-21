@@ -23,8 +23,8 @@ from music_assistant.common.models.media_items import (
     ItemMapping,
     MediaItemType,
     ProviderMapping,
+    SearchResults,
     Track,
-    media_from_dict,
 )
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
 from music_assistant.server.helpers.compare import compare_media_item
@@ -306,13 +306,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 cache_key, category=cache_category, base_key=cache_base_key
             )
         ) is not None:
-            return [media_from_dict(x) for x in cache]
-        # no items in cache - get listing from provider
-        searchresult = await prov.search(
-            search_query,
-            [self.media_type],
-            limit,
-        )
+            searchresult = SearchResults.from_dict(cache)
+        else:
+            # no items in cache - get listing from provider
+            searchresult = await prov.search(
+                search_query,
+                [self.media_type],
+                limit,
+            )
         if self.media_type == MediaType.ARTIST:
             items = searchresult.artists
         elif self.media_type == MediaType.ALBUM:
@@ -328,7 +329,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             self.mass.create_task(
                 self.mass.cache.set(
                     cache_key,
-                    [x.to_dict() for x in items],
+                    searchresult.to_dict(),
                     expiration=86400 * 7,
                     category=cache_category,
                     base_key=cache_base_key,

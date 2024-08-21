@@ -119,6 +119,7 @@ class AlbumsController(MediaControllerBase[Album]):
         extra_query_params: dict[str, Any] = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
         extra_join_parts: list[str] = []
+        artist_table_joined = False
         # optional album type filter
         if album_types:
             extra_query_parts.append("albums.album_type IN :album_types")
@@ -343,7 +344,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 "sort_name": update.sort_name
                 if overwrite
                 else cur_item.sort_name or update.sort_name,
-                "version": update.version if overwrite else cur_item.version,
+                "version": update.version if overwrite else cur_item.version or update.version,
                 "year": update.year if overwrite else cur_item.year or update.year,
                 "album_type": album_type.value,
                 "metadata": serialize_to_json(metadata),

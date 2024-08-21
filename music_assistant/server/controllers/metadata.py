@@ -540,7 +540,7 @@ class MetaDataController(CoreController):
                     )
                     album.metadata.update(prov_item.metadata)
                     if album.year is None and prov_item.year:
-                        album.year = prov_item
+                        album.year = prov_item.year
                     if album.album_type == AlbumType.UNKNOWN:
                         album.album_type = prov_item.album_type
 
