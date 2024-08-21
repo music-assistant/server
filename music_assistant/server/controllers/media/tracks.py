@@ -72,7 +72,7 @@ class TracksController(MediaControllerBase[Track]):
                     'sort_name', artists.sort_name,
                     'media_type', 'artist'
                 )) FROM artists JOIN track_artists on track_artists.track_id = tracks.item_id  WHERE artists.item_id = track_artists.artist_id) AS artists,
-            (SELECT JSON_GROUP_ARRAY(
+            (SELECT
                 json_object(
                 'item_id', albums.item_id,
                 'provider', 'library',
@@ -80,8 +80,9 @@ class TracksController(MediaControllerBase[Track]):
                     'sort_name', albums.sort_name,
                     'media_type', 'album',
                     'disc_number', album_tracks.disc_number,
-                    'track_number', album_tracks.track_number
-                )) FROM albums JOIN album_tracks on album_tracks.track_id = tracks.item_id  WHERE albums.item_id = album_tracks.album_id) AS albums
+                    'track_number', album_tracks.track_number,
+                    'images', json_extract(albums.metadata, '$.images')
+                ) FROM albums JOIN album_tracks on album_tracks.track_id = tracks.item_id  WHERE albums.item_id = album_tracks.album_id) AS track_album
             FROM tracks"""  # noqa: E501
         # register (extra) api handlers
         api_base = self.api_base
