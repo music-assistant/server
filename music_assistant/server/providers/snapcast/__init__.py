@@ -522,19 +522,17 @@ class SnapCastProvider(PlayerProvider):
                     self.mass.players.update(player_id)
                     self._set_childs_state(player_id)
                     await ffmpeg_proc.wait()
-                    # we need to wait a bit for the stream status to become idle
-                    # to ensure that all snapclients have consumed the audio
-                    await asyncio.sleep(5)
-
-                    player.state = PlayerState.IDLE
-                    self.mass.players.update(player_id)
-                    self._set_childs_state(player_id)
-
             finally:
                 self.logger.debug("Finished streaming to %s", stream_path)
-
+                # we need to wait a bit for the stream status to become idle
+                # to ensure that all snapclients have consumed the audio
+                while stream.status != "idle":
+                    await asyncio.sleep(0.25)
                 with suppress(TypeError, KeyError, AttributeError):
                     await self._snapserver.stream_remove_stream(stream.identifier)
+                player.state = PlayerState.IDLE
+                self.mass.players.update(player_id)
+                self._set_childs_state(player_id)
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())

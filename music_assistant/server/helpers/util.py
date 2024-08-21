@@ -165,9 +165,9 @@ class TaskManager:
         self.mass = mass
         self._tasks: list[asyncio.Task] = []
 
-    def create_task(self, coro: Coroutine, eager_start: bool = False) -> None:
+    def create_task(self, coro: Coroutine) -> None:
         """Create a new task and add it to the manager."""
-        task = self.mass.create_task(coro, eager_start=eager_start)
+        task = self.mass.create_task(coro)
         self._tasks.append(task)
 
     async def __aenter__(self) -> Self:
