@@ -53,7 +53,7 @@ test = [
   "pytest-cov==5.0.0",
   "syrupy==4.6.1",
   "tomli==2.0.1",
-  "ruff==0.5.7",
+  "ruff==0.6.1",
 ]
 
 [project.scripts]
@@ -265,6 +265,8 @@ ignore = [
   "RUF009",
   "ANN204",
   "PTH202",
+  "ASYNC109",
+  "ASYNC110",
 ]
 
 select = ["ALL"]
