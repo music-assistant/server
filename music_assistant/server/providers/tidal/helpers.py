@@ -112,7 +112,7 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
             msg = "Tidal API rate limit reached"
             raise ResourceTemporarilyUnavailable(msg)
         else:
-            all_albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
+            all_albums: list[TidalAlbum] = artist_obj.get_albums(limit=DEFAULT_LIMIT)
             # extend with EPs and singles
             all_albums.extend(artist_obj.get_ep_singles(limit=DEFAULT_LIMIT))
             # extend with compilations
