@@ -313,6 +313,7 @@ class PlayerQueuesController(CoreController):
 
         tracks: list[MediaItemType] = []
         radio_source: list[MediaItemType] = []
+        first_track_seen: bool = False
         for item in media:
             try:
                 # parse provided uri into a MA MediaItem or Basic QueueItem from URL
@@ -338,7 +339,6 @@ class PlayerQueuesController(CoreController):
                 if radio_mode:
                     radio_source.append(media_item)
                 elif media_item.media_type == MediaType.PLAYLIST:
-                    first_track_seen: bool = False
                     async for playlist_track in self.mass.music.playlists.tracks(
                         media_item.item_id, media_item.provider
                     ):
@@ -415,6 +415,9 @@ class PlayerQueuesController(CoreController):
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available]
 
         if not queue_items:
+            if first_track_seen:
+                # edge case: playlist with only one track
+                return
             raise MediaNotFoundError("No playable items found")
 
         # load the items into the queue

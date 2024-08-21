@@ -148,15 +148,14 @@ class SoundcloudMusicProvider(MusicProvider):
 
         for item in searchresult["collection"]:
             media_type = item["kind"]
-            if media_type == "user":
-                if MediaType.ARTIST in media_types:
-                    result.artists.append(await self._parse_artist(item))
-            elif media_type == "track":
-                if MediaType.TRACK in media_types:
+            if media_type == "user" and MediaType.ARTIST in media_types:
+                result.artists.append(await self._parse_artist(item))
+            elif media_type == "track" and MediaType.TRACK in media_types:
+                if item.get("duration") == item.get("full_duration"):
+                    # skip if it's a preview track (e.g. in case of free accounts)
                     result.tracks.append(await self._parse_track(item))
-            elif media_type == "playlist":
-                if MediaType.PLAYLIST in media_types:
-                    result.playlists.append(await self._parse_playlist(item))
+            elif media_type == "playlist" and MediaType.PLAYLIST in media_types:
+                result.playlists.append(await self._parse_playlist(item))
 
         return result
 

@@ -235,7 +235,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     break
             else:
                 self.logger.warning(
-                    "Can't add %s to playlist %s - it is not available provider %s",
+                    "Can't add %s to playlist %s - it is not available on provider %s",
                     full_track.name,
                     playlist.name,
                     playlist_prov.name,
