@@ -595,13 +595,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             },
         )
         if library_item.provider_mappings:
-            # we (temporary?) duplicate the provider mappings in a separate column of the media
-            # item's table, because the json_group_array query is superslow
-            await self.mass.music.database.update(
-                self.db_table,
-                {"item_id": db_id},
-                {"provider_mappings": serialize_to_json(library_item.provider_mappings)},
-            )
             self.logger.debug(
                 "removed provider_mapping %s/%s from item id %s",
                 provider_instance_id,
@@ -638,13 +631,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id
         }
         if library_item.provider_mappings:
-            # we (temporary?) duplicate the provider mappings in a separate column of the media
-            # item's table, because the json_group_array query is superslow
-            await self.mass.music.database.update(
-                self.db_table,
-                {"item_id": db_id},
-                {"provider_mappings": serialize_to_json(library_item.provider_mappings)},
-            )
             self.logger.debug(
                 "removed all provider mappings for provider %s from item id %s",
                 provider_instance_id,
