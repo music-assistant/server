@@ -141,9 +141,7 @@ async def get_config_entries(
         import pkce
 
         code_verifier, code_challenge = pkce.generate_pkce_pair()
-        async with AuthenticationHelper(
-            mass, cast(str, values["session_id"]), values.get("frontend_base_url")
-        ) as auth_helper:
+        async with AuthenticationHelper(mass, cast(str, values["session_id"])) as auth_helper:
             params = {
                 "response_type": "code",
                 "client_id": values.get(CONF_CLIENT_ID) or app_var(2),
