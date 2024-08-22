@@ -177,6 +177,7 @@ async def get_config_entries(
             "You need to authenticate to Spotify. Click the authenticate button below "
             "to start the authentication process which will open in a new (popup) window, "
             "so make sure to disable any popup blockers.\n\n"
+            "Also make sure to perform this action from your local network"
         )
     elif action == CONF_ACTION_AUTH:
         label_text = "Authenticated to Spotify. Press save to complete setup."
