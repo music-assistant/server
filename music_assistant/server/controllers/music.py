@@ -73,7 +73,7 @@ DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 7
+DB_SCHEMA_VERSION: Final[int] = 8
 
 
 class MusicController(CoreController):
@@ -1058,9 +1058,15 @@ class MusicController(CoreController):
             await self.__create_database_tables()
             return
 
-        if prev_version <= 6:
+        if prev_version <= 7:
             # remove redundant artists and provider_mappings columns
-            for table in (DB_TABLE_TRACKS, DB_TABLE_ALBUMS, DB_TABLE_ARTISTS, DB_TABLE_RADIOS):
+            for table in (
+                DB_TABLE_TRACKS,
+                DB_TABLE_ALBUMS,
+                DB_TABLE_ARTISTS,
+                DB_TABLE_RADIOS,
+                DB_TABLE_PLAYLISTS,
+            ):
                 for column in ("artists", "provider_mappings"):
                     try:
                         await self.database.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
