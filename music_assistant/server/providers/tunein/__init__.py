@@ -274,7 +274,7 @@ class TuneInProvider(MusicProvider):
             url = endpoint
         else:
             url = f"https://opml.radiotime.com/{endpoint}"
-            kwargs["formats"] = "ogg,aac,wma,mp3"
+            kwargs["formats"] = "ogg,aac,wma,mp3,hls"
             kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
