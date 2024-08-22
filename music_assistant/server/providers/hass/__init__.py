@@ -17,7 +17,6 @@ import shortuuid
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import (
-    async_is_supervisor,
     base_url,
     get_auth_url,
     get_long_lived_token,
@@ -93,7 +92,7 @@ async def get_config_entries(
         # set the retrieved token on the values object to pass along
         values[CONF_AUTH_TOKEN] = long_lived_token
 
-    if await async_is_supervisor():
+    if mass.running_as_hass_addon:
         # on supervisor, we use the internal url
         # token set to None for auto retrieval
         return (
