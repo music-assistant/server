@@ -176,6 +176,11 @@ async def get_config_entries(
             quality: str = values.get(CONF_QUALITY) if values else None
             base64_session = await tidal_auth_url(auth_helper, cast(str, quality))
             values[CONF_TEMP_SESSION] = base64_session
+            # Tidal is (ab)using the AuthenticationHelper just to send the user to an URL
+            # there is no actual oauth callback happening, instead the user is redirected
+            # to a non-existent page and needs to copy the URL from the browser and paste it
+            # we simply wait here to allow the user to start the auth
+            await asyncio.sleep(15)
 
     if action == CONF_ACTION_COMPLETE_PKCE_LOGIN:
         quality: str = values.get(CONF_QUALITY) if values else None
@@ -197,6 +202,11 @@ async def get_config_entries(
 
     if values.get(CONF_AUTH_TOKEN):
         auth_entries = (
+            ConfigEntry(
+                key="label_ok",
+                type=ConfigEntryType.LABEL,
+                label="You are authenticated with Tidal",
+            ),
             ConfigEntry(
                 key=CONF_ACTION_CLEAR_AUTH,
                 type=ConfigEntryType.ACTION,
@@ -230,9 +240,11 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_START_PKCE_LOGIN,
                 type=ConfigEntryType.LABEL,
-                label="The button below will redirect you to Tidal.com to authenticate."
+                label="The button below will redirect you to Tidal.com to authenticate.\n\n"
                 " After authenticating, you will be redirected to a page that prominently displays"
-                " 'Oops' at the top.",
+                " 'Oops' at the top. That is normal, you need to copy that URL from the "
+                "address bar and come back here",
+                hidden=action == CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
                 key=CONF_ACTION_START_PKCE_LOGIN,
@@ -245,6 +257,7 @@ async def get_config_entries(
                 depends_on=CONF_QUALITY,
                 action_label="Starts the auth process via PKCE on Tidal.com",
                 value=values.get(CONF_TEMP_SESSION) if values else None,
+                hidden=action == CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
                 key=CONF_TEMP_SESSION,
@@ -259,6 +272,7 @@ async def get_config_entries(
                 type=ConfigEntryType.LABEL,
                 label="Copy the URL from the 'Oops' page that you were previously redirected to"
                 " and paste it in the field below",
+                hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
                 key=CONF_OOPS_URL,
@@ -269,12 +283,14 @@ async def get_config_entries(
                 " 'Oops' at the top.",
                 depends_on=CONF_ACTION_START_PKCE_LOGIN,
                 value=values.get(CONF_OOPS_URL) if values else None,
+                hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
                 key=LABEL_COMPLETE_PKCE_LOGIN,
                 type=ConfigEntryType.LABEL,
                 label="After pasting the URL in the field above, click the button below to complete"
                 " the process.",
+                hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
                 key=CONF_ACTION_COMPLETE_PKCE_LOGIN,
@@ -286,6 +302,7 @@ async def get_config_entries(
                 depends_on=CONF_OOPS_URL,
                 action_label="Complete the auth process via PKCE on Tidal.com",
                 value=None,
+                hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
         )
 
