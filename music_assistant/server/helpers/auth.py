@@ -18,28 +18,40 @@ if TYPE_CHECKING:
 class AuthenticationHelper:
     """Context manager helper class for authentication with a forward and redirect URL."""
 
-    def __init__(self, mass: MusicAssistant, session_id: str) -> None:
+    def __init__(
+        self, mass: MusicAssistant, session_id: str, frontend_base_url: str | None = None
+    ) -> None:
         """
         Initialize the Authentication Helper.
 
         Params:
         - url: The URL the user needs to open for authentication.
         - session_id: a unique id for this auth session.
+        - (optional) frontend_base_url: The base URL the frontend is using.
         """
         self.mass = mass
         self.session_id = session_id
+        self.frontend_base_url = frontend_base_url
         self._callback_response: asyncio.Queue[dict[str, str]] = asyncio.Queue(1)
 
     @property
     def callback_url(self) -> str:
         """Return the callback URL."""
+        if self.frontend_base_url:
+            return f"{self.frontend_base_url}/callback/{self.session_id}"
         return f"{self.mass.streams.base_url}/callback/{self.session_id}"
 
     async def __aenter__(self) -> AuthenticationHelper:
         """Enter context manager."""
-        self.mass.streams.register_dynamic_route(
-            f"/callback/{self.session_id}", self._handle_callback, "GET"
-        )
+        if self.frontend_base_url:
+            self.mass.webserver.register_auth_callback(
+                self.session_id,
+                self._handle_callback,
+            )
+        else:
+            self.mass.streams.register_dynamic_route(
+                f"/callback/{self.session_id}", self._handle_callback, "GET"
+            )
         return self
 
     async def __aexit__(
@@ -49,7 +61,12 @@ class AuthenticationHelper:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Exit context manager."""
-        self.mass.streams.unregister_dynamic_route(f"/callback/{self.session_id}", "GET")
+        if self.frontend_base_url:
+            self.mass.webserver.unregister_auth_callback(
+                self.session_id,
+            )
+        else:
+            self.mass.streams.unregister_dynamic_route(f"/callback/{self.session_id}", "GET")
 
     async def authenticate(self, auth_url: str, timeout: int = 60) -> dict[str, str]:
         """Start the auth process and return any query params if received on the callback."""
@@ -77,6 +94,7 @@ class AuthenticationHelper:
         <html>
         <body onload="window.close();">
             Authentication completed, you may now close this window.
+            Don't forget to press save in the Music Assistant settings page.
         </body>
         </html>
         """
