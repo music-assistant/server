@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import urllib.parse
+from collections.abc import Callable
 from concurrent import futures
 from contextlib import suppress
 from functools import partial
@@ -64,6 +65,7 @@ class WebserverController(CoreController):
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
         )
         self.manifest.icon = "web-box"
+        self._auth_callbacks: dict[str, Callable] | None = {}
 
     @property
     def base_url(self) -> str:
@@ -160,6 +162,8 @@ class WebserverController(CoreController):
         routes.append(("GET", "/imageproxy", self.mass.metadata.handle_imageproxy))
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
+        # also host the auth callback service
+        routes.append(("*", "/callback/{session_id}", self._handle_auth_callback))
         # start the webserver
         default_publish_ip = await get_ip()
         if self.mass.running_as_hass_addon:
@@ -208,6 +212,22 @@ class WebserverController(CoreController):
             await resp.write(chunk)
         return resp
 
+    def register_auth_callback(self, session_id: str, handler: Awaitable) -> Callable:
+        """Register a auth callback, returns handler to unregister."""
+        if session_id in self._auth_callbacks:
+            msg = f"Session {session_id} already registered."
+            raise RuntimeError(msg)
+        self._auth_callbacks[session_id] = handler
+
+        def _remove():
+            return self._auth_callbacks.pop(session_id, None)
+
+        return _remove
+
+    def unregister_auth_callback(self, session_id: str) -> None:
+        """Unregister a auth callback from the webserver."""
+        self._auth_callbacks.pop(session_id)
+
     async def _handle_server_info(self, request: web.Request) -> web.Response:
         """Handle request for server info."""
         return web.json_response(self.mass.get_server_info().to_dict())
@@ -226,6 +246,13 @@ class WebserverController(CoreController):
         """Handle request to get the application log."""
         log_data = await self.mass.get_application_log()
         return web.Response(text=log_data, content_type="text/text")
+
+    async def _handle_auth_callback(self, request: web.Request) -> web.Response:
+        """Handle request for the auth callback."""
+        session_id = request.match_info["session_id"]
+        if handler := self._auth_callbacks.get(session_id):
+            return await handler(request)
+        return web.Response(status=403)
 
 
 class WebsocketClientHandler:
