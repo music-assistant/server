@@ -808,7 +808,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if track_album := db_row_dict.get("track_album"):
             db_row_dict["album"] = track_album
             db_row_dict["disc_number"] = track_album["disc_number"]
-            db_row_dict["track_number"] = track_album["disc_number"]
+            db_row_dict["track_number"] = track_album["track_number"]
             # copy album image to itemmapping single image
             if images := track_album.get("images"):
                 db_row_dict["album"]["image"] = next(
