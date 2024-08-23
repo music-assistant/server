@@ -394,8 +394,6 @@ class StreamsController(CoreController):
             else:
                 title = "Music Assistant"
             metadata = f"StreamTitle='{title}';".encode()
-            if current_item and current_item.image:
-                metadata += f"StreamURL='{current_item.image.path}'".encode()
             while len(metadata) % 16 != 0:
                 metadata += b"\x00"
             length = len(metadata)
