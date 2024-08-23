@@ -122,6 +122,13 @@ class SonosPlayer:
         self.client = SonosLocalApiClient(self.ip_address, self.mass.http_session)
         self.mass_player: Player | None = None
         self._listen_task: asyncio.Task | None = None
+        # Sonos speakers can optionally have airplay (most S2 speakers do)
+        # and this airplay player can also be a player within MA
+        # we can do some smart stuff if we link them together where possible
+        # the player if we can just guess from the sonos player id (mac address)
+        self._airplay_player_id = (
+            f"ap{self.player_id.replace("RINCON_", "").replace("01400", "").lower()}"
+        )
 
     async def connect(self) -> None:
         """Connect to the Sonos player."""
@@ -187,6 +194,24 @@ class SonosPlayer:
             self.mass_player.synced_to = active_group.coordinator_id
             self.mass_player.active_source = active_group.coordinator_id
 
+        # map playback state
+        self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
+        if (
+            not self.mass_player.powered
+            and active_group.playback_state == SonosPlayBackState.PLAYBACK_STATE_PLAYING
+        ):
+            self.mass_player.powered = True
+
+        self.mass_player.elapsed_time = active_group.position
+        # work out 'can sync with' for this player
+        self.mass_player.can_sync_with = tuple(
+            x
+            for x in self.prov.sonos_players
+            if x != self.player_id
+            and x in self.prov.sonos_players
+            and self.prov.sonos_players[x].client.household_id == self.client.household_id
+        )
+
         # figure out the active source based on the container
         if container := active_group.playback_metadata.get("container"):
             if group_parent and group_parent.mass_player:
@@ -194,7 +219,12 @@ class SonosPlayer:
             elif container.get("type") == "linein":
                 self.mass_player.active_source = SOURCE_LINE_IN
             elif container.get("type") == "linein.airplay":
-                self.mass_player.active_source = SOURCE_AIRPLAY
+                # check if the MA airplay player is active
+                airplay_player = self.mass.players.get(self._airplay_player_id)
+                if airplay_player and airplay_player.powered:
+                    self.mass_player.active_source = airplay_player.active_source
+                else:
+                    self.mass_player.active_source = SOURCE_AIRPLAY
             elif container.get("type") == "station":
                 self.mass_player.active_source = SOURCE_RADIO
             elif container.get("id", {}).get("objectId") == f"mass:queue:{self.player_id}":
@@ -241,24 +271,6 @@ class SonosPlayer:
             )
         else:
             self.mass_player.current_media = None
-
-        # map playback state
-        self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
-        if (
-            not self.mass_player.powered
-            and active_group.playback_state == SonosPlayBackState.PLAYBACK_STATE_PLAYING
-        ):
-            self.mass_player.powered = True
-
-        self.mass_player.elapsed_time = active_group.position
-        # work out 'can sync with' for this player
-        self.mass_player.can_sync_with = tuple(
-            x
-            for x in self.prov.sonos_players
-            if x != self.player_id
-            and x in self.prov.sonos_players
-            and self.prov.sonos_players[x].client.household_id == self.client.household_id
-        )
 
 
 class SonosPlayerProvider(PlayerProvider):
@@ -353,7 +365,7 @@ class SonosPlayerProvider(PlayerProvider):
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
         base_entries = await super().get_player_config_entries(player_id)
-        if not (self.sonos_players.get(player_id)):
+        if not self.sonos_players.get(player_id):
             # most probably a syncgroup
             return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED)
         return (
