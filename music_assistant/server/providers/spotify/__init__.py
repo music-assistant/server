@@ -115,7 +115,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_REFRESH_TOKEN):
+    if config.get_value(CONF_REFRESH_TOKEN) in (None, ""):
         msg = "Re-Authentication required"
         raise SetupFailedError(msg)
     return SpotifyProvider(mass, manifest, config)

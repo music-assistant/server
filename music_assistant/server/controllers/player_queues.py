@@ -1045,6 +1045,7 @@ class PlayerQueuesController(CoreController):
         """Signal state changed of given queue."""
         queue = self._queues[queue_id]
         if items_changed:
+            queue.queue_items_last_updated = time.time()
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
             # save items in cache
             self.mass.create_task(
@@ -1055,7 +1056,6 @@ class PlayerQueuesController(CoreController):
                     base_key=queue_id,
                 )
             )
-
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
         # save state

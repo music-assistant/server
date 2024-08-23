@@ -50,6 +50,7 @@ from music_assistant.server.helpers.audio import (
     get_icy_stream,
     get_player_filter_params,
     get_silence,
+    get_stream_details,
     parse_loudnorm,
     strip_silence,
 )
@@ -252,7 +253,10 @@ class StreamsController(CoreController):
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
         if not queue_item.streamdetails:
-            raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
+            # raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
+            queue_item.streamdetails = await get_stream_details(
+                mass=self.mass, queue_item=queue_item
+            )
         # work out output format/details
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
@@ -873,7 +877,7 @@ class StreamsController(CoreController):
             if default_sample_rate in supported_sample_rates:
                 output_sample_rate = default_sample_rate
             else:
-                output_sample_rate = min(supported_sample_rates)
+                output_sample_rate = max(supported_sample_rates)
             output_bit_depth = min(default_bit_depth, player_max_bit_depth)
             output_channels_str = self.mass.config.get_raw_player_config_value(
                 player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
