@@ -156,7 +156,7 @@ class SonosPlayer:
             await self.client.disconnect()
         self.logger.debug("Disconnected from player API")
 
-    def update_attributes(self) -> None:
+    def update_attributes(self) -> None:  # noqa: PLR0915
         """Update the player attributes."""
         if not self.mass_player:
             return
@@ -166,7 +166,9 @@ class SonosPlayer:
             self.mass_player.volume_level = self.client.player.volume_level or 100
         self.mass_player.volume_muted = self.client.player.volume_muted
 
+        group_parent = None
         if self.client.player.is_coordinator:
+            # player is group coordinator
             active_group = self.client.player.group
             self.mass_player.group_childs = (
                 self.client.player.group_members
@@ -174,19 +176,22 @@ class SonosPlayer:
                 else set()
             )
             self.mass_player.synced_to = None
-
         else:
-            if not (
-                grpup_parent := self.prov.sonos_players.get(self.client.player.group.coordinator_id)
-            ):
+            # player is group child (synced to another player)
+            group_parent = self.prov.sonos_players.get(self.client.player.group.coordinator_id)
+            if not group_parent:
+                # handle race condition where the group parent is not yet discovered
                 return
-            active_group = grpup_parent.client.player.group
+            active_group = group_parent.client.player.group
             self.mass_player.group_childs = set()
             self.mass_player.synced_to = active_group.coordinator_id
             self.mass_player.active_source = active_group.coordinator_id
+
+        # figure out the active source based on the container
         if container := active_group.playback_metadata.get("container"):
-            # figure out the active source based on the container
-            if container.get("type") == "linein":
+            if group_parent and group_parent.mass_player:
+                self.mass_player.active_source = group_parent.mass_player.active_source
+            elif container.get("type") == "linein":
                 self.mass_player.active_source = SOURCE_LINE_IN
             elif container.get("type") == "linein.airplay":
                 self.mass_player.active_source = SOURCE_AIRPLAY
@@ -199,40 +204,45 @@ class SonosPlayer:
                 self.mass_player.active_source = SOURCE_SPOTIFY
             else:
                 self.mass_player.active_source = SOURCE_UNKNOWN
-            # parse current media
-            if (current_item := active_group.playback_metadata.get("currentItem")) and (
-                (track := current_item.get("track")) and track.get("name")
-            ):
-                track_images = track.get("images", [])
-                track_image_url = track_images[0].get("url") if track_images else None
-                track_duration_millis = track.get("durationMillis")
-                self.mass_player.current_media = PlayerMedia(
-                    uri=track.get("id", {}).get("objectId") or track.get("mediaUrl"),
-                    title=track["name"],
-                    artist=track.get("artist", {}).get("name"),
-                    album=track.get("album", {}).get("name"),
-                    duration=track_duration_millis / 1000 if track_duration_millis else None,
-                    image_url=track_image_url,
-                )
-            elif container.get("name") and active_group.playback_metadata.get("streamInfo"):
-                images = container.get("images", [])
-                image_url = images[0].get("url") if images else None
-                self.mass_player.current_media = PlayerMedia(
-                    uri=container.get("id", {}).get("objectId"),
-                    title=active_group.playback_metadata["streamInfo"],
-                    album=container["name"],
-                    image_url=image_url,
-                )
-            elif container.get("name") and container.get("id"):
-                images = container.get("images", [])
-                image_url = images[0].get("url") if images else None
-                self.mass_player.current_media = PlayerMedia(
-                    uri=container["id"]["objectId"],
-                    title=container["name"],
-                    image_url=image_url,
-                )
-            else:
-                self.mass_player.current_media = None
+
+        # parse current media
+        if (current_item := active_group.playback_metadata.get("currentItem")) and (
+            (track := current_item.get("track")) and track.get("name")
+        ):
+            track_images = track.get("images", [])
+            track_image_url = track_images[0].get("url") if track_images else None
+            track_duration_millis = track.get("durationMillis")
+            self.mass_player.current_media = PlayerMedia(
+                uri=track.get("id", {}).get("objectId") or track.get("mediaUrl"),
+                title=track["name"],
+                artist=track.get("artist", {}).get("name"),
+                album=track.get("album", {}).get("name"),
+                duration=track_duration_millis / 1000 if track_duration_millis else None,
+                image_url=track_image_url,
+            )
+        elif (
+            container and container.get("name") and active_group.playback_metadata.get("streamInfo")
+        ):
+            images = container.get("images", [])
+            image_url = images[0].get("url") if images else None
+            self.mass_player.current_media = PlayerMedia(
+                uri=container.get("id", {}).get("objectId"),
+                title=active_group.playback_metadata["streamInfo"],
+                album=container["name"],
+                image_url=image_url,
+            )
+        elif container and container.get("name") and container.get("id"):
+            images = container.get("images", [])
+            image_url = images[0].get("url") if images else None
+            self.mass_player.current_media = PlayerMedia(
+                uri=container["id"]["objectId"],
+                title=container["name"],
+                image_url=image_url,
+            )
+        else:
+            self.mass_player.current_media = None
+
+        # map playback state
         self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
         if (
             not self.mass_player.powered
@@ -241,6 +251,7 @@ class SonosPlayer:
             self.mass_player.powered = True
 
         self.mass_player.elapsed_time = active_group.position
+        # work out 'can sync with' for this player
         self.mass_player.can_sync_with = tuple(
             x
             for x in self.prov.sonos_players
