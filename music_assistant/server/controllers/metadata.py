@@ -336,10 +336,10 @@ class MetaDataController(CoreController):
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
-            encoded_url = urllib.parse.quote_plus(
-                f"path={encoded_url}&provider={image.provider}&size={size}&fmt={image_format}"
+            return (
+                f"{self.mass.streams.base_url}/imageproxy?path={encoded_url}"
+                f"&provider={image.provider}&size={size}&fmt={image_format}"
             )
-            return f"{self.mass.streams.base_url}/imageproxy?{encoded_url}"
         return image.path
 
     async def get_thumbnail(
