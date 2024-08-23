@@ -430,7 +430,8 @@ class RaopStream:
                 title = stream_title
             # set album to radio station name
             album = queue.current_item.name
-        if media_item := queue.current_item.media_item:
+        elif media_item := queue.current_item.media_item:
+            title = media_item.name
             if artist_str := getattr(media_item, "artist_str", None):
                 artist = artist_str
             if _album := getattr(media_item, "album", None):
