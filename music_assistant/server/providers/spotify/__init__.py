@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import platform
@@ -169,6 +170,11 @@ async def get_config_entries(
             result = await response.json()
             values[CONF_REFRESH_TOKEN] = result["refresh_token"]
 
+    # handle action clear authentication
+    if action == CONF_ACTION_CLEAR_AUTH:
+        assert values
+        values[CONF_REFRESH_TOKEN] = None
+
     auth_required = values.get(CONF_REFRESH_TOKEN) in (None, "")
 
     if auth_required:
@@ -217,6 +223,16 @@ async def get_config_entries(
             description="This button will redirect you to Spotify to authenticate.",
             action=CONF_ACTION_AUTH,
             hidden=not auth_required,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_CLEAR_AUTH,
+            type=ConfigEntryType.ACTION,
+            label="Clear authentication",
+            description="Clear the current authentication details.",
+            action=CONF_ACTION_CLEAR_AUTH,
+            action_label="Clear authentication",
+            required=False,
+            hidden=auth_required,
         ),
     )
 
@@ -525,6 +541,7 @@ class SpotifyProvider(MusicProvider):
         items = await self._get_data(endpoint, seed_tracks=prov_track_id, limit=limit)
         return [self._parse_track(item) for item in items["tracks"] if (item and item["id"])]
 
+    @throttle_with_retries
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         # make sure that the token is still valid by just requesting it
@@ -753,12 +770,11 @@ class SpotifyProvider(MusicProvider):
         playlist.cache_checksum = str(playlist_obj["snapshot_id"])
         return playlist
 
-    async def login(self) -> dict:
+    async def login(self, retry: bool = True) -> dict:
         """Log-in Spotify and return Auth/token info."""
         # return existing token if we have one in memory
         if self._auth_info and (self._auth_info["expires_at"] > (time.time() - 300)):
             return self._auth_info
-
         # request new access token using the refresh token
         if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN)):
             raise LoginFailed("Authentication required")
@@ -779,6 +795,9 @@ class SpotifyProvider(MusicProvider):
                     self.mass.config.set_raw_provider_config_value(
                         self.instance_id, CONF_REFRESH_TOKEN, ""
                     )
+                if retry:
+                    await asyncio.sleep(1)
+                    return await self.login(retry=False)
                 raise LoginFailed(f"Failed to refresh access token: {err}")
             auth_info = await response.json()
             auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
@@ -794,7 +813,6 @@ class SpotifyProvider(MusicProvider):
             self._sp_user = userinfo = await self._get_data("me", auth_info=auth_info)
             self.mass.metadata.set_default_preferred_language(userinfo["country"])
             self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
-
         return auth_info
 
     async def _get_all_items(self, endpoint, key="items", **kwargs) -> list[dict]:
