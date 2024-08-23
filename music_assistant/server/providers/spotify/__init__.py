@@ -246,7 +246,6 @@ class SpotifyProvider(MusicProvider):
     # rate limiter needs to be specified on provider-level,
     # so make it an instance attribute
     throttler = ThrottlerManager(rate_limit=1, period=2)
-    _login_lock: asyncio.Lock = asyncio.Lock()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -771,55 +770,50 @@ class SpotifyProvider(MusicProvider):
         playlist.cache_checksum = str(playlist_obj["snapshot_id"])
         return playlist
 
-    async def login(self) -> dict:
+    async def login(self, retry: bool = True) -> dict:
         """Log-in Spotify and return Auth/token info."""
-        async with self._login_lock:
-            # return existing token if we have one in memory
-            if self._auth_info and (self._auth_info["expires_at"] > (time.time() - 300)):
-                return self._auth_info
+        # return existing token if we have one in memory
+        if self._auth_info and (self._auth_info["expires_at"] > (time.time() - 300)):
+            return self._auth_info
+        # request new access token using the refresh token
+        if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN)):
+            raise LoginFailed("Authentication required")
 
-            # request new access token using the refresh token
-            if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN)):
-                raise LoginFailed("Authentication required")
+        client_id = self.config.get_value(CONF_CLIENT_ID) or app_var(2)
+        params = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        }
+        async with self.mass.http_session.post(
+            "https://accounts.spotify.com/api/token", data=params
+        ) as response:
+            if response.status != 200:
+                err = await response.text()
+                if "revoked" in err:
+                    # clear refresh token if it's invalid
+                    self.mass.config.set_raw_provider_config_value(
+                        self.instance_id, CONF_REFRESH_TOKEN, ""
+                    )
+                if retry:
+                    await asyncio.sleep(1)
+                    return await self.login(retry=False)
+                raise LoginFailed(f"Failed to refresh access token: {err}")
+            auth_info = await response.json()
+            auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
+            self.logger.debug("Successfully refreshed access token")
 
-            client_id = self.config.get_value(CONF_CLIENT_ID) or app_var(2)
-            params = {
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": client_id,
-            }
-            for retry in (True, False):
-                async with self.mass.http_session.post(
-                    "https://accounts.spotify.com/api/token", data=params
-                ) as response:
-                    if response.status != 200:
-                        err = await response.text()
-                        if "revoked" in err:
-                            # clear refresh token if it's invalid
-                            self.mass.config.set_raw_provider_config_value(
-                                self.instance_id, CONF_REFRESH_TOKEN, ""
-                            )
-                        if retry:
-                            continue
-                        raise LoginFailed(f"Failed to refresh access token: {err}")
-                auth_info = await response.json()
-                auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
-                self.logger.debug("Successfully refreshed access token")
-
-            # make sure that our updated creds get stored in memory + config
-            self._auth_info = auth_info
-            self.mass.config.set_raw_provider_config_value(
-                self.instance_id, CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True
-            )
-            # get logged-in user info
-            if not self._sp_user:
-                self._sp_user = userinfo = await self._get_data("me", auth_info=auth_info)
-                self.mass.metadata.set_default_preferred_language(userinfo["country"])
-                self.logger.info(
-                    "Successfully logged in to Spotify as %s", userinfo["display_name"]
-                )
-
-            return auth_info
+        # make sure that our updated creds get stored in memory + config
+        self._auth_info = auth_info
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True
+        )
+        # get logged-in user info
+        if not self._sp_user:
+            self._sp_user = userinfo = await self._get_data("me", auth_info=auth_info)
+            self.mass.metadata.set_default_preferred_language(userinfo["country"])
+            self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
+        return auth_info
 
     async def _get_all_items(self, endpoint, key="items", **kwargs) -> list[dict]:
         """Get all items from a paged list."""
