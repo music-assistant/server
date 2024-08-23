@@ -1034,7 +1034,7 @@ class MusicController(CoreController):
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
 
-        if prev_version <= 5:
+        if prev_version <= 4:
             # unhandled schema version
             # we do not try to handle more complex migrations
             self.logger.warning(
