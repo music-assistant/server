@@ -29,10 +29,16 @@ from music_assistant.common.models.enums import (
     PlayerState,
     PlayerType,
     ProviderFeature,
+    RepeatMode,
 )
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import MASS_LOGO_ONLINE, SYNCGROUP_PREFIX, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    MASS_LOGO_ONLINE,
+    SYNCGROUP_PREFIX,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -133,6 +139,7 @@ class SonosPlayer:
             except Exception as err:
                 self.logger.exception("Error in Sonos player listener: %s", err)
                 if self.connected:
+                    self.connected = False
                     self.mass.call_later(5, self.connect)
             finally:
                 self.connected = False
@@ -158,8 +165,9 @@ class SonosPlayer:
         else:
             self.mass_player.volume_level = self.client.player.volume_level or 100
         self.mass_player.volume_muted = self.client.player.volume_muted
-        active_group = self.client.player.group
+
         if self.client.player.is_coordinator:
+            active_group = self.client.player.group
             self.mass_player.group_childs = (
                 self.client.player.group_members
                 if len(self.client.player.group_members) > 1
@@ -167,61 +175,71 @@ class SonosPlayer:
             )
             self.mass_player.synced_to = None
 
-            if container := active_group.playback_metadata.get("container"):
-                # figure out the active source based on the container
-                if container.get("type") == "linein":
-                    self.mass_player.active_source = SOURCE_LINE_IN
-                elif container.get("type") == "linein.airplay":
-                    self.mass_player.active_source = SOURCE_AIRPLAY
-                elif container.get("type") == "station":
-                    self.mass_player.active_source = SOURCE_RADIO
-                elif container.get("id", {}).get("objectId") == f"mass:queue:{self.player_id}":
-                    # mass queue is active
-                    self.mass_player.active_source = self.player_id
-                elif container.get("id", {}).get("serviceId") == "9":
-                    self.mass_player.active_source = SOURCE_SPOTIFY
-                else:
-                    self.mass_player.active_source = SOURCE_UNKNOWN
-                # parse current media
-                if (current_item := active_group.playback_metadata.get("currentItem")) and (
-                    (track := current_item.get("track")) and track.get("name")
-                ):
-                    track_images = track.get("images", [])
-                    track_image_url = track_images[0].get("url") if track_images else None
-                    track_duration_millis = track.get("durationMillis")
-                    self.mass_player.current_media = PlayerMedia(
-                        uri=track.get("id", {}).get("objectId") or track.get("mediaUrl"),
-                        title=track["name"],
-                        artist=track.get("artist", {}).get("name"),
-                        album=track.get("album", {}).get("name"),
-                        duration=track_duration_millis / 1000 if track_duration_millis else None,
-                        image_url=track_image_url,
-                    )
-                elif container.get("name") and active_group.playback_metadata.get("streamInfo"):
-                    images = container.get("images", [])
-                    image_url = images[0].get("url") if images else None
-                    self.mass_player.current_media = PlayerMedia(
-                        uri=container.get("id", {}).get("objectId"),
-                        title=active_group.playback_metadata["streamInfo"],
-                        album=container["name"],
-                        image_url=image_url,
-                    )
-                elif container.get("name") and container.get("id"):
-                    images = container.get("images", [])
-                    image_url = images[0].get("url") if images else None
-                    self.mass_player.current_media = PlayerMedia(
-                        uri=container["id"]["objectId"],
-                        title=container["name"],
-                        image_url=image_url,
-                    )
-                else:
-                    self.mass_player.current_media = None
-
         else:
+            if not (
+                grpup_parent := self.prov.sonos_players.get(self.client.player.group.coordinator_id)
+            ):
+                return
+            active_group = grpup_parent.client.player.group
             self.mass_player.group_childs = set()
             self.mass_player.synced_to = active_group.coordinator_id
             self.mass_player.active_source = active_group.coordinator_id
+        if container := active_group.playback_metadata.get("container"):
+            # figure out the active source based on the container
+            if container.get("type") == "linein":
+                self.mass_player.active_source = SOURCE_LINE_IN
+            elif container.get("type") == "linein.airplay":
+                self.mass_player.active_source = SOURCE_AIRPLAY
+            elif container.get("type") == "station":
+                self.mass_player.active_source = SOURCE_RADIO
+            elif container.get("id", {}).get("objectId") == f"mass:queue:{self.player_id}":
+                # mass queue is active
+                self.mass_player.active_source = self.player_id
+            elif container.get("id", {}).get("serviceId") == "9":
+                self.mass_player.active_source = SOURCE_SPOTIFY
+            else:
+                self.mass_player.active_source = SOURCE_UNKNOWN
+            # parse current media
+            if (current_item := active_group.playback_metadata.get("currentItem")) and (
+                (track := current_item.get("track")) and track.get("name")
+            ):
+                track_images = track.get("images", [])
+                track_image_url = track_images[0].get("url") if track_images else None
+                track_duration_millis = track.get("durationMillis")
+                self.mass_player.current_media = PlayerMedia(
+                    uri=track.get("id", {}).get("objectId") or track.get("mediaUrl"),
+                    title=track["name"],
+                    artist=track.get("artist", {}).get("name"),
+                    album=track.get("album", {}).get("name"),
+                    duration=track_duration_millis / 1000 if track_duration_millis else None,
+                    image_url=track_image_url,
+                )
+            elif container.get("name") and active_group.playback_metadata.get("streamInfo"):
+                images = container.get("images", [])
+                image_url = images[0].get("url") if images else None
+                self.mass_player.current_media = PlayerMedia(
+                    uri=container.get("id", {}).get("objectId"),
+                    title=active_group.playback_metadata["streamInfo"],
+                    album=container["name"],
+                    image_url=image_url,
+                )
+            elif container.get("name") and container.get("id"):
+                images = container.get("images", [])
+                image_url = images[0].get("url") if images else None
+                self.mass_player.current_media = PlayerMedia(
+                    uri=container["id"]["objectId"],
+                    title=container["name"],
+                    image_url=image_url,
+                )
+            else:
+                self.mass_player.current_media = None
         self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
+        if (
+            not self.mass_player.powered
+            and active_group.playback_state == SonosPlayBackState.PLAYBACK_STATE_PLAYING
+        ):
+            self.mass_player.powered = True
+
         self.mass_player.elapsed_time = active_group.position
         self.mass_player.can_sync_with = tuple(
             x
@@ -272,6 +290,11 @@ class SonosPlayerProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+        if not info:
+            self.logger.error(
+                "No info in MDNS service state change for %s - state change: %s", name, state_change
+            )
+            return
         if "uuid" not in info.decoded_properties:
             # not a S2 player
             return
@@ -326,7 +349,7 @@ class SonosPlayerProvider(PlayerProvider):
             *base_entries,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-            create_sample_rates_config_entry(48000, 24, 48000, 24, False),
+            create_sample_rates_config_entry(48000, 24, 48000, 24, True),
         )
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -380,8 +403,14 @@ class SonosPlayerProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the syncgroup master or group player.
         """
+        await self.cmd_sync_many(target_player, [player_id])
+
+    async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
+        """Create temporary sync group by joining given players to target player."""
         sonos_player = self.sonos_players[target_player]
-        await sonos_player.client.player.group.modify_group_members(player_ids_to_add=[player_id])
+        await sonos_player.client.player.group.modify_group_members(
+            player_ids_to_add=child_player_ids, player_ids_to_remove=[]
+        )
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
@@ -408,14 +437,36 @@ class SonosPlayerProvider(PlayerProvider):
                 "accept play_media command, it is synced to another player."
             )
             raise PlayerCommandFailed(msg)
+        mass_queue = self.mass.player_queues.get(media.queue_id)
 
+        # create a sonos cloud queue and load it
         cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
         await sonos_player.client.player.group.play_cloud_queue(
-            cloud_queue_url, http_authorization=media.queue_id, queue_version=player_id
+            cloud_queue_url,
+            http_authorization=media.queue_id,
+            item_id=media.queue_item_id,
+            queue_version=str(mass_queue.queue_items_last_updated),
         )
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
+        sonos_player = self.sonos_players[player_id]
+        if session_id := sonos_player.client.player.group.active_session_id:
+            await sonos_player.client.api.playback_session.refresh_cloud_queue(session_id)
+        # sync play modes from player queue --> sonos
+        mass_queue = self.mass.player_queues.get(media.queue_id)
+        crossfade = await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
+        repeat_single_enabled = mass_queue.repeat_mode == RepeatMode.ONE
+        repeat_all_enabled = mass_queue.repeat_mode == RepeatMode.ALL
+        play_modes = sonos_player.client.player.group.play_modes
+        if (
+            play_modes.crossfade != crossfade
+            or play_modes.repeat != repeat_all_enabled
+            or play_modes.repeat_one != repeat_single_enabled
+        ):
+            await sonos_player.client.player.group.set_play_modes(
+                crossfade=crossfade, repeat=repeat_all_enabled, repeat_one=repeat_single_enabled
+            )
 
     async def play_announcement(
         self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
@@ -439,9 +490,6 @@ class SonosPlayerProvider(PlayerProvider):
         )
         volume_level = self.mass.players.get_announcement_volume(player_id, volume_level)
         await sonos_player.client.player.play_audio_clip(announcement.uri, volume_level)
-
-    async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates."""
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
@@ -481,7 +529,13 @@ class SonosPlayerProvider(PlayerProvider):
             type=PlayerType.PLAYER,
             name=display_name,
             available=True,
-            powered=False,
+            # treat as powered at start if the player is playing/paused
+            powered=sonos_player.client.player.group.playback_state
+            in (
+                SonosPlayBackState.PLAYBACK_STATE_PLAYING,
+                SonosPlayBackState.PLAYBACK_STATE_BUFFERING,
+                SonosPlayBackState.PLAYBACK_STATE_PAUSED,
+            ),
             device_info=DeviceInfo(
                 model=discovery_info["device"]["modelDisplayName"],
                 manufacturer=self.manifest.name,
@@ -528,7 +582,7 @@ class SonosPlayerProvider(PlayerProvider):
         if item_id := request.query.get("itemId"):
             queue_index = self.mass.player_queues.index_by_id(queue.queue_id, item_id)
         else:
-            queue_index = queue.current_index
+            queue_index = queue.current_index or 0
         offset = max(queue_index - previous_window_size, 0)
         queue_items = self.mass.player_queues.items(
             sonos_player_id,
@@ -554,11 +608,21 @@ class SonosPlayerProvider(PlayerProvider):
                     "durationMillis": item.duration * 1000 if item.duration else None,
                     "artist": {
                         "name": item.media_item.artist_str,
-                    },
+                    }
+                    if item.media_item and item.media_item.artist_str
+                    else None,
                     "album": {
                         "name": item.media_item.album.name,
                     }
-                    if item.media_item.album
+                    if item.media_item and item.media_item.album
+                    else None,
+                    "quality": {
+                        "bitDepth": item.streamdetails.audio_format.bit_depth,
+                        "sampleRate": item.streamdetails.audio_format.sample_rate,
+                        "codec": item.streamdetails.audio_format.content_type.value,
+                        "lossless": item.streamdetails.audio_format.content_type.is_lossless(),
+                    }
+                    if item.streamdetails
                     else None,
                 },
             }
@@ -618,12 +682,12 @@ class SonosPlayerProvider(PlayerProvider):
                 "limitedSkips": False,
                 "canSkipToItem": True,
                 "canSkipBack": True,
-                "canSeek": False,
+                "canSeek": False,  # somehow not working correctly, investigate later
                 "canRepeat": True,
                 "canRepeatOne": True,
                 "canCrossfade": True,
-                "canShuffle": True,
-                "showNNextTracks": 20,
+                "canShuffle": False,  # handled by our queue controller itself
+                "showNNextTracks": 5,
                 "showNPreviousTracks": 5,
             },
         }
