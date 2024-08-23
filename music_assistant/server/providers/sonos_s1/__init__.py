@@ -1,8 +1,10 @@
 """
-Sonos Player provider for Music Assistant.
+Sonos Player S1 provider for Music Assistant.
+
+Based on the SoCo library for Sonos which uses the legacy/V1 UPnP API.
 
 Note that large parts of this code are copied over from the Home Assistant
-integratioon for Sonos.
+integration for Sonos.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from soco.discovery import discover, scan_network
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
     ConfigEntry,
     ConfigValueType,
     create_sample_rates_config_entry,
@@ -32,7 +35,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import CONF_CROSSFADE, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_CROSSFADE, CONF_ENFORCE_MP3, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -41,7 +44,7 @@ from .player import SonosPlayer
 if TYPE_CHECKING:
     from soco.core import SoCo
 
-    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
+    from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -50,7 +53,6 @@ if TYPE_CHECKING:
 PLAYER_FEATURES = (
     PlayerFeature.SYNC,
     PlayerFeature.VOLUME_MUTE,
-    PlayerFeature.VOLUME_SET,
     PlayerFeature.ENQUEUE_NEXT,
     PlayerFeature.PAUSE,
 )
@@ -67,13 +69,8 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    # set event listener port to something other than 1400
-    # to allow coextistence with HA on the same host
-    # note: it seems that this setting doesn't have any effect
-    soco_config.EVENT_LISTENER_PORT = 1700
     soco_config.EVENTS_MODULE = events_asyncio
     soco_config.REQUEST_TIMEOUT = 9.5
-    soco_config.ZGT_EVENT_FALLBACK = False
     zonegroupstate.EVENT_CACHE_TIMEOUT = SUBSCRIPTION_TIMEOUT
     prov = SonosPlayerProvider(mass, manifest, config)
     # set-up soco logging
@@ -99,6 +96,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
+    household_ids = await discover_household_ids(mass)
     return (
         ConfigEntry(
             key=CONF_NETWORK_SCAN,
@@ -113,9 +111,10 @@ async def get_config_entries(
             key=CONF_HOUSEHOLD_ID,
             type=ConfigEntryType.STRING,
             label="Household ID",
-            default_value="",
+            default_value=household_ids[0] if household_ids else None,
             description="Household ID for the Sonos (S1) system. Will be auto detected if empty.",
             category="advanced",
+            required=False,
         ),
     )
 
@@ -176,76 +175,15 @@ class SonosPlayerProvider(PlayerProvider):
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
         base_entries = await super().get_player_config_entries(player_id)
-        if not (sonos_player := self.sonosplayers.get(player_id)):
+        if not (self.sonosplayers.get(player_id)):
             # most probably a syncgroup
-            return (*base_entries, CONF_ENTRY_CROSSFADE)
+            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED)
         return (
             *base_entries,
             CONF_ENTRY_CROSSFADE,
-            ConfigEntry(
-                key="sonos_bass",
-                type=ConfigEntryType.INTEGER,
-                label="Bass",
-                default_value=sonos_player.bass,
-                value=sonos_player.bass,
-                range=(-10, 10),
-                description="Set the Bass level for the Sonos player",
-                category="advanced",
-            ),
-            ConfigEntry(
-                key="sonos_treble",
-                type=ConfigEntryType.INTEGER,
-                label="Treble",
-                default_value=sonos_player.treble,
-                value=sonos_player.treble,
-                range=(-10, 10),
-                description="Set the Treble level for the Sonos player",
-                category="advanced",
-            ),
-            ConfigEntry(
-                key="sonos_loudness",
-                type=ConfigEntryType.BOOLEAN,
-                label="Loudness compensation",
-                default_value=sonos_player.loudness,
-                value=sonos_player.loudness,
-                description="Enable loudness compensation on the Sonos player",
-                category="advanced",
-            ),
             CONF_ENTRY_SAMPLE_RATES,
+            CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
         )
-
-    def on_player_config_changed(
-        self,
-        config: PlayerConfig,
-        changed_keys: set[str],
-    ) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-        super().on_player_config_changed(config, changed_keys)
-        if "enabled" in changed_keys:
-            # run discovery to catch any re-enabled players
-            self.mass.create_task(self._run_discovery())
-        if not (sonos_player := self.sonosplayers.get(config.player_id)):
-            return
-        if "values/sonos_bass" in changed_keys:
-            self.mass.create_task(
-                sonos_player.soco.renderingControl.SetBass,
-                [("InstanceID", 0), ("DesiredBass", config.get_value("sonos_bass"))],
-            )
-        if "values/sonos_treble" in changed_keys:
-            self.mass.create_task(
-                sonos_player.soco.renderingControl.SetTreble,
-                [("InstanceID", 0), ("DesiredTreble", config.get_value("sonos_treble"))],
-            )
-        if "values/sonos_loudness" in changed_keys:
-            loudness_value = "1" if config.get_value("sonos_loudness") else "0"
-            self.mass.create_task(
-                sonos_player.soco.renderingControl.SetLoudness,
-                [
-                    ("InstanceID", 0),
-                    ("Channel", "Master"),
-                    ("DesiredLoudness", loudness_value),
-                ],
-            )
 
     def is_device_invisible(self, ip_address: str) -> bool:
         """Check if device at provided IP is known to be invisible."""
@@ -261,6 +199,7 @@ class SonosPlayerProvider(PlayerProvider):
             )
             return
         await asyncio.to_thread(sonos_player.soco.stop)
+        self.mass.call_later(2, sonos_player.poll_speaker)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
@@ -272,6 +211,7 @@ class SonosPlayerProvider(PlayerProvider):
             )
             return
         await asyncio.to_thread(sonos_player.soco.play)
+        self.mass.call_later(2, sonos_player.poll_speaker)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
@@ -287,15 +227,17 @@ class SonosPlayerProvider(PlayerProvider):
             await self.cmd_stop(player_id)
             return
         await asyncio.to_thread(sonos_player.soco.pause)
+        self.mass.call_later(2, sonos_player.poll_speaker)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
+        sonos_player = self.sonosplayers[player_id]
 
         def set_volume_level(player_id: str, volume_level: int) -> None:
-            sonos_player = self.sonosplayers[player_id]
             sonos_player.soco.volume = volume_level
 
         await asyncio.to_thread(set_volume_level, player_id, volume_level)
+        self.mass.call_later(2, sonos_player.poll_speaker)
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
@@ -317,6 +259,7 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player = self.sonosplayers[player_id]
         sonos_master_player = self.sonosplayers[target_player]
         await sonos_master_player.join([sonos_player])
+        self.mass.call_later(2, sonos_player.poll_speaker)
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
@@ -327,6 +270,7 @@ class SonosPlayerProvider(PlayerProvider):
         """
         sonos_player = self.sonosplayers[player_id]
         await sonos_player.unjoin()
+        self.mass.call_later(2, sonos_player.poll_speaker)
 
     async def play_media(
         self,
@@ -343,13 +287,17 @@ class SonosPlayerProvider(PlayerProvider):
                 "accept play_media command, it is synced to another player."
             )
             raise PlayerCommandFailed(msg)
-
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
+            media.uri = media.uri.replace(".flac", ".mp3")
         didl_metadata = create_didl_metadata(media)
         await asyncio.to_thread(sonos_player.soco.play_uri, media.uri, meta=didl_metadata)
+        self.mass.call_later(2, sonos_player.poll_speaker)
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         sonos_player = self.sonosplayers[player_id]
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
+            media.uri = media.uri.replace(".flac", ".mp3")
         didl_metadata = create_didl_metadata(media)
         # set crossfade according to player setting
         crossfade = await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
@@ -391,9 +339,10 @@ class SonosPlayerProvider(PlayerProvider):
         try:
             # the check_poll logic will work out what endpoints need polling now
             # based on when we last received info from the device
-            await sonos_player.check_poll()
+            if needs_poll := await sonos_player.check_poll():
+                await sonos_player.poll_speaker()
             # always update the attributes
-            sonos_player.update_player(signal_update=False)
+            sonos_player.update_player(signal_update=needs_poll)
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
@@ -404,7 +353,7 @@ class SonosPlayerProvider(PlayerProvider):
 
         allow_network_scan = self.config.get_value(CONF_NETWORK_SCAN)
         if not (household_id := self.config.get_value(CONF_HOUSEHOLD_ID)):
-            await self._discover_household_id()
+            household_id = "Sonos"
 
         def do_discover() -> None:
             """Run discovery and add players in executor thread."""
@@ -442,34 +391,6 @@ class SonosPlayerProvider(PlayerProvider):
         # reschedule self once finished
         self._discovery_reschedule_timer = self.mass.loop.call_later(1800, reschedule)
 
-    async def _discover_household_id(self) -> None:
-        """Discover the HouseHold ID of S1 speaker(s) the network."""
-        household_id = self.config.get_value(CONF_HOUSEHOLD_ID)
-
-        def get_all_sonos_ips() -> set[SoCo]:
-            """Run full network discovery and return IP's of all devices found on the network."""
-            discovered_zones: set[SoCo] | None
-            if discovered_zones := scan_network(multi_household=True):
-                return {zone.ip_address for zone in discovered_zones}
-            return set()
-
-        all_sonos_ips = await asyncio.to_thread(get_all_sonos_ips)
-        for ip_address in all_sonos_ips:
-            async with self.mass.http_session.get(f"http://{ip_address}:1400/status/zp") as resp:
-                if resp.status == 200:
-                    data = await resp.text()
-                    if "<SWGen>2</SWGen>" in data:
-                        continue
-                    if "HouseholdControlID" in data:
-                        household_id = data.split("<HouseholdControlID>")[1].split(
-                            "</HouseholdControlID>"
-                        )[0]
-                        break
-        self.logger.debug("Found household ID: %s", household_id)
-        self.mass.config.set_raw_provider_config_value(
-            self.instance_id, CONF_HOUSEHOLD_ID, household_id
-        )
-
     def _add_player(self, soco: SoCo) -> None:
         """Add discovered Sonos player."""
         player_id = soco.uid
@@ -489,6 +410,8 @@ class SonosPlayerProvider(PlayerProvider):
         if soco.uid not in self.boot_counts:
             self.boot_counts[soco.uid] = soco.boot_seqnum
         self.logger.debug("Adding new player: %s", speaker_info)
+        transport_info = soco.get_current_transport_info()
+        play_state = transport_info["current_transport_state"]
         if not (mass_player := self.mass.players.get(soco.uid)):
             mass_player = Player(
                 player_id=soco.uid,
@@ -496,7 +419,7 @@ class SonosPlayerProvider(PlayerProvider):
                 type=PlayerType.PLAYER,
                 name=soco.player_name,
                 available=True,
-                powered=False,
+                powered=play_state in ("PLAYING", "TRANSITIONING"),
                 supported_features=PLAYER_FEATURES,
                 device_info=DeviceInfo(
                     model=speaker_info["model_name"],
@@ -504,14 +427,48 @@ class SonosPlayerProvider(PlayerProvider):
                     manufacturer="SONOS",
                 ),
                 needs_poll=True,
-                poll_interval=120,
+                poll_interval=30,
             )
         self.sonosplayers[player_id] = sonos_player = SonosPlayer(
             self,
             soco=soco,
             mass_player=mass_player,
         )
-        sonos_player.setup()
+        if not soco.fixed_volume:
+            mass_player.supported_features = (
+                *mass_player.supported_features,
+                PlayerFeature.VOLUME_SET,
+            )
+
         self.mass.loop.call_soon_threadsafe(
             self.mass.players.register_or_update, sonos_player.mass_player
         )
+
+
+async def discover_household_ids(mass: MusicAssistant, prefer_s1: bool = True) -> list[str]:
+    """Discover the HouseHold ID of S1 speaker(s) the network."""
+    if cache := await mass.cache.get("sonos_household_ids"):
+        return cache
+    household_ids: list[str] = []
+
+    def get_all_sonos_ips() -> set[SoCo]:
+        """Run full network discovery and return IP's of all devices found on the network."""
+        discovered_zones: set[SoCo] | None
+        if discovered_zones := scan_network(multi_household=True):
+            return {zone.ip_address for zone in discovered_zones}
+        return set()
+
+    all_sonos_ips = await asyncio.to_thread(get_all_sonos_ips)
+    for ip_address in all_sonos_ips:
+        async with mass.http_session.get(f"http://{ip_address}:1400/status/zp") as resp:
+            if resp.status == 200:
+                data = await resp.text()
+                if prefer_s1 and "<SWGen>2</SWGen>" in data:
+                    continue
+                if "HouseholdControlID" in data:
+                    household_id = data.split("<HouseholdControlID>")[1].split(
+                        "</HouseholdControlID>"
+                    )[0]
+                    household_ids.append(household_id)
+    await mass.cache.set("sonos_household_ids", household_ids, 3600)
+    return household_ids
