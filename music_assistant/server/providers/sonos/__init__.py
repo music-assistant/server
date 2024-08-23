@@ -126,9 +126,7 @@ class SonosPlayer:
         # and this airplay player can also be a player within MA
         # we can do some smart stuff if we link them together where possible
         # the player if we can just guess from the sonos player id (mac address)
-        self._airplay_player_id = (
-            f"ap{self.player_id.replace("RINCON_", "").replace("01400", "").lower()}"
-        )
+        self._airplay_player_id = f"ap{self.player_id[7:-5].lower()}"
 
     async def connect(self) -> None:
         """Connect to the Sonos player."""
