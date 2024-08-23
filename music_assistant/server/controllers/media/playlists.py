@@ -313,19 +313,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
             {"item_id": db_id},
             {
                 # always prefer name/owner from updated item here
-                "name": update.name if overwrite else cur_item.name,
+                "name": update.name,
                 "sort_name": update.sort_name
-                if overwrite
-                else cur_item.sort_name or update.sort_name,
+                if (overwrite or update.name != cur_item.name)
+                else cur_item.sort_name,
                 "owner": update.owner or cur_item.owner,
                 "is_editable": update.is_editable,
                 "metadata": serialize_to_json(metadata),
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
-                "cache_checksum": update.cache_checksum
-                if overwrite
-                else update.cache_checksum or cur_item.cache_checksum,
+                "cache_checksum": update.cache_checksum or cur_item.cache_checksum,
             },
         )
         # update/set provider_mappings table
