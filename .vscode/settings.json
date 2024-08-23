@@ -9,5 +9,6 @@
   "editor.defaultFormatter": "charliermarsh.ruff",
   "[github-actions-workflow]": {
     "editor.defaultFormatter": "esbenp.prettier-vscode"
-  }
+  },
+  "python.analysis.extraPaths": ["../aiosonos/"]
 }
