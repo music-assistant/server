@@ -151,6 +151,11 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
     return None
 
 
+def get_port_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
+    """Get primary IP address from zeroconf discovery info."""
+    return discovery_info.port
+
+
 class TaskManager:
     """
     Helper class to run many tasks at once.
