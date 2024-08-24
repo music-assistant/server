@@ -105,7 +105,6 @@ async def setup(
 
 
 async def get_config_entries(
-
     # not used yet, ruff doesnt like that
     mass: MusicAssistant,
     instance_id: str | None = None,
