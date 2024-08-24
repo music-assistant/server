@@ -347,7 +347,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if item.mbid == VARIOUS_ARTISTS_MBID:
             item.name = VARIOUS_ARTISTS_NAME
         # no existing item matched: insert item
-        new_item = await self.mass.music.database.insert(
+        db_id = await self.mass.music.database.insert(
             self.db_table,
             {
                 "name": item.name,
@@ -357,7 +357,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "metadata": serialize_to_json(item.metadata),
             },
         )
-        db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)

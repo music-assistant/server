@@ -640,12 +640,27 @@ class MusicController(CoreController):
         # fetch full (provider) item
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)
-        if library_id is not None:
-            library_item = await ctrl.update_item_in_library(library_id, media_item, overwrite=True)
-            await self.mass.metadata.update_metadata(library_item, force_refresh=True)
-            return library_item
+        if library_id is None:
+            return media_item
+        library_item = await ctrl.update_item_in_library(library_id, media_item, overwrite=True)
+        if library_item.media_type == MediaType.ALBUM:
+            # update (local) album tracks
+            for album_track in await self.albums.tracks(
+                library_item.item_id, library_item.provider, True
+            ):
+                for prov_mapping in album_track.provider_mappings:
+                    if not (prov := self.mass.get_provider(prov_mapping.provider_instance)):
+                        continue
+                    if prov.is_streaming_provider:
+                        continue
+                    with suppress(MediaNotFoundError):
+                        prov_track = await prov.get_track(prov_mapping.item_id)
+                        await self.mass.music.tracks.update_item_in_library(
+                            album_track.item_id, prov_track
+                        )
 
-        return media_item
+        await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+        return library_item
 
     async def set_track_loudness(
         self, item_id: str, provider_instance_id_or_domain: str, loudness: LoudnessMeasurement

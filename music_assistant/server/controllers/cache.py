@@ -143,7 +143,7 @@ class CacheController(CoreController):
             # do not cache items in db with short expiration
             return
         data = await asyncio.to_thread(json_dumps, data)
-        await self.database.insert(
+        await self.database.insert_or_replace(
             DB_TABLE_CACHE,
             {
                 "category": category,
@@ -153,7 +153,6 @@ class CacheController(CoreController):
                 "checksum": checksum,
                 "data": data,
             },
-            allow_replace=True,
         )
 
     async def delete(

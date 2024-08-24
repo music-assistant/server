@@ -411,7 +411,7 @@ class TracksController(MediaControllerBase[Track]):
         if not item.artists:
             msg = "Track is missing artist(s)"
             raise InvalidDataError(msg)
-        new_item = await self.mass.music.database.insert(
+        db_id = await self.mass.music.database.insert(
             self.db_table,
             {
                 "name": item.name,
@@ -423,7 +423,6 @@ class TracksController(MediaControllerBase[Track]):
                 "metadata": serialize_to_json(item.metadata),
             },
         )
-        db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)
         # set track artist(s)

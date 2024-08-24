@@ -30,7 +30,7 @@ class QueueItem(DataClassDictMixin):
 
     def __post_init__(self) -> None:
         """Set default values."""
-        if self.streamdetails and self.streamdetails.stream_title:
+        if not self.name and self.streamdetails and self.streamdetails.stream_title:
             self.name = self.streamdetails.stream_title
         if not self.name:
             self.name = self.uri
@@ -42,6 +42,8 @@ class QueueItem(DataClassDictMixin):
             streamdetails.pop("data", None)
             streamdetails.pop("direct", None)
             streamdetails.pop("expires", None)
+            streamdetails.pop("path", None)
+            streamdetails.pop("decryption_key", None)
         return d
 
     @property

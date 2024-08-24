@@ -168,7 +168,7 @@ class DatabaseConnection:
         table: str,
         values: dict[str, Any],
         allow_replace: bool = False,
-    ) -> Mapping:
+    ) -> int:
         """Insert data in given table."""
         keys = tuple(values.keys())
         if allow_replace:
@@ -176,11 +176,9 @@ class DatabaseConnection:
         else:
             sql_query = f'INSERT INTO {table}({",".join(keys)})'
         sql_query += f' VALUES ({",".join(f":{x}" for x in keys)})'
-        await self.execute(sql_query, values)
+        row_id = await self._db.execute_insert(sql_query, values)
         await self._db.commit()
-        # return inserted/replaced item
-        lookup_vals = {key: value for key, value in values.items() if value not in (None, "")}
-        return await self.get_row(table, lookup_vals)
+        return row_id[0]
 
     async def insert_or_replace(self, table: str, values: dict[str, Any]) -> Mapping:
         """Insert or replace data in given table."""
