@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "zing",
+  "name": "Zing Music",
+  "description": "Support for the Zing Music streaming provider in Music Assistant.",
+  "codeowners": ["@MarvinSchenkel"],
+  "requirements": ["gql==3.0.0a5", "requests_toolbelt"],
+  "documentation": "https://music-assistant.io/music-providers/youtube-music/",
+  "multi_instance": true
+}
