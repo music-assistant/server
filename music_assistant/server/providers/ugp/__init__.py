@@ -33,9 +33,13 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_HTTP_PROFILE, SYNCGROUP_PREFIX
 from music_assistant.server.controllers.streams import DEFAULT_STREAM_HEADERS
-from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
+from music_assistant.server.helpers.audio import (
+    get_chunksize,
+    get_ffmpeg_stream,
+    get_player_filter_params,
+)
 from music_assistant.server.helpers.multi_client_stream import MultiClientStream
 from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -361,14 +365,28 @@ class UniversalGroupProvider(PlayerProvider):
         if not (stream := self.streams.get(ugp_player_id, None)) or stream.done:
             raise web.HTTPNotFound(body=f"There is no active UGP stream for {ugp_player_id}!")
 
-        resp = web.StreamResponse(
-            status=200,
-            reason="OK",
-            headers={
-                **DEFAULT_STREAM_HEADERS,
-                "Content-Type": f"audio/{fmt}",
-            },
+        output_format = AudioFormat(
+            content_type=ContentType.try_parse(fmt),
+            sample_rate=stream.audio_format.sample_rate,
+            bit_depth=stream.audio_format.bit_depth,
         )
+
+        http_profile: str = self.mass.config.get_raw_player_config_value(
+            child_player_id, CONF_HTTP_PROFILE, "chunked"
+        )
+        headers = {
+            **DEFAULT_STREAM_HEADERS,
+            "Content-Type": "faudio/{fmt}",
+            "Accept-Ranges": "none",
+            "Cache-Control": "no-cache",
+            "Connection": "close",
+        }
+
+        resp = web.StreamResponse(status=200, reason="OK", headers=headers)
+        if http_profile == "forced_content_length":
+            resp.content_length = get_chunksize(output_format, 24 * 3600)
+        elif http_profile == "chunked":
+            resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # return early if this is not a GET request
@@ -383,7 +401,7 @@ class UniversalGroupProvider(PlayerProvider):
         )
 
         async for chunk in stream.get_stream(
-            output_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
+            output_format=output_format,
             filter_params=get_player_filter_params(self.mass, child_player_id)
             if child_player_id
             else None,
