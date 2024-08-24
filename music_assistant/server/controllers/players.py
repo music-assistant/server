@@ -567,6 +567,12 @@ class PlayerController(CoreController):
             player_id=player_id,
             media=media,
         )
+        # optimistically set the player state
+        player = self.get(player_id, True)
+        player.current_media = media
+        player.elapsed_time = 0
+        player.elapsed_time_last_updated = time.time()
+        self.update(player_id)
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
