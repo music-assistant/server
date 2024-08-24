@@ -705,7 +705,7 @@ class SonosPlayerProvider(PlayerProvider):
                 },
             },
             "reports": {
-                "sendUpdateAfterMillis": 0,
+                "sendUpdateAfterMillis": 100,
                 "periodicIntervalMillis": 10000,
                 "sendPlaybackActions": True,
             },
@@ -735,17 +735,22 @@ class SonosPlayerProvider(PlayerProvider):
         json_body = await request.json()
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if mass_player := self.mass.players.get(sonos_player_id):
-            for item in json_body["items"]:
-                if "positionMillis" not in item:
-                    continue
-                mass_player.current_media = PlayerMedia(
-                    uri=item["mediaUrl"], queue_id=sonos_playback_id, queue_item_id=item["id"]
-                )
-                mass_player.elapsed_time = item["positionMillis"] / 1000
-                mass_player.elapsed_time_last_updated = time.time()
-                self.mass.players.update(sonos_player_id)
-                break
+        if not (mass_player := self.mass.players.get(sonos_player_id)):
+            return web.Response(status=501)
+        if not (mass_queue := self.mass.player_queues.get(mass_player.active_source)):
+            return web.Response(status=501)
+        for item in json_body["items"]:
+            if item["queueVersion"] != str(mass_queue.queue_items_last_updated):
+                continue
+            if "positionMillis" not in item:
+                continue
+            mass_player.current_media = PlayerMedia(
+                uri=item["mediaUrl"], queue_id=sonos_playback_id, queue_item_id=item["id"]
+            )
+            mass_player.elapsed_time = item["positionMillis"] / 1000
+            mass_player.elapsed_time_last_updated = time.time()
+            self.mass.players.update(sonos_player_id)
+            break
         return web.Response(status=204)
 
 
