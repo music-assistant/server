@@ -1,4 +1,5 @@
-#!/usr/bin/env sh
+#!/bin/bash
+
 set -eu
 
 # Activate pyenv and virtualenv if present, then run the specified command
