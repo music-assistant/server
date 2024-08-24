@@ -765,6 +765,37 @@ class PlayerQueuesController(CoreController):
             task_id=f"play_media_{queue_id}",
         )
 
+    @api_command("player_queues/transfer")
+    async def transfer_queue(
+        self,
+        source_queue_id: str,
+        target_queue_id: str,
+        auto_play: bool | None = None,
+    ) -> None:
+        """Transfer queue to another queue."""
+        if not (source_queue := self.get(source_queue_id)):
+            raise PlayerUnavailableError("Queue {source_queue_id} is not available")
+        if not (target_queue := self.get(target_queue_id)):
+            raise PlayerUnavailableError("Queue {target_queue_id} is not available")
+        if auto_play is None:
+            auto_play = source_queue.state == PlayerState.PLAYING
+        source_items = self._queue_items[source_queue_id]
+        target_queue.repeat_mode = source_queue.repeat_mode
+        target_queue.shuffle_enabled = source_queue.shuffle_enabled
+        target_queue.radio_source = source_queue.radio_source
+        target_queue.resume_pos = source_queue.elapsed_time
+        target_queue.current_index = source_queue.current_index
+        if source_queue.current_item:
+            target_queue.current_item = source_queue.current_item
+            target_queue.current_item.queue_id = target_queue_id
+        self.clear(source_queue_id)
+        self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
+        for item in source_items:
+            item.queue_id = target_queue_id
+        self.update_items(target_queue_id, source_items)
+        if auto_play:
+            await self.resume(target_queue_id)
+
     # Interaction with player
 
     async def on_player_register(self, player: Player) -> None:
