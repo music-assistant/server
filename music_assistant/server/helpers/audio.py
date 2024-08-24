@@ -49,6 +49,7 @@ from music_assistant.server.helpers.playlists import (
     fetch_playlist,
     parse_m3u,
 )
+from music_assistant.server.helpers.throttle_retry import BYPASS_THROTTLER
 
 from .process import AsyncProcess, check_output, communicate
 from .util import create_tempfile
@@ -334,6 +335,10 @@ async def get_stream_details(
     if seek_position and (queue_item.media_type == MediaType.RADIO or not queue_item.duration):
         LOGGER.warning("seeking is not possible on duration-less streams!")
         seek_position = 0
+    # we use a contextvar to bypass the throttler for this asyncio task/context
+    # this makes sure that playback has priority over other requests that may be
+    # happening in the background
+    BYPASS_THROTTLER.set(True)
     # always request the full item as there might be other qualities available
     full_item = await mass.music.get_item_by_uri(queue_item.uri)
     # sort by quality and check track availability
@@ -356,7 +361,9 @@ async def get_stream_details(
         else:
             break
     else:
-        raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
+        raise MediaNotFoundError(
+            f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
+        )
 
     # work out how to handle radio stream
     if (
