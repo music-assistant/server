@@ -281,7 +281,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _add_library_item(self, item: Playlist) -> int:
         """Add a new record to the database."""
-        new_item = await self.mass.music.database.insert(
+        db_id = await self.mass.music.database.insert(
             self.db_table,
             {
                 "name": item.name,
@@ -294,7 +294,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "cache_checksum": item.cache_checksum,
             },
         )
-        db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
