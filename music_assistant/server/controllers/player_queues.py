@@ -30,10 +30,11 @@ from music_assistant.common.models.errors import (
     PlayerUnavailableError,
     QueueEmpty,
 )
-from music_assistant.common.models.media_items import MediaItemType, media_from_dict
+from music_assistant.common.models.media_items import AudioFormat, MediaItemType, media_from_dict
 from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_FLOW_MODE, FALLBACK_DURATION, MASS_LOGO_ONLINE
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.audio import get_stream_details
@@ -966,23 +967,37 @@ class PlayerQueuesController(CoreController):
             cur_index = current_item_id_or_index
         idx = 0
         while True:
+            next_item: QueueItem | None = None
             next_index = self._get_next_index(queue_id, cur_index + idx, allow_repeat=allow_repeat)
             if next_index is None:
                 raise QueueEmpty("No more tracks left in the queue.")
-            next_item = self.get_item(queue_id, next_index)
+            queue_item = self.get_item(queue_id, next_index)
             try:
                 # Check if the QueueItem is playable. For example, YT Music returns Radio Items
                 # that are not playable which will stop playback.
-                next_item.streamdetails = await get_stream_details(
-                    mass=self.mass, queue_item=next_item
+                queue_item.streamdetails = await get_stream_details(
+                    mass=self.mass, queue_item=queue_item
                 )
-                # Lazy load the full MediaItem for the QueueItem, making sure to get the
+                # Preload the full MediaItem for the QueueItem, making sure to get the
                 # maximum quality of thumbs
-                next_item.media_item = await self.mass.music.get_item_by_uri(next_item.uri)
+                if queue_item.media_item:
+                    queue_item.media_item = await self.mass.music.get_item_by_uri(queue_item.uri)
+                # we're all set, this is our next item
+                next_item = queue_item
                 break
             except MediaNotFoundError:
                 # No stream details found, skip this QueueItem
-                next_item = None
+                self.logger.debug("Skipping unplayable item: %s", next_item)
+                # we need to set a fake streamdetails object on the item
+                # otherwise our flow mode logic will break that
+                # calculates where we are in the queue
+                queue_item.streamdetails = StreamDetails(
+                    provider=queue_item.media_item.provider if queue_item.media_item else "unknown",
+                    item_id=queue_item.media_item.item_id if queue_item.media_item else "unknown",
+                    audio_format=AudioFormat(),
+                    media_type=queue_item.media_type,
+                    seconds_streamed=0,
+                )
                 idx += 1
         if next_item is None:
             raise QueueEmpty("No more (playable) tracks left in the queue.")

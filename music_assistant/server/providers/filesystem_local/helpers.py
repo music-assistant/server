@@ -11,13 +11,16 @@ def get_artist_dir(album_or_track_dir: str, artist_name: str) -> str | None:
     """Look for (Album)Artist directory in path of a track (or album)."""
     parentdir = os.path.dirname(album_or_track_dir)
     # account for disc or album sublevel by ignoring (max) 2 levels if needed
+    matched_dir: str | None = None
     for _ in range(3):
         dirname = parentdir.rsplit(os.sep)[-1]
         if compare_strings(artist_name, dirname, False):
             # literal match
-            return parentdir
+            # we keep hunting further down to account for the
+            # edge case where the album name has the same name as the artist
+            matched_dir = parentdir
         parentdir = os.path.dirname(parentdir)
-    return None
+    return matched_dir
 
 
 def get_album_dir(track_dir: str, album_name: str) -> str | None:
