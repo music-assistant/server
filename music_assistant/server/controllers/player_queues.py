@@ -764,8 +764,6 @@ class PlayerQueuesController(CoreController):
             media=self.player_media_from_queue_item(queue_item, queue.flow_mode),
             task_id=f"play_media_{queue_id}",
         )
-        # optimistically update the queue state
-        self.signal_update(queue_id)
 
     # Interaction with player
 
