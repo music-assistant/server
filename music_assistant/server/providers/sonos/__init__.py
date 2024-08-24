@@ -210,9 +210,6 @@ class SonosPlayer:
             and self.prov.sonos_players[x].client.household_id == self.client.household_id
         )
 
-        self.mass_player.elapsed_time = self.client.player.group.position
-        self.mass_player.elapsed_time_last_updated = time.time()
-
         # figure out the active source based on the container
         if container := active_group.playback_metadata.get("container"):
             if group_parent and group_parent.mass_player:
@@ -236,11 +233,14 @@ class SonosPlayer:
             else:
                 self.mass_player.active_source = SOURCE_UNKNOWN
 
-        # parse current media
-        if self.mass_player.active_source == self.player_id:
+        if self.mass_player.active_source == self.player_id and active_group.active_session_id:
             # active source is the mass queue
             # media details are updated through the time played callback
             return
+
+        # parse current media
+        self.mass_player.elapsed_time = self.client.player.group.position
+        self.mass_player.elapsed_time_last_updated = time.time()
         if (current_item := active_group.playback_metadata.get("currentItem")) and (
             (track := current_item.get("track")) and track.get("name")
         ):
@@ -705,7 +705,7 @@ class SonosPlayerProvider(PlayerProvider):
                 },
             },
             "reports": {
-                "sendUpdateAfterMillis": 500,
+                "sendUpdateAfterMillis": 0,
                 "periodicIntervalMillis": 10000,
                 "sendPlaybackActions": True,
             },
@@ -739,12 +739,12 @@ class SonosPlayerProvider(PlayerProvider):
             for item in json_body["items"]:
                 if "positionMillis" not in item:
                     continue
-                if mass_player.current_media:
-                    mass_player.current_media.queue_item_id = item["id"]
-                    mass_player.current_media.uri = item["mediaUrl"]
-                    mass_player.current_media.queue_id = sonos_playback_id
-                    mass_player.elapsed_time = item["positionMillis"] / 1000
-                    mass_player.elapsed_time_last_updated = time.time()
+                mass_player.current_media = PlayerMedia(
+                    uri=item["mediaUrl"], queue_id=sonos_playback_id, queue_item_id=item["id"]
+                )
+                mass_player.elapsed_time = item["positionMillis"] / 1000
+                mass_player.elapsed_time_last_updated = time.time()
+                self.mass.players.update(sonos_player_id)
                 break
         return web.Response(status=204)
 
