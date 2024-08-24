@@ -25,7 +25,6 @@ from soco.core import (
     SoCo,
 )
 from soco.data_structures import DidlAudioBroadcast, DidlPlaylistContainer
-from sonos_websocket import SonosWebsocket
 
 from music_assistant.common.helpers.datetime import utc
 from music_assistant.common.models.enums import PlayerFeature, PlayerState
@@ -104,7 +103,6 @@ class SonosPlayer:
         self.logger = sonos_prov.logger
         self.household_id: str = soco.household_id
         self.subscriptions: list[SubscriptionBase] = []
-        self.websocket: SonosWebsocket | None = None
         self.mass_player: Player = mass_player
         self.available: bool = True
         # cached attributes
@@ -177,16 +175,6 @@ class SonosPlayer:
         if not self.sync_coordinator:
             self.poll_media()
 
-        async def do_async_setup() -> None:
-            """Complete setup in async context."""
-            self.websocket = SonosWebsocket(
-                self.soco.ip_address,
-                player_id=self.soco.uid,
-                session=self.mass.http_session,
-            )
-
-        future = asyncio.run_coroutine_threadsafe(do_async_setup(), self.mass.loop)
-        future.result(timeout=10)
         asyncio.run_coroutine_threadsafe(self.subscribe(), self.mass.loop)
 
     async def offline(self) -> None:
