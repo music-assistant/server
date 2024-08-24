@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from time import time
+import time
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -210,6 +210,9 @@ class SonosPlayer:
             and self.prov.sonos_players[x].client.household_id == self.client.household_id
         )
 
+        self.mass_player.elapsed_time = self.client.player.group.position
+        self.mass_player.elapsed_time_last_updated = time.time()
+
         # figure out the active source based on the container
         if container := active_group.playback_metadata.get("container"):
             if group_parent and group_parent.mass_player:
@@ -234,6 +237,10 @@ class SonosPlayer:
                 self.mass_player.active_source = SOURCE_UNKNOWN
 
         # parse current media
+        if self.mass_player.active_source == self.player_id:
+            # active source is the mass queue
+            # media details are updated through the time played callback
+            return
         if (current_item := active_group.playback_metadata.get("currentItem")) and (
             (track := current_item.get("track")) and track.get("name")
         ):
@@ -697,7 +704,11 @@ class SonosPlayerProvider(PlayerProvider):
                     "accountId": "",
                 },
             },
-            "reports": {"sendUpdateAfterMillis": 0, "sendPlaybackActions": True},
+            "reports": {
+                "sendUpdateAfterMillis": 500,
+                "periodicIntervalMillis": 10000,
+                "sendPlaybackActions": True,
+            },
             "playbackPolicies": {
                 "canSkip": True,
                 "limitedSkips": False,
@@ -724,17 +735,17 @@ class SonosPlayerProvider(PlayerProvider):
         json_body = await request.json()
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        mass_player = self.mass.players.get(sonos_player_id)
-        for item in json_body["items"]:
-            if "positionMillis" not in item:
-                continue
-            if mass_player.current_media:
-                mass_player.current_media.queue_item_id = item["id"]
-                mass_player.current_media.uri = item["mediaUrl"]
-                mass_player.current_media.queue_id = sonos_playback_id
-                mass_player.elapsed_time = item["positionMillis"] / 1000
-                mass_player.elapsed_time_last_updated = time()
-            break
+        if mass_player := self.mass.players.get(sonos_player_id):
+            for item in json_body["items"]:
+                if "positionMillis" not in item:
+                    continue
+                if mass_player.current_media:
+                    mass_player.current_media.queue_item_id = item["id"]
+                    mass_player.current_media.uri = item["mediaUrl"]
+                    mass_player.current_media.queue_id = sonos_playback_id
+                    mass_player.elapsed_time = item["positionMillis"] / 1000
+                    mass_player.elapsed_time_last_updated = time.time()
+                break
         return web.Response(status=204)
 
 
