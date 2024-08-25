@@ -254,6 +254,15 @@ class SonosPlayer:
             self.mass_player.volume_level = self.client.player.volume_level or 100
         self.mass_player.volume_muted = self.client.player.volume_muted
 
+        # work out 'can sync with' for this player
+        self.mass_player.can_sync_with = tuple(
+            x
+            for x in self.prov.sonos_players
+            if x != self.player_id
+            and x in self.prov.sonos_players
+            and self.prov.sonos_players[x].client.household_id == self.client.household_id
+        )
+
         group_parent = None
         if self.client.player.is_coordinator:
             # player is group coordinator
@@ -264,14 +273,6 @@ class SonosPlayer:
                 else set()
             )
             self.mass_player.synced_to = None
-            # work out 'can sync with' for this player
-            self.mass_player.can_sync_with = tuple(
-                x
-                for x in self.prov.sonos_players
-                if x != self.player_id
-                and x in self.prov.sonos_players
-                and self.prov.sonos_players[x].client.household_id == self.client.household_id
-            )
             if airplay := self.get_linked_airplay_player(False):
                 self.mass_player.group_childs.update(
                     x for x in airplay.group_childs if x != self.airplay_player_id
@@ -814,12 +815,12 @@ class SonosPlayerProvider(PlayerProvider):
                     "artist": {
                         "name": item.media_item.artist_str,
                     }
-                    if item.media_item and item.media_item.artist_str
+                    if item.media_item and hasattr(item.media_item, "artist_str")
                     else None,
                     "album": {
                         "name": item.media_item.album.name,
                     }
-                    if item.media_item and item.media_item.album
+                    if item.media_item and hasattr(item.media_item, "album")
                     else None,
                     "quality": {
                         "bitDepth": item.streamdetails.audio_format.bit_depth,
