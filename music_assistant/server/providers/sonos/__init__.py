@@ -135,7 +135,7 @@ class SonosPlayer:
         self.airplay_player_id = f"ap{self.player_id[7:-5].lower()}"
         self.stream_mode: str = "sonos"
 
-    def get_active_airplay_player(self, active_only: bool = True) -> Player | None:
+    def get_linked_airplay_player(self, active_only: bool = True) -> Player | None:
         """Return the linked airplay player if available/enabled."""
         if not self.mass.config.get_raw_player_config_value(
             self.player_id, CONF_SMART_AIRPLAY, False
@@ -272,7 +272,7 @@ class SonosPlayer:
                 and x in self.prov.sonos_players
                 and self.prov.sonos_players[x].client.household_id == self.client.household_id
             )
-            if airplay := self.get_active_airplay_player(False):
+            if airplay := self.get_linked_airplay_player(False):
                 self.mass_player.group_childs.update(
                     x for x in airplay.group_childs if x != self.airplay_player_id
                 )
@@ -288,7 +288,7 @@ class SonosPlayer:
             self.mass_player.active_source = active_group.coordinator_id
             self.mass_player.can_sync_with = ()
 
-        if self.stream_mode == "airplay" and (airplay := self.get_active_airplay_player(True)):
+        if self.stream_mode == "airplay" and (airplay := self.get_linked_airplay_player(True)):
             # linked airplay player is active, update media from there
             self.mass_player.state = airplay.state
             self.mass_player.powered = airplay.powered
@@ -399,10 +399,12 @@ class SonosPlayer:
             return
         airplay_player: Player = event.data
         if (
-            airplay_player.group_childs
+            self.stream_mode == "sonos"
+            and airplay_player.group_childs
             and self.mass_player.state == PlayerState.PLAYING
+            and airplay_player.state != PlayerState.PLAYING
             and self.mass_player.active_source == self.player_id
-            and self.stream_mode == "sonos"
+            and not self.mass_player.synced_to
         ):
             # linked airplay player became active, transfer playback to playback
             self.logger.info(
@@ -410,8 +412,12 @@ class SonosPlayer:
             )
             self.stream_mode = "airplay"
             self.mass.create_task(self.mass.player_queues.resume(self.player_id))
-        elif (not airplay_player.group_childs) and self.stream_mode == "airplay":
-            # linked airplay player became active, transfer playback to playback
+        elif (
+            self.stream_mode == "airplay"
+            and not airplay_player.group_childs
+            and airplay_player.state == PlayerState.PLAYING
+        ):
+            # linked airplay player became active, transfer playback to sonos
             self.logger.info(
                 "Linked Airplay player became idle, transferring playback.",
             )
@@ -552,7 +558,7 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        if airplay := sonos_player.get_active_airplay_player(True):
+        if airplay := sonos_player.get_linked_airplay_player(True):
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting STOP command to linked airplay player.")
             await self.mass.players.cmd_stop(airplay.player_id)
@@ -572,7 +578,7 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        if airplay := sonos_player.get_active_airplay_player(True):
+        if airplay := sonos_player.get_linked_airplay_player(True):
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting PLAY command to linked airplay player.")
             await self.mass.players.cmd_play(airplay.player_id)
@@ -588,7 +594,7 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        if airplay := sonos_player.get_active_airplay_player(True):
+        if airplay := sonos_player.get_linked_airplay_player(True):
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting PAUSE command to linked airplay player.")
             await self.mass.players.cmd_pause(airplay.player_id)
@@ -599,6 +605,9 @@ class SonosPlayerProvider(PlayerProvider):
         """Send VOLUME_SET command to given player."""
         sonos_player = self.sonos_players[player_id]
         await sonos_player.client.player.set_volume(volume_level)
+        # sync volume level with airplay player if linked
+        if airplay := sonos_player.get_linked_airplay_player(False):
+            airplay.volume_level = volume_level
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
@@ -652,11 +661,13 @@ class SonosPlayerProvider(PlayerProvider):
             )
             raise PlayerCommandFailed(msg)
 
-        if airplay := sonos_player.get_active_airplay_player(True):
+        if airplay := sonos_player.get_linked_airplay_player(True):
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting PLAY_MEDIA command to linked airplay player.")
             self.stream_mode = "airplay"
             mass_player.active_source = airplay.player_id
+            # TODO: sonos has an annoying bug where it looses its sync childs
+            # when airplay playback is started
             await self.mass.players.play_media(airplay.player_id, media)
             return
 
@@ -683,7 +694,7 @@ class SonosPlayerProvider(PlayerProvider):
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         sonos_player = self.sonos_players[player_id]
-        if airplay := sonos_player.get_active_airplay_player(True):
+        if airplay := sonos_player.get_linked_airplay_player(True):
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting ENQUEUE_NEXT command to linked airplay player.")
             await self.mass.players.enqueue_next_media(airplay.player_id, media)
