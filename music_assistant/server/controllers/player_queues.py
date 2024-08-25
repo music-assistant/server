@@ -8,8 +8,6 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, TypedDict
 
-import shortuuid
-
 from music_assistant.common.helpers.util import get_changed_keys
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -698,7 +696,12 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         queue_items = self._queue_items[queue_id]
         resume_item = queue.current_item
-        resume_pos = queue.resume_pos
+        if queue.state == PlayerState.PLAYING:
+            # resume requested while already playing,
+            # use current position as resume position
+            resume_pos = queue.corrected_elapsed_time
+        else:
+            resume_pos = queue.resume_pos
 
         if not resume_item and queue.current_index is not None and len(queue_items) > 0:
             resume_item = self.get_item(queue_id, queue.current_index)
@@ -935,7 +938,6 @@ class PlayerQueuesController(CoreController):
         if not queue.flow_mode or queue.stream_finished:
             self._check_enqueue_next(player, queue, prev_state, new_state)
 
-        queue.resume_pos = queue.corrected_elapsed_time
         # do not send full updates if only time was updated
         if changed_keys == {"elapsed_time"}:
             self.mass.signal_event(
@@ -1092,7 +1094,6 @@ class PlayerQueuesController(CoreController):
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
         """Signal state changed of given queue."""
         queue = self._queues[queue_id]
-        queue.queue_version = shortuuid.random(8)
         if items_changed:
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
             # save items in cache
