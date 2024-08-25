@@ -610,6 +610,13 @@ CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
     "'chunked transfer encoding', works just fine. \n\n",
 )
 
+CONF_ENTRY_HTTP_PROFILE_DEFAULT_2 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length"}
+)
+CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length", "hidden": True}
+)
+
 
 def create_sample_rates_config_entry(
     max_sample_rate: int,
