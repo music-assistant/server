@@ -8,6 +8,8 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, TypedDict
 
+import shortuuid
+
 from music_assistant.common.helpers.util import get_changed_keys
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -221,10 +223,7 @@ class PlayerQueuesController(CoreController):
             if player.active_group and player.active_group != player.player_id:
                 return self.get_active_queue(player.active_group)
             # active_source may be filled with other queue id
-            if player.active_source != player_id and (
-                queue := self.get_active_queue(player.active_source)
-            ):
-                return queue
+            return self.get(player.active_source) or self.get(player_id)
         return self.get(player_id)
 
     # Queue commands
@@ -887,6 +886,7 @@ class PlayerQueuesController(CoreController):
         queue.state = player.state
         queue.current_item = self.get_item(queue_id, queue.current_index)
         queue.next_item = self._get_next_item(queue_id)
+
         # correct elapsed time when seeking
         if (
             queue.current_item
@@ -934,6 +934,8 @@ class PlayerQueuesController(CoreController):
         # handle enqueuing of next item to play
         if not queue.flow_mode or queue.stream_finished:
             self._check_enqueue_next(player, queue, prev_state, new_state)
+
+        queue.resume_pos = queue.corrected_elapsed_time
         # do not send full updates if only time was updated
         if changed_keys == {"elapsed_time"}:
             self.mass.signal_event(
@@ -1090,8 +1092,8 @@ class PlayerQueuesController(CoreController):
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
         """Signal state changed of given queue."""
         queue = self._queues[queue_id]
+        queue.queue_version = shortuuid.random(8)
         if items_changed:
-            queue.queue_items_last_updated = time.time()
             self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
             # save items in cache
             self.mass.create_task(
