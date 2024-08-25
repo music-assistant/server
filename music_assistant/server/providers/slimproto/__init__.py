@@ -28,6 +28,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
     CONF_ENTRY_EQ_TREBLE,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry,
@@ -317,6 +318,7 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_SYNC_ADJUST,
                 CONF_ENTRY_DISPLAY,
                 CONF_ENTRY_VISUALIZATION,
+                CONF_ENTRY_HTTP_PROFILE_FORCED_2,
                 create_sample_rates_config_entry(int(slimclient.max_sample_rate), 24, 48000, 24),
             )
         )
