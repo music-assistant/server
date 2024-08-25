@@ -371,8 +371,8 @@ class UniversalGroupProvider(PlayerProvider):
             bit_depth=stream.audio_format.bit_depth,
         )
 
-        http_profile: str = self.mass.config.get_raw_player_config_value(
-            child_player_id, CONF_HTTP_PROFILE, "chunked"
+        http_profile: str = await self.mass.config.get_player_config_value(
+            child_player_id, CONF_HTTP_PROFILE
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,

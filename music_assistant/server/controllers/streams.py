@@ -262,8 +262,8 @@ class StreamsController(CoreController):
             default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
             default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
-        http_profile: str = self.mass.config.get_raw_player_config_value(
-            queue_id, CONF_HTTP_PROFILE, "chunked"
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
         )
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
@@ -352,8 +352,8 @@ class StreamsController(CoreController):
         icy_meta_interval = 16384
 
         # prepare request, add some DLNA/UPNP compatible headers
-        http_profile: str = self.mass.config.get_raw_player_config_value(
-            queue_id, CONF_HTTP_PROFILE, "chunked"
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
         )
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
