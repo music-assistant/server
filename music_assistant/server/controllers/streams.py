@@ -574,8 +574,8 @@ class StreamsController(CoreController):
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-            crossfade_duration = await self.mass.config.get_player_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION
+            crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             bytes_written = 0
