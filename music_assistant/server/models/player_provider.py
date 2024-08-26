@@ -15,6 +15,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_AUTO_PLAY,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HIDE_PLAYER,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_SAMPLE_RATES,
@@ -57,6 +58,7 @@ class PlayerProvider(Provider):
             CONF_ENTRY_HIDE_PLAYER,
             CONF_ENTRY_TTS_PRE_ANNOUNCE,
             CONF_ENTRY_SAMPLE_RATES,
+            CONF_ENTRY_HTTP_PROFILE_FORCED_1,
         )
         if player_id.startswith(SYNCGROUP_PREFIX):
             # add default entries for syncgroups
