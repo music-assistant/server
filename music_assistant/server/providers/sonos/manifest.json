@@ -4,7 +4,7 @@
   "name": "SONOS",
   "description": "SONOS Player provider for Music Assistant.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["aiosonos==0.1.3"],
+  "requirements": ["aiosonos==0.1.4"],
   "documentation": "https://music-assistant.io/player-support/sonos/",
   "multi_instance": false,
   "builtin": false,

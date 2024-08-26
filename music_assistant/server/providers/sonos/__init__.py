@@ -15,6 +15,7 @@ from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
+from aiosonos.exceptions import FailedCommand
 from aiosonos.utils import get_discovery_info
 from zeroconf import IPVersion, ServiceStateChange
 
@@ -217,7 +218,11 @@ class SonosPlayer:
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        await self.client.player.group.stop()
+        try:
+            await self.client.player.group.stop()
+        except FailedCommand as err:
+            if "ERROR_PLAYBACK_NO_CONTENT" not in str(err):
+                raise
 
     async def cmd_play(self) -> None:
         """Send PLAY command to given player."""
@@ -299,13 +304,17 @@ class SonosPlayer:
 
         self.mass_player.elapsed_time = active_group.position
 
+        is_playing = active_group.playback_state in (
+            SonosPlayBackState.PLAYBACK_STATE_PLAYING,
+            SonosPlayBackState.PLAYBACK_STATE_BUFFERING,
+        )
         # figure out the active source based on the container
         container_type = active_group.container_type
         active_service = active_group.active_service
         container = active_group.playback_metadata.get("container")
-        if container_type == ContainerType.LINEIN:
+        if is_playing and container_type == ContainerType.LINEIN:
             self.mass_player.active_source = SOURCE_LINE_IN
-        elif container_type == ContainerType.AIRPLAY:
+        elif is_playing and container_type == ContainerType.AIRPLAY:
             # check if the MA airplay player is active
             airplay_player = self.mass.players.get(self.airplay_player_id)
             if airplay_player and airplay_player.state in (
@@ -315,18 +324,25 @@ class SonosPlayer:
                 self.mass_player.active_source = airplay_player.active_source
             else:
                 self.mass_player.active_source = SOURCE_AIRPLAY
-        elif container_type == ContainerType.STATION:
+        elif is_playing and container_type == ContainerType.STATION:
             self.mass_player.active_source = SOURCE_RADIO
-        elif active_service == MusicService.SPOTIFY:
+        elif is_playing and active_service == MusicService.SPOTIFY:
             self.mass_player.active_source = SOURCE_SPOTIFY
         elif active_service == MusicService.MUSIC_ASSISTANT:
-            if container and (object_id := container.get("id", {}).get("objectId")):
+            if (
+                active_group.active_session_id
+                and container
+                and (object_id := container.get("id", {}).get("objectId"))
+            ):
                 self.mass_player.active_source = object_id.split(":")[-1]
             else:
-                self.mass_player.active_source = self.player_id
+                self.mass_player.active_source = None
+        elif is_playing:
+            # its playing some service we did not yet map
+            self.mass_player.active_source = active_service
         else:
             # all our (known) options exhausted, fallback to unknown
-            self.mass_player.active_source = active_service
+            self.mass_player.active_source = None
 
         if self.mass_player.active_source == self.player_id and active_group.active_session_id:
             # active source is the mass queue
@@ -386,7 +402,7 @@ class SonosPlayerProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
+        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.SYNC_GROUP)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -570,7 +586,9 @@ class SonosPlayerProvider(PlayerProvider):
             await sonos_player.client.api.playback_session.refresh_cloud_queue(session_id)
         # sync play modes from player queue --> sonos
         mass_queue = self.mass.player_queues.get(media.queue_id)
-        crossfade = await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
+        crossfade = await self.mass.config.get_player_config_value(
+            mass_queue.queue_id, CONF_CROSSFADE
+        )
         repeat_single_enabled = mass_queue.repeat_mode == RepeatMode.ONE
         repeat_all_enabled = mass_queue.repeat_mode == RepeatMode.ALL
         play_modes = sonos_player.client.player.group.play_modes
@@ -660,7 +678,7 @@ class SonosPlayerProvider(PlayerProvider):
             return web.Response(status=501)
         offset = max(queue_index - previous_window_size, 0)
         queue_items = self.mass.player_queues.items(
-            sonos_player_id,
+            mass_queue.queue_id,
             limit=upcoming_window_size + previous_window_size,
             offset=max(queue_index - previous_window_size, 0),
         )
