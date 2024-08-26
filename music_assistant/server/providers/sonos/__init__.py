@@ -653,6 +653,10 @@ class SonosPlayerProvider(PlayerProvider):
                 self.mass.call_later(5, self.cmd_sync_many(player_id, group_childs))
             return
 
+        if media.queue_id.startswith("ugp_"):
+            # TODO - this needs some more work
+            raise NotImplementedError("Sonos does not support UGP queues yet.")
+
         if media.queue_id:
             # create a sonos cloud queue and load it
             await sonos_player.client.player.group.create_playback_session()
