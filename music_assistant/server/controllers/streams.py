@@ -9,7 +9,6 @@ the upnp callbacks and json rpc api for slimproto clients.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 import urllib.parse
@@ -40,6 +39,7 @@ from music_assistant.constants import (
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
     SILENCE_FILE,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
@@ -864,9 +864,10 @@ class StreamsController(CoreController):
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
-        if not self.logger.isEnabledFor(logging.DEBUG):
+        if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             return
-        self.logger.debug(
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
             "Got %s request to %s from %s\nheaders: %s\n",
             request.method,
             request.path,
