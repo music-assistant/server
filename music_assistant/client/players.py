@@ -150,7 +150,7 @@ class Players:
 
     #  PlayerGroup related endpoints/commands
 
-    async def create_sync_group(self, name: str, members: list[str]) -> Player:
+    async def create_syncgroup(self, name: str, members: list[str]) -> Player:
         """Create a new Sync Group with name and members.
 
         - name: Name for the new group to create.
@@ -159,7 +159,7 @@ class Players:
         Returns the newly created player on success.
         """
         return Player.from_dict(
-            await self.client.send_command("players/create_group", name=name, members=members)
+            await self.client.send_command("players/create_syncgroup", name=name, members=members)
         )
 
     async def set_player_group_volume(self, player_id: str, volume_level: int) -> None:

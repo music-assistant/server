@@ -246,7 +246,7 @@ class SnapCastProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.SYNC_GROUP)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

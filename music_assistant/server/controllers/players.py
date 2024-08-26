@@ -6,6 +6,7 @@ import asyncio
 import functools
 import time
 from collections.abc import Iterable
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
 import shortuuid
@@ -18,6 +19,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
+    PlayerConfig,
 )
 from music_assistant.common.models.enums import (
     EventType,
@@ -1055,10 +1057,44 @@ class PlayerController(CoreController):
                         self.mass.loop.call_soon(self.update, player_id)
             await asyncio.sleep(1)
 
+    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
+        """Call (by config manager) when the configuration of a player changes."""
+        player = self.mass.players.get(config.player_id)
+        if config.enabled:
+            player_prov = self.mass.players.get_player_provider(config.player_id)
+            self.mass.create_task(player_prov.poll_player(config.player_id))
+        player.enabled = config.enabled
+        self.mass.players.update(config.player_id, force_update=True)
+        if config.player_id.startswith(SYNCGROUP_PREFIX):
+            # handle syncgroup
+            if f"values/{CONF_GROUP_MEMBERS}" in changed_keys:
+                player = self.mass.players.get(config.player_id)
+                player.group_childs = config.get_value(CONF_GROUP_MEMBERS)
+                self.mass.players.update(config.player_id)
+        else:
+            # signal player provider that the config changed
+            with suppress(PlayerUnavailableError):
+                if provider := self.mass.get_provider(config.provider):
+                    provider.on_player_config_changed(config, changed_keys)
+        # if the player was playing, restart playback
+        if player and player.state == PlayerState.PLAYING:
+            self.mass.create_task(self.mass.player_queues.resume(player.active_source))
+
+    def on_player_config_removed(self, player_id: str) -> None:
+        """Call (by config manager) when the configuration of a player is removed."""
+        if (player := self.mass.players.get(player_id)) and player.available:
+            player.enabled = False
+            self.mass.players.update(player_id, force_update=True)
+        if player and (provider := self.mass.get_provider(player.provider)):
+            assert isinstance(provider, PlayerProvider)
+            provider.on_player_config_removed(player_id)
+        if not player:
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+
     # Syncgroup specific functions/helpers
 
-    @api_command("players/create_group")
-    async def create_sync_group(self, name: str, members: list[str]) -> Player:
+    @api_command("players/create_syncgroup")
+    async def create_syncgroup(self, name: str, members: list[str]) -> Player:
         """Create a new Sync Group with name and members.
 
         - name: Name for the new group to create.
@@ -1079,7 +1115,8 @@ class PlayerController(CoreController):
         members = [
             x
             for x in members
-            if x in base_player.can_sync_with and not x.startswith(SYNCGROUP_PREFIX)
+            if (x in base_player.can_sync_with or x == base_player.player_id)
+            and not x.startswith(SYNCGROUP_PREFIX)
         ]
         # create default config with the user chosen name
         self.mass.config.create_default_player_config(

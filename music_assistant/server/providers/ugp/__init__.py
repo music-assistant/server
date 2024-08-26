@@ -8,7 +8,7 @@ allowing the user to create player groups from all players known in the system.
 from __future__ import annotations
 
 from time import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, cast
 
 import shortuuid
 from aiohttp import web
@@ -20,6 +20,7 @@ from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
+    PlayerConfig,
     create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
@@ -59,7 +60,23 @@ UGP_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(24), sample_rate=48000, bit_depth=24
 )
 
+CONF_ACTION_CREATE_PLAYER = "create_player"
+CONF_ACTION_CREATE_PLAYER_SAVE = "create_player_save"
 CONF_ENTRY_SAMPLE_RATES_UGP = create_sample_rates_config_entry(48000, 24, 48000, 24, True)
+CONF_GROUP_PLAYERS: Final[str] = "group_players"
+CONF_NEW_GROUP_NAME: Final[str] = "name"
+CONF_NEW_GROUP_MEMBERS: Final[list[str]] = "members"
+
+CONFIG_ENTRY_UGP_NOTE = ConfigEntry(
+    key="ugp_note",
+    type=ConfigEntryType.LABEL,
+    label="Please note that although the universal group "
+    "allows you to group any player, it will not enable audio sync "
+    "between players of different ecosystems. It is advised to always use native "
+    "player groups or sync groups when available for your player type(s) and use "
+    "the Universal Group only to group players of different ecosystems.",
+    required=False,
+)
 
 
 async def setup(
@@ -70,10 +87,10 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """
     Return Config entries to setup this provider.
@@ -82,7 +99,59 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    return ()
+    if not (ugp_provider := mass.get_provider(instance_id)):
+        # UGP provider is not (yet) loaded
+        return ()
+    if TYPE_CHECKING:
+        ugp_provider = cast(UniversalGroupProvider, ugp_provider)
+    if action == CONF_ACTION_CREATE_PLAYER:
+        # create new group player
+        name = values.pop(CONF_NEW_GROUP_NAME)
+        members = values.pop(CONF_GROUP_MEMBERS)
+        await ugp_provider.create_group(name, members)
+        return (
+            ConfigEntry(
+                key="ugp_note",
+                type=ConfigEntryType.LABEL,
+                label="Your new Universal Group Player has been created and "
+                "is available in the players list.",
+                required=False,
+            ),
+        )
+    return (
+        ConfigEntry(
+            key="ugp_new",
+            type=ConfigEntryType.LABEL,
+            label="Fill in the details below to create a new Universal Group "
+            "Player and click the 'Create new universal group' button.",
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_NEW_GROUP_NAME,
+            type=ConfigEntryType.STRING,
+            label="Name",
+            required=True,
+        ),
+        ConfigEntry(
+            key=CONF_GROUP_MEMBERS,
+            type=ConfigEntryType.STRING,
+            label=CONF_NEW_GROUP_MEMBERS,
+            default_value=[],
+            options=tuple(
+                ConfigValueOption(x.display_name, x.player_id)
+                for x in mass.players.all(True, False)
+            ),
+            multi_value=True,
+            required=True,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_CREATE_PLAYER,
+            type=ConfigEntryType.ACTION,
+            label="Create new Universal Player Group",
+            required=False,
+        ),
+        CONFIG_ENTRY_UGP_NOTE,
+    )
 
 
 class UniversalGroupProvider(PlayerProvider):
@@ -91,7 +160,7 @@ class UniversalGroupProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_GROUP,)
+        return ()
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -135,18 +204,30 @@ class UniversalGroupProvider(PlayerProvider):
                 multi_value=True,
                 required=True,
             ),
-            ConfigEntry(
-                key="ugp_note",
-                type=ConfigEntryType.ALERT,
-                label="Please note that although the universal group "
-                "allows you to group any player, it will not enable audio sync "
-                "between players of different ecosystems.",
-                required=False,
-            ),
+            CONFIG_ENTRY_UGP_NOTE,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_SAMPLE_RATES_UGP,
         )
+
+    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
+        """Call (by config manager) when the configuration of a player changes."""
+        if f"values/{CONF_GROUP_MEMBERS}" in changed_keys:
+            player = self.mass.players.get(config.player_id)
+            player.group_childs = config.get_value(CONF_GROUP_MEMBERS)
+            self.mass.players.update(config.player_id)
+
+    def on_player_config_removed(self, player_id: str) -> None:
+        """Call (by config manager) when the configuration of a player is removed."""
+        # ensure that any group players get removed
+        group_players = self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_GROUP_PLAYERS, {}
+        )
+        if player_id in group_players:
+            del group_players[player_id]
+            self.mass.config.set_raw_provider_config_value(
+                self.instance_id, CONF_GROUP_PLAYERS, group_players
+            )
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""

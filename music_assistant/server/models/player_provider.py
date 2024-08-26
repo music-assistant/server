@@ -25,7 +25,7 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import ConfigEntryType, PlayerState, ProviderFeature
 from music_assistant.common.models.player import Player, PlayerMedia
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_GROUP_PLAYERS, SYNCGROUP_PREFIX
+from music_assistant.constants import CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
 
 from .provider import Provider
 
@@ -84,22 +84,9 @@ class PlayerProvider(Provider):
 
     def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
-        if f"values/{CONF_GROUP_MEMBERS}" in changed_keys:
-            player = self.mass.players.get(config.player_id)
-            player.group_childs = config.get_value(CONF_GROUP_MEMBERS)
-            self.mass.players.update(config.player_id)
 
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
-        # ensure that any group players get removed
-        group_players = self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_GROUP_PLAYERS, {}
-        )
-        if player_id in group_players:
-            del group_players[player_id]
-            self.mass.config.set_raw_provider_config_value(
-                self.instance_id, CONF_GROUP_PLAYERS, group_players
-            )
 
     @abstractmethod
     async def cmd_stop(self, player_id: str) -> None:
