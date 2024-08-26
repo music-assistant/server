@@ -49,6 +49,7 @@ from music_assistant.constants import (
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.tags import parse_tags
+from music_assistant.server.helpers.throttle_retry import Throttler
 from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -111,7 +112,7 @@ class PlayerController(CoreController):
         )
         self.manifest.icon = "speaker-multiple"
         self._poll_task: asyncio.Task | None = None
-        self._player_locks: dict[str, asyncio.Lock] = {}
+        self._player_throttlers: dict[str, Throttler] = {}
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -215,7 +216,7 @@ class PlayerController(CoreController):
                 await self.cmd_play(sync_leader.player_id)
             return
         player_provider = self.get_player_provider(player_id)
-        async with self._player_locks[player_id]:
+        async with self._player_throttlers[player_id]:
             await player_provider.cmd_play(player_id)
 
     @api_command("players/cmd/pause")
@@ -313,7 +314,7 @@ class PlayerController(CoreController):
         if PlayerFeature.POWER in player.supported_features:
             # forward to player provider
             player_provider = self.get_player_provider(player_id)
-            async with self._player_locks[player_id]:
+            async with self._player_throttlers[player_id]:
                 await player_provider.cmd_power(player_id, powered)
         else:
             # allow the stop command to process and prevent race conditions
@@ -354,7 +355,7 @@ class PlayerController(CoreController):
             msg = f"Player {player.display_name} does not support volume_set"
             raise UnsupportedFeaturedException(msg)
         player_provider = self.get_player_provider(player_id)
-        async with self._player_locks[player_id]:
+        async with self._player_throttlers[player_id]:
             await player_provider.cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/volume_up")
@@ -467,7 +468,7 @@ class PlayerController(CoreController):
             msg = f"Player {player.display_name} does not support muting"
             raise UnsupportedFeaturedException(msg)
         player_provider = self.get_player_provider(player_id)
-        async with self._player_locks[player_id]:
+        async with self._player_throttlers[player_id]:
             await player_provider.cmd_volume_mute(player_id, muted)
 
     @api_command("players/cmd/seek")
@@ -610,7 +611,7 @@ class PlayerController(CoreController):
                 )
             return
         player_prov = self.mass.players.get_player_provider(player_id)
-        async with self._player_locks[player_id]:
+        async with self._player_throttlers[player_id]:
             await player_prov.enqueue_next_media(player_id=player_id, media=media)
 
     @api_command("players/cmd/sync")
@@ -684,7 +685,7 @@ class PlayerController(CoreController):
 
         # forward command to the player provider after all (base) sanity checks
         player_provider = self.get_player_provider(target_player)
-        async with self._player_locks[target_player]:
+        async with self._player_throttlers[target_player]:
             await player_provider.cmd_sync_many(target_player, child_player_ids)
 
     @api_command("players/cmd/unsync_many")
@@ -747,8 +748,8 @@ class PlayerController(CoreController):
         # register playerqueue for this player
         self.mass.create_task(self.mass.player_queues.on_player_register(player))
 
-        # register lock for this player
-        self._player_locks[player_id] = asyncio.Lock()
+        # register throttler for this player
+        self._player_throttlers[player_id] = Throttler(1, 0.2)
 
         self._players[player_id] = player
 

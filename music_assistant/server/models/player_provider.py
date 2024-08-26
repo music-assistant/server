@@ -63,7 +63,9 @@ class PlayerProvider(Provider):
                     options=tuple(
                         ConfigValueOption(x.display_name, x.player_id)
                         for x in self.mass.players.all(True, False)
-                        if x.player_id != player_id and x.provider == self.instance_id
+                        if x.player_id != player_id
+                        and x.provider == self.instance_id
+                        and not x.player_id.startswith(SYNCGROUP_PREFIX)
                     ),
                     description="Select all players you want to be part of this group",
                     multi_value=True,

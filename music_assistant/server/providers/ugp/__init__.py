@@ -59,6 +59,7 @@ if TYPE_CHECKING:
 UGP_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(24), sample_rate=48000, bit_depth=24
 )
+UGP_PREFIX = "ugp_"
 
 CONF_ACTION_CREATE_PLAYER = "create_player"
 CONF_ACTION_CREATE_PLAYER_SAVE = "create_player_save"
@@ -107,13 +108,14 @@ async def get_config_entries(
     if action == CONF_ACTION_CREATE_PLAYER:
         # create new group player
         name = values.pop(CONF_NEW_GROUP_NAME)
-        members = values.pop(CONF_GROUP_MEMBERS)
+        members: list[str] = values.pop(CONF_GROUP_MEMBERS)
+        members = ugp_provider._filter_members(members)
         await ugp_provider.create_group(name, members)
         return (
             ConfigEntry(
                 key="ugp_note",
                 type=ConfigEntryType.LABEL,
-                label="Your new Universal Group Player has been created and "
+                label=f"Your new Universal Group Player {name} has been created and "
                 "is available in the players list.",
                 required=False,
             ),
@@ -130,7 +132,7 @@ async def get_config_entries(
             key=CONF_NEW_GROUP_NAME,
             type=ConfigEntryType.STRING,
             label="Name",
-            required=True,
+            required=False,
         ),
         ConfigEntry(
             key=CONF_GROUP_MEMBERS,
@@ -142,7 +144,7 @@ async def get_config_entries(
                 for x in mass.players.all(True, False)
             ),
             multi_value=True,
-            required=True,
+            required=False,
         ),
         ConfigEntry(
             key=CONF_ACTION_CREATE_PLAYER,
@@ -198,7 +200,7 @@ class UniversalGroupProvider(PlayerProvider):
                 options=tuple(
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in self.mass.players.all(True, False)
-                    if x.player_id != player_id
+                    if x.player_id != player_id and not x.player_id.startswith(UGP_PREFIX)
                 ),
                 description="Select all players you want to be part of this universal group",
                 multi_value=True,
@@ -214,7 +216,13 @@ class UniversalGroupProvider(PlayerProvider):
         """Call (by config manager) when the configuration of a player changes."""
         if f"values/{CONF_GROUP_MEMBERS}" in changed_keys:
             player = self.mass.players.get(config.player_id)
-            player.group_childs = config.get_value(CONF_GROUP_MEMBERS)
+            members = config.get_value(CONF_GROUP_MEMBERS)
+            # ensure we filter invalid members
+            members = self._filter_members(members)
+            player.group_childs = members
+            self.mass.config.set_raw_player_config_value(
+                config.player_id, CONF_GROUP_PLAYERS, members
+            )
             self.mass.players.update(config.player_id)
 
     def on_player_config_removed(self, player_id: str) -> None:
@@ -247,8 +255,45 @@ class UniversalGroupProvider(PlayerProvider):
         """Send PLAY command to given player."""
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
-        """Send POWER command to given player."""
-        await self.mass.players.cmd_group_power(player_id, powered)
+        """Send POWER command to given UGP group player."""
+        group_player = self.mass.players.get(player_id, True)
+
+        if group_player.powered == powered:
+            return  # nothing to do
+
+        # make sure to update the group power state
+        group_player.powered = powered
+
+        any_member_powered = False
+        async with TaskManager(self.mass) as tg:
+            for member in self.mass.players.iter_group_members(group_player, only_powered=True):
+                any_member_powered = True
+                if powered:
+                    if member.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+                        # stop playing existing content on member if we start the group player
+                        tg.create_task(self.cmd_stop(member.player_id))
+                    # set active source to group player if the group (is going to be) powered
+                    member.active_group = group_player.active_group
+                    member.active_source = group_player.active_source
+                    self.mass.players.update(member.player_id, skip_forward=True)
+                else:
+                    # turn off child player when group turns off
+                    tg.create_task(self.cmd_power(member.player_id, False))
+                    # reset active source on player
+                    member.active_source = None
+                    member.active_group = None
+                    self.mass.players.update(member.player_id, skip_forward=True)
+            # edge case: group turned on but no members are powered, power them all!
+            # TODO: Do we want to make this configurable ?
+            if not any_member_powered and powered:
+                for member in self.mass.players.iter_group_members(
+                    group_player, only_powered=False
+                ):
+                    tg.create_task(self.cmd_power(member.player_id, True))
+                    member.active_group = group_player.player_id
+                    member.active_source = group_player.active_source
+
+        self.mass.players.update(player_id)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -302,10 +347,6 @@ class UniversalGroupProvider(PlayerProvider):
         # forward to downstream play_media commands
         async with TaskManager(self.mass) as tg:
             for member in self.mass.players.iter_group_members(group_player, only_powered=True):
-                if member.player_id.startswith(SYNCGROUP_PREFIX):
-                    member = self.mass.players.get_sync_leader(member)  # noqa: PLW2901
-                    if member is None:
-                        continue
                 tg.create_task(
                     self.mass.players.play_media(
                         member.player_id,
@@ -331,14 +372,9 @@ class UniversalGroupProvider(PlayerProvider):
             - name: Name for the new group to create.
             - members: A list of player_id's that should be part of this group.
         """
-        new_group_id = f"{self.domain}_{shortuuid.random(8).lower()}"
+        new_group_id = f"{UGP_PREFIX}{shortuuid.random(8).lower()}"
         # cleanup list, filter groups (should be handled by frontend, but just in case)
-        members = [
-            x.player_id
-            for x in self.mass.players
-            if x.player_id in members
-            if x.provider != self.instance_id
-        ]
+        members = self._filter_members(members)
         # create default config with the user chosen name
         self.mass.config.create_default_player_config(
             new_group_id,
@@ -369,7 +405,7 @@ class UniversalGroupProvider(PlayerProvider):
         player = Player(
             player_id=group_player_id,
             provider=self.instance_id,
-            type=PlayerType.SYNC_GROUP,
+            type=PlayerType.GROUP,
             name=name,
             available=True,
             powered=False,
@@ -457,7 +493,7 @@ class UniversalGroupProvider(PlayerProvider):
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "Content-Type": "faudio/{fmt}",
+            "Content-Type": f"audio/{fmt}",
             "Accept-Ranges": "none",
             "Cache-Control": "no-cache",
             "Connection": "close",
@@ -468,6 +504,7 @@ class UniversalGroupProvider(PlayerProvider):
             resp.content_length = get_chunksize(output_format, 24 * 3600)
         elif http_profile == "chunked":
             resp.enable_chunked_encoding()
+
         await resp.prepare(request)
 
         # return early if this is not a GET request
@@ -494,3 +531,22 @@ class UniversalGroupProvider(PlayerProvider):
                 break
 
         return resp
+
+    def _filter_members(self, members: list[str]) -> list[str]:
+        """Filter out members that are not valid players."""
+        # cleanup members - filter out impossible choices
+        syncgroup_childs: list[str] = []
+        for member in members:
+            if not member.startswith(SYNCGROUP_PREFIX):
+                continue
+            if syncgroup := self.mass.players.get(member):
+                syncgroup_childs.extend(syncgroup.group_childs)
+        # we filter out other UGP players and syncgroup childs
+        # if their parent is already in the list
+        return [
+            x
+            for x in members
+            if self.mass.players.get(x)
+            and x not in syncgroup_childs
+            and not x.startswith(UGP_PREFIX)
+        ]
