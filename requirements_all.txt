@@ -7,7 +7,7 @@ aiohttp==3.10.4
 aiojellyfin==0.10.1
 aiorun==2024.8.1
 aioslimproto==3.0.1
-aiosonos==0.1.2
+aiosonos==0.1.3
 aiosqlite==0.20.0
 async-upnp-client==0.40.0
 bidict==0.23.1
