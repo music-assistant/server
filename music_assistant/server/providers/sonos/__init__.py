@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import shortuuid
 from aiohttp import web
@@ -139,8 +139,9 @@ class SonosPlayer:
     @property
     def airplay_mode(self) -> bool:
         """Return if the player is in airplay mode."""
-        return self.mass.config.get_raw_player_config_value(
-            self.airplay_player_id, CONF_AIRPLAY_MODE, False
+        return cast(
+            bool,
+            self.mass.config.get_raw_player_config_value(self.player_id, CONF_AIRPLAY_MODE, False),
         )
 
     def get_linked_airplay_player(self, active_only: bool = True) -> Player | None:
@@ -461,7 +462,7 @@ class SonosPlayerProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.SYNC_GROUP)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -561,7 +562,9 @@ class SonosPlayerProvider(PlayerProvider):
                 "By default, Music Assistant uses the Sonos protocol for playback but with this "
                 "feature enabled, it will use the Airplay protocol instead by redirecting "
                 "the playback related commands to the linked Airplay player in Music Assistant, "
-                "allowing you to mix and match Sonos speakers with Airplay speakers.",
+                "allowing you to mix and match Sonos speakers with Airplay speakers. \n\n"
+                "TIP: When this feature is enabled, it make sense to set the underlying airplay "
+                "players to hide in the UI in the player settings to prevent duplicate players.",
                 required=False,
                 default_value=False,
                 hidden=SonosCapability.AIRPLAY
@@ -650,9 +653,11 @@ class SonosPlayerProvider(PlayerProvider):
                 if len(sonos_player.client.player.group_members) > 1
                 else []
             )
+            if group_childs:
+                await self.cmd_unsync_many(group_childs)
             await self.mass.players.play_media(airplay.player_id, media)
             if group_childs:
-                self.mass.call_later(1, self.cmd_sync_many, player_id, group_childs)
+                self.mass.call_later(5, self.cmd_sync_many(player_id, group_childs))
             return
 
         if media.queue_id:
