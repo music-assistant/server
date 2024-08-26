@@ -15,7 +15,7 @@ from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
-from aiosonos.exceptions import FailedCommand
+from aiosonos.exceptions import ConnectionFailed, FailedCommand
 from aiosonos.utils import get_discovery_info
 from zeroconf import IPVersion, ServiceStateChange
 
@@ -218,14 +218,18 @@ class SonosPlayer:
             try:
                 await self.client.start_listening(init_ready)
             except Exception as err:
-                self.logger.exception("Error in Sonos player listener: %s", err)
+                if not isinstance(err, ConnectionFailed | asyncio.CancelledError):
+                    self.logger.exception("Error in Sonos player listener: %s", err)
             finally:
                 self.logger.info("Disconnected from player API")
                 if self.connected:
                     # we didn't explicitly disconnect, try to reconnect
                     # this should simply try to reconnect once and if that fails
                     # we rely on mdns to pick it up again later
-                    self.mass.call_later(5, self.connect)
+                    # self.mass.call_later(5, self.connect)
+                    await self.disconnect()
+                    self.mass_player.available = False
+                    self.mass.players.update(self.player_id)
                 self.connected = False
 
         self._listen_task = asyncio.create_task(_listener())
@@ -296,8 +300,8 @@ class SonosPlayer:
         """Update the player attributes."""
         if not self.mass_player:
             return
+        self.mass_player.available = self.connected
         if not self.connected:
-            self.mass_player.available = False
             return
         if self.client.player.has_fixed_volume:
             self.mass_player.volume_level = 100
@@ -494,26 +498,15 @@ class SonosPlayerProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
-        if not info:
-            self.logger.error(
-                "No info in MDNS service state change for %s - state change: %s", name, state_change
-            )
+        if state_change == ServiceStateChange.Removed:
+            # we don't listen for removed players here.
+            # instead we just wait for the player connection to fail
             return
         if "uuid" not in info.decoded_properties:
             # not a S2 player
             return
         name = name.split("@", 1)[1] if "@" in name else name
         player_id = info.decoded_properties["uuid"]
-        # handle removed player
-        if state_change == ServiceStateChange.Removed:
-            if mass_player := self.mass.players.get(player_id):
-                if not mass_player.available:
-                    return
-                # the player has become unavailable
-                self.logger.debug("Player offline: %s", mass_player.display_name)
-                mass_player.available = False
-                self.mass.players.update(player_id)
-            return
         # handle update for existing device
         if sonos_player := self.sonos_players.get(player_id):
             if mass_player := self.mass.players.get(player_id):
