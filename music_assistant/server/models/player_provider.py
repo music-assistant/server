@@ -244,7 +244,8 @@ class PlayerProvider(Provider):
             await self.cmd_unsync(player_id)
 
     async def create_group(self, name: str, members: list[str]) -> Player:
-        """Create new PlayerGroup on this provider.
+        """
+        Create new PlayerGroup on this provider.
 
         Create a new SyncGroup (or PlayerGroup) with given name and members.
 
@@ -283,7 +284,7 @@ class PlayerProvider(Provider):
 
     def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:
         """
-        Call when a power command was executed on one of the child players of a Sync group.
+        Call when a power command was executed on one of the child players of a Sync/Player group.
 
         This is used to handle special actions such as (re)syncing.
         """
