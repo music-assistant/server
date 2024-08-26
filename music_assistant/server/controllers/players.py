@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
+
+import shortuuid
 
 from music_assistant.common.helpers.util import get_changed_values
 from music_assistant.common.models.config_entries import (
@@ -33,7 +36,7 @@ from music_assistant.common.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.media_items import UniqueList
-from music_assistant.common.models.player import Player, PlayerMedia
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_GROUP_MEMBERS,
@@ -707,30 +710,6 @@ class PlayerController(CoreController):
         player_provider = self.get_player_provider(final_player_ids[0])
         await player_provider.cmd_unsync_many(final_player_ids)
 
-    @api_command("players/create_group")
-    async def create_group(self, provider: str, name: str, members: list[str]) -> Player:
-        """Create new Player/Sync Group on given PlayerProvider with name and members.
-
-        - provider: provider domain or instance id to create the new group on.
-        - name: Name for the new group to create.
-        - members: A list of player_id's that should be part of this group.
-
-        Returns the newly created player on success.
-        NOTE: Fails if the given provider does not support creating new groups
-        or members are given that can not be handled by the provider.
-        """
-        # perform basic checks
-        if (player_prov := self.mass.get_provider(provider)) is None:
-            msg = f"Provider {provider} is not available!"
-            raise ProviderUnavailableError(msg)
-        if ProviderFeature.PLAYER_GROUP_CREATE in player_prov.supported_features:
-            # Provider supports group create feature: forward request to provider.
-            # NOTE: The provider is itself responsible for
-            # checking if the members can be used for grouping.
-            return await player_prov.create_group(name, members=members)
-        msg = f"Provider {player_prov.name} does not support creating groups"
-        raise UnsupportedFeaturedException(msg)
-
     def set(self, player: Player) -> None:
         """Set/Update player details on the controller."""
         if player.player_id not in self._players:
@@ -1078,6 +1057,67 @@ class PlayerController(CoreController):
 
     # Syncgroup specific functions/helpers
 
+    @api_command("players/create_group")
+    async def create_sync_group(self, name: str, members: list[str]) -> Player:
+        """Create a new Sync Group with name and members.
+
+        - name: Name for the new group to create.
+        - members: A list of player_id's that should be part of this group.
+
+        Returns the newly created player on success.
+        """
+        base_player = self.get(members[0], True)
+        # perform basic checks
+        if (player_prov := self.mass.get_provider(base_player.provider)) is None:
+            msg = f"Provider {base_player.provider} is not available!"
+            raise ProviderUnavailableError(msg)
+        if ProviderFeature.SYNC_PLAYERS not in player_prov.supported_features:
+            msg = f"Provider {player_prov.name} does not support creating groups"
+            raise UnsupportedFeaturedException(msg)
+        new_group_id = f"{SYNCGROUP_PREFIX}{shortuuid.random(8).lower()}"
+        # cleanup list, just in case the frontend sends some garbage
+        members = [
+            x
+            for x in members
+            if x in base_player.can_sync_with and not x.startswith(SYNCGROUP_PREFIX)
+        ]
+        # create default config with the user chosen name
+        self.mass.config.create_default_player_config(
+            new_group_id,
+            player_prov.instance_id,
+            name=name,
+            enabled=True,
+            values={CONF_GROUP_MEMBERS: members},
+        )
+        return self.register_syncgroup(group_player_id=new_group_id, name=name, members=members)
+
+    def register_syncgroup(self, group_player_id: str, name: str, members: Iterable[str]) -> Player:
+        """Register a (virtual/fake) syncgroup player."""
+        # extract player features from first/random player
+        for member in members:
+            if first_player := self.mass.players.get(member):
+                break
+        else:
+            # edge case: no child player is (yet) available; postpone register
+            return None
+        player_prov = self.mass.get_provider(first_player.provider)
+        if TYPE_CHECKING:
+            assert player_prov
+        player = Player(
+            player_id=group_player_id,
+            provider=player_prov.instance_id,
+            type=PlayerType.SYNC_GROUP,
+            name=name,
+            available=True,
+            powered=False,
+            device_info=DeviceInfo(model="SyncGroup", manufacturer=player_prov.name),
+            supported_features=first_player.supported_features,
+            group_childs=set(members),
+            active_source=group_player_id,
+        )
+        self.mass.players.register_or_update(player)
+        return player
+
     def get_sync_leader(self, group_player: Player) -> Player | None:
         """Get the active sync leader player for a syncgroup or synced player."""
         if group_player.synced_to:
@@ -1124,12 +1164,10 @@ class PlayerController(CoreController):
         for player_config in player_configs:
             if not player_config.player_id.startswith(SYNCGROUP_PREFIX):
                 continue
-            if not (player_prov := self.mass.get_provider(player_config.provider)):
-                continue
             members = self.mass.config.get_raw_player_config_value(
                 player_config.player_id, CONF_GROUP_MEMBERS
             )
-            player_prov.register_syncgroup(
+            self.register_syncgroup(
                 group_player_id=player_config.player_id,
                 name=player_config.name or player_config.default_name,
                 members=members,

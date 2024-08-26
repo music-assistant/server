@@ -91,7 +91,7 @@ class UniversalGroupProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.PLAYER_GROUP_CREATE,)
+        return (ProviderFeature.SYNC_GROUP,)
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig

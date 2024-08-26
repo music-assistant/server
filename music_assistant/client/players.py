@@ -150,21 +150,16 @@ class Players:
 
     #  PlayerGroup related endpoints/commands
 
-    async def create_group(self, provider: str, name: str, members: list[str]) -> Player:
-        """Create new (permanent) Player/Sync Group on given PlayerProvider with name and members.
+    async def create_sync_group(self, name: str, members: list[str]) -> Player:
+        """Create a new Sync Group with name and members.
 
-        - provider: provider domain or instance id to create the new group on.
         - name: Name for the new group to create.
         - members: A list of player_id's that should be part of this group.
 
         Returns the newly created player on success.
-        NOTE: Fails if the given provider does not support creating new groups
-        or members are given that can not be handled by the provider.
         """
         return Player.from_dict(
-            await self.client.send_command(
-                "players/create_group", provider=provider, name=name, members=members
-            )
+            await self.client.send_command("players/create_group", name=name, members=members)
         )
 
     async def set_player_group_volume(self, player_id: str, volume_level: int) -> None:

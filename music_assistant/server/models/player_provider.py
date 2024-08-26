@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Iterable
-
-import shortuuid
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -26,14 +23,8 @@ from music_assistant.common.models.config_entries import (
     ConfigValueOption,
     PlayerConfig,
 )
-from music_assistant.common.models.enums import (
-    ConfigEntryType,
-    PlayerFeature,
-    PlayerState,
-    PlayerType,
-    ProviderFeature,
-)
-from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.common.models.enums import ConfigEntryType, PlayerState, ProviderFeature
+from music_assistant.common.models.player import Player, PlayerMedia
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_GROUP_PLAYERS, SYNCGROUP_PREFIX
 
 from .provider import Provider
@@ -243,38 +234,6 @@ class PlayerProvider(Provider):
             # default implementation, simply call the cmd_sync for all player_ids
             await self.cmd_unsync(player_id)
 
-    async def create_group(self, name: str, members: list[str]) -> Player:
-        """
-        Create new PlayerGroup on this provider.
-
-        Create a new SyncGroup (or PlayerGroup) with given name and members.
-
-            - name: Name for the new group to create.
-            - members: A list of player_id's that should be part of this group.
-        """
-        # should only be called for providers with PLAYER_GROUP_CREATE feature set.
-        if ProviderFeature.PLAYER_GROUP_CREATE not in self.supported_features:
-            raise NotImplementedError
-        # default implementation: create syncgroup
-        new_group_id = f"{SYNCGROUP_PREFIX}{shortuuid.random(8).lower()}"
-        # cleanup list, filter groups (should be handled by frontend, but just in case)
-        members = [
-            x.player_id
-            for x in self.players
-            if x.player_id in members
-            if not x.player_id.startswith(SYNCGROUP_PREFIX)
-            if x.provider == self.instance_id and PlayerFeature.SYNC in x.supported_features
-        ]
-        # create default config with the user chosen name
-        self.mass.config.create_default_player_config(
-            new_group_id,
-            self.instance_id,
-            name=name,
-            enabled=True,
-            values={CONF_GROUP_MEMBERS: members},
-        )
-        return self.register_syncgroup(group_player_id=new_group_id, name=name, members=members)
-
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
 
@@ -342,30 +301,6 @@ class PlayerProvider(Provider):
                 self.mass.create_task(
                     self.cmd_sync(child_player_id, sync_leader.player_id),
                 )
-
-    def register_syncgroup(self, group_player_id: str, name: str, members: Iterable[str]) -> Player:
-        """Register a (virtual/fake) syncgroup player."""
-        # extract player features from first/random player
-        for member in members:
-            if first_player := self.mass.players.get(member):
-                break
-        else:
-            # edge case: no child player is (yet) available; postpone register
-            return None
-        player = Player(
-            player_id=group_player_id,
-            provider=self.instance_id,
-            type=PlayerType.SYNC_GROUP,
-            name=name,
-            available=True,
-            powered=False,
-            device_info=DeviceInfo(model="SyncGroup", manufacturer=self.name),
-            supported_features=first_player.supported_features,
-            group_childs=set(members),
-            active_source=group_player_id,
-        )
-        self.mass.players.register_or_update(player)
-        return player
 
     # DO NOT OVERRIDE BELOW
 
