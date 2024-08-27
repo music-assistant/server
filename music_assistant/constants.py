@@ -65,6 +65,7 @@ CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
 CONF_HTTP_PROFILE: Final[str] = "http_profile"
+CONF_SYNC_LEADER: Final[str] = "sync_leader"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
