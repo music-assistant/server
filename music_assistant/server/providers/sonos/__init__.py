@@ -292,7 +292,7 @@ class SonosPlayer:
             if airplay.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
                 airplay.volume_level = volume_level
 
-    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
+    async def cmd_volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         await self.client.player.set_volume(muted=muted)
 
@@ -351,12 +351,6 @@ class SonosPlayer:
 
         # map playback state
         self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
-        if (
-            not self.mass_player.powered
-            and active_group.playback_state == SonosPlayBackState.PLAYBACK_STATE_PLAYING
-        ):
-            self.mass_player.powered = True
-
         self.mass_player.elapsed_time = active_group.position
 
         is_playing = active_group.playback_state in (
@@ -587,8 +581,8 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
-        sonos_player = self.sonos_players[player_id]
-        await sonos_player.client.player.set_volume(muted=muted)
+        if sonos_player := self.sonos_players[player_id]:
+            await sonos_player.cmd_volume_mute(muted)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
@@ -647,19 +641,19 @@ class SonosPlayerProvider(PlayerProvider):
                 else []
             )
             if group_childs:
-                await self.cmd_unsync_many(group_childs)
+                await self.mass.players.cmd_unsync_many(group_childs)
             await self.mass.players.play_media(airplay.player_id, media)
             if group_childs:
                 self.mass.call_later(5, self.cmd_sync_many(player_id, group_childs))
             return
 
         if media.queue_id.startswith("ugp_"):
-            # TODO - this needs some more work
-            raise NotImplementedError("Sonos does not support UGP queues yet.")
+            # Special UGP stream - handle with play URL
+            await sonos_player.client.player.group.play_stream_url(media.uri, None)
+            return
 
         if media.queue_id:
             # create a sonos cloud queue and load it
-            await sonos_player.client.player.group.create_playback_session()
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
             await sonos_player.client.player.group.play_cloud_queue(
                 cloud_queue_url,
