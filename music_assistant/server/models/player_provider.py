@@ -23,9 +23,9 @@ from music_assistant.common.models.config_entries import (
     ConfigValueOption,
     PlayerConfig,
 )
-from music_assistant.common.models.enums import ConfigEntryType, PlayerState, ProviderFeature
+from music_assistant.common.models.enums import ConfigEntryType, PlayerState
 from music_assistant.common.models.player import Player, PlayerMedia
-from music_assistant.constants import CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_SYNC_LEADER, SYNCGROUP_PREFIX
 
 from .provider import Provider
 
@@ -69,6 +69,28 @@ class PlayerProvider(Provider):
                     ),
                     description="Select all players you want to be part of this group",
                     multi_value=True,
+                    required=True,
+                ),
+                ConfigEntry(
+                    key=CONF_SYNC_LEADER,
+                    type=ConfigEntryType.STRING,
+                    label="Preferred sync leader",
+                    default_value="auto",
+                    options=(
+                        *tuple(
+                            ConfigValueOption(x.display_name, x.player_id)
+                            for x in self.mass.players.all(True, False)
+                            if x.player_id
+                            in self.mass.config.get_raw_player_config_value(
+                                player_id, CONF_GROUP_MEMBERS, []
+                            )
+                        ),
+                        ConfigValueOption("Select automatically", "auto"),
+                    ),
+                    description="By default Music Assistant will automatically assign a "
+                    "(random) player as sync leader, meaning the other players in the sync group "
+                    "will be synced to that player. If you want to force a specific player to be "
+                    "the sync leader, select it here.",
                     required=True,
                 ),
                 CONF_ENTRY_PLAYER_ICON_GROUP,
@@ -212,17 +234,6 @@ class PlayerProvider(Provider):
             # default implementation, simply call the cmd_sync for all child players
             await self.cmd_sync(child_id, target_player)
 
-    async def cmd_unsync_many(self, player_ids: str) -> None:
-        """Handle UNSYNC command for all the given players.
-
-        Remove the given player from any syncgroups it currently is synced to.
-
-            - player_id: player_id of the player to handle the command.
-        """
-        for player_id in player_ids:
-            # default implementation, simply call the cmd_sync for all player_ids
-            await self.cmd_unsync(player_id)
-
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
 
@@ -230,66 +241,15 @@ class PlayerProvider(Provider):
         if 'needs_poll' is set to True in the player object.
         """
 
-    def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:
+    def on_group_child_power(
+        self, group_player: Player, child_player: Player, new_power: bool, group_state: PlayerState
+    ) -> None:
         """
-        Call when a power command was executed on one of the child players of a Sync/Player group.
+        Call when a power command was executed on one of the child players of a PlayerGroup.
 
         This is used to handle special actions such as (re)syncing.
+        The group state is sent with the state BEFORE the power command was executed.
         """
-        group_player = self.mass.players.get(player_id)
-        child_player = self.mass.players.get(child_player_id)
-
-        if not group_player.powered:
-            # guard, this should be caught in the player controller but just in case...
-            return
-
-        powered_childs = list(self.mass.players.iter_group_members(group_player, True))
-        if not new_power and child_player in powered_childs:
-            powered_childs.remove(child_player)
-        if new_power and child_player not in powered_childs:
-            powered_childs.append(child_player)
-
-        # if the last player of a group turned off, turn off the group
-        if len(powered_childs) == 0:
-            self.logger.debug(
-                "Group %s has no more powered members, turning off group player",
-                group_player.display_name,
-            )
-            self.mass.create_task(self.mass.players.cmd_power(player_id, False))
-            return
-
-        # the below actions are only suitable for syncgroups
-        if ProviderFeature.SYNC_PLAYERS not in self.supported_features:
-            return
-
-        group_playing = group_player.state == PlayerState.PLAYING
-        is_sync_leader = (
-            len(child_player.group_childs) > 0
-            and child_player.active_source == group_player.player_id
-        )
-        if group_playing and not new_power and is_sync_leader:
-            # the current sync leader player turned OFF while the group player
-            # should still be playing - we need to select a new sync leader and resume
-            self.logger.warning(
-                "Syncleader %s turned off while syncgroup is playing, "
-                "a forced resume for syngroup %s will be attempted in 5 seconds...",
-                child_player.display_name,
-                group_player.display_name,
-            )
-
-            async def full_resync() -> None:
-                await self.mass.players.sync_syncgroup(group_player.player_id)
-                await self.mass.player_queues.resume(group_player.player_id)
-
-            self.mass.call_later(5, full_resync, task_id=f"forced_resync_{player_id}")
-            return
-        elif new_power:
-            # if a child player turned ON while the group is already active, we need to resync
-            sync_leader = self.mass.players.get_sync_leader(group_player)
-            if sync_leader.player_id != child_player_id:
-                self.mass.create_task(
-                    self.cmd_sync(child_player_id, sync_leader.player_id),
-                )
 
     # DO NOT OVERRIDE BELOW
 

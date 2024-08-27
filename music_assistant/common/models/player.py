@@ -134,6 +134,9 @@ class Player(DataClassDictMixin):
     # last_poll: when was the player last polled (used with needs_poll)
     last_poll: float = 0
 
+    # internal use only
+    _prev_volume_level: int = 0
+
     @property
     def corrected_elapsed_time(self) -> float:
         """Return the corrected/realtime elapsed time."""
