@@ -44,6 +44,7 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_HIDE_PLAYER,
     CONF_PLAYERS,
+    CONF_SYNC_LEADER,
     CONF_TTS_PRE_ANNOUNCE,
     SYNCGROUP_PREFIX,
 )
@@ -1213,6 +1214,11 @@ class PlayerController(CoreController):
         ):
             if child_player.group_childs:
                 return child_player
+        pref_sync_leader = self.mass.config.get_raw_player_config_value(
+            group_player.player_id, CONF_SYNC_LEADER, "auto"
+        )
+        if pref_sync_leader != "auto" and (player := self.get(pref_sync_leader)):
+            return player
         # select new sync leader: return the first playing player
         for child_player in self.iter_group_members(
             group_player, only_powered=True, only_playing=True
