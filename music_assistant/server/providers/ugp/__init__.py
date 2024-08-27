@@ -589,6 +589,7 @@ class UGPStream:
             audio_input=self.audio_source,
             input_format=self.input_format,
             output_format=self.output_format,
+            # TODO: enable readrate limiting + initial burst once we have a newer ffmpeg version
             # extra_input_args=["-readrate", "1.15"],
         ):
             await asyncio.gather(*[sub(chunk) for sub in self.subscribers], return_exceptions=True)

@@ -742,7 +742,7 @@ class PlayerController(CoreController):
     async def cmd_unsync_many(self, player_ids: list[str]) -> None:
         """Handle UNSYNC command for all the given players."""
         # filter all player ids on compatibility and availability
-        for player_id in player_ids:
+        for player_id in list(player_ids):
             if not (child_player := self.get(player_id)):
                 self.logger.warning("Player %s is not available", player_id)
                 continue
