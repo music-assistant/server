@@ -110,6 +110,9 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
             continue
         package_name, version = requirement.split("==", 1)
         installed_version = await get_package_version(package_name)
+        if installed_version == "0.0.0":
+            # ignore editable installs
+            continue
         if installed_version != version:
             await install_package(requirement)
 

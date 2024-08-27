@@ -9,7 +9,6 @@ the upnp callbacks and json rpc api for slimproto clients.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 import urllib.parse
@@ -40,6 +39,7 @@ from music_assistant.constants import (
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
     SILENCE_FILE,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
@@ -266,8 +266,8 @@ class StreamsController(CoreController):
             default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
             default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
-        http_profile: str = self.mass.config.get_raw_player_config_value(
-            queue_id, CONF_HTTP_PROFILE, "chunked"
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
         )
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
@@ -356,8 +356,8 @@ class StreamsController(CoreController):
         icy_meta_interval = 16384
 
         # prepare request, add some DLNA/UPNP compatible headers
-        http_profile: str = self.mass.config.get_raw_player_config_value(
-            queue_id, CONF_HTTP_PROFILE, "chunked"
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
         )
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
@@ -574,8 +574,8 @@ class StreamsController(CoreController):
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-            crossfade_duration = await self.mass.config.get_player_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION
+            crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             bytes_written = 0
@@ -864,9 +864,10 @@ class StreamsController(CoreController):
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
-        if not self.logger.isEnabledFor(logging.DEBUG):
+        if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             return
-        self.logger.debug(
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
             "Got %s request to %s from %s\nheaders: %s\n",
             request.method,
             request.path,

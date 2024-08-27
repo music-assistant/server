@@ -507,7 +507,7 @@ class AirplayProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -646,6 +646,9 @@ class AirplayProvider(PlayerProvider):
         """Handle PLAY MEDIA on given player."""
         async with self._play_media_lock:
             player = self.mass.players.get(player_id)
+            # set the active source for the player to the media queue
+            # this accounts for syncgroups and linked players (e.g. sonos)
+            player.active_source = media.queue_id
             if player.synced_to:
                 # should not happen, but just in case
                 raise RuntimeError("Player is synced")
@@ -804,7 +807,9 @@ class AirplayProvider(PlayerProvider):
         group_leader.group_childs.remove(player_id)
         player.synced_to = None
         await self.cmd_stop(player_id)
-        self.mass.players.update(player_id)
+        # make sure that the player manager gets an update
+        self.mass.players.update(player.player_id, skip_forward=True)
+        self.mass.players.update(group_leader.player_id, skip_forward=True)
 
     async def _getcliraop_binary(self):
         """Find the correct raop/airplay binary belonging to the platform."""
