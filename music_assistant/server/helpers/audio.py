@@ -897,8 +897,6 @@ def get_ffmpeg_args(
             "1",
             "-reconnect_streamed",
             "1",
-            "-reconnect_delay_max",
-            "10",
         ]
         if major_version > 4:
             # these options are only supported in ffmpeg > 5
