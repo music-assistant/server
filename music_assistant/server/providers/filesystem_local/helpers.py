@@ -3,8 +3,47 @@
 from __future__ import annotations
 
 import os
+import re
+from dataclasses import dataclass
 
 from music_assistant.server.helpers.compare import compare_strings
+
+IGNORE_DIRS = ("recycle", "Recently-Snaphot")
+
+
+@dataclass
+class FileSystemItem:
+    """Representation of an item (file or directory) on the filesystem.
+
+    - filename: Name (not path) of the file (or directory).
+    - path: Relative path to the item on this filesystem provider.
+    - absolute_path: Absolute path to this item.
+    - is_file: Boolean if item is file (not directory or symlink).
+    - is_dir: Boolean if item is directory (not file).
+    - checksum: Checksum for this path (usually last modified time).
+    - file_size : File size in number of bytes or None if unknown (or not a file).
+    """
+
+    filename: str
+    path: str
+    absolute_path: str
+    is_file: bool
+    is_dir: bool
+    checksum: str
+    file_size: int | None = None
+
+    @property
+    def ext(self) -> str | None:
+        """Return file extension."""
+        try:
+            return self.filename.rsplit(".", 1)[1]
+        except IndexError:
+            return None
+
+    @property
+    def name(self) -> str:
+        """Return file name (without extension)."""
+        return self.filename.rsplit(".", 1)[0]
 
 
 def get_artist_dir(album_or_track_dir: str, artist_name: str) -> str | None:
@@ -67,3 +106,43 @@ def get_absolute_path(base_path: str, path: str) -> str:
     if path.startswith(base_path):
         return path
     return os.path.join(base_path, path)
+
+
+def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[FileSystemItem]:
+    """
+    Implement os.scandir that returns (optionally) sorted entries.
+
+    Not async friendly!
+    """
+
+    def nat_key(name: str) -> tuple[int | str, ...]:
+        """Sort key for natural sorting."""
+        return tuple(int(s) if s.isdigit() else s for s in re.split(r"(\d+)", name))
+
+    def create_item(entry: os.DirEntry) -> FileSystemItem:
+        """Create FileSystemItem from os.DirEntry."""
+        absolute_path = get_absolute_path(base_path, entry.path)
+        stat = entry.stat(follow_symlinks=False)
+        return FileSystemItem(
+            filename=entry.name,
+            path=get_relative_path(base_path, entry.path),
+            absolute_path=absolute_path,
+            is_file=entry.is_file(follow_symlinks=False),
+            is_dir=entry.is_dir(follow_symlinks=False),
+            checksum=str(int(stat.st_mtime)),
+            file_size=stat.st_size,
+        )
+
+    items = [
+        create_item(x)
+        for x in os.scandir(sub_path)
+        # filter out invalid dirs and hidden files
+        if x.name not in IGNORE_DIRS and not x.name.startswith(".")
+    ]
+    if sort:
+        return sorted(
+            items,
+            # sort by (natural) name
+            key=lambda x: nat_key(x.name),
+        )
+    return items
