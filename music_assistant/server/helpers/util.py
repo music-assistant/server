@@ -163,15 +163,29 @@ class TaskManager:
     Logging of exceptions is done by the mass.create_task helper.
     """
 
-    def __init__(self, mass: MusicAssistant):
+    def __init__(self, mass: MusicAssistant, limit: int = 0):
         """Initialize the TaskManager."""
         self.mass = mass
         self._tasks: list[asyncio.Task] = []
+        self._semaphore = asyncio.Semaphore(limit) if limit else None
 
-    def create_task(self, coro: Coroutine) -> None:
+    def create_task(self, coro: Coroutine) -> asyncio.Task:
         """Create a new task and add it to the manager."""
         task = self.mass.create_task(coro)
         self._tasks.append(task)
+        return task
+
+    async def create_task_with_limit(self, coro: Coroutine) -> None:
+        """Create a new task with semaphore limit."""
+        assert self._semaphore is not None
+
+        def task_done_callback(_task: asyncio.Task) -> None:
+            self._tasks.remove(task)
+            self._semaphore.release()
+
+        await self._semaphore.acquire()
+        task: asyncio.Task = self.create_task(coro)
+        task.add_done_callback(task_done_callback)
 
     async def __aenter__(self) -> Self:
         """Enter context manager."""
