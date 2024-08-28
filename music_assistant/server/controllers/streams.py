@@ -32,6 +32,8 @@ from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    CONF_BYPASS_NORMALIZATION_RADIO,
+    CONF_BYPASS_NORMALIZATION_SHORT,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
     CONF_HTTP_PROFILE,
@@ -78,6 +80,7 @@ DEFAULT_STREAM_HEADERS = {
 }
 FLOW_DEFAULT_SAMPLE_RATE = 48000
 FLOW_DEFAULT_BIT_DEPTH = 24
+
 
 # pylint:disable=too-many-locals
 
@@ -161,6 +164,29 @@ class StreamsController(CoreController):
                 "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
+                category="advanced",
+            ),
+            ConfigEntry(
+                key=CONF_BYPASS_NORMALIZATION_RADIO,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                label="Bypass volume normalization for radio streams",
+                description="Radio streams are often already normalized according "
+                "to the EBU standard, so it doesn't make a lot of sense to normalize them again "
+                "in Music Assistant unless you hear big jumps in volume during playback, "
+                "such as commercials.",
+                category="advanced",
+            ),
+            ConfigEntry(
+                key=CONF_BYPASS_NORMALIZATION_SHORT,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                label="Bypass volume normalization for effects and short sounds",
+                description="The volume normalizer of ffmpeg (used in Music Assistant), "
+                "is designed to work best with longer audio streams and can have troubles when "
+                "its applied to very short sound clips (< 60 seconds), "
+                "for example sound effects. With this option enabled, the volume normalizer "
+                "will be bypassed for all audio that has a duration of less than 60 seconds.",
                 category="advanced",
             ),
         )
@@ -771,11 +797,6 @@ class StreamsController(CoreController):
             )
         elif streamdetails.stream_type == StreamType.ICY:
             audio_source = get_icy_stream(self.mass, streamdetails.path, streamdetails)
-            # pad some silence before the radio stream starts to create some headroom
-            # for radio stations that do not provide any look ahead buffer
-            # without this, some radio streams jitter a lot
-            async for chunk in get_silence(2, pcm_format):
-                yield chunk
         elif streamdetails.stream_type == StreamType.HLS:
             # we simply select the best quality substream here
             # if we ever want to support adaptive stream selection based on bandwidth
@@ -784,6 +805,10 @@ class StreamsController(CoreController):
             # the user wants the best quality possible at all times.
             substream = await get_hls_substream(self.mass, streamdetails.path)
             audio_source = substream.path
+            if streamdetails.media_type == MediaType.RADIO:
+                # ffmpeg sometimes has trouble with HLS radio streams stopping
+                # abruptly for no reason so this is a workaround to keep the stream alive
+                extra_input_args += ["-stream_loop", "-1"]
         elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
             audio_source = streamdetails.path
             extra_input_args += ["-decryption_key", streamdetails.decryption_key]
@@ -791,6 +816,13 @@ class StreamsController(CoreController):
             audio_source = streamdetails.path
             if streamdetails.seek_position:
                 extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
+
+        if streamdetails.media_type == MediaType.RADIO:
+            # pad some silence before the radio stream starts to create some headroom
+            # for radio stations that do not provide any look ahead buffer
+            # without this, some radio streams jitter a lot
+            async for chunk in get_silence(2, pcm_format):
+                yield chunk
 
         logger.debug("start media stream for: %s", streamdetails.uri)
         bytes_sent = 0
