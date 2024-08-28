@@ -209,58 +209,35 @@ class BluesoundPlayer:
             self.mass_player.active_source = SOURCE_SPOTIFY
         elif self.status.state == "stream" and self.status.input_id == "RadioParadise":
             self.mass_player.active_source = SOURCE_RADIO
+
+        # Music Assistant falls in this category
         # elif self.status.state ==  "stream" and self.status.input_id == "None":
-        # Streaming Music Assistant falls in this category
-        # self.mass_player.active_source = SOURCE_UNKNOWN
+        #    self.mass_player.active_source = SOURCE_UNKNOWN
 
         # TODO check pair status
-        # active_group = sync_status_result.group
-
-        # self.logger.debug(sync_status_result.slaves)
 
         # TODO fix pairing
 
         if self.sync_status.master is None:
-            # self.logger.debug("Is Master")
-
-            # Ensure 'slaves' exists and is not empty before proceeding
             if self.sync_status.slaves:
                 self.mass_player.group_childs = (
                     self.sync_status.slaves if len(self.sync_status.slaves) > 1 else set()
                 )
                 self.mass_player.synced_to = None
 
-            # Example of retrieving the client's status name
-            # print(sync_status_result.name)
-
-            # Get the container's status and determine the active source
-            # container = status_result
-            # if container:
-            #     if container.get("type") == "linein":
-            #         self.mass_player.active_source = SOURCE_LINE_IN
-            #     elif container.get("type") == "linein.airplay":
-            #         self.mass_player.active_source = SOURCE_AIRPLAY
-            #     else:
-            #         self.mass_player.active_source = None
-            # self.logger.debug("seconds")
-            # self.logger.debug(status_result.seconds)
-
             if self.status.state == "stream":
-                self.logger.debug(self.status.state)
-                # test variables:
-                # track_images = status_result.image
-                # track_image_url = status_result.image
-                # track_duration_millis = status_result.total_seconds/1000
                 self.mass_player.current_media = PlayerMedia(
                     uri=self.status.stream_url,
                     title=self.status.name,
                     artist=self.status.artist,
                     album=self.status.album,
-                    # duration=self.status.total_seconds / 1000,
                     image_url=self.status.image,
+                    # Does not make sense as bluesound does not report song length
+                    # duration=self.status.total_seconds / 1000,
                 )
 
             # TODO fix sync and multiple players
+
             # elif container.get("name") and container.get("id"):
             #     images = self.status.image
             #     image_url = self.status.image
@@ -276,6 +253,7 @@ class BluesoundPlayer:
             self.mass_player.group_childs = set()
             self.mass_player.synced_to = self.sync_status.master
             self.mass_player.active_source = self.sync_status.master
+
         # self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
 
         self.mass_player.elapsed_time = self.status.seconds
