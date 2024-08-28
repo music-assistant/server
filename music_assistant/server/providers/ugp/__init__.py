@@ -7,6 +7,8 @@ allowing the user to create player groups from all players known in the system.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from time import time
 from typing import TYPE_CHECKING, Final, cast
 
@@ -36,12 +38,7 @@ from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_HTTP_PROFILE, SYNCGROUP_PREFIX
 from music_assistant.server.controllers.streams import DEFAULT_STREAM_HEADERS
-from music_assistant.server.helpers.audio import (
-    get_chunksize,
-    get_ffmpeg_stream,
-    get_player_filter_params,
-)
-from music_assistant.server.helpers.multi_client_stream import MultiClientStream
+from music_assistant.server.helpers.audio import get_ffmpeg_stream
 from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -57,13 +54,13 @@ if TYPE_CHECKING:
 # ruff: noqa: ARG002
 
 UGP_FORMAT = AudioFormat(
-    content_type=ContentType.from_bit_depth(24), sample_rate=48000, bit_depth=24
+    content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
 UGP_PREFIX = "ugp_"
 
 CONF_ACTION_CREATE_PLAYER = "create_player"
 CONF_ACTION_CREATE_PLAYER_SAVE = "create_player_save"
-CONF_ENTRY_SAMPLE_RATES_UGP = create_sample_rates_config_entry(48000, 24, 48000, 24, True)
+CONF_ENTRY_SAMPLE_RATES_UGP = create_sample_rates_config_entry(44100, 16, 44100, 16, True)
 CONF_GROUP_PLAYERS: Final[str] = "group_players"
 CONF_NEW_GROUP_NAME: Final[str] = "name"
 CONF_NEW_GROUP_MEMBERS: Final[list[str]] = "members"
@@ -170,7 +167,7 @@ class UniversalGroupProvider(PlayerProvider):
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config)
         self._registered_routes: set[str] = set()
-        self.streams: dict[str, MultiClientStream] = {}
+        self.streams: dict[str, UGPStream] = {}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -310,7 +307,7 @@ class UniversalGroupProvider(PlayerProvider):
         group_player = self.mass.players.get(player_id)
         # stop any existing stream first
         if (existing := self.streams.pop(player_id, None)) and not existing.done:
-            existing.task.cancel()
+            await existing.stop()
 
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -339,10 +336,8 @@ class UniversalGroupProvider(PlayerProvider):
             )
 
         # start the stream task
-        self.streams[player_id] = MultiClientStream(
-            audio_source=audio_source, audio_format=UGP_FORMAT
-        )
-        base_url = f"{self.mass.streams.base_url}/ugp/{player_id}.flac"
+        self.streams[player_id] = UGPStream(audio_source=audio_source, audio_format=UGP_FORMAT)
+        base_url = f"{self.mass.streams.base_url}/ugp/{player_id}.aac"
 
         # forward to downstream play_media commands
         async with TaskManager(self.mass) as tg:
@@ -414,23 +409,21 @@ class UniversalGroupProvider(PlayerProvider):
             group_childs=set(members),
         )
         self.mass.players.register_or_update(player)
-        # register dynamic routes for the ugp stream (both flac and mp3)
-        for fmt in ("mp3", "flac"):
-            route_path = f"/ugp/{group_player_id}.{fmt}"
-            self.mass.streams.register_dynamic_route(route_path, self._serve_ugp_stream)
-            self._registered_routes.add(route_path)
+        # register dynamic route for the ugp stream
+        route_path = f"/ugp/{group_player_id}.aac"
+        self.mass.streams.register_dynamic_route(route_path, self._serve_ugp_stream)
+        self._registered_routes.add(route_path)
 
         return player
 
-    def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:
+    def on_group_child_power(
+        self, group_player: Player, child_player: Player, new_power: bool, group_state: PlayerState
+    ) -> None:
         """
         Call when a power command was executed on one of the child player of a PlayerGroup.
 
-        This is used to handle special actions such as (re)syncing.
+        The group state is sent with the state BEFORE the power command was executed.
         """
-        group_player = self.mass.players.get(player_id)
-        child_player = self.mass.players.get(child_player_id)
-
         if not group_player.powered:
             # guard, this should be caught in the player controller but just in case...
             return None
@@ -438,7 +431,7 @@ class UniversalGroupProvider(PlayerProvider):
         powered_childs = [
             x
             for x in self.mass.players.iter_group_members(group_player, True)
-            if not (not new_power and x.player_id == child_player_id)
+            if not (not new_power and x.player_id == child_player.player_id)
         ]
         if new_power and child_player not in powered_childs:
             powered_childs.append(child_player)
@@ -449,13 +442,13 @@ class UniversalGroupProvider(PlayerProvider):
                 "Group %s has no more powered members, turning off group player",
                 group_player.display_name,
             )
-            self.mass.create_task(self.cmd_power(player_id, False))
+            self.mass.create_task(self.cmd_power(group_player.player_id, False))
             return False
 
         # if a child player turned ON while the group player is already playing
         # we just direct it to the existing stream (we dont care about the audio being in sync)
-        if new_power and group_player.state == PlayerState.PLAYING:
-            base_url = f"{self.mass.streams.base_url}/ugp/{player_id}.flac"
+        if new_power and group_state == PlayerState.PLAYING:
+            base_url = f"{self.mass.streams.base_url}/ugp/{group_player.player_id}.aac"
             self.mass.create_task(
                 self.mass.players.play_media(
                     child_player.player_id,
@@ -473,7 +466,6 @@ class UniversalGroupProvider(PlayerProvider):
     async def _serve_ugp_stream(self, request: web.Request) -> web.Response:
         """Serve the UGP (multi-client) flow stream audio to a player."""
         ugp_player_id = request.path.rsplit(".")[0].rsplit("/")[-1]
-        fmt = request.path.rsplit(".")[-1]
         child_player_id = request.query.get("player_id")  # optional!
 
         if not (ugp_player := self.mass.players.get(ugp_player_id)):
@@ -482,18 +474,12 @@ class UniversalGroupProvider(PlayerProvider):
         if not (stream := self.streams.get(ugp_player_id, None)) or stream.done:
             raise web.HTTPNotFound(body=f"There is no active UGP stream for {ugp_player_id}!")
 
-        output_format = AudioFormat(
-            content_type=ContentType.try_parse(fmt),
-            sample_rate=stream.audio_format.sample_rate,
-            bit_depth=stream.audio_format.bit_depth,
-        )
-
         http_profile: str = await self.mass.config.get_player_config_value(
             child_player_id, CONF_HTTP_PROFILE
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "Content-Type": f"audio/{fmt}",
+            "Content-Type": "audio/aac",
             "Accept-Ranges": "none",
             "Cache-Control": "no-cache",
             "Connection": "close",
@@ -501,7 +487,7 @@ class UniversalGroupProvider(PlayerProvider):
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         if http_profile == "forced_content_length":
-            resp.content_length = get_chunksize(output_format, 24 * 3600)
+            resp.content_length = 4294967296
         elif http_profile == "chunked":
             resp.enable_chunked_encoding()
 
@@ -517,17 +503,10 @@ class UniversalGroupProvider(PlayerProvider):
             ugp_player.display_name,
             child_player_id or request.remote,
         )
-
-        async for chunk in stream.get_stream(
-            output_format=output_format,
-            filter_params=get_player_filter_params(self.mass, child_player_id)
-            if child_player_id
-            else None,
-        ):
+        async for chunk in stream.subscribe():
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
-                # race condition
+            except (ConnectionError, ConnectionResetError):
                 break
 
         return resp
@@ -550,3 +529,70 @@ class UniversalGroupProvider(PlayerProvider):
             and x not in syncgroup_childs
             and not x.startswith(UGP_PREFIX)
         ]
+
+
+class UGPStream:
+    """
+    Implementation of a Stream for the Universal Group Player.
+
+    Basiclaly this is like a fake radio radio stream (AAC) format with multiple subscribers.
+    The AAC format is chosen because it is widely supported and has a good balance between
+    quality and bandwidth and also allows for mid-stream joining of (extra) players.
+    """
+
+    def __init__(
+        self,
+        audio_source: AsyncGenerator[bytes, None],
+        audio_format: AudioFormat,
+    ) -> None:
+        """Initialize UGP Stream."""
+        self.audio_source = audio_source
+        self.input_format = audio_format
+        self.output_format = AudioFormat(content_type=ContentType.AAC)
+        self.subscribers: list[Callable[[bytes], Awaitable]] = []
+        self._task: asyncio.Task | None = None
+        self._done: asyncio.Event = asyncio.Event()
+
+    @property
+    def done(self) -> bool:
+        """Return if this stream is already done."""
+        return self._done.is_set() and self._task and self._task.done()
+
+    async def stop(self) -> None:
+        """Stop/cancel the stream."""
+        if self._done.is_set():
+            return
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._done.set()
+
+    async def subscribe(self) -> AsyncGenerator[bytes, None]:
+        """Subscribe to the raw/unaltered audio stream."""
+        # start the runner as soon as the (first) client connects
+        if not self._task:
+            self._task = asyncio.create_task(self._runner())
+        queue = asyncio.Queue(1)
+        try:
+            self.subscribers.append(queue.put)
+            while True:
+                chunk = await queue.get()
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            self.subscribers.remove(queue.put)
+
+    async def _runner(self) -> None:
+        """Run the stream for the given audio source."""
+        await asyncio.sleep(0.25)  # small delay to allow subscribers to connect
+        async for chunk in get_ffmpeg_stream(
+            audio_input=self.audio_source,
+            input_format=self.input_format,
+            output_format=self.output_format,
+            # TODO: enable readrate limiting + initial burst once we have a newer ffmpeg version
+            # extra_input_args=["-readrate", "1.15"],
+        ):
+            await asyncio.gather(*[sub(chunk) for sub in self.subscribers], return_exceptions=True)
+        # empty chunk when done
+        await asyncio.gather(*[sub(b"") for sub in self.subscribers], return_exceptions=True)
+        self._done.set()

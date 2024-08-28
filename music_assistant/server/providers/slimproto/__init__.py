@@ -59,10 +59,11 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
-from music_assistant.server.helpers.multi_client_stream import MultiClientStream
 from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.ugp import UniversalGroupProvider
+
+from .multi_client_stream import MultiClientStream
 
 if TYPE_CHECKING:
     from aioslimproto.models import SlimEvent
