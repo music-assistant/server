@@ -94,7 +94,7 @@ PLAYBACK_STATE_MAP = {
     "stream": PlayerState.PLAYING,
     "stop": PlayerState.IDLE,
     "pause": PlayerState.PAUSED,
-    "connecting": PlayerState.CONNECTING,
+    "connecting": PlayerState.IDLE,
 }
 
 SOURCE_LINE_IN = "line_in"
@@ -112,7 +112,7 @@ async def setup(
 
 
 async def get_config_entries(
-    # not used yet, ruff doesnt like that
+    # not used yet, ruff doesn't like that
     mass: MusicAssistant,
     instance_id: str | None = None,
     action: str | None = None,
