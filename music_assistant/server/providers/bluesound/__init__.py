@@ -187,7 +187,7 @@ class BluesoundPlayer:
 
     async def update_attributes(self) -> None:
         """Update the player attributes."""
-        self.logger.debug("Update attributes")
+        # self.logger.debug("Update attributes")
 
         self.sync_status = await self.client.sync_status()
         self.status = await self.client.status()
@@ -200,7 +200,7 @@ class BluesoundPlayer:
             self.mass_player.volume_level = self.sync_status.volume
         self.mass_player.volume_muted = self.status.mute
 
-        self.logger.debug(self.status.input_id)
+        # self.logger.debug(self.status.input_id)
         if self.status.state == "stream" and self.status.input_id == "input0":
             self.mass_player.active_source = SOURCE_LINE_IN
         elif self.status.state == "stream" and self.status.input_id == "Airplay":
@@ -259,7 +259,7 @@ class BluesoundPlayer:
         self.mass_player.elapsed_time = self.status.seconds
         self.mass_player.elapsed_time_last_updated = time.time()
         self.mass.players.update(self.player_id)
-        self.logger.debug(self.status.seconds)
+        # self.logger.debug(self.status.seconds)
         self.mass_player.state = PLAYBACK_STATE_MAP[self.status.state]
         self.mass_player.can_sync_with = (
             tuple(x for x in self.prov.bluos_players if x != self.player_id),
@@ -421,7 +421,7 @@ class BluesoundPlayerProvider(PlayerProvider):
                 PlayerFeature.SEEK,
             ),
             needs_poll=True,
-            poll_interval=1,
+            poll_interval=30,
         )
         self.mass.players.register(mass_player)
         # sync_status_result = await self.client.sync_status()
@@ -458,6 +458,10 @@ class BluesoundPlayerProvider(PlayerProvider):
         """Send STOP command to given player."""
         if bluos_player := self.bluos_players[player_id]:
             await bluos_player.client.stop()
+            mass_player = self.mass.players.get(self.player_id)
+            # Optimistic state, reduces interface lag
+            mass_player.state = PLAYBACK_STATE_MAP["stop"]
+
         # MANDATORY
         # this method is mandatory and should be implemented.
         # this method should send a stop command to the given player.
@@ -466,15 +470,21 @@ class BluesoundPlayerProvider(PlayerProvider):
         """Send PLAY command to given player."""
         if bluos_player := self.bluos_players[player_id]:
             await bluos_player.client.play()
+            mass_player = self.mass.players.get(self.player_id)
+            # Optimistic state, reduces interface lag
+            mass_player.state = PLAYBACK_STATE_MAP["play"]
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         if bluos_player := self.bluos_players[player_id]:
             await bluos_player.client.pause()
+            mass_player = self.mass.players.get(self.player_id)
+            # Optimistic state, reduces interface lag
+            mass_player.state = PLAYBACK_STATE_MAP["pause"]
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        self.logger.debug(volume_level)
+        # self.logger.debug(volume_level)
         if bluos_player := self.bluos_players[player_id]:
             await bluos_player.client.volume(level=volume_level)
             mass_player = self.mass.players.get(self.player_id)
