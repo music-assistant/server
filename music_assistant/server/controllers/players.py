@@ -44,7 +44,9 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_HIDE_PLAYER,
     CONF_PLAYERS,
+    CONF_PREVENT_SYNC_LEADER_OFF,
     CONF_SYNC_LEADER,
+    CONF_SYNCGROUP_DEFAULT_ON,
     CONF_TTS_PRE_ANNOUNCE,
     SYNCGROUP_PREFIX,
 )
@@ -300,6 +302,21 @@ class PlayerController(CoreController):
         if active_group_player_id := self._get_active_player_group(player):
             active_group_player = self.get(active_group_player_id)
             group_player_state = active_group_player.state
+            if not powered and active_group_player.type == PlayerType.SYNC_GROUP:
+                # handle 'prevent sync leader off' feature
+                powered_members = list(self.iter_group_members(active_group_player, True))
+                sync_leader = self.get_sync_leader(active_group_player)
+                if (
+                    len(powered_members) > 1
+                    and (sync_leader == player)
+                    and self.mass.config.get_raw_player_config_value(
+                        active_group_player_id, CONF_PREVENT_SYNC_LEADER_OFF, False
+                    )
+                ):
+                    raise PlayerCommandFailed(
+                        f"{player.display_name} is the sync "
+                        "leader of a syncgroup and cannot be turned off"
+                    )
         else:
             active_group_player = None
 
@@ -460,11 +477,17 @@ class PlayerController(CoreController):
         if not power and group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             await self.cmd_stop(player_id)
 
+        default_on_pref = self.mass.config.get_raw_player_config_value(
+            group_player.player_id, CONF_SYNCGROUP_DEFAULT_ON, "powered_only"
+        )
+
         # handle syncgroup - this will also work for temporary syncgroups
         # where players are manually synced against a group leader
         any_member_powered = False
         async with TaskManager(self.mass) as tg:
-            for member in self.iter_group_members(group_player, only_powered=True):
+            for member in self.iter_group_members(
+                group_player, only_powered=(default_on_pref != "always_all")
+            ):
                 any_member_powered = True
                 if power:
                     if member.state in (PlayerState.PLAYING, PlayerState.PAUSED):
@@ -481,12 +504,21 @@ class PlayerController(CoreController):
                     member.active_source = None
                     member.active_group = None
                     self.update(member.player_id, skip_forward=True)
-            # edge case: group turned on but no members are powered, power them all!
-            if not any_member_powered and power:
+            # handle default power ON
+            if power:
+                sync_leader = self.get_sync_leader(group_player)
                 for member in self.iter_group_members(group_player, only_powered=False):
-                    tg.create_task(self.cmd_power(member.player_id, True))
-                    member.active_group = group_player.player_id
-                    member.active_source = group_player.active_source
+                    if default_on_pref == "always_all" or (
+                        sync_leader
+                        and default_on_pref == "always_leader"
+                        and member.player_id == sync_leader.player_id
+                    ):
+                        tg.create_task(self.cmd_power(member.player_id, True))
+                        member.active_group = group_player.player_id
+                        member.active_source = group_player.active_source
+                        any_member_powered = True
+                if not any_member_powered:
+                    return
 
         if power and group_player.player_id.startswith(SYNCGROUP_PREFIX):
             await self.sync_syncgroup(group_player.player_id)
