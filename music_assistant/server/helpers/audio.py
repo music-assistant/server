@@ -33,6 +33,8 @@ from music_assistant.common.models.errors import (
 from music_assistant.common.models.media_items import AudioFormat, ContentType
 from music_assistant.common.models.streamdetails import LoudnessMeasurement, StreamDetails
 from music_assistant.constants import (
+    CONF_BYPASS_NORMALIZATION_RADIO,
+    CONF_BYPASS_NORMALIZATION_SHORT,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
@@ -382,15 +384,24 @@ async def get_stream_details(
     streamdetails.seek_position = seek_position
     streamdetails.fade_in = fade_in
     # handle volume normalization details
-    if not streamdetails.loudness:
+    is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
+    bypass_normalization = (
+        is_radio
+        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_RADIO)
+    ) or (
+        streamdetails.duration is not None
+        and streamdetails.duration < 60
+        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_SHORT)
+    )
+    if not bypass_normalization and not streamdetails.loudness:
         streamdetails.loudness = await mass.music.get_track_loudness(
             streamdetails.item_id, streamdetails.provider
         )
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
-    if player_settings.get_value(CONF_VOLUME_NORMALIZATION):
-        streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
-    else:
+    if bypass_normalization or not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         streamdetails.target_loudness = None
+    else:
+        streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
 
     if not streamdetails.duration:
         streamdetails.duration = queue_item.duration
@@ -897,8 +908,6 @@ def get_ffmpeg_args(
             "1",
             "-reconnect_streamed",
             "1",
-            "-reconnect_delay_max",
-            "10",
         ]
         if major_version > 4:
             # these options are only supported in ffmpeg > 5
