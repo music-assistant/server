@@ -35,25 +35,23 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, TypedDict
 
-from pyblu import Player as BluosPlayer
-
 # TODO fix input and presets
 # from pyblu import Input, Preset
+from pyblu import Player as BluosPlayer
 from pyblu import Status, SyncStatus
 from zeroconf import ServiceStateChange
 
-from music_assistant.common.models.config_entries import (
+from music_assistant.common.models.config_entries import (  # PlayerConfig,
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
-    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
+    CONF_ENTRY_ENABLE_ICY_METADATA,
+    CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     ConfigEntry,
     ConfigValueType,
-    # PlayerConfig,
 )
-from music_assistant.common.models.enums import (
-    # ConfigEntryType,
+from music_assistant.common.models.enums import (  # ConfigEntryType,
     PlayerFeature,
     PlayerState,
     PlayerType,
@@ -443,7 +441,7 @@ class BluesoundPlayerProvider(PlayerProvider):
                 PlayerFeature.SEEK,
             ),
             needs_poll=True,
-            poll_interval=1,
+            poll_interval=30,
         )
         self.mass.players.register(mass_player)
         # sync_status_result = await self.client.sync_status()
@@ -472,8 +470,9 @@ class BluesoundPlayerProvider(PlayerProvider):
             CONF_ENTRY_HTTP_PROFILE_FORCED_2,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
-            CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
+            CONF_ENTRY_ENFORCE_MP3,
             CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
+            CONF_ENTRY_ENABLE_ICY_METADATA,
         )
 
     async def cmd_stop(self, player_id: str) -> None:
