@@ -99,6 +99,9 @@ PLAYBACK_STATE_MAP = {
 
 SOURCE_LINE_IN = "line_in"
 SOURCE_AIRPLAY = "airplay"
+SOURCE_SPOTIFY = "spotify"
+SOURCE_UNKNOWN = "unknown"
+SOURCE_RADIO = "radio"
 
 
 async def setup(
@@ -182,7 +185,7 @@ class BluesoundPlayer:
         self.connected = False
         self.logger.debug("Disconnected from player API")
 
-    async def update_attributes(self, player_id: str) -> None:
+    async def update_attributes(self) -> None:
         """Update the player attributes."""
         self.logger.debug("Update attributes")
 
@@ -196,6 +199,19 @@ class BluesoundPlayer:
         else:
             self.mass_player.volume_level = self.sync_status.volume
         self.mass_player.volume_muted = self.status.mute
+
+        self.logger.debug(self.status.input_id)
+        if self.status.state == "stream" and self.status.input_id == "input0":
+            self.mass_player.active_source = SOURCE_LINE_IN
+        elif self.status.state == "stream" and self.status.input_id == "Airplay":
+            self.mass_player.active_source = SOURCE_AIRPLAY
+        elif self.status.state == "stream" and self.status.input_id == "Spotify":
+            self.mass_player.active_source = SOURCE_SPOTIFY
+        elif self.status.state == "stream" and self.status.input_id == "RadioParadise":
+            self.mass_player.active_source = SOURCE_RADIO
+        # elif self.status.state ==  "stream" and self.status.input_id == "None":
+        # Streaming Music Assistant falls in this category
+        # self.mass_player.active_source = SOURCE_UNKNOWN
 
         # TODO check pair status
         # active_group = sync_status_result.group
@@ -229,7 +245,8 @@ class BluesoundPlayer:
             # self.logger.debug("seconds")
             # self.logger.debug(status_result.seconds)
 
-            if self.status.state:
+            if self.status.state == "stream":
+                self.logger.debug(self.status.state)
                 # test variables:
                 # track_images = status_result.image
                 # track_image_url = status_result.image
