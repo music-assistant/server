@@ -182,7 +182,7 @@ class BluesoundPlayer:
         self.connected = False
         self.logger.debug("Disconnected from player API")
 
-    async def update_attributes(self) -> None:
+    async def update_attributes(self, player_id: str) -> None:
         """Update the player attributes."""
         self.logger.debug("Update attributes")
 
@@ -280,7 +280,6 @@ class BluesoundPlayerProvider(PlayerProvider):
         """Initialize the BluOS Provider."""
         super().__init__(*args, **kwargs)
         self.bluos_players = {}
-        self.player_id = ()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -300,8 +299,6 @@ class BluesoundPlayerProvider(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        self.bluos_player = self.bluos_players[self.player_id]
-        self.mass_player = self.mass.players.get(self.player_id)
 
         # OPTIONAL
         # this is an optional method that you can implement if
@@ -464,33 +461,38 @@ class BluesoundPlayerProvider(PlayerProvider):
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
-        await self.bluos_player.client.stop()
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.client.stop()
         # MANDATORY
         # this method is mandatory and should be implemented.
         # this method should send a stop command to the given player.
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
-        await self.bluos_player.client.play()
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.client.play()
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
-        await self.bluos_player.client.pause()
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.client.pause()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         self.logger.debug(volume_level)
-        await self.bluos_player.client.volume(level=volume_level)
-
-        # Optimistic state, reduces interface lag
-        self.mass_player.volume_level = volume_level
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.client.volume(level=volume_level)
+            mass_player = self.mass.players.get(self.player_id)
+            # Optimistic state, reduces interface lag
+            mass_player.volume_level = volume_level
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
-        await self.bluos_player.client.volume(mute=muted)
-
-        # Optimistic state, reduces interface lag
-        self.mass_player.volume_mute = muted
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.client.volume(mute=muted)
+            # Optimistic state, reduces interface lag
+            mass_player = self.mass.players.get(self.player_id)
+            mass_player.volume_mute = muted
 
     async def cmd_seek(self, player_id: str, position: int) -> None:
         """Handle SEEK command for given queue.
@@ -498,7 +500,8 @@ class BluesoundPlayerProvider(PlayerProvider):
         - player_id: player_id of the player to handle the command.
         - position: position in seconds to seek to in the current playing item.
         """
-        await self.bluos_player.client.play(seek=position)
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.client.play(seek=position)
 
         # OPTIONAL - required only if you specified PlayerFeature.SEEK
         # this method should handle the seek command for the given player.
@@ -520,7 +523,8 @@ class BluesoundPlayerProvider(PlayerProvider):
         # media_url = f"{self.mass.streams.base_url}/play/{media.queue_id}"
 
         # Use the play_url method to start playback
-        playback_state = await self.bluos_player.client.play_url(media.uri, timeout=timeout)
+        if bluos_player := self.bluos_players[player_id]:
+            playback_state = await bluos_player.client.play_url(media.uri, timeout=timeout)
 
         # Optionally, handle the playback_state or additional logic here
         if playback_state != "playing":
@@ -562,14 +566,17 @@ class BluesoundPlayerProvider(PlayerProvider):
 
             - player_id: player_id of the player to handle the command.
         """
-        await self.bluos_player.client.player.leave_group()
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.client.player.leave_group()
 
     async def play_announcement(
         self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         """Send announcement to player."""
-        await self.bluos_player.client.Input(announcement.uri, volume_level)
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.client.Input(announcement.uri, volume_level)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
-        await self.bluos_player.update_attributes()
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.update_attributes()
