@@ -66,6 +66,10 @@ CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
 CONF_HTTP_PROFILE: Final[str] = "http_profile"
 CONF_SYNC_LEADER: Final[str] = "sync_leader"
+CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
+CONF_BYPASS_NORMALIZATION_SHORT: Final[str] = "bypass_normalization_short"
+CONF_PREVENT_SYNC_LEADER_OFF: Final[str] = "prevent_sync_leader_off"
+CONF_SYNCGROUP_DEFAULT_ON: Final[str] = "syncgroup_default_on"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

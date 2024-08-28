@@ -22,7 +22,9 @@ from soco.discovery import discover, scan_network
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
+    CONF_ENTRY_ENFORCE_MP3,
+    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+    CONF_ENTRY_HTTP_PROFILE,
     ConfigEntry,
     ConfigValueType,
     create_sample_rates_config_entry,
@@ -177,12 +179,14 @@ class SonosPlayerProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         if not (self.sonosplayers.get(player_id)):
             # most probably a syncgroup
-            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED)
+            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_ENFORCE_MP3)
         return (
             *base_entries,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_SAMPLE_RATES,
-            CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
+            CONF_ENTRY_ENFORCE_MP3,
+            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+            CONF_ENTRY_HTTP_PROFILE,
         )
 
     def is_device_invisible(self, ip_address: str) -> bool:
@@ -287,7 +291,7 @@ class SonosPlayerProvider(PlayerProvider):
                 "accept play_media command, it is synced to another player."
             )
             raise PlayerCommandFailed(msg)
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
+        if await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3):
             media.uri = media.uri.replace(".flac", ".mp3")
         didl_metadata = create_didl_metadata(media)
         await asyncio.to_thread(sonos_player.soco.play_uri, media.uri, meta=didl_metadata)
@@ -296,7 +300,7 @@ class SonosPlayerProvider(PlayerProvider):
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         sonos_player = self.sonosplayers[player_id]
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
+        if await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3):
             media.uri = media.uri.replace(".flac", ".mp3")
         didl_metadata = create_didl_metadata(media)
         # set crossfade according to player setting
