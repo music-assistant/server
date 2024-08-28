@@ -5,27 +5,25 @@ from __future__ import annotations
 from abc import abstractmethod
 
 from music_assistant.common.models.config_entries import (
+    BASE_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
-    CONF_ENTRY_AUTO_PLAY,
-    CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_HIDE_PLAYER,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
-    CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
-    CONF_ENTRY_SAMPLE_RATES,
-    CONF_ENTRY_TTS_PRE_ANNOUNCE,
-    CONF_ENTRY_VOLUME_NORMALIZATION,
-    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     ConfigEntry,
     ConfigValueOption,
     PlayerConfig,
 )
 from music_assistant.common.models.enums import ConfigEntryType, PlayerState
 from music_assistant.common.models.player import Player, PlayerMedia
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_SYNC_LEADER, SYNCGROUP_PREFIX
+from music_assistant.constants import (
+    CONF_GROUP_MEMBERS,
+    CONF_PREVENT_SYNC_LEADER_OFF,
+    CONF_SYNC_LEADER,
+    CONF_SYNCGROUP_DEFAULT_ON,
+    SYNCGROUP_PREFIX,
+)
 
 from .provider import Provider
 
@@ -40,21 +38,11 @@ class PlayerProvider(Provider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        entries = (
-            CONF_ENTRY_PLAYER_ICON,
-            CONF_ENTRY_FLOW_MODE,
-            CONF_ENTRY_VOLUME_NORMALIZATION,
-            CONF_ENTRY_AUTO_PLAY,
-            CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
-            CONF_ENTRY_HIDE_PLAYER,
-            CONF_ENTRY_TTS_PRE_ANNOUNCE,
-            CONF_ENTRY_SAMPLE_RATES,
-            CONF_ENTRY_HTTP_PROFILE_FORCED_1,
-        )
         if player_id.startswith(SYNCGROUP_PREFIX):
-            # add default entries for syncgroups
-            entries = (
-                *entries,
+            # default entries for syncgroups
+            return (
+                *BASE_PLAYER_CONFIG_ENTRIES,
+                CONF_ENTRY_PLAYER_ICON_GROUP,
                 ConfigEntry(
                     key=CONF_GROUP_MEMBERS,
                     type=ConfigEntryType.STRING,
@@ -93,18 +81,44 @@ class PlayerProvider(Provider):
                     "the sync leader, select it here.",
                     required=True,
                 ),
-                CONF_ENTRY_PLAYER_ICON_GROUP,
+                ConfigEntry(
+                    key=CONF_PREVENT_SYNC_LEADER_OFF,
+                    type=ConfigEntryType.BOOLEAN,
+                    label="Prevent sync leader power off",
+                    default_value=False,
+                    description="With this setting enabled, Music Assistant will disallow powering "
+                    "off the sync leader player if other players are still "
+                    "active in the sync group. This is useful if you want to prevent "
+                    "a short drop in the music while the music is transferred to another player.",
+                    required=True,
+                ),
+                ConfigEntry(
+                    key=CONF_SYNCGROUP_DEFAULT_ON,
+                    type=ConfigEntryType.STRING,
+                    label="Default power ON behavior",
+                    default_value="powered_only",
+                    options=(
+                        ConfigValueOption("Always power ON all child devices", "always_all"),
+                        ConfigValueOption("Always power ON sync leader", "always_leader"),
+                        ConfigValueOption("Start with powered players", "powered_only"),
+                        ConfigValueOption("Ignore", "ignore"),
+                    ),
+                    description="What should happen if you power ON a sync group "
+                    "(or you start playback to it), while no (or not all) players "
+                    "are powered ON ?\n\nShould Music Assistant power ON all players, or only the "
+                    "sync leader, or should it ignore the command if no players are powered ON ?",
+                    required=False,
+                ),
             )
-        if not player_id.startswith(SYNCGROUP_PREFIX):
+
+        return (
+            *BASE_PLAYER_CONFIG_ENTRIES,
             # add default entries for announce feature
-            entries = (
-                *entries,
-                CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
-                CONF_ENTRY_ANNOUNCE_VOLUME,
-                CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
-                CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
-            )
-        return entries
+            CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+            CONF_ENTRY_ANNOUNCE_VOLUME,
+            CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
+            CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+        )
 
     def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
