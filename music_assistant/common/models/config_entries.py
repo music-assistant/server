@@ -645,3 +645,17 @@ def create_sample_rates_config_entry(
     conf_entry.options = tuple(options)
     conf_entry.default_value = default_value
     return conf_entry
+
+
+BASE_PLAYER_CONFIG_ENTRIES = (
+    # config entries that are valid for all players
+    CONF_ENTRY_PLAYER_ICON,
+    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_VOLUME_NORMALIZATION,
+    CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+    CONF_ENTRY_HIDE_PLAYER,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_SAMPLE_RATES,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
+)
