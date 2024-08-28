@@ -50,7 +50,7 @@ async def library_items_add_remove(
     item_id: str,
     media_type: MediaType,
     add: bool = True,
-) -> None:
+) -> bool:
     """Async wrapper around the tidalapi Favorites.items add/remove function."""
 
     def inner() -> bool:
@@ -112,7 +112,7 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
             msg = "Tidal API rate limit reached"
             raise ResourceTemporarilyUnavailable(msg)
         else:
-            all_albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
+            all_albums: list[TidalAlbum] = artist_obj.get_albums(limit=DEFAULT_LIMIT)
             # extend with EPs and singles
             all_albums.extend(artist_obj.get_ep_singles(limit=DEFAULT_LIMIT))
             # extend with compilations
@@ -189,7 +189,7 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
 async def get_stream(track: TidalTrack) -> TidalStream:
     """Async wrapper around the tidalapi Track.get_stream_url function."""
 
-    def inner() -> str:
+    def inner() -> TidalStream:
         try:
             return track.get_stream()
         except ObjectNotFound as err:

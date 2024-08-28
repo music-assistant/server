@@ -174,7 +174,7 @@ class FFMpeg(AsyncProcess):
                 if self.input_format.content_type == ContentType.UNKNOWN:
                     content_type_raw = line.split(": Audio: ")[1].split(" ")[0]
                     content_type = ContentType.try_parse(content_type_raw)
-                    self.logger.info(
+                    self.logger.debug(
                         "Detected (input) content type: %s (%s)", content_type, content_type_raw
                     )
                     self.input_format.content_type = content_type

@@ -471,17 +471,19 @@ class QobuzProvider(MusicProvider):
                 "format_id": format_id,
             }
         ]
-        await self._post_data("track/reportStreamingStart", data=events)
+        async with self.throttler.bypass():
+            await self._post_data("track/reportStreamingStart", data=events)
 
     async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
         """Handle callback when an item completed streaming."""
         user_id = self._user_auth_info["user"]["id"]
-        await self._get_data(
-            "/track/reportStreamingEnd",
-            user_id=user_id,
-            track_id=str(streamdetails.item_id),
-            duration=try_parse_int(seconds_streamed),
-        )
+        async with self.throttler.bypass():
+            await self._get_data(
+                "/track/reportStreamingEnd",
+                user_id=user_id,
+                track_id=str(streamdetails.item_id),
+                duration=try_parse_int(seconds_streamed),
+            )
 
     def _parse_artist(self, artist_obj: dict):
         """Parse qobuz artist object to generic layout."""

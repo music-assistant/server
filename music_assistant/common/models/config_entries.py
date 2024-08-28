@@ -27,6 +27,7 @@ from music_assistant.constants import (
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
     CONF_HIDE_PLAYER,
+    CONF_HTTP_PROFILE,
     CONF_ICON,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
@@ -589,6 +590,34 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     category="advanced",
     description="The sample rates (and bit depths) supported by this player.\n"
     "Content with unsupported sample rates will be automatically resampled.",
+)
+
+
+CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
+    key=CONF_HTTP_PROFILE,
+    type=ConfigEntryType.STRING,
+    options=(
+        ConfigValueOption("Profile 1 - chunked", "chunked"),
+        ConfigValueOption("Profile 2 - no content length", "no_content_length"),
+        ConfigValueOption("Profile 3 - forced content length", "forced_content_length"),
+    ),
+    default_value="chunked",
+    label="HTTP Profile used for sending audio",
+    category="advanced",
+    description="This is considered to be a very advanced setting, only adjust this if needed, "
+    "for example if your player stops playing halfway streams or if you experience "
+    "other playback related issues. In most cases the default setting, "
+    "'chunked transfer encoding', works just fine. \n\n",
+)
+
+CONF_ENTRY_HTTP_PROFILE_DEFAULT_2 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length"}
+)
+CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "chunked", "hidden": True}
+)
+CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length", "hidden": True}
 )
 
 

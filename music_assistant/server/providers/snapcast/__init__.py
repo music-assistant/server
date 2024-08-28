@@ -246,7 +246,7 @@ class SnapCastProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -472,8 +472,8 @@ class SnapCastProvider(PlayerProvider):
             # special case: UGP stream
             ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
             ugp_stream = ugp_provider.streams[media.queue_id]
-            input_format = ugp_stream.audio_format
-            audio_source = ugp_stream.subscribe_raw()
+            input_format = ugp_stream.output_format
+            audio_source = ugp_stream.subscribe()
         elif media.media_type == MediaType.RADIO and media.queue_id and media.queue_item_id:
             # radio stream - consume media stream directly
             input_format = DEFAULT_SNAPCAST_FORMAT

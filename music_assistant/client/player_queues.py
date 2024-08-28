@@ -214,6 +214,21 @@ class PlayerQueues:
             start_item=start_item,
         )
 
+    async def transfer_queue(
+        self,
+        source_queue_id: str,
+        target_queue_id: str,
+        auto_play: bool | None = None,
+    ) -> None:
+        """Transfer queue to another queue."""
+        await self.client.send_command(
+            "player_queues/transfer",
+            source_queue_id=source_queue_id,
+            target_queue_id=target_queue_id,
+            auto_play=auto_play,
+            require_schema=25,
+        )
+
     # Other endpoints/commands
 
     async def _get_player_queues(self) -> list[PlayerQueue]:

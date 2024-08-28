@@ -9,7 +9,6 @@ the upnp callbacks and json rpc api for slimproto clients.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 import urllib.parse
@@ -35,16 +34,19 @@ from music_assistant.constants import (
     CONF_BIND_PORT,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
+    CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
     SILENCE_FILE,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
     FFMpeg,
     check_audio_support,
     crossfade_pcm_parts,
+    get_chunksize,
     get_ffmpeg_stream,
     get_hls_substream,
     get_icy_stream,
@@ -264,16 +266,29 @@ class StreamsController(CoreController):
             default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
             default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
+        )
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "Content-Type": f"audio/{output_format.output_format_str}",
+            "Accept-Ranges": "none",
+            "Cache-Control": "no-cache",
+            "Connection": "close",
         }
         resp = web.StreamResponse(
             status=200,
             reason="OK",
             headers=headers,
         )
+        if http_profile == "forced_content_length":
+            resp.content_length = get_chunksize(
+                output_format, queue_item.streamdetails.duration or 120
+            )
+        elif http_profile == "chunked":
+            resp.enable_chunked_encoding()
+
         await resp.prepare(request)
 
         # return early if this is not a GET request
@@ -341,9 +356,16 @@ class StreamsController(CoreController):
         icy_meta_interval = 16384
 
         # prepare request, add some DLNA/UPNP compatible headers
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
+        )
+        # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "Content-Type": f"audio/{output_format.output_format_str}",
+            "Accept-Ranges": "none",
+            "Cache-Control": "no-cache",
+            "Connection": "close",
         }
         if enable_icy:
             headers["icy-metaint"] = str(icy_meta_interval)
@@ -353,6 +375,10 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
+        if http_profile == "forced_content_length":
+            resp.content_length = get_chunksize(output_format, 24 * 2600)
+        elif http_profile == "chunked":
+            resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # return early if this is not a GET request
@@ -548,8 +574,8 @@ class StreamsController(CoreController):
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-            crossfade_duration = await self.mass.config.get_player_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION
+            crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             bytes_written = 0
@@ -838,9 +864,10 @@ class StreamsController(CoreController):
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
-        if not self.logger.isEnabledFor(logging.DEBUG):
+        if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             return
-        self.logger.debug(
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
             "Got %s request to %s from %s\nheaders: %s\n",
             request.method,
             request.path,

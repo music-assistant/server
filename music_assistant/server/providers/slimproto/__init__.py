@@ -28,6 +28,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
     CONF_ENTRY_EQ_TREBLE,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry,
@@ -58,10 +59,11 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
-from music_assistant.server.helpers.multi_client_stream import MultiClientStream
 from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.ugp import UniversalGroupProvider
+
+from .multi_client_stream import MultiClientStream
 
 if TYPE_CHECKING:
     from aioslimproto.models import SlimEvent
@@ -226,7 +228,7 @@ class SlimprotoProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -317,6 +319,7 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_SYNC_ADJUST,
                 CONF_ENTRY_DISPLAY,
                 CONF_ENTRY_VISUALIZATION,
+                CONF_ENTRY_HTTP_PROFILE_FORCED_2,
                 create_sample_rates_config_entry(int(slimclient.max_sample_rate), 24, 48000, 24),
             )
         )

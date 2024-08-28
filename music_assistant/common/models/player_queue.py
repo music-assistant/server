@@ -42,7 +42,6 @@ class PlayerQueue(DataClassDictMixin):
     flow_mode_start_index: int = 0
     stream_finished: bool | None = None
     end_of_track_reached: bool | None = None
-    queue_items_last_updated: float = time.time()
 
     @property
     def corrected_elapsed_time(self) -> float:

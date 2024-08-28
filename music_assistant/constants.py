@@ -3,7 +3,7 @@
 import pathlib
 from typing import Final
 
-API_SCHEMA_VERSION: Final[int] = 24
+API_SCHEMA_VERSION: Final[int] = 25
 MIN_SCHEMA_VERSION: Final[int] = 24
 
 
@@ -51,7 +51,6 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
-CONF_GROUP_PLAYERS: Final[str] = "group_players"
 CONF_CROSSFADE: Final[str] = "crossfade"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_HIDE_PLAYER: Final[str] = "hide_player"
@@ -65,6 +64,8 @@ CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
+CONF_HTTP_PROFILE: Final[str] = "http_profile"
+CONF_SYNC_LEADER: Final[str] = "sync_leader"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
