@@ -251,6 +251,7 @@ class PlayerState(StrEnum):
     IDLE = "idle"
     PAUSED = "paused"
     PLAYING = "playing"
+    CONNECTING = "connecting"
 
 
 class PlayerType(StrEnum):

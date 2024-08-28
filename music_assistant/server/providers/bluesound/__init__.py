@@ -35,25 +35,31 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, TypedDict
 
-# dev import
-# from pyblu import Input, Preset, Status, SyncStatus
 from pyblu import Player as BluosPlayer
+
+# TODO fix input and presets
+# from pyblu import Input, Preset
+from pyblu import Status, SyncStatus
 from zeroconf import ServiceStateChange
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
+    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     ConfigEntry,
     ConfigValueType,
-    PlayerConfig,
+    # PlayerConfig,
 )
 from music_assistant.common.models.enums import (
-    ConfigEntryType,
+    # ConfigEntryType,
     PlayerFeature,
     PlayerState,
     PlayerType,
     ProviderFeature,
 )
+from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.server.helpers.util import (
     get_port_from_zeroconf,
@@ -70,11 +76,11 @@ if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
 
 
-from music_assistant.constants import (
-    CONF_IP_ADDRESS,
-    CONF_PORT,
-    # VERBOSE_LOG_LEVEL,
-)
+# from music_assistant.constants import (
+#     CONF_IP_ADDRESS,
+#     CONF_PORT,
+#     VERBOSE_LOG_LEVEL,
+# )
 
 PLAYER_FEATURES_BASE = {
     PlayerFeature.SYNC,
@@ -88,6 +94,7 @@ PLAYBACK_STATE_MAP = {
     "stream": PlayerState.PLAYING,
     "stop": PlayerState.IDLE,
     "pause": PlayerState.PAUSED,
+    "connecting": PlayerState.CONNECTING,
 }
 
 SOURCE_LINE_IN = "line_in"
@@ -112,39 +119,26 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """
-    Return Config entries to setup this provider.
+    Return Config entries to setup bluesound provider.
 
     instance_id: id of an existing provider instance (None if new instance setup).
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    mass.logger.debug("loading entries")
+    # mass.logger.debug("loading entries")
     # Config Entries are used to configure the Player Provider if needed.
     # See the models of ConfigEntry and ConfigValueType for more information what is supported.
     # The ConfigEntry is a dataclass that represents a single configuration entry.
     # The ConfigValueType is an Enum that represents the type of value that
     # can be stored in a ConfigEntry.
     # If your provider does not need any configuration, you can return an empty tuple.
-    return (
-        ConfigEntry(
-            key=CONF_IP_ADDRESS,
-            type=ConfigEntryType.STRING,
-            label="IP-Address (or hostname) of the BluOS device.",
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PORT,
-            type=ConfigEntryType.STRING,
-            default_value="11000",
-            label="Port to use to connect to the BluOS device (default is 11000).",
-            required=True,
-            category="advanced",
-        ),
-    )
+    # ruff: noqa: ARG001
+    return ()
 
 
 class BluesoundDiscoveryInfo(TypedDict):
-    # Small dict (note sure if needed anymore)
+    """Template for MDNS discovery info."""
+
     _objectType: str
     ip_address: str
     port: str
@@ -174,7 +168,8 @@ class BluesoundPlayer:
         self.logger = prov.logger.getChild(player_id)
         self.connected: bool = True
         self.client = BluosPlayer(self.ip_address, self.port, self.mass.http_session)
-        self.sync_status = self.client.sync_status()
+        self.sync_status = SyncStatus
+        self.status = Status
         self.mass_player: Player | None = None
         self._listen_task: asyncio.Task | None = None
 
@@ -189,20 +184,18 @@ class BluesoundPlayer:
 
     async def update_attributes(self) -> None:
         """Update the player attributes."""
-        # self.logger.debug("checking master")
-        sync_status_result = await self.client.sync_status()
-        status_result = await self.client.status()
-        # self.logger.debug(sync_status_result.volume)
+        self.logger.debug("Update attributes")
+
+        self.sync_status = await self.client.sync_status()
+        self.status = await self.client.status()
+
         if not self.mass_player:
-            # self.logger.debug("weird")
             return
-        if sync_status_result.volume == -1:
-            test = sync_status_result.volume
-            # self.logger.debug("test")
+        if self.sync_status.volume == -1:
             self.mass_player.volume_level = 100
         else:
-            self.mass_player.volume_level = sync_status_result.volume
-        self.mass_player.volume_muted = status_result.mute
+            self.mass_player.volume_level = self.sync_status.volume
+        self.mass_player.volume_muted = self.status.mute
 
         # TODO check pair status
         # active_group = sync_status_result.group
@@ -210,14 +203,14 @@ class BluesoundPlayer:
         # self.logger.debug(sync_status_result.slaves)
 
         # TODO fix pairing
-        slaves = await self.client.sync_status("slaves", poll_timeout=5, timeout=10)
-        if sync_status_result.master is None:
+
+        if self.sync_status.master is None:
             # self.logger.debug("Is Master")
 
             # Ensure 'slaves' exists and is not empty before proceeding
-            if sync_status_result.slaves:
+            if self.sync_status.slaves:
                 self.mass_player.group_childs = (
-                    sync_status_result.slaves if len(sync_status_result.slaves) > 1 else set()
+                    self.sync_status.slaves if len(self.sync_status.slaves) > 1 else set()
                 )
                 self.mass_player.synced_to = None
 
@@ -235,69 +228,59 @@ class BluesoundPlayer:
             #         self.mass_player.active_source = None
             # self.logger.debug("seconds")
             # self.logger.debug(status_result.seconds)
-            if current_item := status_result.state:
+
+            if self.status.state:
                 # test variables:
                 # track_images = status_result.image
                 # track_image_url = status_result.image
                 # track_duration_millis = status_result.total_seconds/1000
                 self.mass_player.current_media = PlayerMedia(
-                    uri=status_result.stream_url,
-                    title=status_result.name,
-                    artist=status_result.artist,
-                    album=status_result.album,
-                    # duration=status_result.total_seconds / 1000,
-                    image_url=status_result.image,
+                    uri=self.status.stream_url,
+                    title=self.status.name,
+                    artist=self.status.artist,
+                    album=self.status.album,
+                    # duration=self.status.total_seconds / 1000,
+                    image_url=self.status.image,
                 )
 
-            elif container.get("name") and container.get("id"):
-                images = status_result.image
-                image_url = status_result.image
-                self.mass_player.current_media = PlayerMedia(
-                    uri=status_result.stream_url,
-                    title=status_result.name,
-                    image_url=status_result.image,
-                )
+            # TODO fix sync and multiple players
+            # elif container.get("name") and container.get("id"):
+            #     images = self.status.image
+            #     image_url = self.status.image
+            #     self.mass_player.current_media = PlayerMedia(
+            #         uri=self.status.stream_url,
+            #         title=self.status.name,
+            #         image_url=self.status.image,
+            #     )
             else:
                 self.mass_player.current_media = None
 
         else:
             self.mass_player.group_childs = set()
-            self.mass_player.synced_to = sync_status_result.master
-            self.mass_player.active_source = sync_status_result.master
+            self.mass_player.synced_to = self.sync_status.master
+            self.mass_player.active_source = self.sync_status.master
         # self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
 
-        self.mass_player.elapsed_time = status_result.seconds
+        self.mass_player.elapsed_time = self.status.seconds
         self.mass_player.elapsed_time_last_updated = time.time()
         self.mass.players.update(self.player_id)
-        self.logger.debug(status_result.seconds)
-        self.mass_player.state = PLAYBACK_STATE_MAP[status_result.state]
+        self.logger.debug(self.status.seconds)
+        self.mass_player.state = PLAYBACK_STATE_MAP[self.status.state]
         self.mass_player.can_sync_with = (
             tuple(x for x in self.prov.bluos_players if x != self.player_id),
         )
 
 
 class BluesoundPlayerProvider(PlayerProvider):
-    """
-    Example/demo Player provider.
-
-    Note that this is always subclassed from PlayerProvider,
-    which in turn is a subclass of the generic Provider model.
-
-    The base implementation already takes care of some convenience methods,
-    such as the mass object and the logger. Take a look at the base class
-    for more information on what is available.
-
-    Just like with any other subclass, make sure that if you override
-    any of the default methods (such as __init__), you call the super() method.
-    In most cases its not needed to override any of the builtin methods and you only
-    implement the abc methods with your actual implementation.
-    """
+    """Bluos compatible player provider, providing support for bluesound speaker."""
 
     bluos_players: dict[str, BluesoundPlayer]
 
     def __init__(self, *args, **kwargs):
+        """Initialize the BluOS Provider."""
         super().__init__(*args, **kwargs)
         self.bluos_players = {}
+        self.player_id = ()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -306,14 +289,20 @@ class BluesoundPlayerProvider(PlayerProvider):
         # you should return a tuple of provider-level features
         # here that your player provider supports or an empty tuple if none.
         # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
+        return (
+            ProviderFeature.SYNC_PLAYERS,
+            #  ProviderFeature.PLAYER_GROUP_CREATE
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.bluos_players: dict[str, bluos_players] = {}
+        self.bluos_players: dict[str, BluosPlayer] = {}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        self.bluos_player = self.bluos_players[self.player_id]
+        self.mass_player = self.mass.players.get(self.player_id)
+
         # OPTIONAL
         # this is an optional method that you can implement if
         # relevant or leave out completely if not needed.
@@ -352,24 +341,24 @@ class BluesoundPlayerProvider(PlayerProvider):
         # player providers for more inspiration.
 
         name = name.split(".", 1)[0]
-        player_id = info.decoded_properties["mac"]  # this is just an example!
+        self.player_id = info.decoded_properties["mac"]  # this is just an example!
         # handle removed player
 
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get(player_id):
+            if mass_player := self.mass.players.get(self.player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
                 mass_player.available = False
-                self.mass.players.update(player_id)
+                self.mass.players.update(self.player_id)
             return
         # handle update for existing device
         # (state change is either updated or added)
         # check if we have an existing player in the player manager
         # note that you can use this point to update the player connection info
         # if that changed (e.g. ip address)
-        if bluos_player := self.bluos_players.get(player_id):
-            if mass_player := self.mass.players.get(player_id):
+        if bluos_player := self.bluos_players.get(self.player_id):
+            if mass_player := self.mass.players.get(self.player_id):
                 # existing player found in the player manager,
                 # this is an existing player that has been updated/reconnected
                 # or simply a re-announcement on mdns.
@@ -379,8 +368,8 @@ class BluesoundPlayerProvider(PlayerProvider):
                     self.logger.debug(
                         "Address updated to %s for player %s", cur_address, mass_player.display_name
                     )
-                    Bluos_Player.ip_address = cur_address
-                    Bluos_Player.port = cur_port
+                    bluos_player.ip_address = cur_address
+                    bluos_player.port = cur_port
                     mass_player.device_info = DeviceInfo(
                         model=mass_player.device_info.model,
                         manufacturer=mass_player.device_info.manufacturer,
@@ -391,15 +380,15 @@ class BluesoundPlayerProvider(PlayerProvider):
                     # it means the player is back online and we should try to connect to it
                     self.logger.debug("Player back online: %s", mass_player.display_name)
                     # you can try to connect to the player here if needed
-                    Bluos_Player.sync
+                    bluos_player.client.sync()
                     mass_player.available = True
                 # inform the player manager of any changes to the player object
                 # note that you would normally call this from some other callback from
                 # the player's native api/library which informs you of changes in the player state.
                 # as a last resort you can also choose to let the player manager
                 # poll the player for state changes
-                Bluos_Player.discovery_info = info
-                self.mass.players.update(player_id)
+                bluos_player.discovery_info = info
+                self.mass.players.update(self.player_id)
                 return
             # handle new player
         cur_address = get_primary_ip_address_from_zeroconf(info)
@@ -412,12 +401,12 @@ class BluesoundPlayerProvider(PlayerProvider):
 
         # register the player with the player manager
 
-        self.bluos_players[player_id] = bluos_player = BluesoundPlayer(
-            self, player_id, discovery_info=info, ip_address=cur_address, port=cur_port
+        self.bluos_players[self.player_id] = bluos_player = BluesoundPlayer(
+            self, self.player_id, discovery_info=info, ip_address=cur_address, port=cur_port
         )
         # self.logger.debug(name)
         bluos_player.mass_player = mass_player = Player(
-            player_id=player_id,
+            player_id=self.player_id,
             provider=self.instance_id,
             type=PlayerType.PLAYER,
             name=name,
@@ -451,75 +440,57 @@ class BluesoundPlayerProvider(PlayerProvider):
         # poll the player for state changes or you can implement your own logic to
         # listen for state changes from the player and update the player object accordingly.
         # in any case, you need to call the update method on the player manager:
-        self.mass.players.update(player_id)
+        self.mass.players.update(self.player_id)
 
     async def get_player_config_entries(
         self,
         player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
-        base_entries = await super().get_player_config_entries(player_id)
-        if not (bluos_player := self.bluos_players.get(player_id)):
-            # most probably a syncgroup
-            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED)
+        base_entries = await super().get_player_config_entries(self.player_id)
+        if not self.bluos_players.get(self.player_id):
+            # TODO fix player entries
+            # if not (bluos_player := self.bluos_players.get(self.player_id)):
+            #     # most probably a syncgroup
+            return (*base_entries, CONF_ENTRY_CROSSFADE)
         return (
             *base_entries,
-            # CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+            CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+            CONF_ENTRY_CROSSFADE,
+            CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+            CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
+            CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
         )
-
-    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-        # OPTIONAL
-        # this callback will be called whenever a player config changes
-        # you can use this to react to changes in player configuration
-        # but this is completely optional and you can leave it out if not needed.
-
-    def on_player_config_removed(self, player_id: str) -> None:
-        """Call (by config manager) when the configuration of a player is removed."""
-        # OPTIONAL
-        # ensure that any group players get removed
-        # this callback will be called whenever a player config is removed
-        # you can use this to react to changes in player configuration
-        # but this is completely optional and you can leave it out if not needed.
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
-        bluos_player = self.bluos_players[player_id]
-        await bluos_player.client.stop()
+        await self.bluos_player.client.stop()
         # MANDATORY
         # this method is mandatory and should be implemented.
         # this method should send a stop command to the given player.
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
-        bluos_player = self.bluos_players[player_id]
-        await bluos_player.client.play()
-        # MANDATORY
-        # this method is mandatory and should be implemented.
-        # this method should send a play command to the given player.
+        await self.bluos_player.client.play()
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
-        bluos_player = self.bluos_players[player_id]
-        await bluos_player.client.pause()
-        # OPTIONAL - required only if you specified PlayerFeature.PAUSE
-        # this method should send a pause command to the given player.
+        await self.bluos_player.client.pause()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        bluos_player = self.bluos_players[player_id]
         self.logger.debug(volume_level)
-        await bluos_player.client.volume(level=volume_level)
-        # OPTIONAL - required only if you specified PlayerFeature.VOLUME_SET
-        # this method should send a volume set command to the given player.
+        await self.bluos_player.client.volume(level=volume_level)
+
+        # Optimistic state, reduces interface lag
+        self.mass_player.volume_level = volume_level
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
-        bluos_player = self.bluos_players[player_id]
-        await bluos_player.client.volume(mute=muted)
-        # OPTIONAL - required only if you specified PlayerFeature.VOLUME_MUTE
-        # this method should send a volume mute command to the given player.
+        await self.bluos_player.client.volume(mute=muted)
+
+        # Optimistic state, reduces interface lag
+        self.mass_player.volume_mute = muted
 
     async def cmd_seek(self, player_id: str, position: int) -> None:
         """Handle SEEK command for given queue.
@@ -527,8 +498,8 @@ class BluesoundPlayerProvider(PlayerProvider):
         - player_id: player_id of the player to handle the command.
         - position: position in seconds to seek to in the current playing item.
         """
-        bluos_player = self.bluos_players[player_id]
-        await bluos_player.client.play(seek=position)
+        await self.bluos_player.client.play(seek=position)
+
         # OPTIONAL - required only if you specified PlayerFeature.SEEK
         # this method should handle the seek command for the given player.
         # the position is the position in seconds to seek to in the current playing item.
@@ -537,9 +508,6 @@ class BluesoundPlayerProvider(PlayerProvider):
         self, player_id: str, media: PlayerMedia, timeout: float | None = None
     ) -> None:
         """Handle PLAY MEDIA on given player using the provided URL."""
-        bluos_player = self.bluos_players[player_id]
-        mass_player = self.mass.players.get(player_id)
-
         # if status_result.state:
         #     # this should be already handled by the player manager, but just in case...
         #     msg = (
@@ -549,10 +517,10 @@ class BluesoundPlayerProvider(PlayerProvider):
         #     raise PlayerCommandFailed(msg)
 
         # Prepare the URL to play
-        media_url = f"{self.mass.streams.base_url}/play/{media.queue_id}"
+        # media_url = f"{self.mass.streams.base_url}/play/{media.queue_id}"
 
         # Use the play_url method to start playback
-        playback_state = await bluos_player.client.play_url(media.uri, timeout=timeout)
+        playback_state = await self.bluos_player.client.play_url(media.uri, timeout=timeout)
 
         # Optionally, handle the playback_state or additional logic here
         if playback_state != "playing":
@@ -594,15 +562,14 @@ class BluesoundPlayerProvider(PlayerProvider):
 
             - player_id: player_id of the player to handle the command.
         """
-        sonos_player = self.sonos_players[player_id]
-        await sonos_player.client.player.leave_group()
+        await self.bluos_player.client.player.leave_group()
 
     async def play_announcement(
         self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
-        await bluos_player.client.Input(announcement.uri, volume_level)
+        """Send announcement to player."""
+        await self.bluos_player.client.Input(announcement.uri, volume_level)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
-        bluos_player = self.bluos_players[player_id]
-        await bluos_player.update_attributes()
+        await self.bluos_player.update_attributes()
