@@ -7,7 +7,7 @@ import contextlib
 import logging
 import os
 import os.path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import aiofiles
 import shortuuid
@@ -64,6 +64,7 @@ from music_assistant.constants import (
 from music_assistant.server.helpers.compare import compare_strings, create_safe_string
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import AudioTags, parse_tags, split_items
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -179,6 +180,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     base_path: str
     write_access: bool = False
+    scan_limiter = asyncio.Semaphore(25)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -241,7 +243,7 @@ class LocalFileSystemProvider(MusicProvider):
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""
-        async for item in self.listdir(item_path, recursive=False):
+        async for item in self.listdir(item_path, recursive=False, sort=True):
             if not item.is_dir and ("." not in item.filename or not item.ext):
                 # skip system files and files without extension
                 continue
@@ -290,48 +292,24 @@ class LocalFileSystemProvider(MusicProvider):
         # we work bottom up, as-in we derive all info from the tracks
         cur_filenames = set()
         prev_filenames = set(file_checksums.keys())
-        async for item in self.listdir("", recursive=True):
-            if "." not in item.filename or not item.ext:
-                # skip system files and files without extension
-                continue
+        async with TaskManager(self.mass, 25) as tm:
+            async for item in self.listdir("", recursive=True, sort=False):
+                if "." not in item.filename or not item.ext:
+                    # skip system files and files without extension
+                    continue
 
-            if item.ext not in SUPPORTED_EXTENSIONS:
-                # unsupported file extension
-                continue
+                if item.ext not in SUPPORTED_EXTENSIONS:
+                    # unsupported file extension
+                    continue
 
-            cur_filenames.add(item.path)
-            try:
+                cur_filenames.add(item.path)
+
                 # continue if the item did not change (checksum still the same)
                 prev_checksum = file_checksums.get(item.path)
                 if item.checksum == prev_checksum:
                     continue
-                self.logger.debug("Processing: %s", item.path)
-                if item.ext in TRACK_EXTENSIONS:
-                    # add/update track to db
-                    # note that filesystem items are always overwriting existing info
-                    # when they are detected as changed
-                    track = await self._parse_track(item)
-                    await self.mass.music.tracks.add_item_to_library(
-                        track, overwrite_existing=prev_checksum is not None
-                    )
-                elif item.ext in PLAYLIST_EXTENSIONS:
-                    playlist = await self.get_playlist(item.path)
-                    # add/update] playlist to db
-                    playlist.cache_checksum = item.checksum
-                    # playlist is always favorite
-                    playlist.favorite = True
-                    await self.mass.music.playlists.add_item_to_library(
-                        playlist,
-                        overwrite_existing=prev_checksum is not None,
-                    )
-            except Exception as err:  # pylint: disable=broad-except
-                # we don't want the whole sync to crash on one file so we catch all exceptions here
-                self.logger.error(
-                    "Error processing %s - %s",
-                    item.path,
-                    str(err),
-                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-                )
+
+                await tm.create_task_with_limit(self._process_item(item, prev_checksum))
 
         # work out deletions
         deleted_files = prev_filenames - cur_filenames
@@ -339,6 +317,37 @@ class LocalFileSystemProvider(MusicProvider):
 
         # process orphaned albums and artists
         await self._process_orphaned_albums_and_artists()
+
+    async def _process_item(self, item: FileSystemItem, prev_checksum: str | None) -> None:
+        """Process a single item."""
+        try:
+            self.logger.debug("Processing: %s", item.path)
+            if item.ext in TRACK_EXTENSIONS:
+                # add/update track to db
+                # note that filesystem items are always overwriting existing info
+                # when they are detected as changed
+                track = await self._parse_track(item)
+                await self.mass.music.tracks.add_item_to_library(
+                    track, overwrite_existing=prev_checksum is not None
+                )
+            elif item.ext in PLAYLIST_EXTENSIONS:
+                playlist = await self.get_playlist(item.path)
+                # add/update] playlist to db
+                playlist.cache_checksum = item.checksum
+                # playlist is always favorite
+                playlist.favorite = True
+                await self.mass.music.playlists.add_item_to_library(
+                    playlist,
+                    overwrite_existing=prev_checksum is not None,
+                )
+        except Exception as err:  # pylint: disable=broad-except
+            # we don't want the whole sync to crash on one file so we catch all exceptions here
+            self.logger.error(
+                "Error processing %s - %s",
+                item.path,
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+            )
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Process deletion of orphaned albums and artists."""
@@ -439,44 +448,12 @@ class LocalFileSystemProvider(MusicProvider):
                 # this is an artist without an actual path on disk
                 # return the info we already have in the db
                 return db_artist
-
-        artist = Artist(
-            item_id=prov_artist_id,
-            provider=self.instance_id,
-            name=db_artist.name,
+        return await self._parse_artist(
+            db_artist.name,
             sort_name=db_artist.sort_name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=prov_artist_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    url=artist_path,
-                )
-            },
+            mbid=db_artist.mbid,
+            artist_path=artist_path,
         )
-        # grab additional metadata within the Artist's folder
-        nfo_file = os.path.join(artist_path, "artist.nfo")
-        if await self.exists(nfo_file):
-            # found NFO file with metadata
-            # https://kodi.wiki/view/NFO_files/Artists
-            async with aiofiles.open(nfo_file, "r") as _file:
-                data = await _file.read()
-            info = await asyncio.to_thread(xmltodict.parse, data)
-            info = info["artist"]
-            artist.name = info.get("title", info.get("name", db_artist.name))
-            if sort_name := info.get("sortname"):
-                artist.sort_name = sort_name
-            if mbid := info.get("musicbrainzartistid"):
-                artist.mbid = mbid
-            if description := info.get("biography"):
-                artist.metadata.description = description
-            if genre := info.get("genre"):
-                artist.metadata.genres = set(split_items(genre))
-        # find local images
-        if images := await self._get_local_images(artist_path):
-            artist.metadata.images = UniqueList(images)
-
-        return artist
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
@@ -484,7 +461,7 @@ class LocalFileSystemProvider(MusicProvider):
             for prov_mapping in track.provider_mappings:
                 if prov_mapping.provider_instance == self.instance_id:
                     file_item = await self.resolve(prov_mapping.item_id)
-                    full_track = await self._parse_track(file_item, full_album_metadata=True)
+                    full_track = await self._parse_track(file_item)
                     assert isinstance(full_track.album, Album)
                     return full_track.album
         msg = f"Album not found: {prov_album_id}"
@@ -744,18 +721,23 @@ class LocalFileSystemProvider(MusicProvider):
 
         # album
         album = track.album = (
-            await self._parse_album(
-                track_path=file_item.path, track_tags=tags, full_metadata=full_album_metadata
-            )
+            await self._parse_album(track_path=file_item.path, track_tags=tags)
             if tags.album
             else None
         )
 
         # track artist(s)
         for index, track_artist_str in enumerate(tags.artists):
-            artist = await self._create_artist_itemmapping(
+            # prefer album artist if match
+            if album and (
+                album_artist_match := next(
+                    (x for x in album.artists if x.name == track_artist_str), None
+                )
+            ):
+                track.artists.append(album_artist_match)
+                continue
+            artist = await self._parse_artist(
                 track_artist_str,
-                album_or_track_dir=file_item.path,
                 sort_name=(
                     tags.artist_sort_names[index] if index < len(tags.artist_sort_names) else None
                 ),
@@ -783,9 +765,6 @@ class LocalFileSystemProvider(MusicProvider):
                 ]
             )
 
-        if album and not album.metadata.images:
-            # set embedded cover on album if it does not have one yet
-            album.metadata.images = track.metadata.images
         # copy (embedded) album image from track (if the album itself doesn't have an image)
         if album and not album.image and track.image:
             album.metadata.images = UniqueList([track.image])
@@ -807,53 +786,94 @@ class LocalFileSystemProvider(MusicProvider):
         track.metadata.chapters = UniqueList(tags.chapters)
         return track
 
-    # @use_cache(300)
-    async def _create_artist_itemmapping(
+    async def _parse_artist(
         self,
         name: str,
-        album_or_track_dir: str | None = None,
+        album_dir: str | None = None,
         sort_name: str | None = None,
         mbid: str | None = None,
-    ) -> ItemMapping:
-        """Create ItemMapping for a track/album artist."""
-        artist_path = None
-        if album_or_track_dir:
-            # try to find (album)artist folder based on track or album path
-            artist_path = get_artist_dir(album_or_track_dir=album_or_track_dir, artist_name=name)
+        artist_path: str | None = None,
+    ) -> Artist:
+        """Parse full (album) Artist."""
         if not artist_path:
+            # we need to hunt for the artist (metadata) path on disk
+            # this can either be relative to the album path or at root level
             # check if we have an artist folder for this artist at root level
             safe_artist_name = create_safe_string(name, lowercase=False, replace_space=False)
             if await self.exists(name):
                 artist_path = name
             elif await self.exists(safe_artist_name):
                 artist_path = safe_artist_name
-        if not artist_path:
-            # check if we have an existing item to retrieve the artist path
-            async for item in self.mass.music.artists.iter_library_items(search=name):
-                if not compare_strings(name, item.name):
-                    continue
-                for prov_mapping in item.provider_mappings:
-                    if prov_mapping.provider_instance != self.instance_id:
+            elif album_dir and (foldermatch := get_artist_dir(name, album_dir=album_dir)):
+                # try to find (album)artist folder based on album path
+                artist_path = foldermatch
+            else:
+                # check if we have an existing item to retrieve the artist path
+                async for item in self.mass.music.artists.iter_library_items(search=name):
+                    if not compare_strings(name, item.name):
                         continue
-                    if prov_mapping.url:
-                        artist_path = prov_mapping.url
+                    for prov_mapping in item.provider_mappings:
+                        if prov_mapping.provider_instance != self.instance_id:
+                            continue
+                        if prov_mapping.url:
+                            artist_path = prov_mapping.url
+                            break
+                    if artist_path:
                         break
-                if artist_path:
-                    break
 
-        return ItemMapping(
-            media_type=MediaType.ARTIST,
-            # simply use the artist name as item id as fallback
-            item_id=artist_path or name,
+        # prefer (short lived) cache for a bit more speed
+        cache_base_key = f"{self.instance_id}.artist"
+        if artist_path and (cache := await self.cache.get(artist_path, base_key=cache_base_key)):
+            return cast(Artist, cache)
+
+        prov_artist_id = artist_path or name
+        artist = Artist(
+            item_id=prov_artist_id,
             provider=self.instance_id,
             name=name,
             sort_name=sort_name,
-            external_ids={(ExternalID.MB_ARTIST, mbid)} if mbid else set(),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_artist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=artist_path,
+                )
+            },
         )
+        if mbid:
+            artist.mbid = mbid
+        if not artist_path:
+            return artist
 
-    async def _parse_album(
-        self, track_path: str, track_tags: AudioTags, full_metadata: bool = False
-    ) -> Album:
+        # grab additional metadata within the Artist's folder
+        nfo_file = os.path.join(artist_path, "artist.nfo")
+        if await self.exists(nfo_file):
+            # found NFO file with metadata
+            # https://kodi.wiki/view/NFO_files/Artists
+            nfo_file = self.get_absolute_path(nfo_file)
+            async with aiofiles.open(nfo_file, "r") as _file:
+                data = await _file.read()
+            info = await asyncio.to_thread(xmltodict.parse, data)
+            info = info["artist"]
+            artist.name = info.get("title", info.get("name", name))
+            if sort_name := info.get("sortname"):
+                artist.sort_name = sort_name
+            if mbid := info.get("musicbrainzartistid"):
+                artist.mbid = mbid
+            if description := info.get("biography"):
+                artist.metadata.description = description
+            if genre := info.get("genre"):
+                artist.metadata.genres = set(split_items(genre))
+        # find local images
+        if images := await self._get_local_images(artist_path):
+            artist.metadata.images = UniqueList(images)
+
+        await self.cache.set(artist_path, artist, base_key=cache_base_key, expiration=120)
+
+        return artist
+
+    async def _parse_album(self, track_path: str, track_tags: AudioTags) -> Album:
         """Parse Album metadata from Track tags."""
         assert track_tags.album
         # work out if we have an album and/or disc folder
@@ -863,13 +883,17 @@ class LocalFileSystemProvider(MusicProvider):
         track_dir = os.path.dirname(track_path)
         album_dir = get_album_dir(track_dir, track_tags.album)
 
+        cache_base_key = f"{self.instance_id}.album"
+        if album_dir and (cache := await self.cache.get(album_dir, base_key=cache_base_key)):
+            return cast(Album, cache)
+
         # album artist(s)
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
         if track_tags.album_artists:
             for index, album_artist_str in enumerate(track_tags.album_artists):
-                artist = await self._create_artist_itemmapping(
+                artist = await self._parse_artist(
                     album_artist_str,
-                    album_or_track_dir=album_dir,
+                    album_dir=album_dir,
                     sort_name=(
                         track_tags.album_artist_sort_names[index]
                         if index < len(track_tags.album_artist_sort_names)
@@ -894,7 +918,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
                 album_artists = UniqueList(
-                    [await self._create_artist_itemmapping(name=album_artist_str)]
+                    [await self._parse_artist(name=album_artist_str, album_dir=album_dir)]
                 )
             # fallback to track artists (if defined by user)
             elif fallback_action == "track_artist":
@@ -904,9 +928,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 album_artists = UniqueList(
                     [
-                        await self._create_artist_itemmapping(
-                            name=track_artist_str, album_or_track_dir=album_dir
-                        )
+                        await self._parse_artist(name=track_artist_str, album_dir=album_dir)
                         for track_artist_str in track_tags.artists
                     ]
                 )
@@ -918,11 +940,7 @@ class LocalFileSystemProvider(MusicProvider):
                     VARIOUS_ARTISTS_NAME,
                 )
                 album_artists = UniqueList(
-                    [
-                        await self._create_artist_itemmapping(
-                            name=VARIOUS_ARTISTS_NAME, mbid=VARIOUS_ARTISTS_MBID
-                        )
-                    ]
+                    [await self._parse_artist(name=VARIOUS_ARTISTS_NAME, mbid=VARIOUS_ARTISTS_MBID)]
                 )
 
         if album_dir:  # noqa: SIM108
@@ -961,7 +979,7 @@ class LocalFileSystemProvider(MusicProvider):
         album.album_type = track_tags.album_type
 
         # hunt for additional metadata and images in the folder structure
-        if not full_metadata:
+        if not album_dir:
             return album
 
         for folder_path in (track_dir, album_dir):
@@ -971,6 +989,7 @@ class LocalFileSystemProvider(MusicProvider):
             if await self.exists(nfo_file):
                 # found NFO file with metadata
                 # https://kodi.wiki/view/NFO_files/Artists
+                nfo_file = self.get_absolute_path(nfo_file)
                 async with aiofiles.open(nfo_file, "r") as _file:
                     data = await _file.read()
                 info = await asyncio.to_thread(xmltodict.parse, data)
@@ -999,7 +1018,7 @@ class LocalFileSystemProvider(MusicProvider):
                     album.metadata.images = UniqueList(images)
                 else:
                     album.metadata.images += images
-
+        await self.cache.set(album_dir, album, base_key=cache_base_key, expiration=120)
         return album
 
     async def _get_local_images(self, folder: str) -> UniqueList[MediaItemImage]:
@@ -1050,7 +1069,7 @@ class LocalFileSystemProvider(MusicProvider):
             self.logger.debug("Write access disabled: %s", str(err))
 
     async def listdir(
-        self, path: str, recursive: bool = False
+        self, path: str, recursive: bool = False, sort: bool = False
     ) -> AsyncGenerator[FileSystemItem, None]:
         """List contents of a given provider directory/path.
 
@@ -1066,10 +1085,10 @@ class LocalFileSystemProvider(MusicProvider):
 
         """
         abs_path = self.get_absolute_path(path)
-        for entry in await asyncio.to_thread(sorted_scandir, self.base_path, abs_path):
+        for entry in await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort):
             if recursive and entry.is_dir:
                 try:
-                    async for subitem in self.listdir(entry.absolute_path, True):
+                    async for subitem in self.listdir(entry.absolute_path, True, sort):
                         yield subitem
                 except (OSError, PermissionError) as err:
                     self.logger.warning("Skip folder %s: %s", entry.path, str(err))

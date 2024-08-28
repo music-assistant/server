@@ -46,9 +46,14 @@ class FileSystemItem:
         return self.filename.rsplit(".", 1)[0]
 
 
-def get_artist_dir(album_or_track_dir: str, artist_name: str) -> str | None:
+def get_artist_dir(
+    artist_name: str,
+    album_dir: str | None,
+) -> str | None:
     """Look for (Album)Artist directory in path of a track (or album)."""
-    parentdir = os.path.dirname(album_or_track_dir)
+    if not album_dir:
+        return None
+    parentdir = os.path.dirname(album_dir)
     # account for disc or album sublevel by ignoring (max) 2 levels if needed
     matched_dir: str | None = None
     for _ in range(3):
