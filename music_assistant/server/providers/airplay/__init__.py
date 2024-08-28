@@ -403,6 +403,9 @@ class RaopStream:
                     self.mass.create_task(self.mass.player_queues.resume(queue.queue_id))
                 else:
                     logger.warning("Packet loss detected!")
+            if "end of stream reached" in line:
+                logger.debug("End of stream reached")
+                break
 
             logger.log(VERBOSE_LOG_LEVEL, line)
 
