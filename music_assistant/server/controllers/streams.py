@@ -36,6 +36,7 @@ from music_assistant.constants import (
     CONF_BYPASS_NORMALIZATION_SHORT,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
+    CONF_ENABLE_ICY_METADATA,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
@@ -375,10 +376,11 @@ class StreamsController(CoreController):
             default_sample_rate=flow_pcm_format.sample_rate,
             default_bit_depth=flow_pcm_format.bit_depth,
         )
-        # play it safe: only allow icy metadata for mp3 and aac
-        enable_icy = request.headers.get(
-            "Icy-MetaData", ""
-        ) == "1" and output_format.content_type in (ContentType.MP3, ContentType.AAC)
+        # work out ICY metadata support
+        icy_preference = self.mass.config.get_raw_player_config_value(
+            queue_id, CONF_ENABLE_ICY_METADATA, "basic"
+        )
+        enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
         icy_meta_interval = 16384
 
         # prepare request, add some DLNA/UPNP compatible headers
@@ -446,6 +448,8 @@ class StreamsController(CoreController):
             else:
                 title = "Music Assistant"
             metadata = f"StreamTitle='{title}';".encode()
+            if icy_preference == "full" and current_item and current_item.image:
+                metadata += f"StreamURL='{current_item.image.path}'".encode()
             while len(metadata) % 16 != 0:
                 metadata += b"\x00"
             length = len(metadata)

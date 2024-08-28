@@ -26,6 +26,7 @@ from async_upnp_client.search import async_search
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_HTTP_PROFILE,
     ConfigEntry,
@@ -81,6 +82,7 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_HTTP_PROFILE,
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     create_sample_rates_config_entry(192000, 24, 96000, 24),
 )
 

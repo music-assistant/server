@@ -21,6 +21,7 @@ from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
+    CONF_ENABLE_ICY_METADATA,
     CONF_ENFORCE_MP3,
     CONF_EQ_BASS,
     CONF_EQ_MID,
@@ -618,6 +619,24 @@ CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
 )
 CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
     {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length", "hidden": True}
+)
+
+CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
+    key=CONF_ENABLE_ICY_METADATA,
+    type=ConfigEntryType.STRING,
+    options=(
+        ConfigValueOption("Disabled - do not send ICY metadata", "disabled"),
+        ConfigValueOption("Profile 1 - basic info", "basic"),
+        ConfigValueOption("Profile 2 - full info (including image)", "full"),
+    ),
+    depends_on=CONF_FLOW_MODE,
+    default_value="basic",
+    label="Try to ingest metadata into stream (ICY)",
+    category="advanced",
+    description="Try to ingest metadata into the stream (ICY) to show track info on the player, "
+    "even when flow mode is enabled.\n\nThis is called ICY metadata and its what is also used by "
+    "online radio station to inform you what is playing. \n\nBe aware that not all players support "
+    "this correctly. If you experience issues with playback, try to disable this setting.",
 )
 
 

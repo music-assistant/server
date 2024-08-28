@@ -928,7 +928,7 @@ class PlayerController(CoreController):
         changed_values = get_changed_values(
             prev_state,
             new_state,
-            ignore_keys=["elapsed_time", "elapsed_time_last_updated", "seq_no"],
+            ignore_keys=["elapsed_time", "elapsed_time_last_updated", "seq_no", "last_poll"],
         )
         self._prev_states[player_id] = new_state
 
