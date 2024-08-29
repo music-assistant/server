@@ -287,10 +287,15 @@ class StreamsController(CoreController):
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
         if not queue_item.streamdetails:
-            # raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
-            queue_item.streamdetails = await get_stream_details(
-                mass=self.mass, queue_item=queue_item
-            )
+            try:
+                queue_item.streamdetails = await get_stream_details(
+                    mass=self.mass, queue_item=queue_item
+                )
+            except Exception as e:
+                self.logger.error(
+                    "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
+                )
+                raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
         # work out output format/details
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
@@ -775,7 +780,10 @@ class StreamsController(CoreController):
         extra_input_args = []
         # add loudnorm filter: volume normalization
         # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
-        if streamdetails.target_loudness is not None:
+        if (
+            streamdetails.target_loudness is not None
+            and not streamdetails.bypass_loudness_normalization
+        ):
             if streamdetails.loudness:
                 # we have a measurement so we can do linear mode
                 target_loudness = streamdetails.target_loudness

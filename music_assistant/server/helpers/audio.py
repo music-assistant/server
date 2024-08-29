@@ -383,28 +383,28 @@ async def get_stream_details(
     # handle skip/fade_in details
     streamdetails.seek_position = seek_position
     streamdetails.fade_in = fade_in
+    if not streamdetails.duration:
+        streamdetails.duration = queue_item.duration
     # handle volume normalization details
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
-    bypass_normalization = (
+    streamdetails.bypass_loudness_normalization = (
         is_radio
         and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_RADIO)
     ) or (
         streamdetails.duration is not None
-        and streamdetails.duration < 60
+        and streamdetails.duration < 30
         and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_SHORT)
     )
-    if not bypass_normalization and not streamdetails.loudness:
+    if not streamdetails.loudness:
         streamdetails.loudness = await mass.music.get_track_loudness(
             streamdetails.item_id, streamdetails.provider
         )
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
-    if bypass_normalization or not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
+    if not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         streamdetails.target_loudness = None
     else:
         streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
 
-    if not streamdetails.duration:
-        streamdetails.duration = queue_item.duration
     return streamdetails
 
 
@@ -958,10 +958,10 @@ def get_ffmpeg_args(
             str(output_format.sample_rate),
             "-ac",
             str(output_format.channels),
-            output_path,
         ]
         if output_format.output_format_str == "flac":
             output_args += ["-compression_level", "6"]
+        output_args += [output_path]
 
     # edge case: source file is not stereo - downmix to stereo
     if input_format.channels > 2 and output_format.channels == 2:
