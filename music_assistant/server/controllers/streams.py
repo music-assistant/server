@@ -814,7 +814,7 @@ class StreamsController(CoreController):
             if streamdetails.media_type == MediaType.RADIO:
                 # ffmpeg sometimes has trouble with HLS radio streams stopping
                 # abruptly for no reason so this is a workaround to keep the stream alive
-                extra_input_args += ["-stream_loop", "-1"]
+                extra_input_args += ["-reconnect_at_eof", "1"]
         elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
             audio_source = streamdetails.path
             extra_input_args += ["-decryption_key", streamdetails.decryption_key]

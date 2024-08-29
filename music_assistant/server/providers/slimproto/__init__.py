@@ -674,7 +674,9 @@ class SlimprotoProvider(PlayerProvider):
 
         # elapsed time change on the player will be auto picked up
         # by the player manager.
-        player = self.mass.players.get(slimplayer.player_id)
+        if not (player := self.mass.players.get(slimplayer.player_id)):
+            # race condition?!
+            return
         player.elapsed_time = slimplayer.elapsed_seconds
         player.elapsed_time_last_updated = time.time()
 
