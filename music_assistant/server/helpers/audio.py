@@ -944,7 +944,9 @@ def get_ffmpeg_args(
     elif output_format.content_type == ContentType.UNKNOWN:
         raise RuntimeError("Invalid output format specified")
     elif output_format.content_type == ContentType.AAC:
-        output_args = ["-f", "adts", output_path]
+        output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "256k", output_path]
+    elif output_format.content_type == ContentType.MP3:
+        output_args = ["-f", "mp3", "-b:a", "320k", output_path]
     else:
         if output_format.content_type.is_pcm():
             output_args += ["-acodec", output_format.content_type.name.lower()]
@@ -958,6 +960,8 @@ def get_ffmpeg_args(
             str(output_format.channels),
             output_path,
         ]
+        if output_format.output_format_str == "flac":
+            output_args += ["-compression_level", "6"]
 
     # edge case: source file is not stereo - downmix to stereo
     if input_format.channels > 2 and output_format.channels == 2:
