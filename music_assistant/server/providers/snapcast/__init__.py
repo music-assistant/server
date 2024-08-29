@@ -454,7 +454,10 @@ class SnapCastProvider(PlayerProvider):
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
         # stop any existing streams first
-        await self.cmd_stop(player_id)
+        if stream_task := self._stream_tasks.pop(player_id, None):
+            if not stream_task.done():
+                stream_task.cancel()
+        # initialize a new stream and attach it to the group
         stream, port = await self._create_stream()
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
@@ -522,17 +525,17 @@ class SnapCastProvider(PlayerProvider):
                     self.mass.players.update(player_id)
                     self._set_childs_state(player_id)
                     await ffmpeg_proc.wait()
-            finally:
                 self.logger.debug("Finished streaming to %s", stream_path)
                 # we need to wait a bit for the stream status to become idle
                 # to ensure that all snapclients have consumed the audio
                 while stream.status != "idle":
                     await asyncio.sleep(0.25)
-                with suppress(TypeError, KeyError, AttributeError):
-                    await self._snapserver.stream_remove_stream(stream.identifier)
                 player.state = PlayerState.IDLE
                 self.mass.players.update(player_id)
                 self._set_childs_state(player_id)
+            finally:
+                with suppress(TypeError, KeyError, AttributeError):
+                    await self._snapserver.stream_remove_stream(stream.identifier)
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
