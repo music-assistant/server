@@ -19,6 +19,8 @@ source .venv/bin/activate
 
 echo "Installing development dependencies..."
 
-pip install -e ".[server]"
-pip install -e ".[test]"
+pip install --upgrade pip
+pip install --upgrade uv
+uv pip install -e ".[server]"
+uv pip install -e ".[test]"
 pre-commit install
