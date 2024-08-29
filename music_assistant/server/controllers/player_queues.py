@@ -633,9 +633,17 @@ class PlayerQueuesController(CoreController):
         if (queue := self.get(queue_id)) is None or not queue.active:
             # TODO: forward to underlying player if not active
             return
-        current_index = self._queues[queue_id].current_index
-        if (next_index := self._get_next_index(queue_id, current_index, True)) is not None:
-            await self.play_index(queue_id, next_index)
+        idx = self._queues[queue_id].current_index
+        while True:
+            try:
+                if (next_index := self._get_next_index(queue_id, idx, True)) is not None:
+                    await self.play_index(queue_id, next_index)
+                break
+            except MediaNotFoundError:
+                self.logger.warning(
+                    "Failed to fetch next track for queue %s - trying next item", queue.display_name
+                )
+                idx += 1
 
     @api_command("player_queues/previous")
     async def previous(self, queue_id: str) -> None:

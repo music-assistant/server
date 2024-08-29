@@ -47,19 +47,16 @@ async def install_package(package: str) -> None:
         raise RuntimeError(msg)
 
 
-async def get_package_version(pkg_name: str) -> str:
+async def get_package_version(pkg_name: str) -> str | None:
     """
     Return the version of an installed (python) package.
 
-    Will return `0.0.0` if the package is not found.
+    Will return None if the package is not found.
     """
     try:
-        installed_version = await asyncio.to_thread(pkg_version, pkg_name)
-        if installed_version is None:
-            return "0.0.0"  # type: ignore[unreachable]
-        return installed_version
+        return await asyncio.to_thread(pkg_version, pkg_name)
     except PackageNotFoundError:
-        return "0.0.0"
+        return None
 
 
 async def get_ips(include_ipv6: bool = False, ignore_loopback: bool = True) -> set[str]:

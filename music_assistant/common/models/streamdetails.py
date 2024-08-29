@@ -59,6 +59,7 @@ class StreamDetails(DataClassDictMixin):
     queue_id: str | None = None
     seconds_streamed: float | None = None
     target_loudness: float | None = None
+    bypass_loudness_normalization: bool = False
 
     def __str__(self) -> str:
         """Return pretty printable string of object."""

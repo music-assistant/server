@@ -20,6 +20,7 @@ from music_assistant.common.models.enums import (
     StreamType,
 )
 from music_assistant.common.models.errors import (
+    AudioError,
     LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
@@ -561,6 +562,7 @@ class SpotifyProvider(MusicProvider):
         """Return the audio stream for the provider item."""
         auth_info = await self.login()
         librespot = await self.get_librespot_binary()
+        spotify_uri = f"spotify://track:{streamdetails.item_id}"
         args = [
             librespot,
             "-c",
@@ -573,7 +575,7 @@ class SpotifyProvider(MusicProvider):
             "--backend",
             "pipe",
             "--single-track",
-            f"spotify://track:{streamdetails.item_id}",
+            spotify_uri,
             "--token",
             auth_info["access_token"],
         ]
@@ -581,14 +583,25 @@ class SpotifyProvider(MusicProvider):
             args += ["--start-position", str(int(seek_position))]
         chunk_size = get_chunksize(streamdetails.audio_format)
         stderr = None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False
-        async with AsyncProcess(
-            args,
-            stdout=True,
-            stderr=stderr,
-            name="librespot",
-        ) as librespot_proc:
-            async for chunk in librespot_proc.iter_any(chunk_size):
-                yield chunk
+        self.logger.log(VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot")
+        for retry in (True, False):
+            async with AsyncProcess(
+                args,
+                stdout=True,
+                stderr=stderr,
+                name="librespot",
+            ) as librespot_proc:
+                async for chunk in librespot_proc.iter_any(chunk_size):
+                    yield chunk
+                if librespot_proc.returncode == 0:
+                    self.logger.log(VERBOSE_LOG_LEVEL, f"Streaming {spotify_uri} ready.")
+                    break
+                if not retry:
+                    raise AudioError(
+                        f"Failed to stream {spotify_uri} - error: {librespot_proc.returncode}"
+                    )
+                # do one retry attempt
+                auth_info = await self.login(force_refresh=True)
 
     def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
@@ -770,10 +783,12 @@ class SpotifyProvider(MusicProvider):
         playlist.cache_checksum = str(playlist_obj["snapshot_id"])
         return playlist
 
-    async def login(self, retry: bool = True) -> dict:
+    async def login(self, retry: bool = True, force_refresh: bool = False) -> dict:
         """Log-in Spotify and return Auth/token info."""
         # return existing token if we have one in memory
-        if self._auth_info and (self._auth_info["expires_at"] > (time.time() - 300)):
+        if self._auth_info and (
+            self._auth_info["expires_at"] > (time.time() - 1800 if force_refresh else 120)
+        ):
             return self._auth_info
         # request new access token using the refresh token
         if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN)):

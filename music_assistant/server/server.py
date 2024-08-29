@@ -106,7 +106,7 @@ class MusicAssistant:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
         self.running_as_hass_addon = await is_hass_supervisor()
-        self.version = await get_package_version("music_assistant")
+        self.version = await get_package_version("music_assistant") or "0.0.0"
         # create shared zeroconf instance
         # TODO: enumerate interfaces and enable IPv6 support
         self.aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only)
