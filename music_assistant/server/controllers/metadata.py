@@ -88,7 +88,7 @@ LOCALES = {
     "jp_JP": "Japanese",
     "ko_KR": "Korean",
     "nl_NL": "Dutch",
-    "no_NO": "Norwegian",
+    "nb_NO": "Norwegian Bokmål",
     "pl_PL": "Polish",
     "pt_PT": "Portuguese",
     "ro_RO": "Romanian",
