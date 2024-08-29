@@ -41,6 +41,7 @@ from music_assistant.constants import (
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
+    MASS_LOGO_ONLINE,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
 )
@@ -77,8 +78,12 @@ DEFAULT_STREAM_HEADERS = {
     "Pragma": "no-cache",
     "Connection": "close",
     "Accept-Ranges": "none",
-    "Icy-Name": "Music Assistant",
-    "Icy-Url": "https://music-assistant.io",
+}
+ICY_HEADERS = {
+    "icy-name": "Music Assistant",
+    "icy-description": "Music Assistant - Your personal music assistant",
+    "icy-version": "1",
+    "icy-logo": MASS_LOGO_ONLINE,
 }
 FLOW_DEFAULT_SAMPLE_RATE = 48000
 FLOW_DEFAULT_BIT_DEPTH = 24
@@ -303,6 +308,7 @@ class StreamsController(CoreController):
             "Accept-Ranges": "none",
             "Cache-Control": "no-cache",
             "Connection": "close",
+            "icy-name": queue_item.name,
         }
         resp = web.StreamResponse(
             status=200,
@@ -390,6 +396,7 @@ class StreamsController(CoreController):
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
+            **ICY_HEADERS,
             "Content-Type": f"audio/{output_format.output_format_str}",
             "Accept-Ranges": "none",
             "Cache-Control": "no-cache",
@@ -944,6 +951,9 @@ class StreamsController(CoreController):
                 player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
             )
             output_channels = 1 if output_channels_str != "stereo" else 2
+        if not content_type.is_lossless():
+            output_bit_depth = 16
+            output_sample_rate = min(48000, output_sample_rate)
         return AudioFormat(
             content_type=content_type,
             sample_rate=output_sample_rate,
