@@ -14,7 +14,7 @@ else
   echo "Creating Virtual environment..."
   python -m venv .venv
 fi
-echo "Activating virtual environment..."   
+echo "Activating virtual environment..."
 source .venv/bin/activate
 
 echo "Installing development dependencies..."
@@ -22,4 +22,3 @@ echo "Installing development dependencies..."
 pip install -e ".[server]"
 pip install -e ".[test]"
 pre-commit install
-pip install -r requirements_all.txt
