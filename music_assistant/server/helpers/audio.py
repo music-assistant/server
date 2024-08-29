@@ -500,17 +500,17 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
             or "audio/x-scpls" in headers.get("content-type", "")
         ):
             # url is playlist, we need to unfold it
-            substreams = await fetch_playlist(mass, url)
-            if not any(x for x in substreams if x.length):
-                try:
+            try:
+                substreams = await fetch_playlist(mass, url)
+                if not any(x for x in substreams if x.length):
                     for line in substreams:
                         if not line.is_url:
                             continue
                         # unfold first url of playlist
                         return await resolve_radio_stream(mass, line.path)
                     raise InvalidDataError("No content found in playlist")
-                except IsHLSPlaylist:
-                    is_hls = True
+            except IsHLSPlaylist:
+                is_hls = True
 
     except Exception as err:
         LOGGER.warning("Error while parsing radio URL %s: %s", url, err)
@@ -913,9 +913,9 @@ def get_ffmpeg_args(
             # these options are only supported in ffmpeg > 5
             input_args += [
                 "-reconnect_on_network_error",
-                "1",
+                "5",
                 "-reconnect_on_http_error",
-                "5xx",
+                "5xx,4xx",
             ]
     if input_format.content_type.is_pcm():
         input_args += [
