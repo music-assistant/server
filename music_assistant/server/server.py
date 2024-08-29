@@ -314,7 +314,7 @@ class MusicAssistant:
         target: Coroutine | Awaitable | Callable,
         *args: Any,
         task_id: str | None = None,
-        eager_start: bool = False,
+        abort_existing: bool = False,
         **kwargs: Any,
     ) -> asyncio.Task | asyncio.Future:
         """Create Task on (main) event loop from Coroutine(function).
@@ -324,32 +324,24 @@ class MusicAssistant:
         if target is None:
             msg = "Target is missing"
             raise RuntimeError(msg)
-        if task_id and (existing := self._tracked_tasks.get(task_id)):
+        if task_id and (existing := self._tracked_tasks.get(task_id)) and not existing.done():
             # prevent duplicate tasks if task_id is given and already present
-            return existing
+            if abort_existing:
+                existing.cancel()
+            else:
+                return existing
         if asyncio.iscoroutinefunction(target):
-            # coroutine function (with or without eager start)
-            if eager_start:
-                task = asyncio.Task(target(*args, **kwargs), loop=self.loop, eager_start=True)
-            else:
-                task = self.loop.create_task(target(*args, **kwargs))
+            # coroutine function
+            task = self.loop.create_task(target(*args, **kwargs))
         elif asyncio.iscoroutine(target):
-            # coroutine (with or without eager start)
-            if eager_start:
-                task = asyncio.Task(target, loop=self.loop, eager_start=True)
-            else:
-                task = self.loop.create_task(target)
-        elif eager_start:
-            # regular callback (non async function)
-            task = asyncio.Task(
-                asyncio.to_thread(target, *args, **kwargs), loop=self.loop, eager_start=True
-            )
+            # coroutine
+            task = self.loop.create_task(target)
         else:
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
 
         def task_done_callback(_task: asyncio.Task) -> None:
             _task_id = task.task_id
-            self._tracked_tasks.pop(_task_id)
+            self._tracked_tasks.pop(_task_id, None)
             # log unhandled exceptions
             if (
                 LOGGER.isEnabledFor(logging.DEBUG)
@@ -393,7 +385,7 @@ class MusicAssistant:
 
         def _create_task() -> None:
             self._tracked_timers.pop(task_id)
-            self.create_task(target, *args, task_id=task_id, **kwargs)
+            self.create_task(target, *args, task_id=task_id, abort_existing=True, **kwargs)
 
         handle = self.loop.call_later(delay, _create_task)
         self._tracked_timers[task_id] = handle
@@ -592,11 +584,9 @@ class MusicAssistant:
 
         # handle dependency on other provider
         if prov_manifest.depends_on and not self.get_provider(prov_manifest.depends_on):
-            msg = (
-                f"Provider {domain} depends on {prov_manifest.depends_on} "
-                "which is not (yet) available."
-            )
-            raise SetupFailedError(msg)
+            # we can safely ignore this completely as the setup will be retried later
+            # automatically when the dependency is loaded
+            return
 
         # try to setup the module
         prov_mod = await load_provider_module(domain, prov_manifest.requirements)

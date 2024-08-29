@@ -5,7 +5,7 @@ from __future__ import annotations
 import urllib.parse
 from typing import TYPE_CHECKING, cast
 
-from music_assistant.common.models.enums import ImageType, MediaType
+from music_assistant.common.models.enums import AlbumType, ImageType, MediaType
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -124,6 +124,7 @@ class Music:
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | None = None,
+        album_types: list[AlbumType] | None = None,
     ) -> list[Album]:
         """Get Albums listing from the server."""
         return [
@@ -135,6 +136,7 @@ class Music:
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
+                album_types=album_types,
             )
         ]
 
@@ -511,10 +513,15 @@ class Music:
             library_item_id=library_item_id,
         )
 
-    async def add_item_to_library(self, item: str | MediaItemType) -> MediaItemType:
+    async def add_item_to_library(
+        self, item: str | MediaItemType, overwrite_existing: bool = False
+    ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
         return cast(
-            MediaItemType, await self.client.send_command("music/library/add_item", item=item)
+            MediaItemType,
+            await self.client.send_command(
+                "music/library/add_item", item=item, overwrite_existing=overwrite_existing
+            ),
         )
 
     async def refresh_item(

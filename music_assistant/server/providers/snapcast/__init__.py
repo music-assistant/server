@@ -246,7 +246,7 @@ class SnapCastProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -447,14 +447,17 @@ class SnapCastProvider(PlayerProvider):
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
 
-    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:  # noqa: PLR0915
         """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
         # stop any existing streams first
-        await self.cmd_stop(player_id)
+        if stream_task := self._stream_tasks.pop(player_id, None):
+            if not stream_task.done():
+                stream_task.cancel()
+        # initialize a new stream and attach it to the group
         stream, port = await self._create_stream()
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
@@ -472,8 +475,8 @@ class SnapCastProvider(PlayerProvider):
             # special case: UGP stream
             ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
             ugp_stream = ugp_provider.streams[media.queue_id]
-            input_format = ugp_stream.audio_format
-            audio_source = ugp_stream.subscribe_raw()
+            input_format = ugp_stream.output_format
+            audio_source = ugp_stream.subscribe()
         elif media.media_type == MediaType.RADIO and media.queue_id and media.queue_item_id:
             # radio stream - consume media stream directly
             input_format = DEFAULT_SNAPCAST_FORMAT
@@ -522,17 +525,15 @@ class SnapCastProvider(PlayerProvider):
                     self.mass.players.update(player_id)
                     self._set_childs_state(player_id)
                     await ffmpeg_proc.wait()
-                    # we need to wait a bit for the stream status to become idle
-                    # to ensure that all snapclients have consumed the audio
-                    await asyncio.sleep(5)
-
-                    player.state = PlayerState.IDLE
-                    self.mass.players.update(player_id)
-                    self._set_childs_state(player_id)
-
-            finally:
                 self.logger.debug("Finished streaming to %s", stream_path)
-
+                # we need to wait a bit for the stream status to become idle
+                # to ensure that all snapclients have consumed the audio
+                while stream.status != "idle":
+                    await asyncio.sleep(0.25)
+                player.state = PlayerState.IDLE
+                self.mass.players.update(player_id)
+                self._set_childs_state(player_id)
+            finally:
                 with suppress(TypeError, KeyError, AttributeError):
                     await self._snapserver.stream_remove_stream(stream.identifier)
 

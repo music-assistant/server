@@ -25,7 +25,6 @@ from soco.core import (
     SoCo,
 )
 from soco.data_structures import DidlAudioBroadcast, DidlPlaylistContainer
-from sonos_websocket import SonosWebsocket
 
 from music_assistant.common.helpers.datetime import utc
 from music_assistant.common.models.enums import PlayerFeature, PlayerState
@@ -104,7 +103,6 @@ class SonosPlayer:
         self.logger = sonos_prov.logger
         self.household_id: str = soco.household_id
         self.subscriptions: list[SubscriptionBase] = []
-        self.websocket: SonosWebsocket | None = None
         self.mass_player: Player = mass_player
         self.available: bool = True
         # cached attributes
@@ -162,7 +160,7 @@ class SonosPlayer:
         """Return if this player should be polled/pinged."""
         if not self.available:
             return True
-        return (time.monotonic() - self._last_activity) > 120
+        return (time.monotonic() - self._last_activity) > self.mass_player.poll_interval
 
     def setup(self) -> None:
         """Run initial setup of the speaker (NOT async friendly)."""
@@ -177,16 +175,6 @@ class SonosPlayer:
         if not self.sync_coordinator:
             self.poll_media()
 
-        async def do_async_setup() -> None:
-            """Complete setup in async context."""
-            self.websocket = SonosWebsocket(
-                self.soco.ip_address,
-                player_id=self.soco.uid,
-                session=self.mass.http_session,
-            )
-
-        future = asyncio.run_coroutine_threadsafe(do_async_setup(), self.mass.loop)
-        future.result(timeout=10)
         asyncio.run_coroutine_threadsafe(self.subscribe(), self.mass.loop)
 
     async def offline(self) -> None:
@@ -265,22 +253,23 @@ class SonosPlayer:
             self.log_subscription_result(result, "Unsubscribe")
         self._subscriptions = []
 
-    async def check_poll(self) -> None:
+    async def check_poll(self) -> bool:
         """Validate availability of the speaker based on recent activity."""
         if not self.should_poll:
-            return
+            return False
         self.logger.log(VERBOSE_LOG_LEVEL, "Polling player for availability...")
         try:
             await asyncio.to_thread(self.ping)
             self._speaker_activity("ping")
         except SonosUpdateError:
             if not self.available:
-                return  # already offline
+                return False  # already offline
             self.logger.warning(
                 "No recent activity and cannot reach %s, marking unavailable",
                 self.zone_name,
             )
             await self.offline()
+        return True
 
     def update_ip(self, ip_address: str) -> None:
         """Handle updated IP of a Sonos player (NOT async friendly)."""
@@ -331,16 +320,17 @@ class SonosPlayer:
             # will detect changes to the player object itself
             self.mass.loop.call_soon_threadsafe(self.sonos_prov.mass.players.update, self.player_id)
 
-    @soco_error()
-    def poll_track_info(self) -> dict[str, Any]:
-        """Poll the speaker for current track info.
+    async def poll_speaker(self) -> None:
+        """Poll the speaker for updates."""
 
-        Add converted position values (NOT async fiendly).
-        """
-        track_info: dict[str, Any] = self.soco.get_current_track_info()
-        track_info[DURATION_SECONDS] = _timespan_secs(track_info.get("duration"))
-        track_info[POSITION_SECONDS] = _timespan_secs(track_info.get("position"))
-        return track_info
+        def _poll():
+            """Poll the speaker for updates (NOT async friendly)."""
+            self.update_groups()
+            self.poll_media()
+            self.mass_player.volume_level = self.soco.volume
+            self.mass_player.volume_muted = self.soco.mute
+
+        await asyncio.to_thread(_poll)
 
     @soco_error()
     def poll_media(self) -> None:
@@ -486,32 +476,6 @@ class SonosPlayer:
 
         if mute := variables.get("mute"):
             self.mass_player.volume_muted = mute["Master"] == "1"
-
-        if loudness := variables.get("loudness"):
-            # TODO: handle this is a better way
-            self.loudness = loudness["Master"] == "1"
-            with contextlib.suppress(KeyError):
-                self.mass.loop.call_soon_threadsafe(
-                    self.mass.config.set_raw_player_config_value,
-                    self.player_id,
-                    "sonos_loudness",
-                    loudness["Master"] == "1",
-                )
-
-        for int_var in (
-            "bass",
-            "treble",
-        ):
-            if int_var in variables:
-                # TODO: handle this is a better way
-                setattr(self, int_var, variables[int_var])
-                with contextlib.suppress(KeyError):
-                    self.mass.loop.call_soon_threadsafe(
-                        self.mass.config.set_raw_player_config_value,
-                        self.player_id,
-                        f"sonos_{int_var}",
-                        variables[int_var],
-                    )
 
         self.update_player()
 
@@ -691,7 +655,7 @@ class SonosPlayer:
             if x.player_id != self.player_id
         )
         if self.sync_coordinator:
-            # player is syned to another player
+            # player is synced to another player
             self.mass_player.synced_to = self.sync_coordinator.player_id
             self.mass_player.group_childs = set()
             self.mass_player.active_source = self.sync_coordinator.mass_player.active_source
@@ -714,7 +678,7 @@ class SonosPlayer:
         self.uri = None
 
         try:
-            track_info = self.poll_track_info()
+            track_info = self._poll_track_info()
         except SonosUpdateError as err:
             self.logger.warning("Fetching track info failed: %s", err)
             return
@@ -824,6 +788,17 @@ class SonosPlayer:
             return
         self.soco.unjoin()
         self.sync_coordinator = None
+
+    @soco_error()
+    def _poll_track_info(self) -> dict[str, Any]:
+        """Poll the speaker for current track info.
+
+        Add converted position values (NOT async fiendly).
+        """
+        track_info: dict[str, Any] = self.soco.get_current_track_info()
+        track_info[DURATION_SECONDS] = _timespan_secs(track_info.get("duration"))
+        track_info[POSITION_SECONDS] = _timespan_secs(track_info.get("position"))
+        return track_info
 
 
 def _convert_state(sonos_state: str) -> PlayerState:

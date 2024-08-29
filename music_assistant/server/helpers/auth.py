@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from aiohttp.web import Request, Response
 
 from music_assistant.common.models.enums import EventType
+from music_assistant.common.models.errors import LoginFailed
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
@@ -62,8 +63,11 @@ class AuthenticationHelper:
 
     async def wait_for_callback(self, timeout: int = 60) -> dict[str, str]:
         """Wait for the external party to call the callback and return any query strings."""
-        async with asyncio.timeout(timeout):
-            return await self._callback_response.get()
+        try:
+            async with asyncio.timeout(timeout):
+                return await self._callback_response.get()
+        except TimeoutError as err:
+            raise LoginFailed("Timeout while waiting for authentication callback") from err
 
     async def _handle_callback(self, request: Request) -> Response:
         """Handle callback response."""

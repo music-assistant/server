@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from enum import EnumType, StrEnum
+from enum import EnumType, IntEnum, StrEnum
 
 
 class MediaTypeMeta(EnumType):
@@ -370,7 +370,6 @@ class ProviderFeature(StrEnum):
     #
     # PLAYERPROVIDER FEATURES
     #
-    PLAYER_GROUP_CREATE = "player_group_create"
     SYNC_PLAYERS = "sync_players"
 
     #
@@ -432,3 +431,18 @@ class StreamType(StrEnum):
     ICY = "icy"  # http stream with icy metadata
     LOCAL_FILE = "local_file"
     CUSTOM = "custom"
+
+
+class CacheCategory(IntEnum):
+    """Enum with predefined cache categories."""
+
+    DEFAULT = 0
+    MUSIC_SEARCH = 1
+    MUSIC_ALBUM_TRACKS = 2
+    MUSIC_ARTIST_TRACKS = 3
+    MUSIC_ARTIST_ALBUMS = 4
+    MUSIC_PLAYLIST_TRACKS = 5
+    MUSIC_PROVIDER_ITEM = 6
+    PLAYER_QUEUE_STATE = 7
+    MEDIA_INFO = 8
+    LIBRARY_ITEMS = 9

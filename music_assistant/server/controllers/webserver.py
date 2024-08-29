@@ -14,7 +14,7 @@ import urllib.parse
 from concurrent import futures
 from contextlib import suppress
 from functools import partial
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import WSMsgType, web
 from music_assistant_frontend import where as locate_frontend
@@ -348,8 +348,16 @@ class WebsocketClientHandler:
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result = handler.target(**args)
             if hasattr(result, "__anext__"):
-                # handle async generator
-                result = [x async for x in result]
+                # handle async generator (for really large listings)
+                iterator = result
+                result: list[Any] = []
+                async for item in iterator:
+                    result.append(item)
+                    if len(result) >= 500:
+                        self._send_message(
+                            SuccessResultMessage(msg.message_id, result, partial=True)
+                        )
+                        result = []
             elif asyncio.iscoroutine(result):
                 result = await result
             self._send_message(SuccessResultMessage(msg.message_id, result))

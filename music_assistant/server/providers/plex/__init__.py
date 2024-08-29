@@ -437,17 +437,8 @@ class PlexProvider(MusicProvider):
         )
 
     async def _get_or_create_artist_by_name(self, artist_name: str) -> Artist | ItemMapping:
-        subquery = (
-            "WHERE provider_mappings.media_type = 'artist' "
-            "AND provider_mappings.provider_instance = :provider_instance"
-        )
-        query = (
-            "WHERE artists.name LIKE :name AND artists.item_id in "
-            f"(SELECT item_id FROM provider_mappings {subquery})"
-        )
-        query_params = {"name": artist_name, "provider_instance": self.instance_id}
         if library_items := await self.mass.music.artists._get_library_items_by_query(
-            extra_query=query, extra_query_params=query_params
+            search=artist_name, provider=self.instance_id
         ):
             return ItemMapping.from_item(library_items[0])
 

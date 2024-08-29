@@ -6,6 +6,7 @@ import asyncio
 import itertools
 import os
 import random
+from base64 import b64decode
 from collections.abc import Iterable
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -40,6 +41,9 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
                 return await resp.read()
         except ClientError as err:
             raise FileNotFoundError from err
+    # handle base64 embedded images
+    if path_or_url.startswith("data:image"):
+        return b64decode(path_or_url.split(",")[-1])
     # handle FILE location (of type image)
     if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg")):
         if await asyncio.to_thread(os.path.isfile, path_or_url):

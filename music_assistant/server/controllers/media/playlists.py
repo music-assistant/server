@@ -9,7 +9,12 @@ from typing import Any
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.helpers.uri import create_uri, parse_uri
-from music_assistant.common.models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant.common.models.enums import (
+    CacheCategory,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -230,7 +235,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     break
             else:
                 self.logger.warning(
-                    "Can't add %s to playlist %s - it is not available provider %s",
+                    "Can't add %s to playlist %s - it is not available on provider %s",
                     full_track.name,
                     playlist.name,
                     playlist_prov.name,
@@ -276,7 +281,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _add_library_item(self, item: Playlist) -> int:
         """Add a new record to the database."""
-        new_item = await self.mass.music.database.insert(
+        db_id = await self.mass.music.database.insert(
             self.db_table,
             {
                 "name": item.name,
@@ -286,9 +291,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "external_ids": serialize_to_json(item.external_ids),
+                "cache_checksum": item.cache_checksum,
             },
         )
-        db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -307,16 +312,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
             {"item_id": db_id},
             {
                 # always prefer name/owner from updated item here
-                "name": update.name if overwrite else cur_item.name,
+                "name": update.name,
                 "sort_name": update.sort_name
-                if overwrite
-                else cur_item.sort_name or update.sort_name,
+                if (overwrite or update.name != cur_item.name)
+                else cur_item.sort_name,
                 "owner": update.owner or cur_item.owner,
                 "is_editable": update.is_editable,
                 "metadata": serialize_to_json(metadata),
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
+                "cache_checksum": update.cache_checksum or cur_item.cache_checksum,
             },
         )
         # update/set provider_mappings table
@@ -342,29 +348,45 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not provider:
             return []
         # prefer cache items (if any)
-        cache_key = f"{provider.lookup_key}.playlist.{item_id}.tracks.{page}"
+        cache_category = CacheCategory.MUSIC_PLAYLIST_TRACKS
+        cache_base_key = provider.lookup_key
+        cache_key = f"{item_id}.{page}"
         if (
             not force_refresh
-            and (cache := await self.mass.cache.get(cache_key, checksum=cache_checksum)) is not None
+            and (
+                cache := await self.mass.cache.get(
+                    cache_key,
+                    checksum=cache_checksum,
+                    category=cache_category,
+                    base_key=cache_base_key,
+                )
+            )
+            is not None
         ):
             return [PlaylistTrack.from_dict(x) for x in cache]
         # no items in cache (or force_refresh) - get listing from provider
-        result: list[Track] = []
-        for item in await provider.get_playlist_tracks(item_id, page=page):
-            # double check if position set
-            assert item.position is not None, "Playlist items require position to be set"
-            result.append(item)
+        items = await provider.get_playlist_tracks(item_id, page=page)
+        # store (serializable items) in cache
+        self.mass.create_task(
+            self.mass.cache.set(
+                cache_key,
+                [x.to_dict() for x in items],
+                checksum=cache_checksum,
+                category=cache_category,
+                base_key=cache_base_key,
+            )
+        )
+        for item in items:
             # if this is a complete track object, pre-cache it as
             # that will save us an (expensive) lookup later
             if item.image and item.artist_str and item.album and provider.domain != "builtin":
                 await self.mass.cache.set(
-                    f"provider_item.track.{provider.lookup_key}.{item_id}", item.to_dict()
+                    f"track.{item_id}",
+                    item.to_dict(),
+                    category=CacheCategory.MUSIC_PROVIDER_ITEM,
+                    base_key=provider.lookup_key,
                 )
-        # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in result], checksum=cache_checksum)
-        )
-        return result
+        return items
 
     async def _get_provider_dynamic_tracks(
         self,

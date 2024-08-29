@@ -403,6 +403,9 @@ class RaopStream:
                     self.mass.create_task(self.mass.player_queues.resume(queue.queue_id))
                 else:
                     logger.warning("Packet loss detected!")
+            if "end of stream reached" in line:
+                logger.debug("End of stream reached")
+                break
 
             logger.log(VERBOSE_LOG_LEVEL, line)
 
@@ -430,7 +433,8 @@ class RaopStream:
                 title = stream_title
             # set album to radio station name
             album = queue.current_item.name
-        if media_item := queue.current_item.media_item:
+        elif media_item := queue.current_item.media_item:
+            title = media_item.name
             if artist_str := getattr(media_item, "artist_str", None):
                 artist = artist_str
             if _album := getattr(media_item, "album", None):
@@ -499,7 +503,6 @@ class AirplayProvider(PlayerProvider):
 
     cliraop_bin: str | None = None
     _players: dict[str, AirPlayPlayer]
-    _discovery_running: bool = False
     _dacp_server: asyncio.Server = None
     _dacp_info: AsyncServiceInfo = None
     _play_media_lock: asyncio.Lock = asyncio.Lock()
@@ -507,7 +510,7 @@ class AirplayProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -644,92 +647,96 @@ class AirplayProvider(PlayerProvider):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
-        await self._play_media_lock.acquire()
-        player = self.mass.players.get(player_id)
-        if player.synced_to:
-            # should not happen, but just in case
-            raise RuntimeError("Player is synced")
-        # always stop existing stream first
-        async with TaskManager(self.mass) as tg:
-            for airplay_player in self._get_sync_clients(player_id):
-                tg.create_task(airplay_player.cmd_stop(update_state=False))
-        # select audio source
-        if media.media_type == MediaType.ANNOUNCEMENT:
-            # special case: stream announcement
-            input_format = AIRPLAY_PCM_FORMAT
-            audio_source = self.mass.streams.get_announcement_stream(
-                media.custom_data["url"],
-                output_format=AIRPLAY_PCM_FORMAT,
-                use_pre_announce=media.custom_data["use_pre_announce"],
-            )
-        elif media.queue_id.startswith("ugp_"):
-            # special case: UGP stream
-            ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
-            ugp_stream = ugp_provider.streams[media.queue_id]
-            input_format = ugp_stream.audio_format
-            audio_source = ugp_stream.subscribe_raw()
-        elif media.media_type == MediaType.RADIO and media.queue_id and media.queue_item_id:
-            # radio stream - consume media stream directly
-            input_format = AIRPLAY_PCM_FORMAT
-            queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
-            audio_source = self.mass.streams.get_media_stream(
-                streamdetails=queue_item.streamdetails,
-                pcm_format=AIRPLAY_PCM_FORMAT,
-            )
-        elif media.queue_id and media.queue_item_id:
-            # regular queue (flow) stream request
-            input_format = AIRPLAY_PCM_FORMAT
-            audio_source = self.mass.streams.get_flow_stream(
-                queue=self.mass.player_queues.get(media.queue_id),
-                start_queue_item=self.mass.player_queues.get_item(
-                    media.queue_id, media.queue_item_id
-                ),
-                pcm_format=AIRPLAY_PCM_FORMAT,
-            )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            input_format = AIRPLAY_PCM_FORMAT
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(ContentType.try_parse(media.uri)),
-                output_format=AIRPLAY_PCM_FORMAT,
-            )
+        async with self._play_media_lock:
+            player = self.mass.players.get(player_id)
+            # set the active source for the player to the media queue
+            # this accounts for syncgroups and linked players (e.g. sonos)
+            player.active_source = media.queue_id
+            if player.synced_to:
+                # should not happen, but just in case
+                raise RuntimeError("Player is synced")
+            # always stop existing stream first
+            async with TaskManager(self.mass) as tg:
+                for airplay_player in self._get_sync_clients(player_id):
+                    tg.create_task(airplay_player.cmd_stop(update_state=False))
+            # select audio source
+            if media.media_type == MediaType.ANNOUNCEMENT:
+                # special case: stream announcement
+                input_format = AIRPLAY_PCM_FORMAT
+                audio_source = self.mass.streams.get_announcement_stream(
+                    media.custom_data["url"],
+                    output_format=AIRPLAY_PCM_FORMAT,
+                    use_pre_announce=media.custom_data["use_pre_announce"],
+                )
+            elif media.queue_id.startswith("ugp_"):
+                # special case: UGP stream
+                ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
+                ugp_stream = ugp_provider.streams[media.queue_id]
+                input_format = ugp_stream.output_format
+                audio_source = ugp_stream.subscribe()
+            elif media.media_type == MediaType.RADIO and media.queue_id and media.queue_item_id:
+                # radio stream - consume media stream directly
+                input_format = AIRPLAY_PCM_FORMAT
+                queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+                audio_source = self.mass.streams.get_media_stream(
+                    streamdetails=queue_item.streamdetails,
+                    pcm_format=AIRPLAY_PCM_FORMAT,
+                )
+            elif media.queue_id and media.queue_item_id:
+                # regular queue (flow) stream request
+                input_format = AIRPLAY_PCM_FORMAT
+                audio_source = self.mass.streams.get_flow_stream(
+                    queue=self.mass.player_queues.get(media.queue_id),
+                    start_queue_item=self.mass.player_queues.get_item(
+                        media.queue_id, media.queue_item_id
+                    ),
+                    pcm_format=AIRPLAY_PCM_FORMAT,
+                )
+            else:
+                # assume url or some other direct path
+                # NOTE: this will fail if its an uri not playable by ffmpeg
+                input_format = AIRPLAY_PCM_FORMAT
+                audio_source = get_ffmpeg_stream(
+                    audio_input=media.uri,
+                    input_format=AudioFormat(ContentType.try_parse(media.uri)),
+                    output_format=AIRPLAY_PCM_FORMAT,
+                )
 
-        # Python is not suitable for realtime audio streaming so we do the actual streaming
-        # of (RAOP) audio using a small executable written in C based on libraop to do the actual
-        # timestamped playback, which reads pcm audio from stdin
-        # and we can send some interactive commands using a named pipe.
+            # Python is not suitable for realtime audio streaming so we do the actual streaming
+            # of (RAOP) audio using a small executable written in C based on libraop to do
+            # the actual timestamped playback, which reads pcm audio from stdin
+            # and we can send some interactive commands using a named pipe.
 
-        # setup RaopStream for player and its sync childs
-        sync_clients = self._get_sync_clients(player_id)
-        for airplay_player in sync_clients:
-            airplay_player.raop_stream = RaopStream(self, airplay_player, input_format=input_format)
+            # setup RaopStream for player and its sync childs
+            sync_clients = self._get_sync_clients(player_id)
+            for airplay_player in sync_clients:
+                airplay_player.raop_stream = RaopStream(
+                    self, airplay_player, input_format=input_format
+                )
 
-        async def audio_streamer() -> None:
-            async for chunk in audio_source:
+            async def audio_streamer() -> None:
+                async for chunk in audio_source:
+                    await asyncio.gather(
+                        *[x.raop_stream.write_chunk(chunk) for x in sync_clients],
+                        return_exceptions=True,
+                    )
+                # entire stream consumed: send EOF
                 await asyncio.gather(
-                    *[x.raop_stream.write_chunk(chunk) for x in sync_clients],
+                    *[x.raop_stream.write_eof() for x in sync_clients],
                     return_exceptions=True,
                 )
-            # entire stream consumed: send EOF
+
+            # get current ntp and start cliraop
+            _, stdout = await check_output(self.cliraop_bin, "-ntp")
+            start_ntp = int(stdout.strip())
+            wait_start = 1250 + (250 * len(sync_clients))
             await asyncio.gather(
-                *[x.raop_stream.write_eof() for x in sync_clients],
+                *[x.raop_stream.start(start_ntp, wait_start) for x in sync_clients],
                 return_exceptions=True,
             )
-
-        # get current ntp and start cliraop
-        _, stdout = await check_output(self.cliraop_bin, "-ntp")
-        start_ntp = int(stdout.strip())
-        wait_start = 1250 + (250 * len(sync_clients))
-        await asyncio.gather(
-            *[x.raop_stream.start(start_ntp, wait_start) for x in sync_clients],
-            return_exceptions=True,
-        )
-        self._players[player_id].raop_stream.audio_source_task = asyncio.create_task(
-            audio_streamer()
-        )
-        self._play_media_lock.release()
+            self._players[player_id].raop_stream.audio_source_task = asyncio.create_task(
+                audio_streamer()
+            )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
@@ -744,7 +751,7 @@ class AirplayProvider(PlayerProvider):
         mass_player.volume_level = volume_level
         self.mass.players.update(player_id)
         # store last state in cache
-        await self.mass.cache.set(f"{CACHE_KEY_PREV_VOLUME}.{player_id}", volume_level)
+        await self.mass.cache.set(player_id, volume_level, base_key=CACHE_KEY_PREV_VOLUME)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
@@ -803,7 +810,9 @@ class AirplayProvider(PlayerProvider):
         group_leader.group_childs.remove(player_id)
         player.synced_to = None
         await self.cmd_stop(player_id)
-        self.mass.players.update(player_id)
+        # make sure that the player manager gets an update
+        self.mass.players.update(player.player_id, skip_forward=True)
+        self.mass.players.update(group_leader.player_id, skip_forward=True)
 
     async def _getcliraop_binary(self):
         """Find the correct raop/airplay binary belonging to the platform."""
@@ -868,7 +877,7 @@ class AirplayProvider(PlayerProvider):
         if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
             return
-        if not (volume := await self.mass.cache.get(f"{CACHE_KEY_PREV_VOLUME}.{player_id}")):
+        if not (volume := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_VOLUME)):
             volume = FALLBACK_VOLUME
         mass_player = Player(
             player_id=player_id,

@@ -9,7 +9,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from json import JSONDecodeError
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import eyed3
 
@@ -19,9 +19,6 @@ from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.common.models.media_items import MediaItemChapter
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.server.helpers.process import AsyncProcess
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 
@@ -369,16 +366,12 @@ class AudioTags:
         return self.tags.get(key, default)
 
 
-async def parse_tags(
-    input_file: str | AsyncGenerator[bytes, None], file_size: int | None = None
-) -> AudioTags:
-    """Parse tags from a media file.
-
-    input_file may be a (local) filename/url accessible by ffmpeg or
-    an AsyncGenerator which yields the file contents as bytes.
+async def parse_tags(input_file: str, file_size: int | None = None) -> AudioTags:
     """
-    file_path = input_file if isinstance(input_file, str) else "-"
+    Parse tags from a media file (or URL).
 
+    Input_file may be a (local) filename or URL accessible by ffmpeg.
+    """
     args = (
         "ffprobe",
         "-hide_banner",
@@ -393,35 +386,11 @@ async def parse_tags(
         "-print_format",
         "json",
         "-i",
-        file_path,
+        input_file,
     )
-
-    writer_task: asyncio.Task | None = None
-    ffmpeg_proc = AsyncProcess(args, stdin=file_path == "-", stdout=True)
-    await ffmpeg_proc.start()
-
-    async def writer() -> None:
-        bytes_read = 0
-        async for chunk in input_file:
-            if ffmpeg_proc.closed:
-                break
-            await ffmpeg_proc.write(chunk)
-            bytes_read += len(chunk)
-            del chunk
-            if bytes_read > 25 * 1000000:
-                # this is possibly a m4a file with 'moove atom' metadata at the
-                # end of the file
-                # we'll have to read the entire file to do something with it
-                # for now we just ignore/deny these files
-                LOGGER.error("Found file with tags not present at beginning of file")
-                break
-
-    if file_path == "-":
-        # feed the file contents to the process
-        writer_task = asyncio.create_task(writer)
-
+    async with AsyncProcess(args, stdin=False, stdout=True) as ffmpeg:
+        res = await ffmpeg.read(-1)
     try:
-        res = await ffmpeg_proc.read(-1)
         data = json.loads(res)
         if error := data.get("error"):
             raise InvalidDataError(error["string"])
@@ -438,45 +407,39 @@ async def parse_tags(
             tags.duration = float(tags.raw["format"]["duration"])
 
         if (
-            not file_path.startswith("http")
-            and file_path.endswith(".mp3")
+            not input_file.startswith("http")
+            and input_file.endswith(".mp3")
             and "musicbrainzrecordingid" not in tags.tags
-            and await asyncio.to_thread(os.path.isfile, file_path)
+            and await asyncio.to_thread(os.path.isfile, input_file)
         ):
             # eyed3 is able to extract the musicbrainzrecordingid from the unique file id
             # this is actually a bug in ffmpeg/ffprobe which does not expose this tag
             # so we use this as alternative approach for mp3 files
-            audiofile = await asyncio.to_thread(eyed3.load, file_path)
-            if audiofile.tag is not None:
+            audiofile = await asyncio.to_thread(eyed3.load, input_file)
+            if audiofile is not None and audiofile.tag is not None:
                 for uf_id in audiofile.tag.unique_file_ids:
                     if uf_id.owner_id == b"http://musicbrainz.org" and uf_id.uniq_id:
                         tags.tags["musicbrainzrecordingid"] = uf_id.uniq_id.decode()
                         break
-
+            del audiofile
         return tags
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-        msg = f"Unable to retrieve info for {file_path}: {err!s}"
+        msg = f"Unable to retrieve info for {input_file}: {err!s}"
         raise InvalidDataError(msg) from err
-    finally:
-        if writer_task and not writer_task.done():
-            writer_task.cancel()
-        await ffmpeg_proc.close()
 
 
-async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> bytes | None:
+async def get_embedded_image(input_file: str) -> bytes | None:
     """Return embedded image data.
 
-    input_file may be a (local) filename/url accessible by ffmpeg or
-    an AsyncGenerator which yields the file contents as bytes.
+    Input_file may be a (local) filename or URL accessible by ffmpeg.
     """
-    file_path = input_file if isinstance(input_file, str) else "-"
     args = (
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         "error",
         "-i",
-        file_path,
+        input_file,
         "-an",
         "-vcodec",
         "mjpeg",
@@ -484,28 +447,7 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
         "mjpeg",
         "-",
     )
-
-    writer_task: asyncio.Task | None = None
-    ffmpeg_proc = AsyncProcess(
-        args, stdin=file_path == "-", stdout=True, stderr=None, name="ffmpeg_image"
-    )
-    await ffmpeg_proc.start()
-
-    async def writer() -> None:
-        async for chunk in input_file:
-            if ffmpeg_proc.closed:
-                break
-            await ffmpeg_proc.write(chunk)
-        await ffmpeg_proc.write_eof()
-
-    # feed the file contents to the process stdin
-    if file_path == "-":
-        writer_task = asyncio.create_task(writer)
-
-    # return image bytes from stdout
-    try:
-        return await ffmpeg_proc.read(-1)
-    finally:
-        if writer_task and not writer_task.cancelled():
-            writer_task.cancel()
-        await ffmpeg_proc.close()
+    async with AsyncProcess(
+        args, stdin=False, stdout=True, stderr=None, name="ffmpeg_image"
+    ) as ffmpeg:
+        return await ffmpeg.read(-1)

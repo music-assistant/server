@@ -1,0 +1,16 @@
+{
+  "type": "player",
+  "domain": "sonos_s1",
+  "name": "SONOS S1",
+  "description": "SONOS Player provider for Music Assistant for the S1 hardware, based on the Soco library. Select this provider if you have Sonos devices on the S1 operating system (with the S1 Controller app)",
+  "codeowners": [
+    "@music-assistant"
+  ],
+  "requirements": [
+    "soco==0.30.4",
+    "defusedxml==0.7.1"
+  ],
+  "documentation": "https://music-assistant.io/player-support/sonos/",
+  "multi_instance": false,
+  "builtin": false
+}

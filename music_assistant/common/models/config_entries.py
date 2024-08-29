@@ -21,12 +21,14 @@ from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
+    CONF_ENABLE_ICY_METADATA,
     CONF_ENFORCE_MP3,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
     CONF_HIDE_PLAYER,
+    CONF_HTTP_PROFILE,
     CONF_ICON,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
@@ -592,6 +594,52 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
 )
 
 
+CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
+    key=CONF_HTTP_PROFILE,
+    type=ConfigEntryType.STRING,
+    options=(
+        ConfigValueOption("Profile 1 - chunked", "chunked"),
+        ConfigValueOption("Profile 2 - no content length", "no_content_length"),
+        ConfigValueOption("Profile 3 - forced content length", "forced_content_length"),
+    ),
+    default_value="chunked",
+    label="HTTP Profile used for sending audio",
+    category="advanced",
+    description="This is considered to be a very advanced setting, only adjust this if needed, "
+    "for example if your player stops playing halfway streams or if you experience "
+    "other playback related issues. In most cases the default setting, "
+    "'chunked transfer encoding', works just fine. \n\n",
+)
+
+CONF_ENTRY_HTTP_PROFILE_DEFAULT_2 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length"}
+)
+CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "chunked", "hidden": True}
+)
+CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length", "hidden": True}
+)
+
+CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
+    key=CONF_ENABLE_ICY_METADATA,
+    type=ConfigEntryType.STRING,
+    options=(
+        ConfigValueOption("Disabled - do not send ICY metadata", "disabled"),
+        ConfigValueOption("Profile 1 - basic info", "basic"),
+        ConfigValueOption("Profile 2 - full info (including image)", "full"),
+    ),
+    depends_on=CONF_FLOW_MODE,
+    default_value="basic",
+    label="Try to ingest metadata into stream (ICY)",
+    category="advanced",
+    description="Try to ingest metadata into the stream (ICY) to show track info on the player, "
+    "even when flow mode is enabled.\n\nThis is called ICY metadata and its what is also used by "
+    "online radio station to inform you what is playing. \n\nBe aware that not all players support "
+    "this correctly. If you experience issues with playback, try to disable this setting.",
+)
+
+
 def create_sample_rates_config_entry(
     max_sample_rate: int,
     max_bit_depth: int,
@@ -616,3 +664,17 @@ def create_sample_rates_config_entry(
     conf_entry.options = tuple(options)
     conf_entry.default_value = default_value
     return conf_entry
+
+
+BASE_PLAYER_CONFIG_ENTRIES = (
+    # config entries that are valid for all players
+    CONF_ENTRY_PLAYER_ICON,
+    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_VOLUME_NORMALIZATION,
+    CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+    CONF_ENTRY_HIDE_PLAYER,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_SAMPLE_RATES,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
+)

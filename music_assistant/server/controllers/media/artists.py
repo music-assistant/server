@@ -8,7 +8,7 @@ from random import choice, random
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import serialize_to_json
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.enums import CacheCategory, ProviderFeature
 from music_assistant.common.models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
@@ -83,20 +83,21 @@ class ArtistsController(MediaControllerBase[Artist]):
         album_artists_only: bool = False,
     ) -> list[Artist]:
         """Get in-database (album) artists."""
+        extra_query_params: dict[str, Any] = extra_query_params or {}
+        extra_query_parts: list[str] = [extra_query] if extra_query else []
         if album_artists_only:
-            artist_query = (
+            extra_query_parts.append(
                 f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"from {DB_TABLE_ALBUM_ARTISTS})"
             )
-            extra_query = f"{extra_query} AND {artist_query}" if extra_query else artist_query
-        return await super().library_items(
+        return await self._get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
             offset=offset,
             order_by=order_by,
             provider=provider,
-            extra_query=extra_query,
+            extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
         )
 
@@ -210,36 +211,56 @@ class ArtistsController(MediaControllerBase[Artist]):
         if prov is None:
             return []
         # prefer cache items (if any) - for streaming providers
-        cache_key = f"{prov.lookup_key}.artist_toptracks.{item_id}"
+        cache_category = CacheCategory.MUSIC_ARTIST_TRACKS
+        cache_base_key = prov.lookup_key
+        cache_key = item_id
         if (
             prov.is_streaming_provider
-            and (cache := await self.mass.cache.get(cache_key)) is not None
+            and (
+                cache := await self.mass.cache.get(
+                    cache_key, category=cache_category, base_key=cache_base_key
+                )
+            )
+            is not None
         ):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         if ProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
             items = await prov.get_artist_toptracks(item_id)
+            for item in items:
+                # if this is a complete track object, pre-cache it as
+                # that will save us an (expensive) lookup later
+                if item.image and item.artist_str and item.album and prov.domain != "builtin":
+                    await self.mass.cache.set(
+                        f"track.{item_id}",
+                        item.to_dict(),
+                        category=CacheCategory.MUSIC_PROVIDER_ITEM,
+                        base_key=prov.lookup_key,
+                    )
         else:
             # fallback implementation using the db
             if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                query = (
-                    f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id "
-                    "AND (provider_domain = :prov_id "
-                    "OR provider_instance = :prov_id)"
+                artist_id = db_artist.item_id
+                subquery = (
+                    f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {artist_id}"
                 )
-                query_params = {
-                    "artist_id": db_artist.item_id,
-                    "prov_id": provider_instance_id_or_domain,
-                }
+                query = f"tracks.item_id in ({subquery})"
                 return await self.mass.music.tracks._get_library_items_by_query(
-                    extra_query=query, extra_query_params=query_params
+                    extra_query_parts=[query], provider=provider_instance_id_or_domain
                 )
         # store (serializable items) in cache
         if prov.is_streaming_provider:
-            self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
+            self.mass.create_task(
+                self.mass.cache.set(
+                    cache_key,
+                    [x.to_dict() for x in items],
+                    category=cache_category,
+                    base_key=cache_base_key,
+                )
+            )
         return items
 
     async def get_library_artist_tracks(
@@ -247,9 +268,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Track]:
         """Return all tracks for an artist in the library/db."""
-        return await self.mass.music.tracks._get_library_items_by_query(
-            extra_query=f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = {item_id}",
-        )
+        subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {item_id}"
+        query = f"tracks.item_id in ({subquery})"
+        return await self.mass.music.tracks._get_library_items_by_query(extra_query_parts=[query])
 
     async def get_provider_artist_albums(
         self,
@@ -263,10 +284,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         if prov is None:
             return []
         # prefer cache items (if any)
-        cache_key = f"{prov.lookup_key}.artist_albums.{item_id}"
+        cache_category = CacheCategory.MUSIC_ARTIST_ALBUMS
+        cache_base_key = prov.lookup_key
+        cache_key = item_id
         if (
             prov.is_streaming_provider
-            and (cache := await self.mass.cache.get(cache_key)) is not None
+            and (
+                cache := await self.mass.cache.get(
+                    cache_key, category=cache_category, base_key=cache_base_key
+                )
+            )
+            is not None
         ):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -279,22 +307,25 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                query = (
-                    f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = :artist_id "
-                    "AND (provider_domain = :prov_id "
-                    "OR provider_instance = :prov_id)"
+                artist_id = db_artist.item_id
+                subquery = (
+                    f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {artist_id}"
                 )
-                query_params = {
-                    "prov_id": provider_instance_id_or_domain,
-                    "artist_id": db_artist.item_id,
-                }
+                query = f"albums.item_id in ({subquery})"
                 return await self.mass.music.albums._get_library_items_by_query(
-                    extra_query=query, extra_query_params=query_params
+                    extra_query_parts=[query], provider=provider_instance_id_or_domain
                 )
 
         # store (serializable items) in cache
         if prov.is_streaming_provider:
-            self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
+            self.mass.create_task(
+                self.mass.cache.set(
+                    cache_key,
+                    [x.to_dict() for x in items],
+                    category=cache_category,
+                    base_key=cache_base_key,
+                )
+            )
         return items
 
     async def get_library_artist_albums(
@@ -302,8 +333,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Album]:
         """Return all in-library albums for an artist."""
-        query = f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {item_id}"
-        return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
+        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {item_id}"
+        query = f"albums.item_id in ({subquery})"
+        return await self.mass.music.albums._get_library_items_by_query(extra_query_parts=[query])
 
     async def _add_library_item(self, item: Artist | ItemMapping) -> int:
         """Add a new item record to the database."""
@@ -315,7 +347,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if item.mbid == VARIOUS_ARTISTS_MBID:
             item.name = VARIOUS_ARTISTS_NAME
         # no existing item matched: insert item
-        new_item = await self.mass.music.database.insert(
+        db_id = await self.mass.music.database.insert(
             self.db_table,
             {
                 "name": item.name,
@@ -325,7 +357,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "metadata": serialize_to_json(item.metadata),
             },
         )
-        db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)

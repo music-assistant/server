@@ -225,11 +225,11 @@ class TuneInProvider(MusicProvider):
 
     async def _get_stream_info(self, preset_id: str) -> list[dict]:
         """Get stream info for a radio station."""
-        cache_key = f"tunein_stream_{preset_id}"
-        if cache := await self.mass.cache.get(cache_key):
+        cache_base_key = "tunein_stream"
+        if cache := await self.mass.cache.get(preset_id, base_key=cache_base_key):
             return cache
         result = (await self.__get_data("Tune.ashx", id=preset_id))["body"]
-        await self.mass.cache.set(cache_key, result)
+        await self.mass.cache.set(preset_id, result, base_key=cache_base_key)
         return result
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -274,7 +274,7 @@ class TuneInProvider(MusicProvider):
             url = endpoint
         else:
             url = f"https://opml.radiotime.com/{endpoint}"
-            kwargs["formats"] = "ogg,aac,wma,mp3"
+            kwargs["formats"] = "ogg,aac,wma,mp3,hls"
             kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"

@@ -9,7 +9,6 @@ the upnp callbacks and json rpc api for slimproto clients.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import time
 import urllib.parse
@@ -33,23 +32,30 @@ from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    CONF_BYPASS_NORMALIZATION_RADIO,
+    CONF_BYPASS_NORMALIZATION_SHORT,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
+    CONF_ENABLE_ICY_METADATA,
+    CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
     SILENCE_FILE,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
     FFMpeg,
     check_audio_support,
     crossfade_pcm_parts,
+    get_chunksize,
     get_ffmpeg_stream,
     get_hls_substream,
     get_icy_stream,
     get_player_filter_params,
     get_silence,
+    get_stream_details,
     parse_loudnorm,
     strip_silence,
 )
@@ -76,6 +82,7 @@ DEFAULT_STREAM_HEADERS = {
 }
 FLOW_DEFAULT_SAMPLE_RATE = 48000
 FLOW_DEFAULT_BIT_DEPTH = 24
+
 
 # pylint:disable=too-many-locals
 
@@ -159,6 +166,29 @@ class StreamsController(CoreController):
                 "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
+                category="advanced",
+            ),
+            ConfigEntry(
+                key=CONF_BYPASS_NORMALIZATION_RADIO,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                label="Bypass volume normalization for radio streams",
+                description="Radio streams are often already normalized according "
+                "to the EBU standard, so it doesn't make a lot of sense to normalize them again "
+                "in Music Assistant unless you hear big jumps in volume during playback, "
+                "such as commercials.",
+                category="advanced",
+            ),
+            ConfigEntry(
+                key=CONF_BYPASS_NORMALIZATION_SHORT,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                label="Bypass volume normalization for effects and short sounds",
+                description="The volume normalizer of ffmpeg (used in Music Assistant), "
+                "is designed to work best with longer audio streams and can have troubles when "
+                "its applied to very short sound clips (< 60 seconds), "
+                "for example sound effects. With this option enabled, the volume normalizer "
+                "will be bypassed for all audio that has a duration of less than 60 seconds.",
                 category="advanced",
             ),
         )
@@ -252,7 +282,10 @@ class StreamsController(CoreController):
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
         if not queue_item.streamdetails:
-            raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
+            # raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
+            queue_item.streamdetails = await get_stream_details(
+                mass=self.mass, queue_item=queue_item
+            )
         # work out output format/details
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
@@ -260,16 +293,29 @@ class StreamsController(CoreController):
             default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
             default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
+        )
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "Content-Type": f"audio/{output_format.output_format_str}",
+            "Accept-Ranges": "none",
+            "Cache-Control": "no-cache",
+            "Connection": "close",
         }
         resp = web.StreamResponse(
             status=200,
             reason="OK",
             headers=headers,
         )
+        if http_profile == "forced_content_length":
+            resp.content_length = get_chunksize(
+                output_format, queue_item.streamdetails.duration or 120
+            )
+        elif http_profile == "chunked":
+            resp.enable_chunked_encoding()
+
         await resp.prepare(request)
 
         # return early if this is not a GET request
@@ -330,16 +376,24 @@ class StreamsController(CoreController):
             default_sample_rate=flow_pcm_format.sample_rate,
             default_bit_depth=flow_pcm_format.bit_depth,
         )
-        # play it safe: only allow icy metadata for mp3 and aac
-        enable_icy = request.headers.get(
-            "Icy-MetaData", ""
-        ) == "1" and output_format.content_type in (ContentType.MP3, ContentType.AAC)
+        # work out ICY metadata support
+        icy_preference = self.mass.config.get_raw_player_config_value(
+            queue_id, CONF_ENABLE_ICY_METADATA, "basic"
+        )
+        enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
         icy_meta_interval = 16384
 
+        # prepare request, add some DLNA/UPNP compatible headers
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
+        )
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "Content-Type": f"audio/{output_format.output_format_str}",
+            "Accept-Ranges": "none",
+            "Cache-Control": "no-cache",
+            "Connection": "close",
         }
         if enable_icy:
             headers["icy-metaint"] = str(icy_meta_interval)
@@ -349,6 +403,10 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
+        if http_profile == "forced_content_length":
+            resp.content_length = get_chunksize(output_format, 24 * 2600)
+        elif http_profile == "chunked":
+            resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # return early if this is not a GET request
@@ -390,7 +448,7 @@ class StreamsController(CoreController):
             else:
                 title = "Music Assistant"
             metadata = f"StreamTitle='{title}';".encode()
-            if current_item and current_item.image:
+            if icy_preference == "full" and current_item and current_item.image:
                 metadata += f"StreamURL='{current_item.image.path}'".encode()
             while len(metadata) % 16 != 0:
                 metadata += b"\x00"
@@ -546,8 +604,8 @@ class StreamsController(CoreController):
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-            crossfade_duration = await self.mass.config.get_player_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION
+            crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             bytes_written = 0
@@ -745,11 +803,6 @@ class StreamsController(CoreController):
             )
         elif streamdetails.stream_type == StreamType.ICY:
             audio_source = get_icy_stream(self.mass, streamdetails.path, streamdetails)
-            # pad some silence before the radio stream starts to create some headroom
-            # for radio stations that do not provide any look ahead buffer
-            # without this, some radio streams jitter a lot
-            async for chunk in get_silence(2, pcm_format):
-                yield chunk
         elif streamdetails.stream_type == StreamType.HLS:
             # we simply select the best quality substream here
             # if we ever want to support adaptive stream selection based on bandwidth
@@ -758,6 +811,10 @@ class StreamsController(CoreController):
             # the user wants the best quality possible at all times.
             substream = await get_hls_substream(self.mass, streamdetails.path)
             audio_source = substream.path
+            if streamdetails.media_type == MediaType.RADIO:
+                # ffmpeg sometimes has trouble with HLS radio streams stopping
+                # abruptly for no reason so this is a workaround to keep the stream alive
+                extra_input_args += ["-stream_loop", "-1"]
         elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
             audio_source = streamdetails.path
             extra_input_args += ["-decryption_key", streamdetails.decryption_key]
@@ -765,6 +822,13 @@ class StreamsController(CoreController):
             audio_source = streamdetails.path
             if streamdetails.seek_position:
                 extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
+
+        if streamdetails.media_type == MediaType.RADIO:
+            # pad some silence before the radio stream starts to create some headroom
+            # for radio stations that do not provide any look ahead buffer
+            # without this, some radio streams jitter a lot
+            async for chunk in get_silence(2, pcm_format):
+                yield chunk
 
         logger.debug("start media stream for: %s", streamdetails.uri)
         bytes_sent = 0
@@ -836,9 +900,10 @@ class StreamsController(CoreController):
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
-        if not self.logger.isEnabledFor(logging.DEBUG):
+        if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             return
-        self.logger.debug(
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
             "Got %s request to %s from %s\nheaders: %s\n",
             request.method,
             request.path,
@@ -873,7 +938,7 @@ class StreamsController(CoreController):
             if default_sample_rate in supported_sample_rates:
                 output_sample_rate = default_sample_rate
             else:
-                output_sample_rate = min(supported_sample_rates)
+                output_sample_rate = max(supported_sample_rates)
             output_bit_depth = min(default_bit_depth, player_max_bit_depth)
             output_channels_str = self.mass.config.get_raw_player_config_value(
                 player.player_id, CONF_OUTPUT_CHANNELS, "stereo"

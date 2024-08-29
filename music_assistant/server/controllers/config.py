@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -26,12 +25,8 @@ from music_assistant.common.models.config_entries import (
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant.common.models.enums import EventType, PlayerState, ProviderType
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    PlayerUnavailableError,
-    ProviderUnavailableError,
-)
+from music_assistant.common.models.enums import EventType, ProviderType
+from music_assistant.common.models.errors import InvalidDataError, ProviderUnavailableError
 from music_assistant.constants import (
     CONF_CORE,
     CONF_PLAYERS,
@@ -42,7 +37,6 @@ from music_assistant.constants import (
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.util import load_provider_module
-from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     import asyncio
@@ -393,21 +387,7 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
-        player = self.mass.players.get(config.player_id)
-        with suppress(PlayerUnavailableError, AttributeError, KeyError):
-            if config.enabled:
-                player_prov = self.mass.players.get_player_provider(player_id)
-                await player_prov.poll_player(player_id)
-            player.enabled = config.enabled
-            self.mass.players.update(config.player_id, force_update=True)
-
-        # signal player provider that the config changed
-        with suppress(PlayerUnavailableError):
-            if provider := self.mass.get_provider(config.provider):
-                provider.on_player_config_changed(config, changed_keys)
-        # if the player was playing, restart playback
-        if player and player.state == PlayerState.PLAYING:
-            self.mass.create_task(self.mass.player_queues.resume(player.active_source))
+        self.mass.players.on_player_config_changed(config, changed_keys)
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
@@ -420,14 +400,8 @@ class ConfigController:
             msg = f"Player {player_id} does not exist"
             raise KeyError(msg)
         self.remove(conf_key)
-        if (player := self.mass.players.get(player_id)) and player.available:
-            player.enabled = False
-            self.mass.players.update(player_id, force_update=True)
-        if provider := self.mass.get_provider(existing["provider"]):
-            assert isinstance(provider, PlayerProvider)
-            provider.on_player_config_removed(player_id)
-        if not player:
-            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+        # signal update to the player manager
+        self.mass.players.on_player_config_removed(player_id)
 
     def create_default_player_config(
         self,

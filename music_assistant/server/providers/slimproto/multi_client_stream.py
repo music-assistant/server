@@ -44,7 +44,9 @@ class MultiClientStream:
             empty_queue(sub_queue)
 
     async def get_stream(
-        self, output_format: AudioFormat, filter_params: list[str] | None = None
+        self,
+        output_format: AudioFormat,
+        filter_params: list[str] | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Get (client specific encoded) ffmpeg stream."""
         async for chunk in get_ffmpeg_stream(
@@ -75,20 +77,23 @@ class MultiClientStream:
         # wait for first/all subscriber
         count = 0
         while count < 50:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
             count += 1
             if len(self.subscribers) >= expected_clients:
                 break
-            if count == 50:
-                return
         LOGGER.debug(
             "Starting multi-client stream with %s/%s clients",
             len(self.subscribers),
             self.expected_clients,
         )
         async for chunk in self.audio_source:
-            if len(self.subscribers) == 0:
-                return
+            fail_count = 0
+            while len(self.subscribers) == 0:
+                await asyncio.sleep(0.1)
+                fail_count += 1
+                if fail_count > 50:
+                    LOGGER.warning("No clients connected, stopping stream")
+                    return
             await asyncio.gather(
                 *[sub.put(chunk) for sub in self.subscribers], return_exceptions=True
             )

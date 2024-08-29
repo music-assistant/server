@@ -33,6 +33,8 @@ from music_assistant.common.models.errors import (
 from music_assistant.common.models.media_items import AudioFormat, ContentType
 from music_assistant.common.models.streamdetails import LoudnessMeasurement, StreamDetails
 from music_assistant.constants import (
+    CONF_BYPASS_NORMALIZATION_RADIO,
+    CONF_BYPASS_NORMALIZATION_SHORT,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
@@ -49,6 +51,7 @@ from music_assistant.server.helpers.playlists import (
     fetch_playlist,
     parse_m3u,
 )
+from music_assistant.server.helpers.throttle_retry import BYPASS_THROTTLER
 
 from .process import AsyncProcess, check_output, communicate
 from .util import create_tempfile
@@ -113,7 +116,7 @@ class FFMpeg(AsyncProcess):
             else:
                 clean_args.append(arg)
         args_str = " ".join(clean_args)
-        self.logger.debug("starting ffmpeg with args: %s", args_str)
+        self.logger.log(VERBOSE_LOG_LEVEL, "starting ffmpeg with args: %s", args_str)
 
     async def start(self) -> None:
         """Perform Async init of process."""
@@ -173,7 +176,7 @@ class FFMpeg(AsyncProcess):
                 if self.input_format.content_type == ContentType.UNKNOWN:
                     content_type_raw = line.split(": Audio: ")[1].split(" ")[0]
                     content_type = ContentType.try_parse(content_type_raw)
-                    self.logger.info(
+                    self.logger.debug(
                         "Detected (input) content type: %s (%s)", content_type, content_type_raw
                     )
                     self.input_format.content_type = content_type
@@ -191,7 +194,7 @@ class FFMpeg(AsyncProcess):
         except Exception as err:
             # make sure we dont swallow any exceptions and we bail out
             # once our audio source fails.
-            if isinstance(err, asyncio.CancelledError):
+            if not isinstance(err, asyncio.CancelledError):
                 self.logger.exception(err)
                 await self.close(True)
 
@@ -334,65 +337,71 @@ async def get_stream_details(
     if seek_position and (queue_item.media_type == MediaType.RADIO or not queue_item.duration):
         LOGGER.warning("seeking is not possible on duration-less streams!")
         seek_position = 0
-    if queue_item.streamdetails and seek_position:
-        LOGGER.debug(f"Using (pre)cached streamdetails from queue_item for {queue_item.uri}")
-        # we already have (fresh?) streamdetails stored on the queueitem, use these.
-        # only do this when we're seeking.
-        # we create a copy (using to/from dict) to ensure the one-time values are cleared
-        streamdetails = StreamDetails.from_dict(queue_item.streamdetails.to_dict())
-    else:
-        # always request the full item as there might be other qualities available
-        full_item = await mass.music.get_item_by_uri(queue_item.uri)
-        # sort by quality and check track availability
-        for prov_media in sorted(
-            full_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
-        ):
-            if not prov_media.available:
-                LOGGER.debug(f"Skipping unavailable {prov_media}")
-                continue
-            # guard that provider is available
-            music_prov = mass.get_provider(prov_media.provider_instance)
-            if not music_prov:
-                LOGGER.debug(f"Skipping {prov_media} - provider not available")
-                continue  # provider not available ?
-            # get streamdetails from provider
-            try:
-                streamdetails: StreamDetails = await music_prov.get_stream_details(
-                    prov_media.item_id
-                )
-            except MusicAssistantError as err:
-                LOGGER.warning(str(err))
-            else:
-                break
+    # we use a contextvar to bypass the throttler for this asyncio task/context
+    # this makes sure that playback has priority over other requests that may be
+    # happening in the background
+    BYPASS_THROTTLER.set(True)
+    # always request the full item as there might be other qualities available
+    full_item = await mass.music.get_item_by_uri(queue_item.uri)
+    # sort by quality and check track availability
+    for prov_media in sorted(
+        full_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
+    ):
+        if not prov_media.available:
+            LOGGER.debug(f"Skipping unavailable {prov_media}")
+            continue
+        # guard that provider is available
+        music_prov = mass.get_provider(prov_media.provider_instance)
+        if not music_prov:
+            LOGGER.debug(f"Skipping {prov_media} - provider not available")
+            continue  # provider not available ?
+        # get streamdetails from provider
+        try:
+            streamdetails: StreamDetails = await music_prov.get_stream_details(prov_media.item_id)
+        except MusicAssistantError as err:
+            LOGGER.warning(str(err))
         else:
-            raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
+            break
+    else:
+        raise MediaNotFoundError(
+            f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
+        )
 
-        # work out how to handle radio stream
-        if (
-            streamdetails.media_type in (MediaType.RADIO, StreamType.ICY, StreamType.HLS)
-            and streamdetails.stream_type == StreamType.HTTP
-        ):
-            resolved_url, is_icy, is_hls = await resolve_radio_stream(mass, streamdetails.path)
-            streamdetails.path = resolved_url
-            if is_hls:
-                streamdetails.stream_type = StreamType.HLS
-            elif is_icy:
-                streamdetails.stream_type = StreamType.ICY
+    # work out how to handle radio stream
+    if (
+        streamdetails.media_type in (MediaType.RADIO, StreamType.ICY, StreamType.HLS)
+        and streamdetails.stream_type == StreamType.HTTP
+    ):
+        resolved_url, is_icy, is_hls = await resolve_radio_stream(mass, streamdetails.path)
+        streamdetails.path = resolved_url
+        if is_hls:
+            streamdetails.stream_type = StreamType.HLS
+        elif is_icy:
+            streamdetails.stream_type = StreamType.ICY
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
     # handle skip/fade_in details
     streamdetails.seek_position = seek_position
     streamdetails.fade_in = fade_in
     # handle volume normalization details
-    if not streamdetails.loudness:
+    is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
+    bypass_normalization = (
+        is_radio
+        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_RADIO)
+    ) or (
+        streamdetails.duration is not None
+        and streamdetails.duration < 60
+        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_SHORT)
+    )
+    if not bypass_normalization and not streamdetails.loudness:
         streamdetails.loudness = await mass.music.get_track_loudness(
             streamdetails.item_id, streamdetails.provider
         )
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
-    if player_settings.get_value(CONF_VOLUME_NORMALIZATION):
-        streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
-    else:
+    if bypass_normalization or not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         streamdetails.target_loudness = None
+    else:
+        streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
 
     if not streamdetails.duration:
         streamdetails.duration = queue_item.duration
@@ -465,8 +474,8 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     - bool if the URL represents a ICY (radio) stream.
     - bool uf the URL represents a HLS stream/playlist.
     """
-    cache_key = f"RADIO_RESOLVED_{url}"
-    if cache := await mass.cache.get(cache_key):
+    cache_base_key = "resolved_radio"
+    if cache := await mass.cache.get(url, base_key=cache_base_key):
         return cache
     is_hls = False
     is_icy = False
@@ -509,7 +518,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
 
     result = (resolved_url, is_icy, is_hls)
     cache_expiration = 3600 * 3
-    await mass.cache.set(cache_key, result, expiration=cache_expiration)
+    await mass.cache.set(url, result, expiration=cache_expiration, base_key=cache_base_key)
     return result
 
 
@@ -899,8 +908,6 @@ def get_ffmpeg_args(
             "1",
             "-reconnect_streamed",
             "1",
-            "-reconnect_delay_max",
-            "10",
         ]
         if major_version > 4:
             # these options are only supported in ffmpeg > 5

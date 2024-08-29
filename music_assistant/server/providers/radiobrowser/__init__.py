@@ -139,8 +139,9 @@ class RadioBrowserProvider(MusicProvider):
 
         :param path: The path to browse, (e.g. provid://artists).
         """
-        subpath = path.split("://", 1)[1]
-        subsubpath = "" if "/" not in subpath else subpath.split("/")[-1]
+        part_parts = path.split("://")[1].split("/")
+        subpath = part_parts[0] if part_parts else ""
+        subsubpath = part_parts[1] if len(part_parts) > 1 else ""
 
         if not subpath:
             # return main listing
@@ -171,50 +172,18 @@ class RadioBrowserProvider(MusicProvider):
         if subpath == "popular":
             return await self.get_by_popularity()
 
-        if subpath == "tag":
-            tags = await self.radios.tags(
-                hide_broken=True,
-                order=Order.STATION_COUNT,
-                reverse=True,
-            )
-            tags.sort(key=lambda tag: tag.name)
-            return [
-                BrowseFolder(
-                    item_id=tag.name.lower(),
-                    provider=self.domain,
-                    path=path + "/" + tag.name.lower(),
-                    name=tag.name,
-                )
-                for tag in tags
-            ]
-
-        if subpath == "country":
-            items: list[BrowseFolder | Radio] = []
-            for country in await self.radios.countries(order=Order.NAME, hide_broken=True):
-                folder = BrowseFolder(
-                    item_id=country.code.lower(),
-                    provider=self.domain,
-                    path=path + "/" + country.code.lower(),
-                    name=country.name,
-                )
-                folder.metadata.images = UniqueList(
-                    [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=country.favicon,
-                            provider=self.lookup_key,
-                            remotely_accessible=True,
-                        )
-                    ]
-                )
-                items.append(folder)
-            return items
-
-        if subsubpath in await self.get_tag_names():
+        if subpath == "tag" and subsubpath:
             return await self.get_by_tag(subsubpath)
 
-        if subsubpath in await self.get_country_codes():
+        if subpath == "tag":
+            return await self.get_tag_folders(path)
+
+        if subpath == "country" and subsubpath:
             return await self.get_by_country(subsubpath)
+
+        if subpath == "country":
+            return await self.get_country_folders(path)
+
         return []
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
@@ -254,28 +223,47 @@ class RadioBrowserProvider(MusicProvider):
         return True
 
     @use_cache(3600 * 24)
-    async def get_tag_names(self) -> Sequence[str]:
-        """Get a list of tag names."""
+    async def get_tag_folders(self, base_path: str) -> list[BrowseFolder]:
+        """Get a list of tag names as BrowseFolder."""
         tags = await self.radios.tags(
             hide_broken=True,
-            limit=10000,
             order=Order.STATION_COUNT,
             reverse=True,
         )
         tags.sort(key=lambda tag: tag.name)
-        tag_names = []
-        for tag in tags:
-            tag_names.append(tag.name.lower())
-        return tag_names
+        return [
+            BrowseFolder(
+                item_id=tag.name.lower(),
+                provider=self.domain,
+                path=base_path + "/" + tag.name.lower(),
+                name=tag.name,
+            )
+            for tag in tags
+        ]
 
     @use_cache(3600 * 24)
-    async def get_country_codes(self) -> Sequence[str]:
-        """Get a list of country names."""
-        countries = await self.radios.countries(order=Order.NAME, hide_broken=True)
-        country_codes = []
-        for country in countries:
-            country_codes.append(country.code.lower())
-        return country_codes
+    async def get_country_folders(self, base_path: str) -> list[BrowseFolder]:
+        """Get a list of country names as BrowseFolder."""
+        items: list[BrowseFolder] = []
+        for country in await self.radios.countries(order=Order.NAME, hide_broken=True):
+            folder = BrowseFolder(
+                item_id=country.code.lower(),
+                provider=self.domain,
+                path=base_path + "/" + country.code.lower(),
+                name=country.name,
+            )
+            folder.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=country.favicon,
+                        provider=self.lookup_key,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
+            items.append(folder)
+        return items
 
     @use_cache(3600)
     async def get_by_popularity(self) -> Sequence[Radio]:

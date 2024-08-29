@@ -19,7 +19,7 @@ from signal import SIGINT
 from types import TracebackType
 from typing import Self
 
-from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 
@@ -113,7 +113,9 @@ class AsyncProcess:
                     "permissive access rights. This will impact performance !"
                 )
 
-        self.logger.debug("Process %s started with PID %s", self.name, self.proc.pid)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
+        )
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
@@ -243,7 +245,8 @@ class AsyncProcess:
                     self.proc.pid,
                 )
                 self.proc.terminate()
-        self.logger.debug(
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
             "Process %s with PID %s stopped with returncode %s",
             self.name,
             self.proc.pid,
