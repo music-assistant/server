@@ -759,6 +759,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if query_parts:
             sql_query += " WHERE " + " AND ".join(query_parts)
         # build final query
+        sql_query += f" GROUP BY {self.db_table}.item_id"
         if order_by:
             if sort_key := SORT_KEYS.get(order_by):
                 sql_query += f" ORDER BY {sort_key}"

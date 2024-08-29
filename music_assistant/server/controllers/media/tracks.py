@@ -82,8 +82,10 @@ class TracksController(MediaControllerBase[Track]):
                     'disc_number', album_tracks.disc_number,
                     'track_number', album_tracks.track_number,
                     'images', json_extract(albums.metadata, '$.images')
-                ) FROM albums JOIN album_tracks on album_tracks.track_id = tracks.item_id  WHERE albums.item_id = album_tracks.album_id) AS track_album
-            FROM tracks"""  # noqa: E501
+                ) FROM albums WHERE albums.item_id = album_tracks.album_id) AS track_album
+            FROM tracks
+            LEFT JOIN album_tracks on album_tracks.track_id = tracks.item_id
+            """  # noqa: E501
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/track_versions", self.versions)

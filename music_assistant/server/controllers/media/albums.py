@@ -286,9 +286,9 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str | int,
     ) -> list[Track]:
         """Return in-database album tracks for the given database album."""
-        subquery = f"SELECT track_id FROM {DB_TABLE_ALBUM_TRACKS} WHERE album_id = {item_id}"
-        query = f"WHERE tracks.item_id in ({subquery})"
-        return await self.mass.music.tracks._get_library_items_by_query(extra_query_parts=[query])
+        return await self.mass.music.tracks._get_library_items_by_query(
+            extra_query_parts=[f"WHERE album_tracks.album_id = {item_id}"],
+        )
 
     async def _add_library_item(self, item: Album) -> int:
         """Add a new record to the database."""

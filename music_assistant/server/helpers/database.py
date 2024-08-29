@@ -80,7 +80,7 @@ class DatabaseConnection:
         """Perform async initialization."""
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
-        await self.execute("PRAGMA analysis_limit=400;")
+        await self.execute("PRAGMA analysis_limit=10000;")
         await self.execute("PRAGMA optimize;")
         await self.commit()
 
