@@ -36,8 +36,10 @@ RUN uv pip install \
     --find-links "https://wheels.home-assistant.io/musllinux/" \
     music-assistant[server]==${MASS_VERSION}
 
-# Enable jemalloc
-RUN export LD_PRELOAD="/usr/local/lib/libjemalloc.so.2"
+# Configure runtime environmental variables
+RUN export LD_PRELOAD="/usr/lib/libjemalloc.so.2" \
+    && export UV_SYSTEM_PYTHON="1" \
+    && export UV_BREAK_SYSTEM_PACKAGES==1"
 
 # Set some labels
 LABEL \
