@@ -17,11 +17,15 @@ jobs:
       - uses: actions/checkout@v4.1.4
       - name: Get tag
         id: vars
-        run: echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+        run:
+          if [[ "${{ github.event.workflow_dispatch }}" == "true" ]]; then
+            echo "tag=$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+          fi  
       - name: Validate version number
         run: >-
           if [[ "${{ github.event.workflow_dispatch }}" == "true" ]]; then
-            echo "tag=$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
             echo "Skipping version validation for manual trigger"
           else  
             if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
@@ -67,6 +71,7 @@ jobs:
       
   pypi-publish:
     runs-on: ubuntu-latest
+    if: !github.event.workflow_dispatch
     needs:
       - build-artifact
     steps:
@@ -153,7 +158,10 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:${{ needs.build-artifact.outputs.version }},
             ghcr.io/${{ github.repository_owner }}/server:dev
           push: true
-          build-args: "MASS_VERSION=${{ needs.build-artifact.outputs.version }}"
+          build-args: |
+            MASS_VERSION=${{ needs.build-artifact.outputs.version }}
+            DEV_RELEASE="true"
+            MASS_INSTALL_LOCATION="/tmp/music_assitant-${{ needs.build-artifact.outputs.version }}-py3-none-any.whl"
 
   release-notes-update:
     name: Updates the release notes and changelog
