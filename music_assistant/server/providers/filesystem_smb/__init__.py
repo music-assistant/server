@@ -10,7 +10,7 @@ from music_assistant.common.helpers.util import get_ip_from_host
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.process import check_output
 from music_assistant.server.providers.filesystem_local import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
@@ -186,8 +186,15 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             options = ["rw"]
             if mount_options := str(self.config.get_value(CONF_MOUNT_OPTIONS)):
                 options += mount_options.split(",")
-
+            options.append(f"username={username}")
             options_str = ",".join(options)
+
+            env_vars = {
+                **os.environ,
+            }
+            if password:
+                env_vars["PASSWD"] = str(password)
+
             mount_cmd = [
                 "mount",
                 "-t",
@@ -197,23 +204,16 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 f"//{server}/{share}{subfolder}",
                 self.base_path,
             ]
-
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
             raise LoginFailed(msg)
 
-        self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.debug(
+        self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
             "Using mount command: %s",
-            [m.replace(str(password), "########") if password else m for m in mount_cmd],
+            " ".join([m.replace(str(password), "########") if password else m for m in mount_cmd]),
         )
-        env_vars = {
-            **os.environ,
-            "USER": username,
-        }
-        if password:
-            env_vars["PASSWD"] = str(password)
-
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
             msg = f"SMB mount failed with error: {output.decode()}"
