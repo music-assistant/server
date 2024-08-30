@@ -52,8 +52,9 @@ from music_assistant.server.helpers.audio import (
     crossfade_pcm_parts,
     get_chunksize,
     get_ffmpeg_stream,
+    get_hls_radio_stream,
     get_hls_substream,
-    get_icy_stream,
+    get_icy_radio_stream,
     get_player_filter_params,
     get_silence,
     get_stream_details,
@@ -817,19 +818,16 @@ class StreamsController(CoreController):
                 seek_position=streamdetails.seek_position,
             )
         elif streamdetails.stream_type == StreamType.ICY:
-            audio_source = get_icy_stream(self.mass, streamdetails.path, streamdetails)
+            audio_source = get_icy_radio_stream(self.mass, streamdetails.path, streamdetails)
         elif streamdetails.stream_type == StreamType.HLS:
-            # we simply select the best quality substream here
-            # if we ever want to support adaptive stream selection based on bandwidth
-            # we need to move the substream selection into the loop below and make it
-            # bandwidth aware. For now we just assume domestic high bandwidth where
-            # the user wants the best quality possible at all times.
-            substream = await get_hls_substream(self.mass, streamdetails.path)
-            audio_source = substream.path
             if streamdetails.media_type == MediaType.RADIO:
-                # ffmpeg sometimes has trouble with HLS radio streams stopping
-                # abruptly for no reason so this is a workaround to keep the stream alive
-                extra_input_args += ["-reconnect_at_eof", "1"]
+                # Especially the BBC streams struggle when they're played directly
+                # with ffmpeg, so we use our own HLS stream parser/logic
+                audio_source = get_hls_radio_stream(self.mass, streamdetails.path, streamdetails)
+            else:
+                # normal tracks we just let ffmpeg deal with it
+                substream = await get_hls_substream(self.mass, streamdetails.path)
+                audio_source = substream.path
         elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
             audio_source = streamdetails.path
             extra_input_args += ["-decryption_key", streamdetails.decryption_key]
