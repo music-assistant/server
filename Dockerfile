@@ -16,13 +16,13 @@ RUN set -x \
         sox \
         samba \
     # install ffmpeg from community repo
-    && apk add ffmpeg --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+    && apk add --no-cache ffmpeg --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
     # install snapcast from community repo
-    && apk add snapcast --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+    && apk add --no-cache snapcast --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
     # install libnfs from community repo
-    && apk add libnfs --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+    && apk add --no-cache libnfs --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
     # install openssl-dev (needed for airplay)
-    && openssl-dev
+    && apk add --no-cache openssl-dev
 
 # Copy widevine client files to container
 RUN mkdir -p /usr/local/bin/widevine_cdm
