@@ -186,11 +186,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             options = ["rw"]
             if mount_options := str(self.config.get_value(CONF_MOUNT_OPTIONS)):
                 options += mount_options.split(",")
-            options.append(f"username={username}")
             options_str = ",".join(options)
 
+            # pass the username+password using (scoped) env variables
+            # to prevent leaking in the process list and special chars supported
             env_vars = {
                 **os.environ,
+                "USER": username,
             }
             if password:
                 env_vars["PASSWD"] = str(password)
@@ -212,7 +214,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Using mount command: %s",
-            " ".join([m.replace(str(password), "########") if password else m for m in mount_cmd]),
+            " ".join(mount_cmd),
         )
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
