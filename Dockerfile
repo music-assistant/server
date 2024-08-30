@@ -14,7 +14,7 @@ RUN set -x \
         wget \
         tzdata \
         sox \
-        samba \
+        cifs-utils \
     # install ffmpeg from community repo
     && apk add --no-cache ffmpeg --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
     # install snapcast from community repo
