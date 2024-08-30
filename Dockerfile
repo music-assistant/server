@@ -20,7 +20,9 @@ RUN set -x \
     # install snapcast from community repo
     && apk add snapcast --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
     # install libnfs from community repo
-    && apk add libnfs --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community
+    && apk add libnfs --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+    # install openssl-dev (needed for airplay)
+    && openssl-dev
 
 # Copy widevine client files to container
 RUN mkdir -p /usr/local/bin/widevine_cdm
