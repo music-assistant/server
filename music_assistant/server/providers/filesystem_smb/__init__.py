@@ -182,14 +182,11 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             ]
 
         elif platform.system() == "Linux":
-            options = ["rw"]
+            options = ["rw", f'username="{username}"']
             if mount_options := str(self.config.get_value(CONF_MOUNT_OPTIONS)):
                 options += mount_options.split(",")
-
-            options += ["username", f'"{username}"']
             if password:
-                options += ["password", f'"{password}"']
-
+                options.append(f'password="{password}"')
             options_str = ",".join(options)
             mount_cmd = [
                 "mount",
