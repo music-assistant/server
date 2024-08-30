@@ -2,7 +2,8 @@
 
 FROM python:3.12-alpine3.20
 
-ARG MASS_VERSION=2.3.0b8
+ARG MASS_VERSION
+ARG TARGETPLATFORM
 
 RUN set -x \
     && apk add --no-cache \
