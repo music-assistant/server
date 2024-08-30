@@ -1409,6 +1409,8 @@ class PlayerQueuesController(CoreController):
             return None
         if player.current_media.queue_item_id:
             return player.current_media.queue_item_id
+        if not player.current_media.uri:
+            return None
         if queue_id in player.current_media.uri:
             # try to extract the item id from either a url or queue_id/item_id combi
             current_item_id = player.current_media.uri.rsplit("/")[-1].split(".")[0]
