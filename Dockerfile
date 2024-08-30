@@ -38,9 +38,8 @@ RUN uv pip install \
     music-assistant[server]==${MASS_VERSION}
 
 # Configure runtime environmental variables
-RUN export LD_PRELOAD="/usr/lib/libjemalloc.so.2" \
-    && export UV_SYSTEM_PYTHON="1" \
-    && export UV_BREAK_SYSTEM_PACKAGES="1"
+ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
+ENV UV_SYSTEM_PYTHON="1"
 
 # Set some labels
 LABEL \

@@ -191,7 +191,7 @@ class StreamsController(CoreController):
                 label="Bypass volume normalization for effects and short sounds",
                 description="The volume normalizer of ffmpeg (used in Music Assistant), "
                 "is designed to work best with longer audio streams and can have troubles when "
-                "its applied to very short sound clips (< 60 seconds), "
+                "its applied to very short sound clips (< 30 seconds), "
                 "for example sound effects. With this option enabled, the volume normalizer "
                 "will be bypassed for all audio that has a duration of less than 60 seconds.",
                 category="advanced",
