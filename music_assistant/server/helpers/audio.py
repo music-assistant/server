@@ -913,7 +913,7 @@ def get_ffmpeg_args(
             # these options are only supported in ffmpeg > 5
             input_args += [
                 "-reconnect_on_network_error",
-                "5",
+                "1",
                 "-reconnect_on_http_error",
                 "5xx,4xx",
             ]
