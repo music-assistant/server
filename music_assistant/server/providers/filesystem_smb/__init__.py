@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import platform
 from typing import TYPE_CHECKING
 
@@ -187,6 +186,10 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             if mount_options := str(self.config.get_value(CONF_MOUNT_OPTIONS)):
                 options += mount_options.split(",")
 
+            options += ["username", f'"{username}"']
+            if password:
+                options += ["password", f'"{password}"']
+
             options_str = ",".join(options)
             mount_cmd = [
                 "mount",
@@ -197,7 +200,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 f"//{server}/{share}{subfolder}",
                 self.base_path,
             ]
-
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
             raise LoginFailed(msg)
@@ -207,14 +209,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             "Using mount command: %s",
             [m.replace(str(password), "########") if password else m for m in mount_cmd],
         )
-        env_vars = {
-            **os.environ,
-            "USER": username,
-        }
-        if password:
-            env_vars["PASSWD"] = str(password)
-
-        returncode, output = await check_output(*mount_cmd, env=env_vars)
+        returncode, output = await check_output(*mount_cmd)
         if returncode != 0:
             msg = f"SMB mount failed with error: {output.decode()}"
             raise LoginFailed(msg)
