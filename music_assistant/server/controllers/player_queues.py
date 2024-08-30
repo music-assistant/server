@@ -890,7 +890,7 @@ class PlayerQueuesController(CoreController):
             queue.elapsed_time_last_updated = time.time()
         else:
             # queue is active and player has one of our tracks loaded, update state
-            if item_id := self._parse_player_current_item_id(queue_id, player.current_item_id):
+            if item_id := self._parse_player_current_item_id(queue_id, player):
                 queue.current_index = self.index_by_id(queue_id, item_id)
             if player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
                 queue.elapsed_time = int(player.corrected_elapsed_time)
@@ -1117,7 +1117,6 @@ class PlayerQueuesController(CoreController):
                     base_key=queue_id,
                 )
             )
-
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
         # save state
@@ -1402,13 +1401,19 @@ class PlayerQueuesController(CoreController):
                     break
         return queue_index, track_time
 
-    def _parse_player_current_item_id(self, queue_id: str, current_item_id: str) -> str | None:
+    def _parse_player_current_item_id(self, queue_id: str, player: Player) -> str | None:
         """Parse QueueItem ID from Player's current url."""
-        if not current_item_id:
+        if not player.current_media:
             return None
-        if queue_id in current_item_id:
+        if player.current_media.queue_id and player.current_media.queue_id != queue_id:
+            return None
+        if player.current_media.queue_item_id:
+            return player.current_media.queue_item_id
+        if not player.current_media.uri:
+            return None
+        if queue_id in player.current_media.uri:
             # try to extract the item id from either a url or queue_id/item_id combi
-            current_item_id = current_item_id.rsplit("/")[-1].split(".")[0]
-        if self.get_item(queue_id, current_item_id):
-            return current_item_id
+            current_item_id = player.current_media.uri.rsplit("/")[-1].split(".")[0]
+            if self.get_item(queue_id, current_item_id):
+                return current_item_id
         return None
