@@ -95,6 +95,11 @@ jobs:
       packages: write
     needs: build-artifact
     steps:
+      - name: Retrieve release distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
       - uses: actions/checkout@v4.1.4
       - name: Download Widevine CDM client files from private repository
         shell: bash
