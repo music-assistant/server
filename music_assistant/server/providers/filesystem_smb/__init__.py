@@ -6,8 +6,6 @@ import os
 import platform
 from typing import TYPE_CHECKING
 
-import aiofiles
-
 from music_assistant.common.helpers.util import get_ip_from_host
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
@@ -164,14 +162,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         password = self.config.get_value(CONF_PASSWORD)
         share = str(self.config.get_value(CONF_SHARE))
 
-        # somehow alpine doesn't accept the PASSWD env var and passing it in the options string
-        # means we cant support any special characters, so alternative is to use a credentials file
-        creds_file = f"/tmp/{self.instance_id}_smb_creds"  # noqa: S108
-        async with aiofiles.open(creds_file, "w") as _file:
-            await _file.write(f"username={username}\n")
-            if password:
-                await _file.write(f"password={password}\n")
-
         # handle optional subfolder
         subfolder = str(self.config.get_value(CONF_SUBFOLDER))
         if subfolder:
@@ -196,8 +186,17 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             options = ["rw"]
             if mount_options := str(self.config.get_value(CONF_MOUNT_OPTIONS)):
                 options += mount_options.split(",")
-            options.append(f"credentials={creds_file}")
             options_str = ",".join(options)
+
+            # pass the username+password using (scoped) env variables
+            # to prevent leaking in the process list and special chars supported
+            env_vars = {
+                **os.environ,
+                "USER": username,
+            }
+            if password:
+                env_vars["PASSWD"] = str(password)
+
             mount_cmd = [
                 "mount",
                 "-t",
@@ -215,10 +214,9 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Using mount command: %s",
-            " ".join([m.replace(str(password), "########") if password else m for m in mount_cmd]),
+            " ".join(mount_cmd),
         )
-        returncode, output = await check_output(*mount_cmd)
-        self.mass.create_task(os.remove, creds_file)
+        returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
             msg = f"SMB mount failed with error: {output.decode()}"
             raise LoginFailed(msg)
