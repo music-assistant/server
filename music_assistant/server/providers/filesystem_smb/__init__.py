@@ -212,9 +212,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Using mount command: %s",
-            " ".replace(
-                [m.replace(str(password), "########") if password else m for m in mount_cmd]
-            ),
+            " ".join([m.replace(str(password), "########") if password else m for m in mount_cmd]),
         )
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
