@@ -22,15 +22,15 @@ jobs:
       - uses: actions/checkout@v4.1.4
       - name: Get tag
         id: vars
-        run:
-          if [[ "${{ inputs.tags }}" ]]; then
+        run: >-
+          if [[ "${{ inputs.tags }}" == "true" ]]; then
             echo "tag=$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
           else
             echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
           fi  
       - name: Validate version number
         run: >-
-          if [[ "${{ inputs.tags }}" ]]; then
+          if [[ "${{ inputs.tags }}" == "true" ]]; then
             echo "Skipping version validation for manual trigger"
           else  
             if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
