@@ -4,6 +4,8 @@ FROM python:3.12-alpine3.20
 
 ARG MASS_VERSION
 ARG TARGETPLATFORM
+ARG DEV_RELEASE="false"
+ARG MASS_INSTALL_LOCATION="music-assistant[server]==${MASS_VERSION}"
 
 RUN set -x \
     && apk add --no-cache \
@@ -27,6 +29,9 @@ RUN set -x \
 # Copy widevine client files to container
 RUN mkdir -p /usr/local/bin/widevine_cdm
 COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
+COPY dist/music_assitant-${MASS_VERSION}-py3-none-any.whl /tmp/
+
+RUN bash -c 'if [ "${DEV_RELEASE}" = "false" ]; then rm /tmp/music_assitant-${MASS_VERSION}-py3-none-any.whl; fi'
 
 # Upgrade pip + Install uv
 RUN pip install --upgrade pip \
@@ -37,7 +42,7 @@ RUN uv pip install \
     --system \
     --no-cache \
     --find-links "https://wheels.home-assistant.io/musllinux/" \
-    music-assistant[server]==${MASS_VERSION}
+    ${MASS_INSTALL_LOCATION}
 
 # Configure runtime environmental variables
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
