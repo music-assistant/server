@@ -4,6 +4,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Run Dev Build'
+        required: true
+        type: boolean
 env:
   PYTHON_VERSION: "3.11"
 
@@ -18,14 +23,14 @@ jobs:
       - name: Get tag
         id: vars
         run:
-          if [[ "${{ github.event.workflow_dispatch }}" == "true" ]]; then
+          if [[ "${{ inputs.tags }}" ]]; then
             echo "tag=$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
           else
             echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
           fi  
       - name: Validate version number
         run: >-
-          if [[ "${{ github.event.workflow_dispatch }}" == "true" ]]; then
+          if [[ "${{ inputs.tags }}" ]]; then
             echo "Skipping version validation for manual trigger"
           else  
             if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
@@ -71,7 +76,7 @@ jobs:
       
   pypi-publish:
     runs-on: ubuntu-latest
-    if: !github.event.workflow_dispatch
+    if: ${{ ! inputs.tags }}
     needs:
       - build-artifact
     steps:
@@ -127,7 +132,7 @@ jobs:
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
       - name: Build and Push release
         uses: docker/build-push-action@v6.7.0
-        if: !github.event.workflow_dispatch && github.event.release.prerelease == false
+        if: ${{ ! inputs.tags && github.event.release.prerelease == false }}
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -142,7 +147,7 @@ jobs:
           build-args: "MASS_VERSION=${{ needs.build-artifact.outputs.version }}"
       - name: Build and Push pre-release
         uses: docker/build-push-action@v6.7.0
-        if: !github.event.workflow_dispatch && github.event.release.prerelease == true
+        if: ${{ ! inputs.tags && github.event.release.prerelease == true }}
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -154,7 +159,7 @@ jobs:
           build-args: "MASS_VERSION=${{ needs.build-artifact.outputs.version }}"
       - name: Build and Push dev-release
         uses: docker/build-push-action@v6.7.0
-        if: github.event.workflow_dispatch == true
+        if: inputs.tags
         with:
           context: .
           platforms: linux/amd64,linux/arm64
