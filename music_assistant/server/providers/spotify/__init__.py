@@ -563,28 +563,29 @@ class SpotifyProvider(MusicProvider):
         auth_info = await self.login()
         librespot = await self.get_librespot_binary()
         spotify_uri = f"spotify://track:{streamdetails.item_id}"
-        args = [
-            librespot,
-            "-c",
-            CACHE_DIR,
-            "-M",
-            "256M",
-            "--passthrough",
-            "-b",
-            "320",
-            "--backend",
-            "pipe",
-            "--single-track",
-            spotify_uri,
-            "--token",
-            auth_info["access_token"],
-        ]
-        if seek_position:
-            args += ["--start-position", str(int(seek_position))]
-        chunk_size = get_chunksize(streamdetails.audio_format)
-        stderr = None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False
-        self.logger.log(VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot")
         for retry in (True, False):
+            args = [
+                librespot,
+                "-c",
+                CACHE_DIR,
+                "-M",
+                "256M",
+                "--passthrough",
+                "-b",
+                "320",
+                "--backend",
+                "pipe",
+                "--single-track",
+                spotify_uri,
+                "--token",
+                auth_info["access_token"],
+            ]
+            if seek_position:
+                args += ["--start-position", str(int(seek_position))]
+            chunk_size = get_chunksize(streamdetails.audio_format)
+            stderr = None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False
+            self.logger.log(VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot")
+
             async with AsyncProcess(
                 args,
                 stdout=True,
@@ -600,7 +601,7 @@ class SpotifyProvider(MusicProvider):
                     raise AudioError(
                         f"Failed to stream {spotify_uri} - error: {librespot_proc.returncode}"
                     )
-                # do one retry attempt
+                # do one retry attempt - accounting for the fact that the token might have expired
                 auth_info = await self.login(force_refresh=True)
 
     def _parse_artist(self, artist_obj):

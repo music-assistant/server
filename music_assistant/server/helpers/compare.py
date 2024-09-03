@@ -128,22 +128,32 @@ def compare_track(
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
-    # return early on (un)matched external id
+    # return early on (un)matched primary/unique external id
     for ext_id in (
         ExternalID.MB_RECORDING,
-        ExternalID.DISCOGS,
+        ExternalID.MB_TRACK,
         ExternalID.ACOUSTID,
-        ExternalID.TADB,
-        # make sure to check musicbrainz before isrc
-        # https://github.com/music-assistant/hass-music-assistant/issues/2316
-        ExternalID.ISRC,
-        ExternalID.ASIN,
     ):
         external_id_match = compare_external_ids(
             base_item.external_ids, compare_item.external_ids, ext_id
         )
         if external_id_match is not None:
             return external_id_match
+    # check secondary external id matches
+    for ext_id in (
+        ExternalID.DISCOGS,
+        ExternalID.TADB,
+        ExternalID.ISRC,
+        ExternalID.ASIN,
+    ):
+        external_id_match = compare_external_ids(
+            base_item.external_ids, compare_item.external_ids, ext_id
+        )
+        if external_id_match is True:
+            # we got a 'soft-match' on a secondary external id (like ISRC)
+            # but we do a double check on duration
+            if abs(base_item.duration - compare_item.duration) <= 2:
+                return True
 
     # compare name
     if not compare_strings(base_item.name, compare_item.name, strict=True):
@@ -227,18 +237,15 @@ def compare_playlist(
     """Compare two Playlist items and return True if they match."""
     if base_item is None or compare_item is None:
         return False
-    # return early on exact item_id match
-    if compare_item_ids(base_item, compare_item):
-        return True
-    # compare owner (if not ItemMapping)
+    # require (exact) name match
+    if not compare_strings(base_item.name, compare_item.name, strict=strict):
+        return False
+    # require exact owner match (if not ItemMapping)
     if isinstance(base_item, Playlist) and isinstance(compare_item, Playlist):
         if not compare_strings(base_item.owner, compare_item.owner):
             return False
-    # compare version
-    if not compare_version(base_item.version, compare_item.version):
-        return False
-    # finally comparing on (exact) name match
-    return compare_strings(base_item.name, compare_item.name, strict=strict)
+    # a playlist is always unique - so do a strict compare on item id(s)
+    return compare_item_ids(base_item, compare_item)
 
 
 def compare_radio(
