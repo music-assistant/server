@@ -254,7 +254,7 @@ async def crossfade_pcm_parts(
     _returncode, crossfaded_audio, _stderr = await communicate(args, fade_in_part)
     if crossfaded_audio:
         LOGGER.log(
-            5,
+            VERBOSE_LOG_LEVEL,
             "crossfaded 2 pcm chunks. fade_in_part: %s - "
             "fade_out_part: %s - fade_length: %s seconds",
             len(fade_in_part),
@@ -310,12 +310,12 @@ async def strip_silence(
 
     # return stripped audio
     bytes_stripped = len(audio_data) - len(stripped_data)
-    if LOGGER.isEnabledFor(5):
+    if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
         pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
         seconds_stripped = round(bytes_stripped / pcm_sample_size, 2)
         location = "end" if reverse else "begin"
         LOGGER.log(
-            5,
+            VERBOSE_LOG_LEVEL,
             "stripped %s seconds of silence from %s of pcm audio. bytes stripped: %s",
             seconds_stripped,
             location,
@@ -336,6 +336,8 @@ async def get_stream_details(
     Do not try to request streamdetails in advance as this is expiring data.
         param media_item: The QueueItem for which to request the streamdetails for.
     """
+    time_start = time.time()
+    LOGGER.debug("Getting streamdetails for %s", queue_item.uri)
     if seek_position and (queue_item.media_type == MediaType.RADIO or not queue_item.duration):
         LOGGER.warning("seeking is not possible on duration-less streams!")
         seek_position = 0
@@ -406,7 +408,8 @@ async def get_stream_details(
         streamdetails.target_loudness = None
     else:
         streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
-
+    process_time = int((time.time() - time_start) * 1000)
+    LOGGER.debug("retrieved streamdetails for %s in %s milliseconds", queue_item.uri, process_time)
     return streamdetails
 
 

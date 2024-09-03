@@ -245,7 +245,7 @@ class RadioBrowserProvider(MusicProvider):
     async def get_country_folders(self, base_path: str) -> list[BrowseFolder]:
         """Get a list of country names as BrowseFolder."""
         items: list[BrowseFolder] = []
-        for country in await self.radios.countries(order=Order.NAME, hide_broken=True):
+        for country in await self.radios.countries(order=Order.NAME, hide_broken=True, limit=1000):
             folder = BrowseFolder(
                 item_id=country.code.lower(),
                 provider=self.domain,
@@ -270,7 +270,7 @@ class RadioBrowserProvider(MusicProvider):
         """Get radio stations by popularity."""
         stations = await self.radios.stations(
             hide_broken=True,
-            limit=5000,
+            limit=1000,
             order=Order.CLICK_COUNT,
             reverse=True,
         )
@@ -287,7 +287,8 @@ class RadioBrowserProvider(MusicProvider):
             filter_by=FilterBy.TAG_EXACT,
             filter_term=tag,
             hide_broken=True,
-            order=Order.NAME,
+            limit=1000,
+            order=Order.CLICK_COUNT,
             reverse=False,
         )
         for station in stations:
@@ -302,7 +303,8 @@ class RadioBrowserProvider(MusicProvider):
             filter_by=FilterBy.COUNTRY_CODE_EXACT,
             filter_term=country_code,
             hide_broken=True,
-            order=Order.NAME,
+            limit=1000,
+            order=Order.CLICK_COUNT,
             reverse=False,
         )
         for station in stations:

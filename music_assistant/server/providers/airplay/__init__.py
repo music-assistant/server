@@ -749,6 +749,7 @@ class AirplayProvider(PlayerProvider):
             await airplay_player.raop_stream.send_cli_command(f"VOLUME={volume_level}\n")
         mass_player = self.mass.players.get(player_id)
         mass_player.volume_level = volume_level
+        mass_player.volume_muted = volume_level == 0
         self.mass.players.update(player_id)
         # store last state in cache
         await self.mass.cache.set(player_id, volume_level, base_key=CACHE_KEY_PREV_VOLUME)
