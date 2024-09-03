@@ -29,9 +29,9 @@ RUN set -x \
 # Copy widevine client files to container
 RUN mkdir -p /usr/local/bin/widevine_cdm
 COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
-COPY pre_built_whl/music_assitant-${MASS_VERSION}-py3-none-any.whl /tmp/
+COPY pre_built_whl/music_assistant-${MASS_VERSION}-py3-none-any.whl /tmp/
 
-RUN bash -c 'if [ "${DEV_RELEASE}" = "false" ]; then rm /tmp/music_assitant-${MASS_VERSION}-py3-none-any.whl; fi'
+RUN bash -c 'if [ "${DEV_RELEASE}" = "false" ]; then rm /tmp/music_assistant-${MASS_VERSION}-py3-none-any.whl; fi'
 
 # Upgrade pip + Install uv
 RUN pip install --upgrade pip \
