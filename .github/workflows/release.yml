@@ -176,7 +176,7 @@ jobs:
           build-args: |
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
             DEV_RELEASE="true"
-            MASS_INSTALL_LOCATION="/tmp/music_assitant-${{ needs.build-artifact.outputs.version }}-py3-none-any.whl"
+            MASS_INSTALL_LOCATION="/tmp/music_assistant-${{ needs.build-artifact.outputs.version }}-py3-none-any.whl"
 
   release-notes-update:
     name: Updates the release notes and changelog
