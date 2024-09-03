@@ -105,6 +105,11 @@ jobs:
         with:
           name: release-dists
           path: dist/
+      - name: Copy Wheel to new location
+        shell: bash
+        run: |
+          mkdir -p pre_built_whl
+          cp dist/*.whl pre_built_whl/ 
       - uses: actions/checkout@v4.1.4
       - name: Download Widevine CDM client files from private repository
         shell: bash
