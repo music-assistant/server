@@ -237,18 +237,15 @@ def compare_playlist(
     """Compare two Playlist items and return True if they match."""
     if base_item is None or compare_item is None:
         return False
-    # return early on exact item_id match
-    if compare_item_ids(base_item, compare_item):
-        return True
-    # compare owner (if not ItemMapping)
+    # require (exact) name match
+    if not compare_strings(base_item.name, compare_item.name, strict=strict):
+        return False
+    # require exact owner match (if not ItemMapping)
     if isinstance(base_item, Playlist) and isinstance(compare_item, Playlist):
         if not compare_strings(base_item.owner, compare_item.owner):
             return False
-    # compare version
-    if not compare_version(base_item.version, compare_item.version):
-        return False
-    # finally comparing on (exact) name match
-    return compare_strings(base_item.name, compare_item.name, strict=strict)
+    # a playlist is always unique - so do a strict compare on item id(s)
+    return compare_item_ids(base_item, compare_item)
 
 
 def compare_radio(
