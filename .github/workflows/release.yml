@@ -24,7 +24,7 @@ jobs:
         id: vars
         run: >-
           if [[ "${{ inputs.dev_version }}" ]]; then
-            echo "tag=${dev_version}.dev$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
+            echo "tag=${inputs.dev_version}.dev$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
           else
             echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
           fi  
