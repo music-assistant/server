@@ -10,6 +10,8 @@ FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
 
 ARG MASS_VERSION
 ARG TARGETPLATFORM
+ADD dist dist
+RUN ls -al dist
 
 # Install Music Assistant from prebuilt wheel
 RUN uv pip install \
