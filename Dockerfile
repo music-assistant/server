@@ -13,11 +13,10 @@ ARG TARGETPLATFORM
 ADD dist dist
 # Install Music Assistant from prebuilt wheel
 RUN uv pip install \
-    --system \
     --no-cache \
     --find-links "https://wheels.home-assistant.io/musllinux/" \
-    dist/music_assistant-${MASS_VERSION}-py3-none-any.whl
-
+    "music-assistant[server]@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
+    
 # Set some labels
 LABEL \
     org.opencontainers.image.title="Music Assistant Server" \
