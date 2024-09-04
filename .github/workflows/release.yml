@@ -97,7 +97,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
-    needs: build-artifact
+    needs: 
+      - build-artifact
+      - pypi-publish
+    if: |
+      always() &&
+      ((github.event.release.prerelease == false && needs.pypi-publish.result == 'success') || 
+      (github.event.release.prerelease == true && needs.pypi-publish.result == 'skipped') ||
+      (inputs.tags && needs.pypi-publish.result == 'skipped'))
     steps:
       - uses: actions/checkout@v4.1.4
       - name: Download Widevine CDM client files from private repository
