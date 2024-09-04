@@ -5,10 +5,10 @@ on:
     types: [published]
   workflow_dispatch:
     inputs:
-      tags:
-        description: 'Run Dev Build'
+      dev_version:
+        description: 'DEV Build version (postfix)'
         required: true
-        type: boolean
+        type: string
 env:
   PYTHON_VERSION: "3.11"
 
@@ -23,15 +23,15 @@ jobs:
       - name: Get tag
         id: vars
         run: >-
-          if [[ "${{ inputs.tags }}" == "true" ]]; then
-            echo "tag=$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
+          if [[ "${{ inputs.dev_version }}" ]]; then
+            echo "tag=${dev_version}.dev$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
           else
             echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
           fi  
       - name: Validate version number
         run: >-
-          if [[ "${{ inputs.tags }}" == "true" ]]; then
-            echo "Skipping version validation for manual trigger"
+          if [[ "${{ inputs.dev_version }}" ]]; then
+            echo "Skipping version validation for dev version via manual trigger"
           else  
             if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
               if ! [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
@@ -76,7 +76,7 @@ jobs:
       
   pypi-publish:
     runs-on: ubuntu-latest
-    if: ${{ ! inputs.tags }}
+    if: ${{ ! inputs.dev_version }}
     needs: build-artifact
     steps:
       - name: Retrieve release distributions
@@ -104,7 +104,7 @@ jobs:
       always() &&
       ((github.event.release.prerelease == false && needs.pypi-publish.result == 'success') || 
       (github.event.release.prerelease == true && needs.pypi-publish.result == 'skipped') ||
-      (inputs.tags && needs.pypi-publish.result == 'skipped'))
+      (inputs.dev_version && needs.pypi-publish.result == 'skipped'))
     steps:
       - uses: actions/checkout@v4.1.4
       - name: Download Widevine CDM client files from private repository
@@ -138,7 +138,7 @@ jobs:
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
       - name: Build and Push release
         uses: docker/build-push-action@v6.7.0
-        if: ${{ ! inputs.tags && github.event.release.prerelease == false }}
+        if: ${{ ! inputs.dev_version && github.event.release.prerelease == false }}
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -153,7 +153,7 @@ jobs:
           build-args: "MASS_VERSION=${{ needs.build-artifact.outputs.version }}"
       - name: Build and Push pre-release
         uses: docker/build-push-action@v6.7.0
-        if: ${{ ! inputs.tags && github.event.release.prerelease == true }}
+        if: ${{ ! inputs.dev_version && github.event.release.prerelease == true }}
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -165,7 +165,7 @@ jobs:
           build-args: "MASS_VERSION=${{ needs.build-artifact.outputs.version }}"
       - name: Build and Push dev-release
         uses: docker/build-push-action@v6.7.0
-        if: inputs.tags
+        if: inputs.dev_version
         with:
           context: .
           platforms: linux/amd64,linux/arm64
