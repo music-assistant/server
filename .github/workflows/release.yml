@@ -3,14 +3,11 @@ name: Publish releases
 on:
   release:
     types: [published]
-  workflow_dispatch:
-    inputs:
-      tags:
-        description: 'Run Dev Build'
-        required: true
-        type: boolean
+
 env:
   PYTHON_VERSION: "3.11"
+  BASE_IMAGE_VERSION_STABLE: "1.0.0"
+  BASE_IMAGE_VERSION_BETA: "1.0.0"
 
 jobs:
   build-artifact:
@@ -23,28 +20,20 @@ jobs:
       - name: Get tag
         id: vars
         run: >-
-          if [[ "${{ inputs.tags }}" == "true" ]]; then
-            echo "tag=$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
-          fi  
+          echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
       - name: Validate version number
         run: >-
-          if [[ "${{ inputs.tags }}" == "true" ]]; then
-            echo "Skipping version validation for manual trigger"
-          else  
-            if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
-              if ! [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
-              echo "Pre-release: Tag is missing beta suffix (${{ steps.vars.outputs.tag }})"
-                exit 1
-              fi
-            else
-              if [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
-                echo "Release: Tag must not have a beta (or rc) suffix (${{ steps.vars.outputs.tag }})"
-                exit 1
-              fi
+          if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
+            if ! [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
+            echo "Pre-release: Tag is missing beta suffix (${{ steps.vars.outputs.tag }})"
+              exit 1
             fi
-          fi  
+          else
+            if [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
+              echo "Release: Tag must not have a beta (or rc) suffix (${{ steps.vars.outputs.tag }})"
+              exit 1
+            fi
+          fi
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5.2.0
         with:
@@ -73,48 +62,35 @@ jobs:
         with:
           name: release-dists
           path: dist/
-      
+
   pypi-publish:
+    name: Publish release to PyPI (stable releases only)
     runs-on: ubuntu-latest
-    if: ${{ ! inputs.tags }}
     needs: build-artifact
     steps:
       - name: Retrieve release distributions
+        if: ${{ github.event.release.prerelease == false }}
         uses: actions/download-artifact@v4
         with:
           name: release-dists
           path: dist/
       - name: Publish release to PyPI
+        if: ${{ github.event.release.prerelease == false }}
         uses: pypa/gh-action-pypi-publish@v1.10.1
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
-      - name: Wait for PyPI
-        run: sleep 300
 
   build-and-push-container-image:
     name: Builds and pushes the Music Assistant Server container to ghcr.io
     runs-on: ubuntu-latest
     permissions:
       packages: write
-    needs: 
+    needs:
       - build-artifact
       - pypi-publish
-    if: |
-      always() &&
-      ((github.event.release.prerelease == false && needs.pypi-publish.result == 'success') || 
-      (github.event.release.prerelease == true && needs.pypi-publish.result == 'skipped') ||
-      (inputs.tags && needs.pypi-publish.result == 'skipped'))
     steps:
       - uses: actions/checkout@v4.1.4
-      - name: Download Widevine CDM client files from private repository
-        shell: bash
-        env:
-          TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
-        run: |
-          mkdir -p widevine_cdm && cd widevine_cdm
-          curl -OJ -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/private_key.pem
-          curl -OJ -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/client_id.bin
       - name: Retrieve release distributions
         uses: actions/download-artifact@v4
         with:
@@ -138,7 +114,7 @@ jobs:
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
       - name: Build and Push release
         uses: docker/build-push-action@v6.7.0
-        if: ${{ ! inputs.tags && github.event.release.prerelease == false }}
+        if: ${{ github.event.release.prerelease == false }}
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -150,10 +126,12 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:stable,
             ghcr.io/${{ github.repository_owner }}/server:latest
           push: true
-          build-args: "MASS_VERSION=${{ needs.build-artifact.outputs.version }}"
+          build-args: |
+            MASS_VERSION=${{ needs.build-artifact.outputs.version }}
+            BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_STABLE }}
       - name: Build and Push pre-release
         uses: docker/build-push-action@v6.7.0
-        if: ${{ ! inputs.tags && github.event.release.prerelease == true }}
+        if: ${{ github.event.release.prerelease == true }}
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -162,20 +140,9 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.patch }},
             ghcr.io/${{ github.repository_owner }}/server:beta
           push: true
-          build-args: "MASS_VERSION=${{ needs.build-artifact.outputs.version }}"
-      - name: Build and Push dev-release
-        uses: docker/build-push-action@v6.7.0
-        if: inputs.tags
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          file: Dockerfile
-          tags: |-
-            ghcr.io/${{ github.repository_owner }}/server:${{ needs.build-artifact.outputs.version }},
-            ghcr.io/${{ github.repository_owner }}/server:dev
-          push: true
           build-args: |
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
+            BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_BETA }}
 
   release-notes-update:
     name: Updates the release notes and changelog
@@ -192,12 +159,10 @@ jobs:
   addon-version-update:
     name: Updates the Addon repository with the new version
     needs:
-      [
-        build-artifact,  
-        pypi-publish,
-        build-and-push-container-image,
-        release-notes-update,
-      ]
+      - build-artifact
+      - pypi-publish
+      - build-and-push-container-image
+      - release-notes-update
     runs-on: ubuntu-latest
     steps:
       - name: Push new version number to addon config

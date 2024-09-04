@@ -1,0 +1,47 @@
+name: Build base image
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number"
+        required: true
+        type: string
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  build-base-image:
+    name: Builds and pushes the Music Assistant base container to ghcr.io
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4.1.4
+      - name: Download Widevine CDM client files from private repository
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+        run: |
+          mkdir -p widevine_cdm && cd widevine_cdm
+          curl -OJ -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/private_key.pem
+          curl -OJ -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/client_id.bin
+      - name: Log in to the GitHub container registry
+        uses: docker/login-action@v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3.6.1
+
+      - name: Build and Push image
+        uses: docker/build-push-action@v6.7.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          file: Dockerfile.base
+          tags: |-
+            ghcr.io/${{ github.repository_owner }}/base:${{ inputs.version }},
+            ghcr.io/${{ github.repository_owner }}/base:latest
+          push: true
