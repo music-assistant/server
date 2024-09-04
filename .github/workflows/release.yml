@@ -3,12 +3,7 @@ name: Publish releases
 on:
   release:
     types: [published]
-  workflow_dispatch:
-    inputs:
-      dev_version:
-        description: 'DEV Build version (postfix)'
-        required: true
-        type: string
+
 env:
   PYTHON_VERSION: "3.11"
 
@@ -23,28 +18,20 @@ jobs:
       - name: Get tag
         id: vars
         run: >-
-          if [[ -n "${{ inputs.dev_version }}" ]]; then
-            echo "tag=${inputs.dev_version}.dev$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
-          fi  
+          echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
       - name: Validate version number
         run: >-
-          if [[ -n "${{ inputs.dev_version }}" ]]; then
-            echo "Skipping version validation for dev version via manual trigger"
-          else  
-            if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
-              if ! [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
-              echo "Pre-release: Tag is missing beta suffix (${{ steps.vars.outputs.tag }})"
-                exit 1
-              fi
-            else
-              if [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
-                echo "Release: Tag must not have a beta (or rc) suffix (${{ steps.vars.outputs.tag }})"
-                exit 1
-              fi
+          if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
+            if ! [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
+            echo "Pre-release: Tag is missing beta suffix (${{ steps.vars.outputs.tag }})"
+              exit 1
             fi
-          fi  
+          else
+            if [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
+              echo "Release: Tag must not have a beta (or rc) suffix (${{ steps.vars.outputs.tag }})"
+              exit 1
+            fi
+          fi
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5.2.0
         with:
@@ -73,10 +60,11 @@ jobs:
         with:
           name: release-dists
           path: dist/
-      
+
   pypi-publish:
+    name: Publish release to PyPI (stable releases only)
     runs-on: ubuntu-latest
-    if: ${{ inputs.dev_version }}
+    if: ${{ !github.event.release.prerelease }}
     needs: build-artifact
     steps:
       - name: Retrieve release distributions
@@ -97,12 +85,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
-    needs: 
+    needs:
       - build-artifact
       - pypi-publish
     if: |
       always() &&
-      ((github.event.release.prerelease == false && needs.pypi-publish.result == 'success') || 
+      ((github.event.release.prerelease == false && needs.pypi-publish.result == 'success') ||
       (github.event.release.prerelease == true && needs.pypi-publish.result == 'skipped') ||
       (inputs.dev_version && needs.pypi-publish.result == 'skipped'))
     steps:
@@ -193,7 +181,7 @@ jobs:
     name: Updates the Addon repository with the new version
     needs:
       [
-        build-artifact,  
+        build-artifact,
         pypi-publish,
         build-and-push-container-image,
         release-notes-update,
