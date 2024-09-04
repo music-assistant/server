@@ -1,47 +1,22 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.12-alpine3.20
+# FINAL docker image for music assistant server
+# This image is based on the base image and installs
+# the music assistant server from our built wheel on top.
+
+ARG BASE_IMAGE_VERSION = "latest"
+
+FROM ghcr.io/music-assistant/base:${BASE_IMAGE_VERSION}
 
 ARG MASS_VERSION
 ARG TARGETPLATFORM
 
-RUN set -x \
-    && apk add --no-cache \
-        ca-certificates \
-        jemalloc \
-        curl \
-        git \
-        wget \
-        tzdata \
-        sox \
-        cifs-utils \
-    # install ffmpeg from community repo
-    && apk add --no-cache ffmpeg --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
-    # install snapcast from community repo
-    && apk add --no-cache snapcast --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
-    # install libnfs from community repo
-    && apk add --no-cache libnfs --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
-    # install openssl-dev (needed for airplay)
-    && apk add --no-cache openssl-dev
-
-# Copy widevine client files to container
-RUN mkdir -p /usr/local/bin/widevine_cdm
-COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
-
-# Upgrade pip + Install uv
-RUN pip install --upgrade pip \
-    && pip install uv==0.2.27
-
-# Install Music Assistant from published wheel on PyPi
+# Install Music Assistant from prebuilt wheel
 RUN uv pip install \
     --system \
     --no-cache \
     --find-links "https://wheels.home-assistant.io/musllinux/" \
     dist/music_assistant-${MASS_VERSION}-py3-none-any.whl
-
-# Configure runtime environmental variables
-ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
-ENV UV_SYSTEM_PYTHON="1"
 
 # Set some labels
 LABEL \

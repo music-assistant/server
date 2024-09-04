@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1
+
+# BASE docker image for music assistant container
+
+FROM python:3.12-alpine3.20
+
+ARG TARGETPLATFORM
+
+RUN set -x \
+    && apk add --no-cache \
+        ca-certificates \
+        jemalloc \
+        curl \
+        git \
+        wget \
+        tzdata \
+        sox \
+        cifs-utils \
+    # install ffmpeg from community repo
+    && apk add --no-cache ffmpeg --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+    # install snapcast from community repo
+    && apk add --no-cache snapcast --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+    # install libnfs from community repo
+    && apk add --no-cache libnfs --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
+    # install openssl-dev (needed for airplay)
+    && apk add --no-cache openssl-dev
+
+# Copy widevine client files to container
+RUN mkdir -p /usr/local/bin/widevine_cdm
+COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
+
+# Upgrade pip + Install uv
+RUN pip install --upgrade pip \
+    && pip install uv==0.2.27
+
+# Configure runtime environmental variables
+ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
+ENV UV_SYSTEM_PYTHON="1"
+
+LABEL \
+    org.opencontainers.image.title="Music Assistant Base Image" \
+    org.opencontainers.image.description="Base Image for Music Assistant server - not to be used directly" \
+    org.opencontainers.image.source="https://github.com/music-assistant/server" \
+    org.opencontainers.image.authors="The Music Assistant Team" \
+    org.opencontainers.image.licenses="Apache License 2.0"
