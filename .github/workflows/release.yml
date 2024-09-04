@@ -66,7 +66,6 @@ jobs:
   pypi-publish:
     name: Publish release to PyPI (stable releases only)
     runs-on: ubuntu-latest
-    if: ${{ !github.event.release.prerelease }}
     needs: build-artifact
     steps:
       - name: Retrieve release distributions
@@ -75,12 +74,11 @@ jobs:
           name: release-dists
           path: dist/
       - name: Publish release to PyPI
+        if: ${{ github.event.release.prerelease == false }}
         uses: pypa/gh-action-pypi-publish@v1.10.1
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
-      - name: Wait for PyPI
-        run: sleep 300
 
   build-and-push-container-image:
     name: Builds and pushes the Music Assistant Server container to ghcr.io
@@ -156,12 +154,10 @@ jobs:
   addon-version-update:
     name: Updates the Addon repository with the new version
     needs:
-      [
-        build-artifact,
-        pypi-publish,
-        build-and-push-container-image,
-        release-notes-update,
-      ]
+      - build-artifact
+      - pypi-publish
+      - build-and-push-container-image
+      - release-notes-update
     runs-on: ubuntu-latest
     steps:
       - name: Push new version number to addon config
