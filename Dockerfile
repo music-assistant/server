@@ -1,11 +1,15 @@
 # syntax=docker/dockerfile:1
 
+# FINAL docker image for music assistant server
+# This image is based on the base image and installs
+# the music assistant server from our built wheel on top.
+
 FROM ghcr.io/music-assistant/base:latest
 
 ARG MASS_VERSION
 ARG TARGETPLATFORM
 
-# Install Music Assistant from published wheel on PyPi
+# Install Music Assistant from prebuilt wheel
 RUN uv pip install \
     --system \
     --no-cache \

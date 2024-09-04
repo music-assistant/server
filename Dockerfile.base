@@ -36,3 +36,10 @@ RUN pip install --upgrade pip \
 # Configure runtime environmental variables
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
 ENV UV_SYSTEM_PYTHON="1"
+
+LABEL \
+    org.opencontainers.image.title="Music Assistant Base Image" \
+    org.opencontainers.image.description="Base Image for Music Assistant server - not to be used directly" \
+    org.opencontainers.image.source="https://github.com/music-assistant/server" \
+    org.opencontainers.image.authors="The Music Assistant Team" \
+    org.opencontainers.image.licenses="Apache License 2.0"
