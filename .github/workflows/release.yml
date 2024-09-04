@@ -77,8 +77,7 @@ jobs:
   pypi-publish:
     runs-on: ubuntu-latest
     if: ${{ ! inputs.tags }}
-    needs:
-      - build-artifact
+    needs: build-artifact
     steps:
       - name: Retrieve release distributions
         uses: actions/download-artifact@v4
@@ -98,13 +97,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
-    needs: 
-      - build-artifact
-      - pypi-publish
-    if: |
-      always() &&
-      needs.build-artifact.result == 'success' &&
-      (needs.pypi-publish.result == 'success' || needs.pypi-publish.result == 'skipped')  
+    needs: build-artifact
     steps:
       - uses: actions/checkout@v4.1.4
       - name: Download Widevine CDM client files from private repository
@@ -176,8 +169,6 @@ jobs:
           push: true
           build-args: |
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
-            DEV_RELEASE="true"
-            MASS_INSTALL_LOCATION="/tmp/music_assistant-${{ needs.build-artifact.outputs.version }}-py3-none-any.whl"
 
   release-notes-update:
     name: Updates the release notes and changelog
