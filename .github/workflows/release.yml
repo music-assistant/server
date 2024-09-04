@@ -128,7 +128,7 @@ jobs:
           push: true
           build-args: |
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
-            BASE_IMAGE_VERSION=${{ BASE_IMAGE_VERSION_STABLE} }}
+            BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_STABLE }}
       - name: Build and Push pre-release
         uses: docker/build-push-action@v6.7.0
         if: ${{ github.event.release.prerelease == true }}
@@ -142,7 +142,7 @@ jobs:
           push: true
           build-args: |
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
-            BASE_IMAGE_VERSION=${{ BASE_IMAGE_VERSION_BETA} }}
+            BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_BETA }}
 
   release-notes-update:
     name: Updates the release notes and changelog
