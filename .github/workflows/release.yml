@@ -98,18 +98,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
-    needs: build-artifact
+    needs: 
+      - build-artifact
+      - pypi-publish
+    if: |
+      always() &&
+      needs.build-artifact.result == 'success' &&
+      (needs.pypi-publish.result == 'success' || needs.pypi-publish.result == 'skipped')  
     steps:
-      - name: Retrieve release distributions
-        uses: actions/download-artifact@v4
-        with:
-          name: release-dists
-          path: dist/
-      - name: Copy Wheel to new location
-        shell: bash
-        run: |
-          mkdir -p pre_built_whl
-          cp dist/*.whl pre_built_whl/ 
       - uses: actions/checkout@v4.1.4
       - name: Download Widevine CDM client files from private repository
         shell: bash
@@ -119,6 +115,11 @@ jobs:
           mkdir -p widevine_cdm && cd widevine_cdm
           curl -OJ -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/private_key.pem
           curl -OJ -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/client_id.bin
+      - name: Retrieve release distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dists
+          path: dist/
       - name: Log in to the GitHub container registry
         uses: docker/login-action@v3.3.0
         with:
