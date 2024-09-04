@@ -69,6 +69,7 @@ jobs:
     needs: build-artifact
     steps:
       - name: Retrieve release distributions
+        if: ${{ github.event.release.prerelease == false }}
         uses: actions/download-artifact@v4
         with:
           name: release-dists
@@ -125,7 +126,9 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:stable,
             ghcr.io/${{ github.repository_owner }}/server:latest
           push: true
-          build-args: "MASS_VERSION=${{ needs.build-artifact.outputs.version }},BASE_IMAGE_VERSION=${{env.BASE_IMAGE_VERSION_STABLE}}"
+          build-args: |
+            MASS_VERSION=${{ needs.build-artifact.outputs.version }}
+            BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_STABLE} }}
       - name: Build and Push pre-release
         uses: docker/build-push-action@v6.7.0
         if: ${{ github.event.release.prerelease == true }}
@@ -137,7 +140,9 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.patch }},
             ghcr.io/${{ github.repository_owner }}/server:beta
           push: true
-          build-args: "MASS_VERSION=${{ needs.build-artifact.outputs.version }},BASE_IMAGE_VERSION=${{env.BASE_IMAGE_VERSION_BETA}}"
+          build-args: |
+            MASS_VERSION=${{ needs.build-artifact.outputs.version }}
+            BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_BETA} }}
 
   release-notes-update:
     name: Updates the release notes and changelog
