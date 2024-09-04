@@ -23,14 +23,14 @@ jobs:
       - name: Get tag
         id: vars
         run: >-
-          if [[ "${{ inputs.dev_version }}" ]]; then
+          if [[ -n "${{ inputs.dev_version }}" ]]; then
             echo "tag=${inputs.dev_version}.dev$(git rev-parse --short "$GITHUB_SHA")" >> $GITHUB_OUTPUT
           else
             echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
           fi  
       - name: Validate version number
         run: >-
-          if [[ "${{ inputs.dev_version }}" ]]; then
+          if [[ -n "${{ inputs.dev_version }}" ]]; then
             echo "Skipping version validation for dev version via manual trigger"
           else  
             if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
@@ -76,7 +76,7 @@ jobs:
       
   pypi-publish:
     runs-on: ubuntu-latest
-    if: ${{ ! inputs.dev_version }}
+    if: ${{ inputs.dev_version }}
     needs: build-artifact
     steps:
       - name: Retrieve release distributions
