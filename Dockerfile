@@ -4,9 +4,9 @@
 # This image is based on the base image and installs
 # the music assistant server from our built wheel on top.
 
-ARG BASE_IMAGE_VERSION = "latest"
+ARG BASE_IMAGE_VERSION=latest
 
-FROM ghcr.io/music-assistant/base:${BASE_IMAGE_VERSION}
+FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
 
 ARG MASS_VERSION
 ARG TARGETPLATFORM
