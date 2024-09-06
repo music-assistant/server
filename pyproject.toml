@@ -18,7 +18,6 @@ version = "0.0.0"
 
 [project.optional-dependencies]
 server = [
-  "aiorun==2024.8.1",
   "faust-cchardet>=2.1.18",
   "aiodns>=3.0.0",
   "Brotli>=1.0.9",
