@@ -98,7 +98,7 @@ LOCALES = {
     "sr_RS": "Serbian",
     "sv_SE": "Swedish",
     "tr_TR": "Turkish",
-    "uk_UA": "Ukranian",
+    "uk_UA": "Ukrainian",
 }
 
 DEFAULT_LANGUAGE = "en_US"
