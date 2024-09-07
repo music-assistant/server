@@ -420,12 +420,15 @@ async def get_media_stream(
     audio_source: AsyncGenerator[bytes, None] | str,
     filter_params: list[str] | None = None,
     extra_input_args: list[str] | None = None,
-    strip_silence_begin: bool = False,
-    strip_silence_end: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """Get PCM audio stream for given media details."""
     logger = LOGGER.getChild("media_stream")
     logger.debug("start media stream for: %s", streamdetails.uri)
+    strip_silence_begin = streamdetails.strip_silence_begin
+    strip_silence_end = streamdetails.strip_silence_end
+    if streamdetails.fade_in:
+        filter_params.append("afade=type=in:start_time=0:duration=3")
+        strip_silence_begin = False
     bytes_sent = 0
     chunk_number = 0
     buffer: bytes = b""

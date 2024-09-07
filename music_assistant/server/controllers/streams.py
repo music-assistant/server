@@ -57,7 +57,6 @@ from music_assistant.server.helpers.audio import (
     get_player_filter_params,
     get_silence,
     get_stream_details,
-    strip_silence,
 )
 from music_assistant.server.helpers.util import get_ips
 from music_assistant.server.helpers.webserver import Webserver
@@ -624,8 +623,6 @@ class StreamsController(CoreController):
             async for chunk in self.get_media_stream(
                 queue_track.streamdetails,
                 pcm_format=pcm_format,
-                strip_silence_begin=use_crossfade and queue_track != start_queue_item,
-                strip_silence_end=use_crossfade,
             ):
                 # buffer size needs to be big enough to include the crossfade part
                 req_buffer_size = pcm_sample_size * 2 if not use_crossfade else crossfade_size
@@ -674,14 +671,6 @@ class StreamsController(CoreController):
                 bytes_written += len(last_fadeout_part)
                 last_fadeout_part = b""
             if use_crossfade:
-                # strip silence from last part
-                buffer = await strip_silence(
-                    self.mass,
-                    buffer,
-                    sample_rate=pcm_format.sample_rate,
-                    bit_depth=pcm_format.bit_depth,
-                    reverse=True,
-                )
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_size:]
                 remaining_bytes = buffer[:-crossfade_size]
@@ -754,8 +743,6 @@ class StreamsController(CoreController):
         self,
         streamdetails: StreamDetails,
         pcm_format: AudioFormat,
-        strip_silence_begin: bool = False,
-        strip_silence_end: bool = False,
     ) -> AsyncGenerator[tuple[bool, bytes], None]:
         """Get the audio stream for the given streamdetails as raw pcm chunks."""
         is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
@@ -795,8 +782,6 @@ class StreamsController(CoreController):
                 )
             filter_rule += ":print_format=json"
             filter_params.append(filter_rule)
-        if streamdetails.fade_in:
-            filter_params.append("afade=type=in:start_time=0:duration=3")
         if streamdetails.stream_type == StreamType.CUSTOM:
             audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
                 streamdetails,
@@ -819,7 +804,6 @@ class StreamsController(CoreController):
         else:
             audio_source = streamdetails.path
             if streamdetails.seek_position:
-                strip_silence_begin = False
                 extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
 
         if streamdetails.media_type == MediaType.RADIO:
@@ -836,8 +820,6 @@ class StreamsController(CoreController):
             audio_source=audio_source,
             filter_params=filter_params,
             extra_input_args=extra_input_args,
-            strip_silence_begin=strip_silence_begin,
-            strip_silence_end=strip_silence_end,
         ):
             yield chunk
 
