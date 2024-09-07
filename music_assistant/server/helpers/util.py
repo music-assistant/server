@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib
 import logging
 import platform
@@ -10,12 +11,12 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from types import TracebackType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar
 
 import ifaddr
 import memory_tempfile
@@ -198,3 +199,25 @@ class TaskManager:
         if len(self._tasks) > 0:
             await asyncio.wait(self._tasks)
             self._tasks.clear()
+
+
+_ClassT = TypeVar("_ClassT")
+_R = TypeVar("_R")
+_P = ParamSpec("_P")
+
+
+def lock(
+    func: Callable[Concatenate[_ClassT, _P], Awaitable[_R]],
+) -> Callable[Concatenate[_ClassT, _P], Coroutine[Any, Any, _R]]:
+    """Call async function using a Lock."""
+
+    @functools.wraps(func)
+    async def wrapper(self: _ClassT, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        """Call async function using the throttler with retries."""
+        if not hasattr(func, "_lock"):
+            func.lock = asyncio.Lock()
+        _lock: asyncio.Lock = func._lock
+        async with _lock:
+            return await func(self, *args, **kwargs)
+
+    return wrapper
