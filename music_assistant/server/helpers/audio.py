@@ -413,6 +413,136 @@ async def get_stream_details(
     return streamdetails
 
 
+async def get_media_stream(
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+    pcm_format: AudioFormat,
+    audio_source: AsyncGenerator[bytes, None] | str,
+    filter_params: list[str] | None = None,
+    extra_input_args: list[str] | None = None,
+    strip_silence_begin: bool = False,
+    strip_silence_end: bool = False,
+) -> AsyncGenerator[bytes, None]:
+    """Get PCM audio stream for given media details."""
+    logger = LOGGER.getChild("media_stream")
+    logger.debug("start media stream for: %s", streamdetails.uri)
+    bytes_sent = 0
+    chunk_number = 0
+    buffer: bytes = b""
+    finished = False
+    try:
+        async with FFMpeg(
+            audio_input=audio_source,
+            input_format=streamdetails.audio_format,
+            output_format=pcm_format,
+            filter_params=filter_params,
+            extra_input_args=extra_input_args,
+            collect_log_history=True,
+            logger=logger,
+        ) as ffmpeg_proc:
+            async for chunk in ffmpeg_proc.iter_chunked(pcm_format.pcm_sample_size):
+                chunk_number += 1
+                # determine buffer size dynamically
+                if chunk_number < 5 and strip_silence_begin:
+                    req_buffer_size = int(pcm_format.pcm_sample_size * 4)
+                elif chunk_number > 30 and strip_silence_end:
+                    req_buffer_size = int(pcm_format.pcm_sample_size * 8)
+                else:
+                    req_buffer_size = int(pcm_format.pcm_sample_size * 2)
+
+                # always append to buffer
+                buffer += chunk
+                del chunk
+
+                if len(buffer) < req_buffer_size:
+                    # buffer is not full enough, move on
+                    continue
+
+                if chunk_number == 5 and strip_silence_begin:
+                    # strip silence from begin of audio
+                    chunk = await strip_silence(  # noqa: PLW2901
+                        mass, buffer, pcm_format.sample_rate, pcm_format.bit_depth
+                    )
+                    bytes_sent += len(chunk)
+                    yield chunk
+                    buffer = b""
+                    continue
+
+                #### OTHER: enough data in buffer, feed to output
+                while len(buffer) > req_buffer_size:
+                    yield buffer[: pcm_format.pcm_sample_size]
+                    bytes_sent += pcm_format.pcm_sample_size
+                    buffer = buffer[pcm_format.pcm_sample_size :]
+
+            # end of audio/track reached
+            if strip_silence_end:
+                # strip silence from end of audio
+                buffer = await strip_silence(
+                    mass,
+                    buffer,
+                    sample_rate=pcm_format.sample_rate,
+                    bit_depth=pcm_format.bit_depth,
+                    reverse=True,
+                )
+            # send remaining bytes in buffer
+            bytes_sent += len(buffer)
+            yield buffer
+            del buffer
+            finished = True
+    finally:
+        if "ffmpeg_proc" not in locals():
+            # edge case: ffmpeg process was not yet started
+            return  # noqa: B012
+        if finished and not ffmpeg_proc.closed:
+            await asyncio.wait_for(ffmpeg_proc.wait(), 60)
+        elif not ffmpeg_proc.closed:
+            await ffmpeg_proc.close()
+
+        if bytes_sent == 0 or ffmpeg_proc.returncode != 0:
+            finished = False
+
+        # try to determine how many seconds we've streamed
+        seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
+        logger.debug(
+            "stream %s (with code %s) for %s - seconds streamed: %s",
+            "finished" if finished else "aborted",
+            ffmpeg_proc.returncode,
+            streamdetails.uri,
+            seconds_streamed,
+        )
+        streamdetails.seconds_streamed = seconds_streamed
+        # store accurate duration
+        if finished and not streamdetails.seek_position and seconds_streamed:
+            streamdetails.duration = seconds_streamed
+
+        # parse loudnorm data if we have that collected
+        if loudness_details := parse_loudnorm(" ".join(ffmpeg_proc.log_history)):
+            required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
+            if finished or (seconds_streamed >= required_seconds):
+                logger.debug(
+                    "Loudness measurement for %s: %s",
+                    streamdetails.uri,
+                    loudness_details,
+                )
+                streamdetails.loudness = loudness_details
+                mass.create_task(
+                    mass.music.set_track_loudness(
+                        streamdetails.item_id, streamdetails.provider, loudness_details
+                    )
+                )
+        # report playback
+        if finished or seconds_streamed > 30:
+            mass.create_task(
+                mass.music.mark_item_played(
+                    streamdetails.media_type,
+                    streamdetails.item_id,
+                    streamdetails.provider,
+                )
+            )
+            if music_prov := mass.get_provider(streamdetails.provider):
+                mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
+
+
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=None):
     """Generate a wave header from given params."""
     # pylint: disable=no-member

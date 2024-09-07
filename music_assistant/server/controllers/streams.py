@@ -8,7 +8,6 @@ the upnp callbacks and json rpc api for slimproto clients.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 import urllib.parse
@@ -47,7 +46,6 @@ from music_assistant.constants import (
 )
 from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
-    FFMpeg,
     check_audio_support,
     crossfade_pcm_parts,
     get_chunksize,
@@ -55,10 +53,10 @@ from music_assistant.server.helpers.audio import (
     get_hls_radio_stream,
     get_hls_substream,
     get_icy_radio_stream,
+    get_media_stream,
     get_player_filter_params,
     get_silence,
     get_stream_details,
-    parse_loudnorm,
     strip_silence,
 )
 from music_assistant.server.helpers.util import get_ips
@@ -586,7 +584,6 @@ class StreamsController(CoreController):
             use_crossfade,
         )
         total_bytes_sent = 0
-        started = time.time()
 
         while True:
             # get (next) queue item to stream
@@ -627,16 +624,11 @@ class StreamsController(CoreController):
             async for chunk in self.get_media_stream(
                 queue_track.streamdetails,
                 pcm_format=pcm_format,
+                strip_silence_begin=use_crossfade and queue_track != start_queue_item,
+                strip_silence_end=use_crossfade,
             ):
                 # buffer size needs to be big enough to include the crossfade part
-                # allow it to be a bit smaller when playback just starts
-                if not use_crossfade:
-                    req_buffer_size = pcm_sample_size * 2
-                elif (time.time() - started) > 120:
-                    # additional 5 seconds to strip silence from last part
-                    req_buffer_size = crossfade_size + pcm_sample_size * 5
-                else:
-                    req_buffer_size = crossfade_size
+                req_buffer_size = pcm_sample_size * 2 if not use_crossfade else crossfade_size
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -647,14 +639,6 @@ class StreamsController(CoreController):
 
                 ####  HANDLE CROSSFADE OF PREVIOUS TRACK AND NEW TRACK
                 if last_fadeout_part:
-                    # strip silence from last part
-                    buffer = await strip_silence(
-                        self.mass,
-                        buffer,
-                        sample_rate=pcm_format.sample_rate,
-                        bit_depth=pcm_format.bit_depth,
-                        reverse=False,
-                    )
                     # perform crossfade
                     fadein_part = buffer[:crossfade_size]
                     remaining_bytes = buffer[crossfade_size:]
@@ -770,9 +754,10 @@ class StreamsController(CoreController):
         self,
         streamdetails: StreamDetails,
         pcm_format: AudioFormat,
+        strip_silence_begin: bool = False,
+        strip_silence_end: bool = False,
     ) -> AsyncGenerator[tuple[bool, bytes], None]:
         """Get the audio stream for the given streamdetails as raw pcm chunks."""
-        logger = self.logger.getChild("media_stream")
         is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
         if is_radio:
             streamdetails.seek_position = 0
@@ -834,6 +819,7 @@ class StreamsController(CoreController):
         else:
             audio_source = streamdetails.path
             if streamdetails.seek_position:
+                strip_silence_begin = False
                 extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
 
         if streamdetails.media_type == MediaType.RADIO:
@@ -843,73 +829,17 @@ class StreamsController(CoreController):
             async for chunk in get_silence(2, pcm_format):
                 yield chunk
 
-        logger.debug("start media stream for: %s", streamdetails.uri)
-        bytes_sent = 0
-        finished = False
-        try:
-            async with FFMpeg(
-                audio_input=audio_source,
-                input_format=streamdetails.audio_format,
-                output_format=pcm_format,
-                filter_params=filter_params,
-                extra_input_args=extra_input_args,
-                collect_log_history=True,
-                logger=logger,
-            ) as ffmpeg_proc:
-                async for chunk in ffmpeg_proc.iter_chunked(pcm_format.pcm_sample_size):
-                    bytes_sent += len(chunk)
-                    yield chunk
-                    # del chunk
-                finished = True
-        finally:
-            if "ffmpeg_proc" not in locals():
-                # edge case: ffmpeg process was not yet started
-                return  # noqa: B012
-            if finished and not ffmpeg_proc.closed:
-                await asyncio.wait_for(ffmpeg_proc.wait(), 60)
-            elif not ffmpeg_proc.closed:
-                await ffmpeg_proc.close()
-
-            # try to determine how many seconds we've streamed
-            seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-            logger.debug(
-                "stream %s (with code %s) for %s - seconds streamed: %s",
-                "finished" if finished else "aborted",
-                ffmpeg_proc.returncode,
-                streamdetails.uri,
-                seconds_streamed,
-            )
-            streamdetails.seconds_streamed = seconds_streamed
-            # store accurate duration
-            if finished and not streamdetails.seek_position and seconds_streamed:
-                streamdetails.duration = seconds_streamed
-
-            # parse loudnorm data if we have that collected
-            if loudness_details := parse_loudnorm(" ".join(ffmpeg_proc.log_history)):
-                required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
-                if finished or (seconds_streamed >= required_seconds):
-                    logger.debug(
-                        "Loudness measurement for %s: %s",
-                        streamdetails.uri,
-                        loudness_details,
-                    )
-                    streamdetails.loudness = loudness_details
-                    self.mass.create_task(
-                        self.mass.music.set_track_loudness(
-                            streamdetails.item_id, streamdetails.provider, loudness_details
-                        )
-                    )
-            # report playback
-            if finished or seconds_streamed > 30:
-                self.mass.create_task(
-                    self.mass.music.mark_item_played(
-                        streamdetails.media_type,
-                        streamdetails.item_id,
-                        streamdetails.provider,
-                    )
-                )
-                if music_prov := self.mass.get_provider(streamdetails.provider):
-                    self.mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
+        async for chunk in get_media_stream(
+            self.mass,
+            streamdetails=streamdetails,
+            pcm_format=pcm_format,
+            audio_source=audio_source,
+            filter_params=filter_params,
+            extra_input_args=extra_input_args,
+            strip_silence_begin=strip_silence_begin,
+            strip_silence_end=strip_silence_end,
+        ):
+            yield chunk
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
