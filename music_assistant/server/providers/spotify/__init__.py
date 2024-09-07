@@ -242,17 +242,14 @@ async def get_config_entries(
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
 
-    _auth_info: str | None
-    _sp_user: dict[str, Any] | None
-    _librespot_bin: str | None
+    _auth_info: str | None = None
+    _sp_user: dict[str, Any] | None = None
+    _librespot_bin: str | None = None
     throttler: ThrottlerManager
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.throttler = ThrottlerManager(rate_limit=1, period=2)
-        self._auth_info = None
-        self._sp_user = None
-        self._librespot_bin = None
         if self.config.get_value(CONF_CLIENT_ID):
             # loosen the throttler a bit when a custom client id is used
             self.throttler.rate_limit = 45
