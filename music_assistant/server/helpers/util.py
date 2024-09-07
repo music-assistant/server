@@ -16,7 +16,7 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar
+from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar
 
 import ifaddr
 import memory_tempfile
@@ -201,22 +201,22 @@ class TaskManager:
             self._tasks.clear()
 
 
-_ClassT = TypeVar("_ClassT")
 _R = TypeVar("_R")
 _P = ParamSpec("_P")
 
 
 def lock(
-    func: Callable[Concatenate[_ClassT, _P], Awaitable[_R]],
-) -> Callable[Concatenate[_ClassT, _P], Coroutine[Any, Any, _R]]:
+    func: Callable[_P, Awaitable[_R]],
+) -> Callable[_P, Coroutine[Any, Any, _R]]:
     """Call async function using a Lock."""
 
     @functools.wraps(func)
-    async def wrapper(self: _ClassT, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+    async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         """Call async function using the throttler with retries."""
-        if not hasattr(func, "_lock"):
-            func._lock = asyncio.Lock()
-        async with func._lock:
-            return await func(self, *args, **kwargs)
+        if not (func_lock := getattr(func, "lock", None)):
+            func_lock = asyncio.Lock()
+            func.lock = func_lock
+        async with func_lock:
+            return await func(*args, **kwargs)
 
     return wrapper

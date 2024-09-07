@@ -333,7 +333,8 @@ class StreamsController(CoreController):
 
         # all checks passed, start streaming!
         self.logger.debug(
-            "Start serving audio stream for QueueItem %s to %s",
+            "Start serving audio stream for QueueItem %s (%s) to %s",
+            queue_item.name,
             queue_item.uri,
             queue.display_name,
         )
@@ -344,6 +345,7 @@ class StreamsController(CoreController):
             bit_depth=queue_item.streamdetails.audio_format.bit_depth,
             channels=2,
         )
+        chunk_num = 0
         async for chunk in get_ffmpeg_stream(
             audio_input=self.get_media_stream(
                 streamdetails=queue_item.streamdetails,
@@ -355,8 +357,16 @@ class StreamsController(CoreController):
         ):
             try:
                 await resp.write(chunk)
+                chunk_num += 1
             except (BrokenPipeError, ConnectionResetError, ConnectionError):
                 break
+        if queue_item.streamdetails.stream_error:
+            self.logger.error(
+                "Error streaming QueueItem %s (%s) to %s",
+                queue_item.name,
+                queue_item.uri,
+                queue.display_name,
+            )
         if queue.stream_finished is not None:
             queue.stream_finished = True
         return resp

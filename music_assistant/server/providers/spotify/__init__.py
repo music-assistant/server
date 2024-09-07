@@ -20,7 +20,6 @@ from music_assistant.common.models.enums import (
     StreamType,
 )
 from music_assistant.common.models.errors import (
-    AudioError,
     LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
@@ -562,6 +561,7 @@ class SpotifyProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
+        self.run_count += 1
         auth_info = await self.login(force_fresh=True)
         librespot = await self.get_librespot_binary()
         spotify_uri = f"spotify://track:{streamdetails.item_id}"
@@ -594,10 +594,6 @@ class SpotifyProvider(MusicProvider):
         ) as librespot_proc:
             async for chunk in librespot_proc.iter_any(chunk_size):
                 yield chunk
-            if librespot_proc.returncode != 0:
-                raise AudioError(
-                    f"Failed to stream {spotify_uri} - error: {librespot_proc.returncode}"
-                )
 
     def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
@@ -780,7 +776,7 @@ class SpotifyProvider(MusicProvider):
         return playlist
 
     @lock
-    async def login(self, retry: bool = True, force_fresh: bool = False) -> dict:
+    async def login(self, force_fresh: bool = False) -> dict:
         """Log-in Spotify and return Auth/token info."""
         # return existing token if we have one in memory
         if self._auth_info and (
@@ -797,23 +793,28 @@ class SpotifyProvider(MusicProvider):
             "refresh_token": refresh_token,
             "client_id": client_id,
         }
-        async with self.mass.http_session.post(
-            "https://accounts.spotify.com/api/token", data=params
-        ) as response:
-            if response.status != 200:
-                err = await response.text()
-                if "revoked" in err:
-                    # clear refresh token if it's invalid
-                    self.mass.config.set_raw_provider_config_value(
-                        self.instance_id, CONF_REFRESH_TOKEN, ""
-                    )
-                if retry:
+        for _ in range(2):
+            async with self.mass.http_session.post(
+                "https://accounts.spotify.com/api/token", data=params
+            ) as response:
+                if response.status != 200:
+                    err = await response.text()
+                    if "revoked" in err:
+                        # clear refresh token if it's invalid
+                        self.mass.config.set_raw_provider_config_value(
+                            self.instance_id, CONF_REFRESH_TOKEN, ""
+                        )
+                        raise LoginFailed(f"Failed to refresh access token: {err}")
+                    # the token failed to refresh, we allow one retry
                     await asyncio.sleep(2)
-                    return await self.login(retry=False)
-                raise LoginFailed(f"Failed to refresh access token: {err}")
-            auth_info = await response.json()
-            auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
-            self.logger.debug("Successfully refreshed access token")
+                    continue
+                # if we reached this point, the token has been successfully refreshed
+                auth_info = await response.json()
+                auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
+                self.logger.debug("Successfully refreshed access token")
+                break
+        else:
+            raise LoginFailed(f"Failed to refresh access token: {err}")
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info = auth_info
@@ -850,7 +851,8 @@ class SpotifyProvider(MusicProvider):
         url = f"https://api.spotify.com/v1/{endpoint}"
         kwargs["market"] = "from_token"
         kwargs["country"] = "from_token"
-        auth_info = kwargs.pop("auth_info", await self.login())
+        if not (auth_info := kwargs.pop("auth_info", None)):
+            auth_info = await self.login()
         headers = {"Authorization": f'Bearer {auth_info["access_token"]}'}
         locale = self.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]

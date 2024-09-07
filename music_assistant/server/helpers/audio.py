@@ -194,11 +194,16 @@ class FFMpeg(AsyncProcess):
             # write EOF once we've reached the end of the input stream
             await self.write_eof()
         except Exception as err:
+            if isinstance(err, asyncio.CancelledError):
+                return
             # make sure we dont swallow any exceptions and we bail out
             # once our audio source fails.
-            if not isinstance(err, asyncio.CancelledError):
-                self.logger.exception(err)
-                await self.close(True)
+            self.logger.error(
+                "Stream error: %s",
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
+            )
+            await self.write_eof()
 
 
 async def crossfade_pcm_parts(
@@ -478,7 +483,7 @@ async def get_media_stream(
                     buffer = buffer[pcm_format.pcm_sample_size :]
 
             # end of audio/track reached
-            if strip_silence_end:
+            if strip_silence_end and buffer:
                 # strip silence from end of audio
                 buffer = await strip_silence(
                     mass,
@@ -491,7 +496,19 @@ async def get_media_stream(
             bytes_sent += len(buffer)
             yield buffer
             del buffer
-            finished = True
+
+            if bytes_sent == 0:
+                # edge case: no audio data was sent
+                streamdetails.stream_error = True
+                finished = False
+                logger.warning("Stream error on %s", streamdetails.uri)
+                # we send a bit of silence so players get at least some data
+                # without it, some players refuse to skip to the next track
+                async for chunk in get_silence(6, pcm_format):
+                    yield chunk
+                    bytes_sent += len(chunk)
+            else:
+                finished = True
     finally:
         if "ffmpeg_proc" not in locals():
             # edge case: ffmpeg process was not yet started
@@ -500,9 +517,6 @@ async def get_media_stream(
             await asyncio.wait_for(ffmpeg_proc.wait(), 60)
         elif not ffmpeg_proc.closed:
             await ffmpeg_proc.close()
-
-        if bytes_sent == 0 or ffmpeg_proc.returncode != 0:
-            finished = False
 
         # try to determine how many seconds we've streamed
         seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
@@ -513,6 +527,7 @@ async def get_media_stream(
             streamdetails.uri,
             seconds_streamed,
         )
+
         streamdetails.seconds_streamed = seconds_streamed
         # store accurate duration
         if finished and not streamdetails.seek_position and seconds_streamed:
