@@ -215,9 +215,8 @@ def lock(
     async def wrapper(self: _ClassT, *args: _P.args, **kwargs: _P.kwargs) -> _R:
         """Call async function using the throttler with retries."""
         if not hasattr(func, "_lock"):
-            func.lock = asyncio.Lock()
-        _lock: asyncio.Lock = func._lock
-        async with _lock:
+            func._lock = asyncio.Lock()
+        async with func._lock:
             return await func(self, *args, **kwargs)
 
     return wrapper
