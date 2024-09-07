@@ -53,6 +53,7 @@ from music_assistant.server.helpers.app_vars import app_var
 
 # pylint: enable=no-name-in-module
 from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.server.helpers.util import lock
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -699,6 +700,7 @@ class QobuzProvider(MusicProvider):
         playlist.cache_checksum = str(playlist_obj["updated_at"])
         return playlist
 
+    @lock
     async def _auth_token(self):
         """Login to qobuz and store the token."""
         if self._user_auth_info:
