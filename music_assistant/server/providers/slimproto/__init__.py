@@ -643,7 +643,6 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.PAUSE,
                     PlayerFeature.VOLUME_MUTE,
-                    PlayerFeature.ENQUEUE_NEXT,
                 ),
                 can_sync_with=tuple(
                     x.player_id for x in self.slimproto.players if x.player_id != player_id

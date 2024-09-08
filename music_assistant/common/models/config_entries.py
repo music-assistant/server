@@ -359,6 +359,7 @@ CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED = ConfigEntry.from_dict(
     {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": False, "value": False, "hidden": True}
 )
 
+
 CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
     type=ConfigEntryType.BOOLEAN,
