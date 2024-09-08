@@ -561,7 +561,6 @@ class SpotifyProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        self.run_count += 1
         auth_info = await self.login(force_fresh=True)
         librespot = await self.get_librespot_binary()
         spotify_uri = f"spotify://track:{streamdetails.item_id}"
