@@ -405,7 +405,7 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
     ):
-        """Generate a dynamic list of tracks based on the album content."""
+        """Get the list of base tracks from the controller used to calculated the dynamic radio."""
         assert provider_instance_id_or_domain != "library"
         return await self._get_provider_album_tracks(item_id, provider_instance_id_or_domain)
 
@@ -414,7 +414,7 @@ class AlbumsController(MediaControllerBase[Album]):
         media_item: Album,
         limit: int = 25,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculated the dynamic radio."""
+        """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
         msg = "No Music Provider found that supports requesting similar tracks."
         raise UnsupportedFeaturedException(msg)
