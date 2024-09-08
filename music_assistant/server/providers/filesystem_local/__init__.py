@@ -705,6 +705,8 @@ class LocalFileSystemProvider(MusicProvider):
                         channels=tags.channels,
                         bit_rate=tags.bit_rate,
                     ),
+                    loudness=tags.track_loudness,
+                    loudness_album=tags.track_album_loudness,
                     details=file_item.checksum,
                 )
             },
