@@ -368,6 +368,7 @@ class AppleMusicProvider(MusicProvider):
             stream_type=StreamType.ENCRYPTED_HTTP,
             path=stream_url,
             decryption_key=await self._get_decryption_key(license_url, key_id, uri, item_id),
+            can_seek=True,
         )
 
     def _parse_artist(self, artist_obj):
@@ -622,6 +623,8 @@ class AppleMusicProvider(MusicProvider):
             kwargs["limit"] = limit
             kwargs["offset"] = offset
             result = await self._get_data(endpoint, **kwargs)
+            if key not in result:
+                break
             all_items += result[key]
             if not result.get("next"):
                 break
