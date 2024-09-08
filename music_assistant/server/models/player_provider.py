@@ -167,9 +167,8 @@ class PlayerProvider(Provider):
         """
         Handle enqueuing of the next (queue) item on the player.
 
-        Only called if the player supports PlayerFeature.ENQUE_NEXT.
-        Called about 1 second after a new track started playing.
-        Called about 15 seconds before the end of the current track.
+        Called when player reports it started buffering a queue item
+        and when the queue items updated.
 
         A PlayerProvider implementation is in itself responsible for handling this
         so that the queue items keep playing until its empty or the player stopped.

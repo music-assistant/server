@@ -338,7 +338,7 @@ class StreamsController(CoreController):
             queue_item.uri,
             queue.display_name,
         )
-        queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_id, queue_item_id)
+        self.mass.player_queues.track_loaded_in_buffer(queue_id, queue_item_id)
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(output_format.bit_depth),
             sample_rate=queue_item.streamdetails.audio_format.sample_rate,
@@ -617,7 +617,7 @@ class StreamsController(CoreController):
                 queue_track.name,
                 queue.display_name,
             )
-            queue.index_in_buffer = self.mass.player_queues.index_by_id(
+            self.mass.player_queues.track_loaded_in_buffer(
                 queue.queue_id, queue_track.queue_item_id
             )
 

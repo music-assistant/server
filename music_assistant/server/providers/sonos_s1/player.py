@@ -47,7 +47,6 @@ PLAYER_FEATURES = (
     PlayerFeature.SYNC,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,
-    PlayerFeature.ENQUEUE_NEXT,
 )
 DURATION_SECONDS = "duration_in_s"
 POSITION_SECONDS = "position_in_s"

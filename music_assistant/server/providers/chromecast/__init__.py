@@ -372,7 +372,6 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.POWER,
                         PlayerFeature.VOLUME_MUTE,
                         PlayerFeature.VOLUME_SET,
-                        PlayerFeature.ENQUEUE_NEXT,
                         PlayerFeature.PAUSE,
                     ),
                     enabled_by_default=enabled_by_default,
@@ -431,7 +430,6 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.supported_features = (
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
-                PlayerFeature.ENQUEUE_NEXT,
                 PlayerFeature.PAUSE,
             )
 

@@ -65,7 +65,6 @@ PLAYBACK_STATE_MAP = {
 PLAYER_FEATURES_BASE = {
     PlayerFeature.SYNC,
     PlayerFeature.VOLUME_MUTE,
-    PlayerFeature.ENQUEUE_NEXT,
     PlayerFeature.PAUSE,
 }
 

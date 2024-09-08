@@ -55,7 +55,6 @@ if TYPE_CHECKING:
 PLAYER_FEATURES = (
     PlayerFeature.SYNC,
     PlayerFeature.VOLUME_MUTE,
-    PlayerFeature.ENQUEUE_NEXT,
     PlayerFeature.PAUSE,
 )
 
@@ -179,7 +178,12 @@ class SonosPlayerProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         if not (self.sonosplayers.get(player_id)):
             # most probably a syncgroup
-            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_ENFORCE_MP3)
+            return (
+                *base_entries,
+                CONF_ENTRY_CROSSFADE,
+                CONF_ENTRY_ENFORCE_MP3,
+                CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+            )
         return (
             *base_entries,
             CONF_ENTRY_CROSSFADE,
