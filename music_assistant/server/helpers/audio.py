@@ -194,11 +194,16 @@ class FFMpeg(AsyncProcess):
             # write EOF once we've reached the end of the input stream
             await self.write_eof()
         except Exception as err:
+            if isinstance(err, asyncio.CancelledError):
+                return
             # make sure we dont swallow any exceptions and we bail out
             # once our audio source fails.
-            if not isinstance(err, asyncio.CancelledError):
-                self.logger.exception(err)
-                await self.close(True)
+            self.logger.error(
+                "Stream error: %s",
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
+            )
+            await self.write_eof()
 
 
 async def crossfade_pcm_parts(
@@ -411,6 +416,149 @@ async def get_stream_details(
     process_time = int((time.time() - time_start) * 1000)
     LOGGER.debug("retrieved streamdetails for %s in %s milliseconds", queue_item.uri, process_time)
     return streamdetails
+
+
+async def get_media_stream(
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+    pcm_format: AudioFormat,
+    audio_source: AsyncGenerator[bytes, None] | str,
+    filter_params: list[str] | None = None,
+    extra_input_args: list[str] | None = None,
+) -> AsyncGenerator[bytes, None]:
+    """Get PCM audio stream for given media details."""
+    logger = LOGGER.getChild("media_stream")
+    logger.debug("start media stream for: %s", streamdetails.uri)
+    strip_silence_begin = streamdetails.strip_silence_begin
+    strip_silence_end = streamdetails.strip_silence_end
+    if streamdetails.fade_in:
+        filter_params.append("afade=type=in:start_time=0:duration=3")
+        strip_silence_begin = False
+    bytes_sent = 0
+    chunk_number = 0
+    buffer: bytes = b""
+    finished = False
+    try:
+        async with FFMpeg(
+            audio_input=audio_source,
+            input_format=streamdetails.audio_format,
+            output_format=pcm_format,
+            filter_params=filter_params,
+            extra_input_args=extra_input_args,
+            collect_log_history=True,
+            logger=logger,
+        ) as ffmpeg_proc:
+            async for chunk in ffmpeg_proc.iter_chunked(pcm_format.pcm_sample_size):
+                chunk_number += 1
+                # determine buffer size dynamically
+                if chunk_number < 5 and strip_silence_begin:
+                    req_buffer_size = int(pcm_format.pcm_sample_size * 4)
+                elif chunk_number > 30 and strip_silence_end:
+                    req_buffer_size = int(pcm_format.pcm_sample_size * 8)
+                else:
+                    req_buffer_size = int(pcm_format.pcm_sample_size * 2)
+
+                # always append to buffer
+                buffer += chunk
+                del chunk
+
+                if len(buffer) < req_buffer_size:
+                    # buffer is not full enough, move on
+                    continue
+
+                if chunk_number == 5 and strip_silence_begin:
+                    # strip silence from begin of audio
+                    chunk = await strip_silence(  # noqa: PLW2901
+                        mass, buffer, pcm_format.sample_rate, pcm_format.bit_depth
+                    )
+                    bytes_sent += len(chunk)
+                    yield chunk
+                    buffer = b""
+                    continue
+
+                #### OTHER: enough data in buffer, feed to output
+                while len(buffer) > req_buffer_size:
+                    yield buffer[: pcm_format.pcm_sample_size]
+                    bytes_sent += pcm_format.pcm_sample_size
+                    buffer = buffer[pcm_format.pcm_sample_size :]
+
+            # end of audio/track reached
+            if strip_silence_end and buffer:
+                # strip silence from end of audio
+                buffer = await strip_silence(
+                    mass,
+                    buffer,
+                    sample_rate=pcm_format.sample_rate,
+                    bit_depth=pcm_format.bit_depth,
+                    reverse=True,
+                )
+            # send remaining bytes in buffer
+            bytes_sent += len(buffer)
+            yield buffer
+            del buffer
+
+            if bytes_sent == 0:
+                # edge case: no audio data was sent
+                streamdetails.stream_error = True
+                finished = False
+                logger.warning("Stream error on %s", streamdetails.uri)
+                # we send a bit of silence so players get at least some data
+                # without it, some players refuse to skip to the next track
+                async for chunk in get_silence(6, pcm_format):
+                    yield chunk
+                    bytes_sent += len(chunk)
+            else:
+                finished = True
+    finally:
+        if "ffmpeg_proc" not in locals():
+            # edge case: ffmpeg process was not yet started
+            return  # noqa: B012
+        if finished and not ffmpeg_proc.closed:
+            await asyncio.wait_for(ffmpeg_proc.wait(), 60)
+        elif not ffmpeg_proc.closed:
+            await ffmpeg_proc.close()
+
+        # try to determine how many seconds we've streamed
+        seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
+        logger.debug(
+            "stream %s (with code %s) for %s - seconds streamed: %s",
+            "finished" if finished else "aborted",
+            ffmpeg_proc.returncode,
+            streamdetails.uri,
+            seconds_streamed,
+        )
+
+        streamdetails.seconds_streamed = seconds_streamed
+        # store accurate duration
+        if finished and not streamdetails.seek_position and seconds_streamed:
+            streamdetails.duration = seconds_streamed
+
+        # parse loudnorm data if we have that collected
+        if loudness_details := parse_loudnorm(" ".join(ffmpeg_proc.log_history)):
+            required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
+            if finished or (seconds_streamed >= required_seconds):
+                logger.debug(
+                    "Loudness measurement for %s: %s",
+                    streamdetails.uri,
+                    loudness_details,
+                )
+                streamdetails.loudness = loudness_details
+                mass.create_task(
+                    mass.music.set_track_loudness(
+                        streamdetails.item_id, streamdetails.provider, loudness_details
+                    )
+                )
+        # report playback
+        if finished or seconds_streamed > 30:
+            mass.create_task(
+                mass.music.mark_item_played(
+                    streamdetails.media_type,
+                    streamdetails.item_id,
+                    streamdetails.provider,
+                )
+            )
+            if music_prov := mass.get_provider(streamdetails.provider):
+                mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
 
 
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=None):
