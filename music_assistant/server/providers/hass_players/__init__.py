@@ -17,7 +17,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
-    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE,
     ConfigEntry,
     ConfigValueOption,
@@ -120,6 +120,16 @@ async def _get_hass_media_players(
         yield state
 
 
+async def _get_hass_media_player(
+    hass_prov: HomeAssistantProvider, entity_id: str
+) -> HassState | None:
+    """Return Hass state object for a single media_player entity."""
+    for state in await hass_prov.hass.get_states():
+        if state["entity_id"] == entity_id:
+            return state
+    return None
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -198,9 +208,13 @@ class HomeAssistantPlayers(PlayerProvider):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         entries = await super().get_player_config_entries(player_id)
         entries = entries + PLAYER_CONFIG_ENTRIES
-        if player := self.mass.players.get(player_id):
-            if PlayerFeature.ENQUEUE_NEXT not in player.supported_features:
-                entries += (CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,)
+        if hass_state := await _get_hass_media_player(self.hass_prov, player_id):
+            hass_supported_features = MediaPlayerEntityFeature(
+                hass_state["attributes"]["supported_features"]
+            )
+            if MediaPlayerEntityFeature.MEDIA_ENQUEUE not in hass_supported_features:
+                entries += (CONF_ENTRY_FLOW_MODE_ENFORCED,)
+
         return entries
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -371,8 +385,6 @@ class HomeAssistantPlayers(PlayerProvider):
             supported_features.append(PlayerFeature.SYNC)
         if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
             supported_features.append(PlayerFeature.PAUSE)
-        if MediaPlayerEntityFeature.MEDIA_ENQUEUE in hass_supported_features:
-            supported_features.append(PlayerFeature.ENQUEUE_NEXT)
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
             supported_features.append(PlayerFeature.VOLUME_SET)
         if MediaPlayerEntityFeature.VOLUME_MUTE in hass_supported_features:

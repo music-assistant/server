@@ -64,20 +64,8 @@ BASE_PLAYER_FEATURES = (
     PlayerFeature.VOLUME_SET,
 )
 
-CONF_ENQUEUE_NEXT = "enqueue_next"
-
 
 PLAYER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_ENQUEUE_NEXT,
-        type=ConfigEntryType.BOOLEAN,
-        label="Player supports enqueue next/gapless",
-        default_value=False,
-        description="If the player supports enqueuing the next item for fluid/gapless playback. "
-        "\n\nUnfortunately this feature is missing or broken on many DLNA players. \n"
-        "Enable it with care. If music stops after one song, "
-        "disable this setting (and use flow-mode instead).",
-    ),
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENFORCE_MP3,
@@ -627,9 +615,3 @@ class DLNAPlayerProvider(PlayerProvider):
     def _set_player_features(self, dlna_player: DLNAPlayer) -> None:
         """Set Player Features based on config values and capabilities."""
         dlna_player.player.supported_features = BASE_PLAYER_FEATURES
-        player_id = dlna_player.player.player_id
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENQUEUE_NEXT, False):
-            dlna_player.player.supported_features = (
-                *dlna_player.player.supported_features,
-                PlayerFeature.ENQUEUE_NEXT,
-            )

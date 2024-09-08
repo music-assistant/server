@@ -215,7 +215,6 @@ class MyDemoPlayerprovider(PlayerProvider):
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
                 PlayerFeature.PLAY_ANNOUNCEMENT,  # see play_announcement method
-                PlayerFeature.ENQUEUE_NEXT,  # see play_media/enqueue_next_media methods
             ),
         )
         # register the player with the player manager
@@ -333,9 +332,8 @@ class MyDemoPlayerprovider(PlayerProvider):
         """
         Handle enqueuing of the next (queue) item on the player.
 
-        Only called if the player supports PlayerFeature.ENQUE_NEXT.
-        Called about 1 second after a new track started playing.
-        Called about 15 seconds before the end of the current track.
+        Called when player reports it started buffering a queue item
+        and when the queue items updated.
 
         A PlayerProvider implementation is in itself responsible for handling this
         so that the queue items keep playing until its empty or the player stopped.
@@ -343,7 +341,6 @@ class MyDemoPlayerprovider(PlayerProvider):
         This will NOT be called if the end of the queue is reached (and repeat disabled).
         This will NOT be called if the player is using flow mode to playback the queue.
         """
-        # OPTIONAL - required only if you specified PlayerFeature.ENQUEUE_NEXT
         # this method should handle the enqueuing of the next queue item on the player.
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:

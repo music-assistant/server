@@ -292,7 +292,6 @@ class PlayerFeature(StrEnum):
     PAUSE = "pause"
     SYNC = "sync"
     SEEK = "seek"
-    ENQUEUE_NEXT = "enqueue_next"
     PLAY_ANNOUNCEMENT = "play_announcement"
     UNKNOWN = "unknown"
 

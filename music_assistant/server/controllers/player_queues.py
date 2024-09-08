@@ -19,7 +19,6 @@ from music_assistant.common.models.enums import (
     ConfigEntryType,
     EventType,
     MediaType,
-    PlayerFeature,
     PlayerState,
     QueueOption,
     RepeatMode,
@@ -277,7 +276,20 @@ class PlayerQueuesController(CoreController):
         if queue.repeat_mode == repeat_mode:
             return  # no change
         queue.repeat_mode = repeat_mode
+        # ensure that we restart playback or trigger enqueue next if repeat mode changed
         self.signal_update(queue_id)
+        if (
+            repeat_mode == RepeatMode.ONE
+            and queue.flow_mode
+            and queue.state == PlayerState.PLAYING
+            and queue.current_index != queue.index_in_buffer
+        ):
+            # edge case; repeat one enabled in flow mode but the
+            # flow stream had already loaded a new item in the buffer,
+            # we need to restart playback
+            self.mass.create_task(self.resume(queue_id))
+        else:
+            self.mass.create_task(self._enqueue_next(queue, queue.current_index))
 
     @api_command("player_queues/play_media")
     async def play_media(
@@ -960,9 +972,18 @@ class PlayerQueuesController(CoreController):
         elif prev_state["current_index"] != new_state["current_index"]:
             queue.end_of_track_reached = False
 
-        # handle enqueuing of next item to play
-        if not queue.flow_mode or queue.stream_finished:
-            self._check_enqueue_next(player, queue, prev_state, new_state)
+        # handle auto restart of queue in flow mode when repeat is enabled
+        if (
+            queue.flow_mode
+            and queue.repeat_mode != RepeatMode.OFF
+            and queue.stream_finished
+            and prev_state["state"] == PlayerState.PLAYING
+            and new_state["state"] == PlayerState.IDLE
+        ):
+            # flow mode and repeat mode is on, restart the queue
+            next_index = self._get_next_index(queue_id, queue.current_index, allow_repeat=True)
+            if next_index is not None:
+                self.mass.create_task(self.play_index(queue_id, next_index))
 
         # do not send full updates if only time was updated
         if changed_keys == {"elapsed_time"}:
@@ -1069,6 +1090,20 @@ class PlayerQueuesController(CoreController):
             raise QueueEmpty("No more (playable) tracks left in the queue.")
         return next_item
 
+    def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
+        """Call when a player has (started) loading a track in the buffer."""
+        queue = self.get(queue_id)
+        if not queue:
+            msg = f"PlayerQueue {queue_id} is not available"
+            raise PlayerUnavailableError(msg)
+        queue.index_in_buffer = self.index_by_id(queue_id, item_id)
+        if queue.flow_mode:
+            return  # nothing to do when flow mode is active
+        self.signal_update(queue_id)
+        # enqueue the next track as soon as the player reports
+        # it has started buffering the given queue item
+        self.mass.create_task(self._enqueue_next(queue, item_id))
+
     # Main queue manipulation methods
 
     def load(
@@ -1136,6 +1171,13 @@ class PlayerQueuesController(CoreController):
                     base_key=queue_id,
                 )
             )
+            # signal preload of next item (to ensure the player loads the correct next item)
+            if queue.index_in_buffer is not None:
+                task_id = f"enqueue_next_{queue.queue_id}"
+                self.mass.call_later(
+                    1, self._enqueue_next(queue, queue.index_in_buffer), task_id=task_id
+                )
+
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
         # save state
@@ -1226,88 +1268,19 @@ class PlayerQueuesController(CoreController):
         await asyncio.sleep(5)
         setattr(self, debounce_key, None)
 
-    def _check_enqueue_next(
-        self,
-        player: Player,
-        queue: PlayerQueue,
-        prev_state: CompareState,
-        new_state: CompareState,
-    ) -> None:
-        """Check if we need to enqueue the next item to the player itself."""
-        if not queue.active:
-            return
-        if prev_state["state"] != PlayerState.PLAYING:
-            return
+    async def _enqueue_next(self, queue: PlayerQueue, current_index: int | str) -> None:
+        """Enqueue the next item in the queue."""
         if (player := self.mass.players.get(queue.queue_id)) and player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        current_item = self.get_item(queue.queue_id, queue.current_index)
-        if not current_item:
-            return  # guard, just in case something bad happened
-        if not current_item.duration:
-            return
-        # NOTE: 'seconds_streamed' can actually be 0 if there was a stream error!
-        if current_item.streamdetails and current_item.streamdetails.seconds_streamed is not None:
-            duration = current_item.streamdetails.seconds_streamed
-        else:
-            duration = current_item.duration
-        seconds_remaining = int(duration - player.corrected_elapsed_time)
-
-        async def _enqueue_next(current_index: int, supports_enqueue: bool = False) -> None:
-            if (
-                player := self.mass.players.get(queue.queue_id)
-            ) and player.announcement_in_progress:
-                self.logger.warning("Ignore queue command: An announcement is in progress")
-                return
-            with suppress(QueueEmpty):
-                next_item = await self.preload_next_item(queue.queue_id, current_index)
-                if supports_enqueue:
-                    await self.mass.players.enqueue_next_media(
-                        player_id=player.player_id,
-                        media=self.player_media_from_queue_item(next_item, queue.flow_mode),
-                    )
-                    return
-                await self.play_index(queue.queue_id, next_item.queue_item_id)
-
-        # handle queue fully played - clear it completely once the player stopped
-        if (
-            queue.stream_finished
-            and queue.state == PlayerState.IDLE
-            and self._get_next_index(queue.queue_id, queue.current_index) is None
-        ):
-            self.logger.debug("End of queue reached for %s", queue.display_name)
-            self.clear(queue.queue_id)
-            return
-
-        # handle native enqueue next support of player
-        if PlayerFeature.ENQUEUE_NEXT in player.supported_features:
-            # we enqueue the next track after a new track
-            # has started playing and (repeat) before the current track ends
-            new_track_started = (
-                new_state["state"] == PlayerState.PLAYING
-                and prev_state["current_index"] != new_state["current_index"]
+        if isinstance(current_index, str):
+            current_index = self.index_by_id(queue.queue_id, current_index)
+        with suppress(QueueEmpty):
+            next_item = await self.preload_next_item(queue.queue_id, current_index)
+            await self.mass.players.enqueue_next_media(
+                player_id=player.player_id,
+                media=self.player_media_from_queue_item(next_item, queue.flow_mode),
             )
-            if (
-                new_track_started
-                or seconds_remaining == 15
-                or int(player.corrected_elapsed_time) == 1
-            ):
-                self.mass.create_task(_enqueue_next(queue.current_index, True))
-            return
-
-        # player does not support enqueue next feature.
-        # we wait for the player to stop after it reaches the end of the track
-        if (
-            (not queue.flow_mode or queue.repeat_mode in (RepeatMode.ALL, RepeatMode.ONE))
-            # we have a couple of guards here to prevent the player starting
-            # playback again when its stopped outside of MA's control
-            and queue.stream_finished
-            and queue.end_of_track_reached
-            and queue.state == PlayerState.IDLE
-        ):
-            queue.stream_finished = None
-            self.mass.create_task(_enqueue_next(queue.current_index, False))
-            return
 
     async def _get_radio_tracks(
         self, queue_id: str, is_initial_radio_mode: bool = False
