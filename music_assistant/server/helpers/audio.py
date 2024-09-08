@@ -32,10 +32,9 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
 )
 from music_assistant.common.models.media_items import AudioFormat, ContentType
-from music_assistant.common.models.streamdetails import LoudnessMeasurement, StreamDetails
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
     CONF_BYPASS_NORMALIZATION_RADIO,
-    CONF_BYPASS_NORMALIZATION_SHORT,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
@@ -367,6 +366,7 @@ async def get_stream_details(
         # get streamdetails from provider
         try:
             streamdetails: StreamDetails = await music_prov.get_stream_details(prov_media.item_id)
+            streamdetails.loudness = prov_media.loudness
         except MusicAssistantError as err:
             LOGGER.warning(str(err))
         else:
@@ -395,21 +395,19 @@ async def get_stream_details(
     if not streamdetails.duration:
         streamdetails.duration = queue_item.duration
     # handle volume normalization details
-    is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
-    streamdetails.bypass_loudness_normalization = (
-        is_radio
-        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_RADIO)
-    ) or (
-        streamdetails.duration is not None
-        and streamdetails.duration < 30
-        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_SHORT)
-    )
     if not streamdetails.loudness:
-        streamdetails.loudness = await mass.music.get_track_loudness(
-            streamdetails.item_id, streamdetails.provider
+        streamdetails.loudness = await mass.music.get_loudness(
+            streamdetails.item_id,
+            streamdetails.provider,
+            album_loudness=False,
+            media_type=queue_item.media_type,
         )
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
-    if not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
+    if (
+        not player_settings.get_value(CONF_VOLUME_NORMALIZATION)
+        or (streamdetails.media_type == MediaType.RADIO or not streamdetails.duration)
+        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_RADIO)
+    ):
         streamdetails.target_loudness = None
     else:
         streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
@@ -534,9 +532,10 @@ async def get_media_stream(
             streamdetails.duration = seconds_streamed
 
         # parse loudnorm data if we have that collected
-        if loudness_details := parse_loudnorm(" ".join(ffmpeg_proc.log_history)):
-            required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
-            if finished or (seconds_streamed >= required_seconds):
+        required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
+        if not streamdetails.loudness and (finished or (seconds_streamed >= required_seconds)):
+            loudness_details = parse_loudnorm(" ".join(ffmpeg_proc.log_history))
+            if loudness_details is not None:
                 logger.debug(
                     "Loudness measurement for %s: %s",
                     streamdetails.uri,
@@ -544,8 +543,11 @@ async def get_media_stream(
                 )
                 streamdetails.loudness = loudness_details
                 mass.create_task(
-                    mass.music.set_track_loudness(
-                        streamdetails.item_id, streamdetails.provider, loudness_details
+                    mass.music.set_loudness(
+                        streamdetails.item_id,
+                        streamdetails.provider,
+                        loudness_details,
+                        media_type=streamdetails.media_type,
                     )
                 )
         # report playback
@@ -1101,6 +1103,9 @@ def get_player_filter_params(
     elif conf_channels == "right":
         filter_params.append("pan=mono|c0=FR")
 
+    # add a peak limiter at the end of the filter chain
+    filter_params.append("alimiter=limit=-2dB:level=false:asc=true")
+
     return filter_params
 
 
@@ -1240,7 +1245,7 @@ def get_ffmpeg_args(
     return generic_args + input_args + extra_args + output_args
 
 
-def parse_loudnorm(raw_stderr: bytes | str) -> LoudnessMeasurement | None:
+def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
     """Parse Loudness measurement from ffmpeg stderr output."""
     stderr_data = raw_stderr.decode() if isinstance(raw_stderr, bytes) else raw_stderr
     if "[Parsed_loudnorm_" not in stderr_data:
@@ -1252,10 +1257,4 @@ def parse_loudnorm(raw_stderr: bytes | str) -> LoudnessMeasurement | None:
         loudness_data = json_loads(stderr_data)
     except JSON_DECODE_EXCEPTIONS:
         return None
-    return LoudnessMeasurement(
-        integrated=float(loudness_data["input_i"]),
-        true_peak=float(loudness_data["input_tp"]),
-        lra=float(loudness_data["input_lra"]),
-        threshold=float(loudness_data["input_thresh"]),
-        target_offset=float(loudness_data["target_offset"]),
-    )
+    return float(loudness_data["input_i"])

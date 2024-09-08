@@ -67,7 +67,6 @@ CONF_SAMPLE_RATES: Final[str] = "sample_rates"
 CONF_HTTP_PROFILE: Final[str] = "http_profile"
 CONF_SYNC_LEADER: Final[str] = "sync_leader"
 CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
-CONF_BYPASS_NORMALIZATION_SHORT: Final[str] = "bypass_normalization_short"
 CONF_PREVENT_SYNC_LEADER_OFF: Final[str] = "prevent_sync_leader_off"
 CONF_SYNCGROUP_DEFAULT_ON: Final[str] = "syncgroup_default_on"
 CONF_ENABLE_ICY_METADATA: Final[str] = "enable_icy_metadata"
@@ -77,7 +76,6 @@ DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
 
 # common db tables
-DB_TABLE_TRACK_LOUDNESS: Final[str] = "track_loudness"
 DB_TABLE_PLAYLOG: Final[str] = "playlog"
 DB_TABLE_ARTISTS: Final[str] = "artists"
 DB_TABLE_ALBUMS: Final[str] = "albums"

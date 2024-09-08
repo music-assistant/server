@@ -32,7 +32,6 @@ from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_BYPASS_NORMALIZATION_RADIO,
-    CONF_BYPASS_NORMALIZATION_SHORT,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
     CONF_ENABLE_ICY_METADATA,
@@ -180,18 +179,6 @@ class StreamsController(CoreController):
                 "to the EBU standard, so it doesn't make a lot of sense to normalize them again "
                 "in Music Assistant unless you hear big jumps in volume during playback, "
                 "such as commercials.",
-                category="advanced",
-            ),
-            ConfigEntry(
-                key=CONF_BYPASS_NORMALIZATION_SHORT,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                label="Bypass volume normalization for effects and short sounds",
-                description="The volume normalizer of ffmpeg (used in Music Assistant), "
-                "is designed to work best with longer audio streams and can have troubles when "
-                "its applied to very short sound clips (< 30 seconds), "
-                "for example sound effects. With this option enabled, the volume normalizer "
-                "will be bypassed for all audio that has a duration of less than 60 seconds.",
                 category="advanced",
             ),
         )
@@ -761,35 +748,18 @@ class StreamsController(CoreController):
         # collect all arguments for ffmpeg
         filter_params = []
         extra_input_args = []
-        # add loudnorm filter: volume normalization
-        # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
-        if (
-            streamdetails.target_loudness is not None
-            and not streamdetails.bypass_loudness_normalization
-        ):
-            if streamdetails.loudness:
-                # we have a measurement so we can do linear mode
-                target_loudness = streamdetails.target_loudness
-                # we must ensure that target loudness does not exceed the measured value
-                # otherwise ffmpeg falls back to dynamic again
-                # https://github.com/slhck/ffmpeg-normalize/issues/251
-                target_loudness = min(
-                    streamdetails.target_loudness,
-                    streamdetails.loudness.integrated + streamdetails.loudness.lra - 1,
-                )
-                filter_rule = f"loudnorm=I={target_loudness}:TP=-2.0:LRA=7.0:linear=true"
-                filter_rule += f":measured_I={streamdetails.loudness.integrated}"
-                filter_rule += f":measured_LRA={streamdetails.loudness.lra}"
-                filter_rule += f":measured_tp={streamdetails.loudness.true_peak}"
-                filter_rule += f":measured_thresh={streamdetails.loudness.threshold}"
-                if streamdetails.loudness.target_offset is not None:
-                    filter_rule += f":offset={streamdetails.loudness.target_offset}"
-            else:
-                # if we have no measurement, we use dynamic mode
-                # which also collects the measurement on the fly during playback
-                filter_rule = (
-                    f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=7.0:offset=0.0"
-                )
+        # handle volume normalization
+        if streamdetails.target_loudness is not None and streamdetails.loudness is not None:
+            # volume normalization with known loudness measurement
+            gain_correct = streamdetails.target_loudness - streamdetails.loudness
+            gain_correct = round(gain_correct, 2)
+            filter_params.append(f"volume={gain_correct}dB")
+        elif streamdetails.target_loudness is not None:
+            # volume normalization with unknown loudness measurement
+            # use loudnorm filter in dynamic mode
+            # which also collects the measurement on the fly during playback
+            # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
+            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=10.0:offset=0.0"
             filter_rule += ":print_format=json"
             filter_params.append(filter_rule)
         if streamdetails.stream_type == StreamType.CUSTOM:

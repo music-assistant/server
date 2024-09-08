@@ -109,6 +109,10 @@ class ProviderMapping(DataClassDictMixin):
     audio_format: AudioFormat = field(default_factory=AudioFormat)
     # url = link to provider details page if exists
     url: str | None = None
+    # loudness: integrated loudness in LUFS (measured according EBU R128)
+    loudness: float | None = None
+    # loudness_album: same as loudness but as seen in relation to the entire album
+    loudness_album: float | None = None
     # optional details to store provider specific details
     details: str | None = None
 
