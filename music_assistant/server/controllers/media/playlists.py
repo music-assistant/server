@@ -388,47 +388,20 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 )
         return items
 
-    async def _get_provider_dynamic_tracks(
+    async def _get_provider_dynamic_base_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        limit: int = 25,
     ):
-        """Generate a dynamic list of tracks based on the playlist content."""
+        """Get the list of base tracks from the controller used to calculated the dynamic radio."""
         assert provider_instance_id_or_domain != "library"
-        provider = self.mass.get_provider(provider_instance_id_or_domain)
-        if not provider or ProviderFeature.SIMILAR_TRACKS not in provider.supported_features:
-            return []
         playlist = await self.get(item_id, provider_instance_id_or_domain)
-        playlist_tracks = [
+        return [
             x
             async for x in self.tracks(playlist.item_id, playlist.provider)
             # filter out unavailable tracks
             if x.available
         ]
-        limit = min(limit, len(playlist_tracks))
-        # use set to prevent duplicates
-        final_items: list[Track] = []
-        # to account for playlists with mixed content we grab suggestions from a few
-        # random playlist tracks to prevent getting too many tracks of one of the
-        # source playlist's genres.
-        sample_size = min(len(playlist_tracks), 5)
-        while len(final_items) < limit:
-            # grab 5 random tracks from the playlist
-            base_tracks = random.sample(playlist_tracks, sample_size)
-            # add the source/base playlist tracks to the final list...
-            final_items.extend(base_tracks)
-            # get 5 suggestions for one of the base tracks
-            base_track = next(x for x in base_tracks if x.available)
-            similar_tracks = await provider.get_similar_tracks(
-                prov_track_id=base_track.item_id, limit=5
-            )
-            final_items.extend(x for x in similar_tracks if x.available)
-        # Remove duplicate tracks
-        radio_items = {track.sort_name: track for track in final_items}.values()
-        # NOTE: In theory we can return a few more items than limit here
-        # Shuffle the final items list
-        return random.sample(list(radio_items), len(radio_items))
 
     async def _get_dynamic_tracks(
         self,

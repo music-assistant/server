@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterable
-from random import choice, random
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import serialize_to_json
@@ -401,46 +400,21 @@ class AlbumsController(MediaControllerBase[Album]):
                 )
         return items
 
-    async def _get_provider_dynamic_tracks(
+    async def _get_provider_dynamic_base_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the album content."""
         assert provider_instance_id_or_domain != "library"
-        prov = self.mass.get_provider(provider_instance_id_or_domain)
-        if prov is None:
-            return []
-        if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
-            return []
-        album_tracks = await self._get_provider_album_tracks(
-            item_id, provider_instance_id_or_domain
-        )
-        # Grab a random track from the album that we use to obtain similar tracks for
-        track = choice(album_tracks)
-        # Calculate no of songs to grab from each list at a 10/90 ratio
-        total_no_of_tracks = limit + limit % 2
-        no_of_album_tracks = int(total_no_of_tracks * 10 / 100)
-        no_of_similar_tracks = int(total_no_of_tracks * 90 / 100)
-        # Grab similar tracks from the music provider
-        similar_tracks = await prov.get_similar_tracks(
-            prov_track_id=track.item_id, limit=no_of_similar_tracks
-        )
-        # Merge album content with similar tracks
-        # ruff: noqa: ARG005
-        dynamic_playlist = [
-            *sorted(album_tracks, key=lambda n: random())[:no_of_album_tracks],
-            *sorted(similar_tracks, key=lambda n: random())[:no_of_similar_tracks],
-        ]
-        return sorted(dynamic_playlist, key=lambda n: random())
+        return await self._get_provider_album_tracks(item_id, provider_instance_id_or_domain)
 
     async def _get_dynamic_tracks(
         self,
         media_item: Album,
         limit: int = 25,
     ) -> list[Track]:
-        """Get dynamic list of tracks for given item, fallback/default implementation."""
+        """Get the list of base tracks from the controller used to calculated the dynamic radio."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
         msg = "No Music Provider found that supports requesting similar tracks."
         raise UnsupportedFeaturedException(msg)
