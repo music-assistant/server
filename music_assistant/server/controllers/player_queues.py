@@ -275,7 +275,20 @@ class PlayerQueuesController(CoreController):
         if queue.repeat_mode == repeat_mode:
             return  # no change
         queue.repeat_mode = repeat_mode
+        # ensure that we restart playback or trigger enqueue next if repeat mode changed
         self.signal_update(queue_id)
+        if (
+            repeat_mode == RepeatMode.ONE
+            and queue.flow_mode
+            and queue.state == PlayerState.PLAYING
+            and queue.current_index != queue.index_in_buffer
+        ):
+            # edge case; repeat one enabled in flow mode but the
+            # flow stream had already loaded a new item in the buffer,
+            # we need to restart playback
+            self.mass.create_task(self.resume(queue_id))
+        else:
+            self.mass.create_task(self._enqueue_next(queue, queue.current_index))
 
     @api_command("player_queues/play_media")
     async def play_media(
@@ -963,7 +976,9 @@ class PlayerQueuesController(CoreController):
             and new_state["state"] == PlayerState.IDLE
         ):
             # flow mode and repeat mode is on, restart the queue
-            self.mass.create_task(self.next(queue_id))
+            next_index = self._get_next_index(queue_id, queue.current_index, allow_repeat=True)
+            if next_index is not None:
+                self.mass.create_task(self.play_index(queue_id, next_index))
 
         # do not send full updates if only time was updated
         if changed_keys == {"elapsed_time"}:
