@@ -831,8 +831,6 @@ class StreamsController(CoreController):
         elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
             audio_source = streamdetails.path
             extra_input_args += ["-decryption_key", streamdetails.decryption_key]
-            if streamdetails.seek_position:
-                extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
         else:
             audio_source = streamdetails.path
             if streamdetails.seek_position:
