@@ -60,6 +60,9 @@ class StreamDetails(DataClassDictMixin):
     seconds_streamed: float | None = None
     target_loudness: float | None = None
     bypass_loudness_normalization: bool = False
+    strip_silence_begin: bool = False
+    strip_silence_end: bool = False
+    stream_error: bool | None = None
 
     def __str__(self) -> str:
         """Return pretty printable string of object."""

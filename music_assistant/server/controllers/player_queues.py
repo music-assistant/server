@@ -35,7 +35,12 @@ from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import CONF_FLOW_MODE, FALLBACK_DURATION, MASS_LOGO_ONLINE
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_FLOW_MODE,
+    FALLBACK_DURATION,
+    MASS_LOGO_ONLINE,
+)
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.audio import get_stream_details
 from music_assistant.server.models.core_controller import CoreController
@@ -767,6 +772,10 @@ class PlayerQueuesController(CoreController):
         queue_item.streamdetails = await get_stream_details(
             self.mass, queue_item, seek_position=seek_position, fade_in=fade_in
         )
+        # allow stripping silence from the end of the track if crossfade is enabled
+        # this will allow for smoother crossfades
+        if await self.mass.config.get_player_config_value(queue_id, CONF_CROSSFADE):
+            queue_item.streamdetails.strip_silence_end = True
         # send play_media request to player
         # NOTE that we debounce this a bit to account for someone hitting the next button
         # like a madman. This will prevent the player from being overloaded with requests.
@@ -1029,6 +1038,11 @@ class PlayerQueuesController(CoreController):
                 # maximum quality of thumbs
                 if queue_item.media_item:
                     queue_item.media_item = await self.mass.music.get_item_by_uri(queue_item.uri)
+                # allow stripping silence from the begin/end of the track if crossfade is enabled
+                # this will allow for (much) smoother crossfades
+                if await self.mass.config.get_player_config_value(queue_id, CONF_CROSSFADE):
+                    queue_item.streamdetails.strip_silence_end = True
+                    queue_item.streamdetails.strip_silence_begin = True
                 # we're all set, this is our next item
                 next_item = queue_item
                 break

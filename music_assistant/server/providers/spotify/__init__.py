@@ -20,7 +20,6 @@ from music_assistant.common.models.enums import (
     StreamType,
 )
 from music_assistant.common.models.errors import (
-    AudioError,
     LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
@@ -52,6 +51,7 @@ from music_assistant.server.helpers.audio import get_chunksize
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.server.helpers.util import lock
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -244,12 +244,11 @@ class SpotifyProvider(MusicProvider):
     _auth_info: str | None = None
     _sp_user: dict[str, Any] | None = None
     _librespot_bin: str | None = None
-    # rate limiter needs to be specified on provider-level,
-    # so make it an instance attribute
-    throttler = ThrottlerManager(rate_limit=1, period=2)
+    throttler: ThrottlerManager
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self.throttler = ThrottlerManager(rate_limit=1, period=2)
         if self.config.get_value(CONF_CLIENT_ID):
             # loosen the throttler a bit when a custom client id is used
             self.throttler.rate_limit = 45
@@ -542,13 +541,15 @@ class SpotifyProvider(MusicProvider):
         items = await self._get_data(endpoint, seed_tracks=prov_track_id, limit=limit)
         return [self._parse_track(item) for item in items["tracks"] if (item and item["id"])]
 
-    @throttle_with_retries
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        # make sure that the token is still valid by just requesting it
-        await self.login()
+        # fetch full track details
+        # this will also check if the track is available for streaming
+        # and use spotify's track linking feature to serve a substitute track
+        # if the original track is not available
+        track = await self.get_track(item_id)
         return StreamDetails(
-            item_id=item_id,
+            item_id=track.item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=ContentType.OGG,
@@ -560,49 +561,38 @@ class SpotifyProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        auth_info = await self.login()
+        auth_info = await self.login(force_fresh=True)
         librespot = await self.get_librespot_binary()
         spotify_uri = f"spotify://track:{streamdetails.item_id}"
-        for retry in (True, False):
-            args = [
-                librespot,
-                "-c",
-                CACHE_DIR,
-                "-M",
-                "256M",
-                "--passthrough",
-                "-b",
-                "320",
-                "--backend",
-                "pipe",
-                "--single-track",
-                spotify_uri,
-                "--token",
-                auth_info["access_token"],
-            ]
-            if seek_position:
-                args += ["--start-position", str(int(seek_position))]
-            chunk_size = get_chunksize(streamdetails.audio_format)
-            stderr = None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False
-            self.logger.log(VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot")
-
-            async with AsyncProcess(
-                args,
-                stdout=True,
-                stderr=stderr,
-                name="librespot",
-            ) as librespot_proc:
-                async for chunk in librespot_proc.iter_any(chunk_size):
-                    yield chunk
-                if librespot_proc.returncode == 0:
-                    self.logger.log(VERBOSE_LOG_LEVEL, f"Streaming {spotify_uri} ready.")
-                    break
-                if not retry:
-                    raise AudioError(
-                        f"Failed to stream {spotify_uri} - error: {librespot_proc.returncode}"
-                    )
-                # do one retry attempt - accounting for the fact that the token might have expired
-                auth_info = await self.login(force_refresh=True)
+        args = [
+            librespot,
+            "-c",
+            CACHE_DIR,
+            "-M",
+            "256M",
+            "--passthrough",
+            "-b",
+            "320",
+            "--backend",
+            "pipe",
+            "--single-track",
+            spotify_uri,
+            "--token",
+            auth_info["access_token"],
+        ]
+        if seek_position:
+            args += ["--start-position", str(int(seek_position))]
+        chunk_size = get_chunksize(streamdetails.audio_format)
+        stderr = None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False
+        self.logger.log(VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot")
+        async with AsyncProcess(
+            args,
+            stdout=True,
+            stderr=stderr,
+            name="librespot",
+        ) as librespot_proc:
+            async for chunk in librespot_proc.iter_any(chunk_size):
+                yield chunk
 
     def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
@@ -784,11 +774,12 @@ class SpotifyProvider(MusicProvider):
         playlist.cache_checksum = str(playlist_obj["snapshot_id"])
         return playlist
 
-    async def login(self, retry: bool = True, force_refresh: bool = False) -> dict:
+    @lock
+    async def login(self, force_fresh: bool = False) -> dict:
         """Log-in Spotify and return Auth/token info."""
         # return existing token if we have one in memory
         if self._auth_info and (
-            self._auth_info["expires_at"] > (time.time() - 1800 if force_refresh else 120)
+            self._auth_info["expires_at"] > (time.time() - 1800 if force_fresh else 300)
         ):
             return self._auth_info
         # request new access token using the refresh token
@@ -801,23 +792,28 @@ class SpotifyProvider(MusicProvider):
             "refresh_token": refresh_token,
             "client_id": client_id,
         }
-        async with self.mass.http_session.post(
-            "https://accounts.spotify.com/api/token", data=params
-        ) as response:
-            if response.status != 200:
-                err = await response.text()
-                if "revoked" in err:
-                    # clear refresh token if it's invalid
-                    self.mass.config.set_raw_provider_config_value(
-                        self.instance_id, CONF_REFRESH_TOKEN, ""
-                    )
-                if retry:
-                    await asyncio.sleep(1)
-                    return await self.login(retry=False)
-                raise LoginFailed(f"Failed to refresh access token: {err}")
-            auth_info = await response.json()
-            auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
-            self.logger.debug("Successfully refreshed access token")
+        for _ in range(2):
+            async with self.mass.http_session.post(
+                "https://accounts.spotify.com/api/token", data=params
+            ) as response:
+                if response.status != 200:
+                    err = await response.text()
+                    if "revoked" in err:
+                        # clear refresh token if it's invalid
+                        self.mass.config.set_raw_provider_config_value(
+                            self.instance_id, CONF_REFRESH_TOKEN, ""
+                        )
+                        raise LoginFailed(f"Failed to refresh access token: {err}")
+                    # the token failed to refresh, we allow one retry
+                    await asyncio.sleep(2)
+                    continue
+                # if we reached this point, the token has been successfully refreshed
+                auth_info = await response.json()
+                auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
+                self.logger.debug("Successfully refreshed access token")
+                break
+        else:
+            raise LoginFailed(f"Failed to refresh access token: {err}")
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info = auth_info
@@ -854,7 +850,8 @@ class SpotifyProvider(MusicProvider):
         url = f"https://api.spotify.com/v1/{endpoint}"
         kwargs["market"] = "from_token"
         kwargs["country"] = "from_token"
-        auth_info = kwargs.pop("auth_info", await self.login())
+        if not (auth_info := kwargs.pop("auth_info", None)):
+            auth_info = await self.login()
         headers = {"Authorization": f'Bearer {auth_info["access_token"]}'}
         locale = self.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
