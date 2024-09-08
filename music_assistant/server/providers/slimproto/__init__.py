@@ -465,12 +465,14 @@ class SlimprotoProvider(PlayerProvider):
             transition_duration = 0
 
         metadata = {
-            "item_id": media.queue_item_id or media.uri,
+            "item_id": media.uri,
             "title": media.title,
             "album": media.album,
             "artist": media.artist,
             "image_url": media.image_url,
             "duration": media.duration,
+            "queue_id": media.queue_id,
+            "queue_item_id": media.queue_item_id,
         }
         queue = self.mass.player_queues.get(media.queue_id or player_id)
         slimplayer.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
@@ -652,11 +654,19 @@ class SlimprotoProvider(PlayerProvider):
 
         # update player state on player events
         player.available = True
-        player.current_item_id = (
-            slimplayer.current_media.metadata.get("item_id")
-            if slimplayer.current_media and slimplayer.current_media.metadata
-            else slimplayer.current_url
-        )
+        if slimplayer.current_media and (metadata := slimplayer.current_media.metadata):
+            player.current_media = PlayerMedia(
+                uri=metadata.get("item_id"),
+                title=metadata.get("title"),
+                album=metadata.get("album"),
+                artist=metadata.get("artist"),
+                image_url=metadata.get("image_url"),
+                duration=metadata.get("duration"),
+                queue_id=metadata.get("queue_id"),
+                queue_item_id=metadata.get("queue_item_id"),
+            )
+        else:
+            player.current_media = None
         player.active_source = player.player_id
         player.name = slimplayer.name
         player.powered = slimplayer.powered
