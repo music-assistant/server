@@ -954,6 +954,17 @@ class PlayerQueuesController(CoreController):
         elif prev_state["current_index"] != new_state["current_index"]:
             queue.end_of_track_reached = False
 
+        # handle auto restart of queue in flow mode when repeat is enabled
+        if (
+            queue.flow_mode
+            and queue.repeat_mode != RepeatMode.OFF
+            and queue.stream_finished
+            and prev_state["state"] == PlayerState.PLAYING
+            and new_state["state"] == PlayerState.IDLE
+        ):
+            # flow mode and repeat mode is on, restart the queue
+            self.mass.create_task(self.next(queue_id))
+
         # do not send full updates if only time was updated
         if changed_keys == {"elapsed_time"}:
             self.mass.signal_event(
