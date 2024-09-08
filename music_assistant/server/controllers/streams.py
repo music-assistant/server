@@ -813,8 +813,14 @@ class StreamsController(CoreController):
             extra_input_args += ["-decryption_key", streamdetails.decryption_key]
         else:
             audio_source = streamdetails.path
-            if streamdetails.seek_position:
-                extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
+
+        # handle seek support
+        if (
+            streamdetails.seek_position
+            and streamdetails.media_type != MediaType.RADIO
+            and streamdetails.stream_type != StreamType.CUSTOM
+        ):
+            extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
 
         if streamdetails.media_type == MediaType.RADIO:
             # pad some silence before the radio stream starts to create some headroom
