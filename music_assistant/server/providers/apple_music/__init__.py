@@ -191,7 +191,9 @@ class AppleMusicProvider(MusicProvider):
             endpoint, include="catalog,artists", extend="editorialNotes"
         ):
             if item and item["id"]:
-                yield self._parse_album(item)
+                album = self._parse_album(item)
+                if album:
+                    yield album
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
@@ -296,12 +298,12 @@ class AppleMusicProvider(MusicProvider):
         """Get a list of all albums for the given artist."""
         endpoint = f"catalog/{self._storefront}/artists/{prov_artist_id}/albums"
         try:
-            response = await self._get_data(endpoint)
+            response = await self._get_all_items(endpoint)
         except MediaNotFoundError:
             # Some artists do not have albums, return empty list
             self.logger.info("No albums found for artist %s", prov_artist_id)
             return []
-        return [self._parse_album(album) for album in response["data"] if album["id"]]
+        return [self._parse_album(album) for album in response if album["id"]]
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
@@ -366,6 +368,7 @@ class AppleMusicProvider(MusicProvider):
             stream_type=StreamType.ENCRYPTED_HTTP,
             path=stream_url,
             decryption_key=await self._get_decryption_key(license_url, key_id, uri, item_id),
+            can_seek=True,
         )
 
     def _parse_artist(self, artist_obj):
@@ -418,7 +421,7 @@ class AppleMusicProvider(MusicProvider):
             artist.metadata.description = notes.get("standard") or notes.get("short")
         return artist
 
-    def _parse_album(self, album_obj: dict) -> Album | ItemMapping:
+    def _parse_album(self, album_obj: dict) -> Album | ItemMapping | None:
         """Parse album object to generic layout."""
         relationships = album_obj.get("relationships", {})
         response_type = album_obj.get("type")
@@ -441,6 +444,13 @@ class AppleMusicProvider(MusicProvider):
                 item_id=album_id,
                 name=album_id,
             )
+        is_available_in_catalog = attributes.get("url") is not None
+        if not is_available_in_catalog:
+            self.logger.debug(
+                "Skipping album %s. Album is not available in the Apple Music catalog.",
+                attributes.get("name"),
+            )
+            return None
         album = Album(
             item_id=album_id,
             provider=self.domain,
@@ -613,6 +623,8 @@ class AppleMusicProvider(MusicProvider):
             kwargs["limit"] = limit
             kwargs["offset"] = offset
             result = await self._get_data(endpoint, **kwargs)
+            if key not in result:
+                break
             all_items += result[key]
             if not result.get("next"):
                 break
