@@ -333,6 +333,7 @@ async def get_stream_details(
     queue_item: QueueItem,
     seek_position: int = 0,
     fade_in: bool = False,
+    prefer_album_loudness: bool = False,
 ) -> StreamDetails:
     """Get streamdetails for the given QueueItem.
 
@@ -366,7 +367,9 @@ async def get_stream_details(
         # get streamdetails from provider
         try:
             streamdetails: StreamDetails = await music_prov.get_stream_details(prov_media.item_id)
-            streamdetails.loudness = prov_media.loudness
+            streamdetails.loudness = (
+                prov_media.loudness_album if prefer_album_loudness else prov_media.loudness
+            )
         except MusicAssistantError as err:
             LOGGER.warning(str(err))
         else:
@@ -399,7 +402,7 @@ async def get_stream_details(
         streamdetails.loudness = await mass.music.get_loudness(
             streamdetails.item_id,
             streamdetails.provider,
-            album_loudness=False,
+            prefer_album_loudness=prefer_album_loudness,
             media_type=queue_item.media_type,
         )
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)

@@ -780,10 +780,32 @@ class PlayerQueuesController(CoreController):
         queue.flow_mode = player_needs_flow_mode and next_index is not None
         queue.stream_finished = False
         queue.end_of_track_reached = False
+
+        # work out if we are playing an album and if we should prefer album loudness
+        if (
+            next_index is not None
+            and (next_item := self.get_item(queue_id, next_index))
+            and (
+                queue_item.media_item
+                and queue_item.media_item.album
+                and next_item.media_item
+                and next_item.media_item.album
+                and queue_item.media_item.album.item_id == next_item.media_item.album.item_id
+            )
+        ):
+            prefer_album_loudness = True
+        else:
+            prefer_album_loudness = False
+
         # get streamdetails - do this here to catch unavailable items early
         queue_item.streamdetails = await get_stream_details(
-            self.mass, queue_item, seek_position=seek_position, fade_in=fade_in
+            self.mass,
+            queue_item,
+            seek_position=seek_position,
+            fade_in=fade_in,
+            prefer_album_loudness=prefer_album_loudness,
         )
+
         # allow stripping silence from the end of the track if crossfade is enabled
         # this will allow for smoother crossfades
         if await self.mass.config.get_player_config_value(queue_id, CONF_CROSSFADE):
@@ -1049,11 +1071,30 @@ class PlayerQueuesController(CoreController):
             if next_index is None:
                 raise QueueEmpty("No more tracks left in the queue.")
             queue_item = self.get_item(queue_id, next_index)
+
+            # work out if we are playing an album and if we should prefer album loudness
+            if (
+                next_index is not None
+                and (next_item := self.get_item(queue_id, next_index))
+                and (
+                    queue_item.media_item
+                    and queue_item.media_item.album
+                    and next_item.media_item
+                    and next_item.media_item.album
+                    and queue_item.media_item.album.item_id == next_item.media_item.album.item_id
+                )
+            ):
+                prefer_album_loudness = True
+            else:
+                prefer_album_loudness = False
+
             try:
                 # Check if the QueueItem is playable. For example, YT Music returns Radio Items
                 # that are not playable which will stop playback.
                 queue_item.streamdetails = await get_stream_details(
-                    mass=self.mass, queue_item=queue_item
+                    mass=self.mass,
+                    queue_item=queue_item,
+                    prefer_album_loudness=prefer_album_loudness,
                 )
                 # Preload the full MediaItem for the QueueItem, making sure to get the
                 # maximum quality of thumbs

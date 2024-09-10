@@ -668,7 +668,7 @@ class MusicController(CoreController):
         album_loudness: bool = False,
         media_type: MediaType = MediaType.TRACK,
     ) -> None:
-        """Store Loudness Measurement for a mediaitem in db."""
+        """Store (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         column = "loudness_album" if album_loudness else "loudness"
         await self.database.execute(
             f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET {column} = {loudness} "
@@ -682,11 +682,11 @@ class MusicController(CoreController):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        album_loudness: bool = False,
+        prefer_album_loudness: bool = False,
         media_type: MediaType = MediaType.TRACK,
     ) -> float | None:
-        """Get Loudness Measurement for a mediaitem in db."""
-        column = "loudness_album" if album_loudness else "loudness"
+        """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
+        column = "loudness_album" if prefer_album_loudness else "loudness"
         for row in await self.database.get_rows_from_query(
             f"SELECT {column} FROM {DB_TABLE_PROVIDER_MAPPINGS} "
             f"WHERE provider_item_id = '{item_id}' AND "
@@ -697,6 +697,11 @@ class MusicController(CoreController):
             if row["loudness"] == inf or row["loudness"] == -inf:
                 continue
             return row["loudness"]
+        if prefer_album_loudness:
+            # try again without preferring album loudness
+            return await self.get_loudness(
+                item_id, provider_instance_id_or_domain, False, media_type
+            )
         return None
 
     async def mark_item_played(
