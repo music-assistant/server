@@ -148,9 +148,6 @@ class BluesoundPlayer:
         self.connected = False
         self.logger.debug("Disconnected from player API")
 
-    async def update_media(self) -> None:
-        """Retrieve BluOS media information."""
-
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
         self.logger.debug("Update attributes")
