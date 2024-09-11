@@ -54,7 +54,9 @@ if TYPE_CHECKING:
 # ruff: noqa: ARG002
 
 UGP_FORMAT = AudioFormat(
-    content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
+    content_type=ContentType.PCM_F32LE,
+    sample_rate=44100,
+    bit_depth=32,
 )
 UGP_PREFIX = "ugp_"
 

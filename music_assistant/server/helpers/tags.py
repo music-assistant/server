@@ -329,6 +329,24 @@ class AudioTags:
                 return value
         return None
 
+    @property
+    def track_loudness(self) -> float | None:
+        """Try to read/calculate the integrated loudness from the tags."""
+        if (tag := self.tags.get("r128trackgain")) is not None:
+            return -23 - float(int(tag.split(" ")[0]) / 256)
+        if (tag := self.tags.get("replaygaintrackgain")) is not None:
+            return -18 - float(tag.split(" ")[0])
+        return None
+
+    @property
+    def track_album_loudness(self) -> float | None:
+        """Try to read/calculate the integrated loudness from the tags (album level)."""
+        if tag := self.tags.get("r128albumgain"):
+            return -23 - float(int(tag.split(" ")[0]) / 256)
+        if (tag := self.tags.get("replaygainalbumgain")) is not None:
+            return -18 - float(tag.split(" ")[0])
+        return None
+
     @classmethod
     def parse(cls, raw: dict) -> AudioTags:
         """Parse instance from raw ffmpeg info output."""

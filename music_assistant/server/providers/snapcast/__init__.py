@@ -79,6 +79,15 @@ DEFAULT_SNAPCAST_FORMAT = AudioFormat(
     channels=2,
 )
 
+DEFAULT_SNAPCAST_PCM_FORMAT = AudioFormat(
+    # the format that is used as intermediate pcm stream,
+    # we prefer F32 here to account for volume normalization
+    content_type=ContentType.PCM_F32LE,
+    sample_rate=48000,
+    bit_depth=32,
+    channels=2,
+)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -447,7 +456,7 @@ class SnapCastProvider(PlayerProvider):
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
 
-    async def play_media(self, player_id: str, media: PlayerMedia) -> None:  # noqa: PLR0915
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
@@ -477,23 +486,15 @@ class SnapCastProvider(PlayerProvider):
             ugp_stream = ugp_provider.streams[media.queue_id]
             input_format = ugp_stream.output_format
             audio_source = ugp_stream.subscribe()
-        elif media.media_type == MediaType.RADIO and media.queue_id and media.queue_item_id:
-            # radio stream - consume media stream directly
-            input_format = DEFAULT_SNAPCAST_FORMAT
-            queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
-            audio_source = self.mass.streams.get_media_stream(
-                streamdetails=queue_item.streamdetails,
-                pcm_format=DEFAULT_SNAPCAST_FORMAT,
-            )
         elif media.queue_id and media.queue_item_id:
             # regular queue (flow) stream request
-            input_format = DEFAULT_SNAPCAST_FORMAT
+            input_format = DEFAULT_SNAPCAST_PCM_FORMAT
             audio_source = self.mass.streams.get_flow_stream(
                 queue=self.mass.player_queues.get(media.queue_id),
                 start_queue_item=self.mass.player_queues.get_item(
                     media.queue_id, media.queue_item_id
                 ),
-                pcm_format=DEFAULT_SNAPCAST_FORMAT,
+                pcm_format=input_format,
             )
         else:
             # assume url or some other direct path

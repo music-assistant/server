@@ -12,17 +12,6 @@ from music_assistant.common.models.media_items import AudioFormat
 
 
 @dataclass(kw_only=True)
-class LoudnessMeasurement(DataClassDictMixin):
-    """Model for EBU-R128 loudness measurement details."""
-
-    integrated: float
-    true_peak: float
-    lra: float
-    threshold: float
-    target_offset: float | None = None
-
-
-@dataclass(kw_only=True)
 class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""
 
@@ -55,11 +44,14 @@ class StreamDetails(DataClassDictMixin):
     # the fields below will be set/controlled by the streamcontroller
     seek_position: int = 0
     fade_in: bool = False
-    loudness: LoudnessMeasurement | None = None
+    enable_volume_normalization: bool = False
+    loudness: float | None = None
+    loudness_album: float | None = None
+    prefer_album_loudness: bool = False
+    force_dynamic_volume_normalization: bool = False
     queue_id: str | None = None
     seconds_streamed: float | None = None
     target_loudness: float | None = None
-    bypass_loudness_normalization: bool = False
     strip_silence_begin: bool = False
     strip_silence_end: bool = False
     stream_error: bool | None = None

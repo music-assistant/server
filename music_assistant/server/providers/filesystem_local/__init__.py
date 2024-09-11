@@ -784,6 +784,11 @@ class LocalFileSystemProvider(MusicProvider):
         if tags.musicbrainz_recordingid:
             track.mbid = tags.musicbrainz_recordingid
         track.metadata.chapters = UniqueList(tags.chapters)
+        # handle (optional) loudness measurement tag(s)
+        if tags.track_loudness is not None:
+            await self.mass.music.set_loudness(
+                track.item_id, self.instance_id, tags.track_loudness, tags.track_album_loudness
+            )
         return track
 
     async def _parse_artist(

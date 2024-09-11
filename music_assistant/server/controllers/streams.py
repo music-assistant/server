@@ -19,6 +19,7 @@ from aiohttp import web
 
 from music_assistant.common.helpers.util import get_ip, select_free_port, try_parse_bool
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -31,15 +32,14 @@ from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
-    CONF_BYPASS_NORMALIZATION_RADIO,
-    CONF_BYPASS_NORMALIZATION_SHORT,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
-    CONF_ENABLE_ICY_METADATA,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
+    CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_RADIO,
     MASS_LOGO_ONLINE,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
@@ -172,26 +172,23 @@ class StreamsController(CoreController):
                 category="advanced",
             ),
             ConfigEntry(
-                key=CONF_BYPASS_NORMALIZATION_RADIO,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                label="Bypass volume normalization for radio streams",
-                description="Radio streams are often already normalized according "
-                "to the EBU standard, so it doesn't make a lot of sense to normalize them again "
-                "in Music Assistant unless you hear big jumps in volume during playback, "
-                "such as commercials.",
-                category="advanced",
-            ),
-            ConfigEntry(
-                key=CONF_BYPASS_NORMALIZATION_SHORT,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                label="Bypass volume normalization for effects and short sounds",
-                description="The volume normalizer of ffmpeg (used in Music Assistant), "
-                "is designed to work best with longer audio streams and can have troubles when "
-                "its applied to very short sound clips (< 30 seconds), "
-                "for example sound effects. With this option enabled, the volume normalizer "
-                "will be bypassed for all audio that has a duration of less than 60 seconds.",
+                key=CONF_VOLUME_NORMALIZATION_RADIO,
+                type=ConfigEntryType.STRING,
+                default_value="standard",
+                label="Volume normalization method to use for radio streams",
+                description="Radio streams often have varying loudness levels, especially "
+                "during announcements and commercials. \n"
+                "You can choose to enforce dynamic volume normalization to radio streams, "
+                "even if a (average) loudness measurement for the radio station exists. \n\n"
+                "Options: \n"
+                "- Disabled - do not apply volume normalization at all \n"
+                "- Force dynamic - Enforce dynamic volume levelling at all times \n"
+                "- Standard - use normalization based on previous measurement, ",
+                options=(
+                    ConfigValueOption("Disabled", "disabled"),
+                    ConfigValueOption("Force dynamic", "dynamic"),
+                    ConfigValueOption("Standard", "standard"),
+                ),
                 category="advanced",
             ),
         )
@@ -339,10 +336,19 @@ class StreamsController(CoreController):
             queue.display_name,
         )
         self.mass.player_queues.track_loaded_in_buffer(queue_id, queue_item_id)
+
+        # pick pcm format based on the streamdetails and player capabilities
+        if self.mass.config.get_raw_player_config_value(queue_id, CONF_VOLUME_NORMALIZATION, True):
+            # prefer f32 when volume normalization is enabled
+            bit_depth = 32
+            floating_point = True
+        else:
+            bit_depth = queue_item.streamdetails.audio_format.bit_depth
+            floating_point = False
         pcm_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(output_format.bit_depth),
+            content_type=ContentType.from_bit_depth(bit_depth, floating_point),
             sample_rate=queue_item.streamdetails.audio_format.sample_rate,
-            bit_depth=queue_item.streamdetails.audio_format.bit_depth,
+            bit_depth=bit_depth,
             channels=2,
         )
         chunk_num = 0
@@ -397,10 +403,12 @@ class StreamsController(CoreController):
         )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_raw_player_config_value(
-            queue_id, CONF_ENABLE_ICY_METADATA, "basic"
+            queue_id,
+            CONF_ENTRY_ENABLE_ICY_METADATA.key,
+            CONF_ENTRY_ENABLE_ICY_METADATA.default_value,
         )
         enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
-        icy_meta_interval = 16384
+        icy_meta_interval = 256000 if icy_preference == "full" else 16384
 
         # prepare request, add some DLNA/UPNP compatible headers
         http_profile: str = await self.mass.config.get_player_config_value(
@@ -652,8 +660,7 @@ class StreamsController(CoreController):
                     crossfade_part = await crossfade_pcm_parts(
                         fadein_part,
                         last_fadeout_part,
-                        pcm_format.bit_depth,
-                        pcm_format.sample_rate,
+                        pcm_format=pcm_format,
                     )
                     # send crossfade_part (as one big chunk)
                     bytes_written += len(crossfade_part)
@@ -761,37 +768,24 @@ class StreamsController(CoreController):
         # collect all arguments for ffmpeg
         filter_params = []
         extra_input_args = []
-        # add loudnorm filter: volume normalization
-        # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
-        if (
-            streamdetails.target_loudness is not None
-            and not streamdetails.bypass_loudness_normalization
-        ):
-            if streamdetails.loudness:
-                # we have a measurement so we can do linear mode
-                target_loudness = streamdetails.target_loudness
-                # we must ensure that target loudness does not exceed the measured value
-                # otherwise ffmpeg falls back to dynamic again
-                # https://github.com/slhck/ffmpeg-normalize/issues/251
-                target_loudness = min(
-                    streamdetails.target_loudness,
-                    streamdetails.loudness.integrated + streamdetails.loudness.lra - 1,
-                )
-                filter_rule = f"loudnorm=I={target_loudness}:TP=-2.0:LRA=7.0:linear=true"
-                filter_rule += f":measured_I={streamdetails.loudness.integrated}"
-                filter_rule += f":measured_LRA={streamdetails.loudness.lra}"
-                filter_rule += f":measured_tp={streamdetails.loudness.true_peak}"
-                filter_rule += f":measured_thresh={streamdetails.loudness.threshold}"
-                if streamdetails.loudness.target_offset is not None:
-                    filter_rule += f":offset={streamdetails.loudness.target_offset}"
-            else:
-                # if we have no measurement, we use dynamic mode
+        # handle volume normalization
+        if streamdetails.enable_volume_normalization and streamdetails.target_loudness is not None:
+            if streamdetails.force_dynamic_volume_normalization or streamdetails.loudness is None:
+                # volume normalization with unknown loudness measurement
+                # use loudnorm filter in dynamic mode
                 # which also collects the measurement on the fly during playback
+                # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
                 filter_rule = (
-                    f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=7.0:offset=0.0"
+                    f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=10.0:offset=0.0"
                 )
-            filter_rule += ":print_format=json"
-            filter_params.append(filter_rule)
+                filter_rule += ":print_format=json"
+                filter_params.append(filter_rule)
+            else:
+                # volume normalization with known loudness measurement
+                # apply fixed volume/gain correction
+                gain_correct = streamdetails.target_loudness - streamdetails.loudness
+                gain_correct = round(gain_correct, 2)
+                filter_params.append(f"volume={gain_correct}dB")
         if streamdetails.stream_type == StreamType.CUSTOM:
             audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
                 streamdetails,
@@ -911,9 +905,17 @@ class StreamsController(CoreController):
             if sample_rate in supported_sample_rates:
                 output_sample_rate = sample_rate
                 break
-        output_bit_depth = min(24, player_max_bit_depth)
+        if self.mass.config.get_raw_player_config_value(
+            player.player_id, CONF_VOLUME_NORMALIZATION, True
+        ):
+            # prefer f32 when volume normalization is enabled
+            output_bit_depth = 32
+            floating_point = True
+        else:
+            output_bit_depth = min(24, player_max_bit_depth)
+            floating_point = False
         return AudioFormat(
-            content_type=ContentType.from_bit_depth(output_bit_depth),
+            content_type=ContentType.from_bit_depth(output_bit_depth, floating_point),
             sample_rate=output_sample_rate,
             bit_depth=output_bit_depth,
             channels=2,

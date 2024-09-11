@@ -37,19 +37,18 @@ from music_assistant.common.models.media_items import (
     SearchResults,
 )
 from music_assistant.common.models.provider import SyncTask
-from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_LOUDNESS_MEASUREMENTS,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_ARTISTS,
-    DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
@@ -73,7 +72,7 @@ DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 8
+DB_SCHEMA_VERSION: Final[int] = 9
 
 
 class MusicController(CoreController):
@@ -662,47 +661,43 @@ class MusicController(CoreController):
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         return library_item
 
-    async def set_track_loudness(
-        self, item_id: str, provider_instance_id_or_domain: str, loudness: LoudnessMeasurement
+    async def set_loudness(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        loudness: float,
+        album_loudness: float | None = None,
+        media_type: MediaType = MediaType.TRACK,
     ) -> None:
-        """Store Loudness Measurement for a track in db."""
-        if provider := self.mass.get_provider(provider_instance_id_or_domain):
-            await self.database.insert(
-                DB_TABLE_TRACK_LOUDNESS,
-                {
-                    "item_id": item_id,
-                    "provider": provider.lookup_key,
-                    "integrated": round(loudness.integrated, 2),
-                    "true_peak": round(loudness.true_peak, 2),
-                    "lra": round(loudness.lra, 2),
-                    "threshold": round(loudness.threshold, 2),
-                    "target_offset": round(loudness.target_offset, 2),
-                },
-                allow_replace=True,
-            )
+        """Store (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
+        values = {
+            "item_id": item_id,
+            "media_type": media_type.value,
+            "provider": provider_instance_id_or_domain,
+            "loudness": loudness,
+        }
+        if album_loudness is not None:
+            values["loudness_album"] = album_loudness
+        await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
 
-    async def get_track_loudness(
-        self, item_id: str, provider_instance_id_or_domain: str
-    ) -> LoudnessMeasurement | None:
-        """Get Loudness Measurement for a track in db."""
-        if provider := self.mass.get_provider(provider_instance_id_or_domain):
-            if result := await self.database.get_row(
-                DB_TABLE_TRACK_LOUDNESS,
-                {
-                    "item_id": item_id,
-                    "provider": provider.lookup_key,
-                },
-            ):
-                if result["integrated"] == inf or result["integrated"] == -inf:
-                    return None
+    async def get_loudness(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> tuple[float, float] | None:
+        """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
+        db_row = await self.database.get_row(
+            DB_TABLE_LOUDNESS_MEASUREMENTS,
+            {
+                "item_id": item_id,
+                "media_type": media_type.value,
+                "provider": provider_instance_id_or_domain,
+            },
+        )
+        if db_row and db_row["loudness"] != inf and db_row["loudness"] != -inf:
+            return (db_row["loudness"], db_row["loudness_album"])
 
-                return LoudnessMeasurement(
-                    integrated=result["integrated"],
-                    true_peak=result["true_peak"],
-                    lra=result["lra"],
-                    threshold=result["threshold"],
-                    target_offset=result["target_offset"],
-                )
         return None
 
     async def mark_item_played(
@@ -1064,7 +1059,6 @@ class MusicController(CoreController):
                 DB_TABLE_RADIOS,
                 DB_TABLE_ALBUM_TRACKS,
                 DB_TABLE_PLAYLOG,
-                DB_TABLE_TRACK_LOUDNESS,
                 DB_TABLE_PROVIDER_MAPPINGS,
             ):
                 await self.database.execute(f"DROP TABLE IF EXISTS {table}")
@@ -1098,6 +1092,24 @@ class MusicController(CoreController):
                 if "duplicate column" not in str(err):
                     raise
 
+        if prev_version <= 8:
+            # migrate track_loudness --> loudness_measurements
+            async for db_row in self.database.iter_items("track_loudness"):
+                if db_row["integrated"] == inf or db_row["integrated"] == -inf:
+                    continue
+                if db_row["provider"] in ("radiobrowser", "tunein"):
+                    continue
+                await self.database.insert_or_replace(
+                    DB_TABLE_LOUDNESS_MEASUREMENTS,
+                    {
+                        "item_id": db_row["item_id"],
+                        "media_type": "track",
+                        "provider": db_row["provider"],
+                        "loudness": db_row["integrated"],
+                    },
+                )
+            await self.database.execute("DROP TABLE IF EXISTS track_loudness")
+
         # save changes
         await self.database.commit()
 
@@ -1120,18 +1132,6 @@ class MusicController(CoreController):
                     [value] TEXT,
                     [type] TEXT
                 );"""
-        )
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_LOUDNESS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [integrated] REAL,
-                    [true_peak] REAL,
-                    [lra] REAL,
-                    [threshold] REAL,
-                    [target_offset] REAL,
-                    UNIQUE(item_id, provider));"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLOG}(
@@ -1270,6 +1270,18 @@ class MusicController(CoreController):
             UNIQUE(album_id, artist_id)
             );"""
         )
+
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [loudness] REAL,
+                    [loudness_album] REAL,
+                    UNIQUE(media_type,item_id,provider));"""
+        )
+
         await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
@@ -1365,6 +1377,11 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
             f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
+        )
+        # index on loudness measurements table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}_idx "
+            f"on {DB_TABLE_LOUDNESS_MEASUREMENTS}(media_type,item_id,provider);"
         )
         await self.database.commit()
 

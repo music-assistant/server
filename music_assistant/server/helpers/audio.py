@@ -32,15 +32,14 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
 )
 from music_assistant.common.models.media_items import AudioFormat, ContentType
-from music_assistant.common.models.streamdetails import LoudnessMeasurement, StreamDetails
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
-    CONF_BYPASS_NORMALIZATION_RADIO,
-    CONF_BYPASS_NORMALIZATION_SHORT,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
@@ -209,12 +208,10 @@ class FFMpeg(AsyncProcess):
 async def crossfade_pcm_parts(
     fade_in_part: bytes,
     fade_out_part: bytes,
-    bit_depth: int,
-    sample_rate: int,
+    pcm_format: AudioFormat,
 ) -> bytes:
     """Crossfade two chunks of pcm/raw audio using ffmpeg."""
-    sample_size = int(sample_rate * (bit_depth / 8) * 2)
-    fmt = ContentType.from_bit_depth(bit_depth)
+    sample_size = pcm_format.pcm_sample_size
     # calculate the fade_length from the smallest chunk
     fade_length = min(len(fade_in_part), len(fade_out_part)) / sample_size
     fadeoutfile = create_tempfile()
@@ -228,24 +225,24 @@ async def crossfade_pcm_parts(
         "quiet",
         # fadeout part (as file)
         "-acodec",
-        fmt.name.lower(),
+        pcm_format.content_type.name.lower(),
         "-f",
-        fmt,
+        pcm_format.content_type.value,
         "-ac",
-        "2",
+        str(pcm_format.channels),
         "-ar",
-        str(sample_rate),
+        str(pcm_format.sample_rate),
         "-i",
         fadeoutfile.name,
         # fade_in part (stdin)
         "-acodec",
-        fmt.name.lower(),
+        pcm_format.content_type.name.lower(),
         "-f",
-        fmt,
+        pcm_format.content_type.value,
         "-ac",
-        "2",
+        str(pcm_format.channels),
         "-ar",
-        str(sample_rate),
+        str(pcm_format.sample_rate),
         "-i",
         "-",
         # filter args
@@ -253,7 +250,7 @@ async def crossfade_pcm_parts(
         f"[0][1]acrossfade=d={fade_length}",
         # output args
         "-f",
-        fmt,
+        pcm_format.content_type.value,
         "-",
     ]
     _returncode, crossfaded_audio, _stderr = await communicate(args, fade_in_part)
@@ -279,22 +276,20 @@ async def crossfade_pcm_parts(
 async def strip_silence(
     mass: MusicAssistant,  # noqa: ARG001
     audio_data: bytes,
-    sample_rate: int,
-    bit_depth: int,
+    pcm_format: AudioFormat,
     reverse: bool = False,
 ) -> bytes:
     """Strip silence from begin or end of pcm audio using ffmpeg."""
-    fmt = ContentType.from_bit_depth(bit_depth)
     args = ["ffmpeg", "-hide_banner", "-loglevel", "quiet"]
     args += [
         "-acodec",
-        fmt.name.lower(),
+        pcm_format.content_type.name.lower(),
         "-f",
-        fmt,
+        pcm_format.content_type.value,
         "-ac",
-        "2",
+        str(pcm_format.channels),
         "-ar",
-        str(sample_rate),
+        str(pcm_format.sample_rate),
         "-i",
         "-",
     ]
@@ -310,14 +305,13 @@ async def strip_silence(
             "atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02",
         ]
     # output args
-    args += ["-f", fmt, "-"]
+    args += ["-f", pcm_format.content_type.value, "-"]
     _returncode, stripped_data, _stderr = await communicate(args, audio_data)
 
     # return stripped audio
     bytes_stripped = len(audio_data) - len(stripped_data)
     if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
-        pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
-        seconds_stripped = round(bytes_stripped / pcm_sample_size, 2)
+        seconds_stripped = round(bytes_stripped / pcm_format.pcm_sample_size, 2)
         location = "end" if reverse else "begin"
         LOGGER.log(
             VERBOSE_LOG_LEVEL,
@@ -334,6 +328,7 @@ async def get_stream_details(
     queue_item: QueueItem,
     seek_position: int = 0,
     fade_in: bool = False,
+    prefer_album_loudness: bool = False,
 ) -> StreamDetails:
     """Get streamdetails for the given QueueItem.
 
@@ -395,24 +390,25 @@ async def get_stream_details(
     if not streamdetails.duration:
         streamdetails.duration = queue_item.duration
     # handle volume normalization details
-    is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
-    streamdetails.bypass_loudness_normalization = (
-        is_radio
-        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_RADIO)
-    ) or (
-        streamdetails.duration is not None
-        and streamdetails.duration < 30
-        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_SHORT)
-    )
-    if not streamdetails.loudness:
-        streamdetails.loudness = await mass.music.get_track_loudness(
-            streamdetails.item_id, streamdetails.provider
-        )
+    if result := await mass.music.get_loudness(
+        streamdetails.item_id,
+        streamdetails.provider,
+        media_type=queue_item.media_type,
+    ):
+        streamdetails.loudness, streamdetails.loudness_album = result
+    streamdetails.prefer_album_loudness = prefer_album_loudness
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
-    if not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
-        streamdetails.target_loudness = None
-    else:
-        streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
+    streamdetails.enable_volume_normalization = player_settings.get_value(CONF_VOLUME_NORMALIZATION)
+    streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
+
+    radio_norm_pref = await mass.config.get_core_config_value(
+        "streams", CONF_VOLUME_NORMALIZATION_RADIO
+    )
+    if streamdetails.media_type == MediaType.RADIO and radio_norm_pref == "disabled":
+        streamdetails.enable_volume_normalization = False
+    elif streamdetails.media_type == MediaType.RADIO and radio_norm_pref == "dynamic":
+        streamdetails.force_dynamic_volume_normalization = True
+
     process_time = int((time.time() - time_start) * 1000)
     LOGGER.debug("retrieved streamdetails for %s in %s milliseconds", queue_item.uri, process_time)
     return streamdetails
@@ -449,6 +445,12 @@ async def get_media_stream(
             logger=logger,
         ) as ffmpeg_proc:
             async for chunk in ffmpeg_proc.iter_chunked(pcm_format.pcm_sample_size):
+                # for radio streams we just yield all chunks directly
+                if streamdetails.media_type == MediaType.RADIO:
+                    yield chunk
+                    bytes_sent += len(chunk)
+                    continue
+
                 chunk_number += 1
                 # determine buffer size dynamically
                 if chunk_number < 5 and strip_silence_begin:
@@ -469,7 +471,7 @@ async def get_media_stream(
                 if chunk_number == 5 and strip_silence_begin:
                     # strip silence from begin of audio
                     chunk = await strip_silence(  # noqa: PLW2901
-                        mass, buffer, pcm_format.sample_rate, pcm_format.bit_depth
+                        mass, buffer, pcm_format=pcm_format
                     )
                     bytes_sent += len(chunk)
                     yield chunk
@@ -488,8 +490,7 @@ async def get_media_stream(
                 buffer = await strip_silence(
                     mass,
                     buffer,
-                    sample_rate=pcm_format.sample_rate,
-                    bit_depth=pcm_format.bit_depth,
+                    pcm_format=pcm_format,
                     reverse=True,
                 )
             # send remaining bytes in buffer
@@ -534,18 +535,22 @@ async def get_media_stream(
             streamdetails.duration = seconds_streamed
 
         # parse loudnorm data if we have that collected
-        if loudness_details := parse_loudnorm(" ".join(ffmpeg_proc.log_history)):
-            required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
-            if finished or (seconds_streamed >= required_seconds):
+        required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
+        if streamdetails.loudness is None and (finished or (seconds_streamed >= required_seconds)):
+            loudness_details = parse_loudnorm(" ".join(ffmpeg_proc.log_history))
+            if loudness_details is not None:
                 logger.debug(
-                    "Loudness measurement for %s: %s",
+                    "Loudness measurement for %s: %s dB",
                     streamdetails.uri,
                     loudness_details,
                 )
                 streamdetails.loudness = loudness_details
                 mass.create_task(
-                    mass.music.set_track_loudness(
-                        streamdetails.item_id, streamdetails.provider, loudness_details
+                    mass.music.set_loudness(
+                        streamdetails.item_id,
+                        streamdetails.provider,
+                        loudness_details,
+                        media_type=streamdetails.media_type,
                     )
                 )
         # report playback
@@ -1101,6 +1106,9 @@ def get_player_filter_params(
     elif conf_channels == "right":
         filter_params.append("pan=mono|c0=FR")
 
+    # add a peak limiter at the end of the filter chain
+    filter_params.append("alimiter=limit=-2dB:level=false:asc=true")
+
     return filter_params
 
 
@@ -1229,7 +1237,7 @@ def get_ffmpeg_args(
             resample_filter += f":osr={output_format.sample_rate}"
 
         # bit depth conversion: apply dithering when going down to 16 bits
-        if output_format.bit_depth < input_format.bit_depth:
+        if output_format.bit_depth == 16 and input_format.bit_depth > 16:
             resample_filter += ":osf=s16:dither_method=triangular_hp"
 
         filter_params.append(resample_filter)
@@ -1240,7 +1248,7 @@ def get_ffmpeg_args(
     return generic_args + input_args + extra_args + output_args
 
 
-def parse_loudnorm(raw_stderr: bytes | str) -> LoudnessMeasurement | None:
+def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
     """Parse Loudness measurement from ffmpeg stderr output."""
     stderr_data = raw_stderr.decode() if isinstance(raw_stderr, bytes) else raw_stderr
     if "[Parsed_loudnorm_" not in stderr_data:
@@ -1252,10 +1260,4 @@ def parse_loudnorm(raw_stderr: bytes | str) -> LoudnessMeasurement | None:
         loudness_data = json_loads(stderr_data)
     except JSON_DECODE_EXCEPTIONS:
         return None
-    return LoudnessMeasurement(
-        integrated=float(loudness_data["input_i"]),
-        true_peak=float(loudness_data["input_tp"]),
-        lra=float(loudness_data["input_lra"]),
-        threshold=float(loudness_data["input_thresh"]),
-        target_offset=float(loudness_data["target_offset"]),
-    )
+    return float(loudness_data["input_i"])

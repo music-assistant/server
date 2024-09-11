@@ -631,7 +631,7 @@ CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
         ConfigValueOption("Profile 2 - full info (including image)", "full"),
     ),
     depends_on=CONF_FLOW_MODE,
-    default_value="basic",
+    default_value="disabled",
     label="Try to ingest metadata into stream (ICY)",
     category="advanced",
     description="Try to ingest metadata into the stream (ICY) to show track info on the player, "
