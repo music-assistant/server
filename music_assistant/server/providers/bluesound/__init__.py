@@ -252,10 +252,7 @@ class BluesoundPlayerProvider(PlayerProvider):
         # you should return a tuple of provider-level features
         # here that your player provider supports or an empty tuple if none.
         # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
-        return (
-            ProviderFeature.SYNC_PLAYERS,
-            #  ProviderFeature.PLAYER_GROUP_CREATE
-        )
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
