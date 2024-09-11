@@ -148,12 +148,19 @@ class BluesoundPlayer:
         self.connected = False
         self.logger.debug("Disconnected from player API")
 
+    async def update_media(self) -> None:
+        """Retrieve BluOS media information."""
+
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
-        # self.logger.debug("Update attributes")
+        self.logger.debug("Update attributes")
 
         self.sync_status = await self.client.sync_status()
         self.status = await self.client.status()
+
+        # Update accurate timing
+        self.mass_player.elapsed_time = self.status.seconds
+        self.mass_player.elapsed_time_last_updated = time.time()
 
         if not self.mass_player:
             return
@@ -163,7 +170,10 @@ class BluesoundPlayer:
             self.mass_player.volume_level = self.sync_status.volume
         self.mass_player.volume_muted = self.status.mute
 
-        # self.logger.debug(self.status.input_id)
+        if self.status.state == "stream":
+            mass_active = self.mass.streams.base_url
+            self.logger.debug(mass_active)
+            self.logger.debug(self.status.stream_url)
         if self.status.state == "stream" and self.status.input_id == "input0":
             self.mass_player.active_source = SOURCE_LINE_IN
         elif self.status.state == "stream" and self.status.input_id == "Airplay":
@@ -172,10 +182,9 @@ class BluesoundPlayer:
             self.mass_player.active_source = SOURCE_SPOTIFY
         elif self.status.state == "stream" and self.status.input_id == "RadioParadise":
             self.mass_player.active_source = SOURCE_RADIO
-
-        # Music Assistant falls in this category
-        # elif self.status.state ==  "stream" and self.status.input_id == "None":
-        #    self.mass_player.active_source = SOURCE_UNKNOWN
+        elif self.status.state == "stream" and (mass_active not in self.status.stream_url):
+            self.logger.debug("mass_active")
+            self.mass_player.active_source = SOURCE_UNKNOWN
 
         # TODO check pair status
 
@@ -195,8 +204,6 @@ class BluesoundPlayer:
                     artist=self.status.artist,
                     album=self.status.album,
                     image_url=self.status.image,
-                    # Does not make sense as bluesound does not report song length
-                    # duration=self.status.total_seconds / 1000,
                 )
 
             # TODO fix sync and multiple players
@@ -219,13 +226,12 @@ class BluesoundPlayer:
 
         # self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
 
-        self.mass_player.elapsed_time = self.status.seconds
-        self.mass_player.elapsed_time_last_updated = time.time()
         # self.logger.debug(self.status.seconds)
         self.mass_player.state = PLAYBACK_STATE_MAP[self.status.state]
         self.mass_player.can_sync_with = (
             tuple(x for x in self.prov.bluos_players if x != self.player_id),
         )
+
         self.mass.players.update(self.player_id)
 
 
@@ -324,7 +330,7 @@ class BluesoundPlayerProvider(PlayerProvider):
                 PlayerFeature.PLAY_ANNOUNCEMENT,  # see play_announcement method
                 PlayerFeature.ENQUEUE_NEXT,  # see play_media/enqueue_next_media methods
                 PlayerFeature.PAUSE,
-                PlayerFeature.SEEK,
+                # PlayerFeature.SEEK,
             ),
             needs_poll=True,
             poll_interval=30,
@@ -366,7 +372,8 @@ class BluesoundPlayerProvider(PlayerProvider):
             mass_player = self.mass.players.get(player_id)
             # Optimistic state, reduces interface lag
             mass_player.state = PLAYBACK_STATE_MAP["stop"]
-            self.mass.players.update(player_id)
+            await bluos_player.update_attributes()
+            # self.mass.players.update(player_id)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to BluOS player."""
@@ -375,7 +382,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             # Optimistic state, reduces interface lag
             mass_player = self.mass.players.get(player_id)
             mass_player.state = PLAYBACK_STATE_MAP["play"]
-            self.mass.players.update(player_id)
+            await bluos_player.update_attributes()
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to BluOS player."""
@@ -384,7 +391,8 @@ class BluesoundPlayerProvider(PlayerProvider):
             # Optimistic state, reduces interface lag
             mass_player = self.mass.players.get(player_id)
             mass_player.state = PLAYBACK_STATE_MAP["pause"]
-            self.mass.players.update(player_id)
+            # self.mass.players.update(player_id)
+            await bluos_player.update_attributes()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to BluOS player."""
@@ -394,7 +402,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             mass_player = self.mass.players.get(player_id)
             # Optimistic state, reduces interface lag
             mass_player.volume_level = volume_level
-            self.mass.players.update(player_id)
+            await bluos_player.update_attributes()
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to BluOS player."""
@@ -403,23 +411,24 @@ class BluesoundPlayerProvider(PlayerProvider):
             # Optimistic state, reduces interface lag
             mass_player = self.mass.players.get(player_id)
             mass_player.volume_mute = muted
-            self.mass.players.update(player_id)
-
-    # async def cmd_seek(self, player_id: str, position: int) -> None:
-    #     """Handle SEEK command for given queue. Doesn't work with flow mode."""
-    #     if bluos_player := self.bluos_players[player_id]:
-    #         await bluos_player.client.play(seek=position)
+            await bluos_player.update_attributes()
 
     async def play_media(
         self, player_id: str, media: PlayerMedia, timeout: float | None = None
     ) -> None:
         """Handle PLAY MEDIA for BluOS player using the provided URL."""
+        mass_player = self.mass.players.get(player_id)
         if bluos_player := self.bluos_players[player_id]:
-            playback_state = await bluos_player.client.play_url(media.uri, timeout=timeout)
+            await bluos_player.client.play_url(media.uri, timeout=timeout)
+            # Update media info then optimistically override playback state
+            await bluos_player.update_attributes()
+            mass_player.state = PLAYBACK_STATE_MAP["play"]
             self.mass.players.update(player_id)
 
+        mass_player = self.mass.players.get(player_id)
+
         # Optionally, handle the playback_state or additional logic here
-        if playback_state != "playing":
+        if mass_player.state != "playing":
             raise PlayerCommandFailed("Failed to start playback.")
 
     async def play_announcement(
