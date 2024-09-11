@@ -393,7 +393,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
     ):
-        """Get the list of base tracks from the controller used to calculated the dynamic radio."""
+        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         assert provider_instance_id_or_domain != "library"
         playlist = await self.get(item_id, provider_instance_id_or_domain)
         return [
