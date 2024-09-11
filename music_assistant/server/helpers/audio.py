@@ -39,6 +39,7 @@ from music_assistant.constants import (
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
@@ -399,6 +400,15 @@ async def get_stream_details(
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     streamdetails.enable_volume_normalization = player_settings.get_value(CONF_VOLUME_NORMALIZATION)
     streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
+
+    radio_norm_pref = await mass.config.get_core_config_value(
+        "streams", CONF_VOLUME_NORMALIZATION_RADIO
+    )
+    if streamdetails.media_type == MediaType.RADIO and radio_norm_pref == "disabled":
+        streamdetails.enable_volume_normalization = False
+    elif streamdetails.media_type == MediaType.RADIO and radio_norm_pref == "dynamic":
+        streamdetails.force_dynamic_volume_normalization = True
+
     process_time = int((time.time() - time_start) * 1000)
     LOGGER.debug("retrieved streamdetails for %s in %s milliseconds", queue_item.uri, process_time)
     return streamdetails

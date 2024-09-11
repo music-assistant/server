@@ -70,6 +70,7 @@ CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
 CONF_PREVENT_SYNC_LEADER_OFF: Final[str] = "prevent_sync_leader_off"
 CONF_SYNCGROUP_DEFAULT_ON: Final[str] = "syncgroup_default_on"
 CONF_ENABLE_ICY_METADATA: Final[str] = "enable_icy_metadata"
+CONF_VOLUME_NORMALIZATION_RADIO: Final[str] = "volume_normalization_radio"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

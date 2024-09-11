@@ -32,7 +32,6 @@ from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
-    CONF_BYPASS_NORMALIZATION_RADIO,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
     CONF_HTTP_PROFILE,
@@ -40,6 +39,7 @@ from music_assistant.constants import (
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
     CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_RADIO,
     MASS_LOGO_ONLINE,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
@@ -172,14 +172,23 @@ class StreamsController(CoreController):
                 category="advanced",
             ),
             ConfigEntry(
-                key=CONF_BYPASS_NORMALIZATION_RADIO,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                label="Bypass volume normalization for radio streams",
-                description="Radio streams are often already normalized according "
-                "to the EBU standard, so it doesn't make a lot of sense to normalize them again "
-                "in Music Assistant unless you hear big jumps in volume during playback, "
-                "such as commercials.",
+                key=CONF_VOLUME_NORMALIZATION_RADIO,
+                type=ConfigEntryType.STRING,
+                default_value="standard",
+                label="Volume normalization method to use for radio streams",
+                description="Radio streams often have varying loudness levels, especially "
+                "during announcements and commercials. \n"
+                "You can choose to enforce dynamic volume normalization to radio streams, "
+                "even if a (average) loudness measurement for the radio station exists. \n\n"
+                "Options: \n"
+                "- Disabled - do not apply volume normalization at all \n"
+                "- Force dynamic - Enforce dynamic volume levelling at all times \n"
+                "- Standard - use normalization based on previous measurement, ",
+                options=(
+                    ConfigValueOption("Disabled", "disabled"),
+                    ConfigValueOption("Force dynamic", "dynamic"),
+                    ConfigValueOption("Standard", "standard"),
+                ),
                 category="advanced",
             ),
         )
@@ -760,14 +769,8 @@ class StreamsController(CoreController):
         filter_params = []
         extra_input_args = []
         # handle volume normalization
-        if streamdetails.enable_volume_normalization:
-            if streamdetails.target_loudness is not None and streamdetails.loudness is not None:
-                # volume normalization with known loudness measurement
-                # apply fixed volume/gain correction
-                gain_correct = streamdetails.target_loudness - streamdetails.loudness
-                gain_correct = round(gain_correct, 2)
-                filter_params.append(f"volume={gain_correct}dB")
-            elif streamdetails.target_loudness is not None:
+        if streamdetails.enable_volume_normalization and streamdetails.target_loudness is not None:
+            if streamdetails.force_dynamic_volume_normalization or streamdetails.loudness is None:
                 # volume normalization with unknown loudness measurement
                 # use loudnorm filter in dynamic mode
                 # which also collects the measurement on the fly during playback
@@ -777,6 +780,12 @@ class StreamsController(CoreController):
                 )
                 filter_rule += ":print_format=json"
                 filter_params.append(filter_rule)
+            else:
+                # volume normalization with known loudness measurement
+                # apply fixed volume/gain correction
+                gain_correct = streamdetails.target_loudness - streamdetails.loudness
+                gain_correct = round(gain_correct, 2)
+                filter_params.append(f"volume={gain_correct}dB")
         if streamdetails.stream_type == StreamType.CUSTOM:
             audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
                 streamdetails,
