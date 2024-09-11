@@ -89,6 +89,7 @@ DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
 DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
+DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 
 
 # all other

@@ -42,6 +42,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_LOUDNESS_MEASUREMENTS,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
@@ -665,43 +666,38 @@ class MusicController(CoreController):
         item_id: str,
         provider_instance_id_or_domain: str,
         loudness: float,
-        album_loudness: bool = False,
+        album_loudness: float | None = None,
         media_type: MediaType = MediaType.TRACK,
     ) -> None:
         """Store (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
-        column = "loudness_album" if album_loudness else "loudness"
-        await self.database.execute(
-            f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET {column} = {loudness} "
-            f"WHERE provider_item_id = '{item_id}' AND "
-            f"media_type = '{media_type.value}' AND "
-            f"(provider_instance = '{provider_instance_id_or_domain}' OR "
-            f"provider_instance = '{provider_instance_id_or_domain}')"
-        )
+        values = {
+            "item_id": item_id,
+            "media_type": media_type.value,
+            "provider": provider_instance_id_or_domain,
+            "loudness": loudness,
+        }
+        if album_loudness is not None:
+            values["loudness_album"] = album_loudness
+        await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
 
     async def get_loudness(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        prefer_album_loudness: bool = False,
         media_type: MediaType = MediaType.TRACK,
-    ) -> float | None:
+    ) -> tuple[float, float] | None:
         """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
-        column = "loudness_album" if prefer_album_loudness else "loudness"
-        for row in await self.database.get_rows_from_query(
-            f"SELECT {column} FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-            f"WHERE provider_item_id = '{item_id}' AND "
-            f"media_type = '{media_type.value}' AND "
-            f"(provider_instance = '{provider_instance_id_or_domain}' OR "
-            f"provider_instance = '{provider_instance_id_or_domain}')",
-        ):
-            if row[column] == inf or row[column] == -inf:
-                continue
-            return row[column]
-        if prefer_album_loudness:
-            # try again without preferring album loudness
-            return await self.get_loudness(
-                item_id, provider_instance_id_or_domain, False, media_type
-            )
+        db_row = await self.database.get_row(
+            DB_TABLE_LOUDNESS_MEASUREMENTS,
+            {
+                "item_id": item_id,
+                "media_type": media_type.value,
+                "provider": provider_instance_id_or_domain,
+            },
+        )
+        if db_row and db_row["loudness"] != inf and db_row["loudness"] != -inf:
+            return (db_row["loudness"], db_row["loudness_album"])
+
         return None
 
     async def mark_item_played(
@@ -1097,21 +1093,20 @@ class MusicController(CoreController):
                     raise
 
         if prev_version <= 8:
-            # migrate loudness measurement --> provider_mappings
-            await self.database.execute(
-                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN loudness REAL"
-            )
-            await self.database.execute(
-                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN loudness_album REAL"
-            )
+            # migrate track_loudness --> loudness_measurements
             async for db_row in self.database.iter_items("track_loudness"):
                 if db_row["integrated"] == inf or db_row["integrated"] == -inf:
                     continue
-                await self.database.execute(
-                    f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET loudness = {db_row['integrated']} "
-                    f"WHERE provider_item_id = '{db_row['item_id']}' AND "
-                    f"(provider_instance = '{db_row['provider']}' OR "
-                    f"provider_instance = '{db_row['provider']}')"
+                if db_row["provider"] in ("radiobrowser", "tunein"):
+                    continue
+                await self.database.insert_or_replace(
+                    DB_TABLE_LOUDNESS_MEASUREMENTS,
+                    {
+                        "item_id": db_row["item_id"],
+                        "media_type": "track",
+                        "provider": db_row["provider"],
+                        "loudness": db_row["integrated"],
+                    },
                 )
             await self.database.execute("DROP TABLE IF EXISTS track_loudness")
 
@@ -1253,8 +1248,6 @@ class MusicController(CoreController):
             [available] BOOLEAN DEFAULT 1,
             [url] text,
             [audio_format] json,
-            [loudness] REAL,
-            [loudness_album] REAL,
             [details] TEXT,
             UNIQUE(media_type, provider_instance, provider_item_id)
             );"""
@@ -1277,6 +1270,18 @@ class MusicController(CoreController):
             UNIQUE(album_id, artist_id)
             );"""
         )
+
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [loudness] REAL,
+                    [loudness_album] REAL,
+                    UNIQUE(media_type,item_id,provider));"""
+        )
+
         await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
@@ -1372,6 +1377,11 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
             f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
+        )
+        # index on loudness measurements table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}_idx "
+            f"on {DB_TABLE_LOUDNESS_MEASUREMENTS}(media_type,item_id,provider);"
         )
         await self.database.commit()
 

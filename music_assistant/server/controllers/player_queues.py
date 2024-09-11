@@ -787,6 +787,8 @@ class PlayerQueuesController(CoreController):
             and (next_item := self.get_item(queue_id, next_index))
             and (
                 queue_item.media_item
+                and hasattr(queue_item.media_item, "album")
+                and hasattr(next_item.media_item, "album")
                 and queue_item.media_item.album
                 and next_item.media_item
                 and next_item.media_item.album

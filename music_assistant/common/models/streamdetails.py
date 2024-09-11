@@ -44,7 +44,10 @@ class StreamDetails(DataClassDictMixin):
     # the fields below will be set/controlled by the streamcontroller
     seek_position: int = 0
     fade_in: bool = False
+    enable_volume_normalization: bool = False
     loudness: float | None = None
+    loudness_album: float | None = None
+    prefer_album_loudness: bool = False
     queue_id: str | None = None
     seconds_streamed: float | None = None
     target_loudness: float | None = None

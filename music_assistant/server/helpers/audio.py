@@ -34,7 +34,6 @@ from music_assistant.common.models.errors import (
 from music_assistant.common.models.media_items import AudioFormat, ContentType
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
-    CONF_BYPASS_NORMALIZATION_RADIO,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
@@ -362,9 +361,6 @@ async def get_stream_details(
         # get streamdetails from provider
         try:
             streamdetails: StreamDetails = await music_prov.get_stream_details(prov_media.item_id)
-            streamdetails.loudness = (
-                prov_media.loudness_album if prefer_album_loudness else prov_media.loudness
-            )
         except MusicAssistantError as err:
             LOGGER.warning(str(err))
         else:
@@ -393,22 +389,16 @@ async def get_stream_details(
     if not streamdetails.duration:
         streamdetails.duration = queue_item.duration
     # handle volume normalization details
-    if not streamdetails.loudness:
-        streamdetails.loudness = await mass.music.get_loudness(
-            streamdetails.item_id,
-            streamdetails.provider,
-            prefer_album_loudness=prefer_album_loudness,
-            media_type=queue_item.media_type,
-        )
-    player_settings = await mass.config.get_player_config(streamdetails.queue_id)
-    if (
-        not player_settings.get_value(CONF_VOLUME_NORMALIZATION)
-        or (streamdetails.media_type == MediaType.RADIO or not streamdetails.duration)
-        and await mass.config.get_core_config_value("streams", CONF_BYPASS_NORMALIZATION_RADIO)
+    if result := await mass.music.get_loudness(
+        streamdetails.item_id,
+        streamdetails.provider,
+        media_type=queue_item.media_type,
     ):
-        streamdetails.target_loudness = None
-    else:
-        streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
+        streamdetails.loudness, streamdetails.loudness_album = result
+    streamdetails.prefer_album_loudness = prefer_album_loudness
+    player_settings = await mass.config.get_player_config(streamdetails.queue_id)
+    streamdetails.enable_volume_normalization = player_settings.get_value(CONF_VOLUME_NORMALIZATION)
+    streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
     process_time = int((time.time() - time_start) * 1000)
     LOGGER.debug("retrieved streamdetails for %s in %s milliseconds", queue_item.uri, process_time)
     return streamdetails
@@ -445,6 +435,12 @@ async def get_media_stream(
             logger=logger,
         ) as ffmpeg_proc:
             async for chunk in ffmpeg_proc.iter_chunked(pcm_format.pcm_sample_size):
+                # for radio streams we just yield all chunks directly
+                if streamdetails.media_type == MediaType.RADIO:
+                    yield chunk
+                    bytes_sent += len(chunk)
+                    continue
+
                 chunk_number += 1
                 # determine buffer size dynamically
                 if chunk_number < 5 and strip_silence_begin:
@@ -530,11 +526,11 @@ async def get_media_stream(
 
         # parse loudnorm data if we have that collected
         required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
-        if not streamdetails.loudness and (finished or (seconds_streamed >= required_seconds)):
+        if streamdetails.loudness is None and (finished or (seconds_streamed >= required_seconds)):
             loudness_details = parse_loudnorm(" ".join(ffmpeg_proc.log_history))
             if loudness_details is not None:
                 logger.debug(
-                    "Loudness measurement for %s: %s",
+                    "Loudness measurement for %s: %s dB",
                     streamdetails.uri,
                     loudness_details,
                 )

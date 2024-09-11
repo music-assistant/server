@@ -760,19 +760,23 @@ class StreamsController(CoreController):
         filter_params = []
         extra_input_args = []
         # handle volume normalization
-        if streamdetails.target_loudness is not None and streamdetails.loudness is not None:
-            # volume normalization with known loudness measurement
-            gain_correct = streamdetails.target_loudness - streamdetails.loudness
-            gain_correct = round(gain_correct, 2)
-            filter_params.append(f"volume={gain_correct}dB")
-        elif streamdetails.target_loudness is not None:
-            # volume normalization with unknown loudness measurement
-            # use loudnorm filter in dynamic mode
-            # which also collects the measurement on the fly during playback
-            # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
-            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=10.0:offset=0.0"
-            filter_rule += ":print_format=json"
-            filter_params.append(filter_rule)
+        if streamdetails.enable_volume_normalization:
+            if streamdetails.target_loudness is not None and streamdetails.loudness is not None:
+                # volume normalization with known loudness measurement
+                # apply fixed volume/gain correction
+                gain_correct = streamdetails.target_loudness - streamdetails.loudness
+                gain_correct = round(gain_correct, 2)
+                filter_params.append(f"volume={gain_correct}dB")
+            elif streamdetails.target_loudness is not None:
+                # volume normalization with unknown loudness measurement
+                # use loudnorm filter in dynamic mode
+                # which also collects the measurement on the fly during playback
+                # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
+                filter_rule = (
+                    f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=10.0:offset=0.0"
+                )
+                filter_rule += ":print_format=json"
+                filter_params.append(filter_rule)
         if streamdetails.stream_type == StreamType.CUSTOM:
             audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
                 streamdetails,
