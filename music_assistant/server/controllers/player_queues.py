@@ -1295,10 +1295,10 @@ class PlayerQueuesController(CoreController):
         for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
             ctrl = self.mass.music.get_controller(radio_item.media_type)
             available_base_tracks += [
-                t
-                for t in await ctrl.dynamic_base_tracks(radio_item.item_id, radio_item.provider)
+                track
+                for track in await ctrl.dynamic_base_tracks(radio_item.item_id, radio_item.provider)
                 # Avoid duplicate base tracks
-                if t not in available_base_tracks
+                if track not in available_base_tracks
             ]
         # Sample tracks from the base tracks, which will be used to calculate the dynamic ones
         base_tracks = random.sample(
@@ -1307,14 +1307,14 @@ class PlayerQueuesController(CoreController):
         # Use a set to avoid duplicate dynamic tracks
         dynamic_tracks: set[Track] = set()
         track_ctrl = self.mass.music.get_controller(MediaType.TRACK)
-        # Use base tracks + Trackcontroller to obtain similar tracks
+        # Use base tracks + Trackcontroller to obtain similar tracks for every base Track
         for base_track in base_tracks:
             [
-                dynamic_tracks.add(t)
-                for t in await track_ctrl.get_provider_similar_tracks(
+                dynamic_tracks.add(track)
+                for track in await track_ctrl.get_provider_similar_tracks(
                     base_track.item_id, base_track.provider
                 )
-                if t not in base_tracks
+                if track not in base_tracks
             ]
             if len(dynamic_tracks) >= 50:
                 break
