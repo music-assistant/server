@@ -412,7 +412,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
     ):
-        """Get the list of base tracks from the controller used to calculated the dynamic radio."""
+        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         assert provider_instance_id_or_domain != "library"
         return await self.get_provider_artist_toptracks(
             item_id,

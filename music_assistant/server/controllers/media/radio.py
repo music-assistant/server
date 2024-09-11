@@ -109,7 +109,7 @@ class RadioController(MediaControllerBase[Radio]):
         provider_instance_id_or_domain: str,
         limit: int = 25,
     ) -> list[Track]:
-        """Generate a dynamic list of tracks based on the item's content."""
+        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         msg = "Dynamic tracks not supported for Radio MediaItem"
         raise NotImplementedError(msg)
 

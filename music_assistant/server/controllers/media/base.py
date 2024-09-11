@@ -689,7 +689,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> list[Track]:
-        """Get the list of base tracks from the controller used to calculated the dynamic radio."""
+        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
 
     @abstractmethod
     async def _get_dynamic_tracks(self, media_item: ItemCls, limit: int = 25) -> list[Track]:

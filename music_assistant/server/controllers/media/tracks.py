@@ -399,9 +399,8 @@ class TracksController(MediaControllerBase[Track]):
         item_id: str,
         provider_instance_id_or_domain: str,
     ):
-        """Get the list of base tracks from the controller used to calculated the dynamic radio."""
+        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         assert provider_instance_id_or_domain != "library"
-        # Grab similar tracks from the music provider
         return [await self.get(item_id, provider_instance_id_or_domain)]
 
     async def _get_dynamic_tracks(
