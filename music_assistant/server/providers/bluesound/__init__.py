@@ -169,8 +169,8 @@ class BluesoundPlayer:
 
         if self.status.state == "stream":
             mass_active = self.mass.streams.base_url
-            self.logger.debug(mass_active)
-            self.logger.debug(self.status.stream_url)
+            # self.logger.debug(mass_active)
+            # self.logger.debug(self.status.stream_url)
         if self.status.state == "stream" and self.status.input_id == "input0":
             self.mass_player.active_source = SOURCE_LINE_IN
         elif self.status.state == "stream" and self.status.input_id == "Airplay":
@@ -414,9 +414,10 @@ class BluesoundPlayerProvider(PlayerProvider):
         mass_player = self.mass.players.get(player_id)
         if bluos_player := self.bluos_players[player_id]:
             await bluos_player.client.play_url(media.uri, timeout=timeout)
-            # Update media info then optimistically override playback state
+            # Update media info then optimistically override playback state and source
             await bluos_player.update_attributes()
             mass_player.state = PLAYBACK_STATE_MAP["play"]
+            mass_player.active_source = None
             self.mass.players.update(player_id)
 
         mass_player = self.mass.players.get(player_id)
