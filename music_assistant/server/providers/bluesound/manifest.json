@@ -8,4 +8,3 @@
     "documentation": "Link to the documentation on the music-assistant.io helppage (may be added later).",
     "mdns_discovery": ["_musc._tcp.local."]
 }
-  
