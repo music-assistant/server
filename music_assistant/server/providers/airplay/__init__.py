@@ -110,6 +110,11 @@ CONF_CREDENTIALS = "credentials"
 CACHE_KEY_PREV_VOLUME = "airplay_prev_volume"
 FALLBACK_VOLUME = 20
 
+AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_F32LE,
+    sample_rate=44100,
+    bit_depth=32,
+)
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
@@ -674,23 +679,15 @@ class AirplayProvider(PlayerProvider):
                 ugp_stream = ugp_provider.streams[media.queue_id]
                 input_format = ugp_stream.output_format
                 audio_source = ugp_stream.subscribe()
-            elif media.media_type == MediaType.RADIO and media.queue_id and media.queue_item_id:
-                # radio stream - consume media stream directly
-                input_format = AIRPLAY_PCM_FORMAT
-                queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
-                audio_source = self.mass.streams.get_media_stream(
-                    streamdetails=queue_item.streamdetails,
-                    pcm_format=AIRPLAY_PCM_FORMAT,
-                )
             elif media.queue_id and media.queue_item_id:
                 # regular queue (flow) stream request
-                input_format = AIRPLAY_PCM_FORMAT
+                input_format = AIRPLAY_FLOW_PCM_FORMAT
                 audio_source = self.mass.streams.get_flow_stream(
                     queue=self.mass.player_queues.get(media.queue_id),
                     start_queue_item=self.mass.player_queues.get_item(
                         media.queue_id, media.queue_item_id
                     ),
-                    pcm_format=AIRPLAY_PCM_FORMAT,
+                    pcm_format=input_format,
                 )
             else:
                 # assume url or some other direct path

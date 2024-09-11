@@ -19,6 +19,7 @@ from aiohttp import web
 
 from music_assistant.common.helpers.util import get_ip, select_free_port, try_parse_bool
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -34,11 +35,11 @@ from music_assistant.constants import (
     CONF_BYPASS_NORMALIZATION_RADIO,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
-    CONF_ENABLE_ICY_METADATA,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
+    CONF_VOLUME_NORMALIZATION,
     MASS_LOGO_ONLINE,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
@@ -326,10 +327,19 @@ class StreamsController(CoreController):
             queue.display_name,
         )
         self.mass.player_queues.track_loaded_in_buffer(queue_id, queue_item_id)
+
+        # pick pcm format based on the streamdetails and player capabilities
+        if self.mass.config.get_raw_player_config_value(queue_id, CONF_VOLUME_NORMALIZATION, True):
+            # prefer f32 when volume normalization is enabled
+            bit_depth = 32
+            floating_point = True
+        else:
+            bit_depth = queue_item.streamdetails.audio_format.bit_depth
+            floating_point = False
         pcm_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(output_format.bit_depth),
+            content_type=ContentType.from_bit_depth(bit_depth, floating_point),
             sample_rate=queue_item.streamdetails.audio_format.sample_rate,
-            bit_depth=queue_item.streamdetails.audio_format.bit_depth,
+            bit_depth=bit_depth,
             channels=2,
         )
         chunk_num = 0
@@ -384,10 +394,12 @@ class StreamsController(CoreController):
         )
         # work out ICY metadata support
         icy_preference = self.mass.config.get_raw_player_config_value(
-            queue_id, CONF_ENABLE_ICY_METADATA, "basic"
+            queue_id,
+            CONF_ENTRY_ENABLE_ICY_METADATA.key,
+            CONF_ENTRY_ENABLE_ICY_METADATA.default_value,
         )
         enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
-        icy_meta_interval = 16384
+        icy_meta_interval = 256000 if icy_preference == "full" else 16384
 
         # prepare request, add some DLNA/UPNP compatible headers
         http_profile: str = await self.mass.config.get_player_config_value(
@@ -639,8 +651,7 @@ class StreamsController(CoreController):
                     crossfade_part = await crossfade_pcm_parts(
                         fadein_part,
                         last_fadeout_part,
-                        pcm_format.bit_depth,
-                        pcm_format.sample_rate,
+                        pcm_format=pcm_format,
                     )
                     # send crossfade_part (as one big chunk)
                     bytes_written += len(crossfade_part)
@@ -881,9 +892,17 @@ class StreamsController(CoreController):
             if sample_rate in supported_sample_rates:
                 output_sample_rate = sample_rate
                 break
-        output_bit_depth = min(24, player_max_bit_depth)
+        if self.mass.config.get_raw_player_config_value(
+            player.player_id, CONF_VOLUME_NORMALIZATION, True
+        ):
+            # prefer f32 when volume normalization is enabled
+            output_bit_depth = 32
+            floating_point = True
+        else:
+            output_bit_depth = min(24, player_max_bit_depth)
+            floating_point = False
         return AudioFormat(
-            content_type=ContentType.from_bit_depth(output_bit_depth),
+            content_type=ContentType.from_bit_depth(output_bit_depth, floating_point),
             sample_rate=output_sample_rate,
             bit_depth=output_bit_depth,
             channels=2,

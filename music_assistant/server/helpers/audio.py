@@ -208,12 +208,10 @@ class FFMpeg(AsyncProcess):
 async def crossfade_pcm_parts(
     fade_in_part: bytes,
     fade_out_part: bytes,
-    bit_depth: int,
-    sample_rate: int,
+    pcm_format: AudioFormat,
 ) -> bytes:
     """Crossfade two chunks of pcm/raw audio using ffmpeg."""
-    sample_size = int(sample_rate * (bit_depth / 8) * 2)
-    fmt = ContentType.from_bit_depth(bit_depth)
+    sample_size = pcm_format.pcm_sample_size
     # calculate the fade_length from the smallest chunk
     fade_length = min(len(fade_in_part), len(fade_out_part)) / sample_size
     fadeoutfile = create_tempfile()
@@ -227,24 +225,24 @@ async def crossfade_pcm_parts(
         "quiet",
         # fadeout part (as file)
         "-acodec",
-        fmt.name.lower(),
+        pcm_format.content_type.name.lower(),
         "-f",
-        fmt,
+        pcm_format.content_type.value,
         "-ac",
-        "2",
+        str(pcm_format.channels),
         "-ar",
-        str(sample_rate),
+        str(pcm_format.sample_rate),
         "-i",
         fadeoutfile.name,
         # fade_in part (stdin)
         "-acodec",
-        fmt.name.lower(),
+        pcm_format.content_type.name.lower(),
         "-f",
-        fmt,
+        pcm_format.content_type.value,
         "-ac",
-        "2",
+        str(pcm_format.channels),
         "-ar",
-        str(sample_rate),
+        str(pcm_format.sample_rate),
         "-i",
         "-",
         # filter args
@@ -252,7 +250,7 @@ async def crossfade_pcm_parts(
         f"[0][1]acrossfade=d={fade_length}",
         # output args
         "-f",
-        fmt,
+        pcm_format.content_type.value,
         "-",
     ]
     _returncode, crossfaded_audio, _stderr = await communicate(args, fade_in_part)
@@ -278,22 +276,20 @@ async def crossfade_pcm_parts(
 async def strip_silence(
     mass: MusicAssistant,  # noqa: ARG001
     audio_data: bytes,
-    sample_rate: int,
-    bit_depth: int,
+    pcm_format: AudioFormat,
     reverse: bool = False,
 ) -> bytes:
     """Strip silence from begin or end of pcm audio using ffmpeg."""
-    fmt = ContentType.from_bit_depth(bit_depth)
     args = ["ffmpeg", "-hide_banner", "-loglevel", "quiet"]
     args += [
         "-acodec",
-        fmt.name.lower(),
+        pcm_format.content_type.name.lower(),
         "-f",
-        fmt,
+        pcm_format.content_type.value,
         "-ac",
-        "2",
+        str(pcm_format.channels),
         "-ar",
-        str(sample_rate),
+        str(pcm_format.sample_rate),
         "-i",
         "-",
     ]
@@ -309,14 +305,13 @@ async def strip_silence(
             "atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02",
         ]
     # output args
-    args += ["-f", fmt, "-"]
+    args += ["-f", pcm_format.content_type.value, "-"]
     _returncode, stripped_data, _stderr = await communicate(args, audio_data)
 
     # return stripped audio
     bytes_stripped = len(audio_data) - len(stripped_data)
     if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
-        pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
-        seconds_stripped = round(bytes_stripped / pcm_sample_size, 2)
+        seconds_stripped = round(bytes_stripped / pcm_format.pcm_sample_size, 2)
         location = "end" if reverse else "begin"
         LOGGER.log(
             VERBOSE_LOG_LEVEL,
@@ -470,7 +465,7 @@ async def get_media_stream(
                 if chunk_number == 5 and strip_silence_begin:
                     # strip silence from begin of audio
                     chunk = await strip_silence(  # noqa: PLW2901
-                        mass, buffer, pcm_format.sample_rate, pcm_format.bit_depth
+                        mass, buffer, pcm_format=pcm_format
                     )
                     bytes_sent += len(chunk)
                     yield chunk
@@ -489,8 +484,7 @@ async def get_media_stream(
                 buffer = await strip_silence(
                     mass,
                     buffer,
-                    sample_rate=pcm_format.sample_rate,
-                    bit_depth=pcm_format.bit_depth,
+                    pcm_format=pcm_format,
                     reverse=True,
                 )
             # send remaining bytes in buffer

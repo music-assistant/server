@@ -371,7 +371,9 @@ class SlimprotoProvider(PlayerProvider):
 
         # this is a syncgroup, we need to handle this with a multi client stream
         master_audio_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(24), sample_rate=48000, bit_depth=24
+            content_type=ContentType.PCM_F32LE,
+            sample_rate=48000,
+            bit_depth=32,
         )
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
