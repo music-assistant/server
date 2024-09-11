@@ -1146,11 +1146,11 @@ class PlayerQueuesController(CoreController):
         # enqueue the next track as soon as the player reports
         # it has started buffering the given queue item
         task_id = f"enqueue_next_{queue_id}"
-        self.mass.call_later(0.2, self._enqueue_next(queue, item_id), task_id=task_id)
+        self.mass.call_later(0.2, self._enqueue_next, queue, item_id, task_id=task_id)
         # we repeat this task once more after 2 seconds to ensure the player
         # received the command as it may be missed at the first attempt
         # due to a race condition
-        self.mass.call_later(2, self._enqueue_next(queue, item_id), task_id=task_id)
+        self.mass.call_later(2, self._enqueue_next, queue, item_id, task_id=task_id)
 
     # Main queue manipulation methods
 
