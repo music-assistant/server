@@ -6,13 +6,11 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, TypedDict
 
-# TODO fix input and presets
-# from pyblu import Input, Preset
 from pyblu import Player as BluosPlayer
 from pyblu import Status, SyncStatus
 from zeroconf import ServiceStateChange
 
-from music_assistant.common.models.config_entries import (  # PlayerConfig,
+from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_ENABLE_ICY_METADATA,
@@ -22,7 +20,7 @@ from music_assistant.common.models.config_entries import (  # PlayerConfig,
     ConfigEntry,
     ConfigValueType,
 )
-from music_assistant.common.models.enums import (  # ConfigEntryType,
+from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
@@ -44,12 +42,6 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
-
-# from music_assistant.constants import (
-#     CONF_IP_ADDRESS,
-#     CONF_PORT,
-#     VERBOSE_LOG_LEVEL,
-# )
 
 PLAYER_FEATURES_BASE = {
     PlayerFeature.SYNC,
@@ -77,27 +69,16 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize BluOS instance with given configuration."""
-    # setup is called when the user wants to setup a new provider instance.
-    # you are free to do any preflight checks here and but you must return
-    #  an instance of the provider.
     return BluesoundPlayerProvider(mass, manifest, config)
 
 
 async def get_config_entries(
-    # not used yet, ruff doesn't like that
     mass: MusicAssistant,
     instance_id: str | None = None,
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Set up legacy BluOS devices."""
-    # mass.logger.debug("loading entries")
-    # Config Entries are used to configure the Player Provider if needed.
-    # See the models of ConfigEntry and ConfigValueType for more information what is supported.
-    # The ConfigEntry is a dataclass that represents a single configuration entry.
-    # The ConfigValueType is an Enum that represents the type of value that
-    # can be stored in a ConfigEntry.
-    # If your provider does not need any configuration, you can return an empty tuple.
     # ruff: noqa: ARG001
     return ()
 
@@ -237,10 +218,6 @@ class BluesoundPlayerProvider(PlayerProvider):
 
     bluos_players: dict[str, BluesoundPlayer]
 
-    def __init__(self, *args, **kwargs):
-        """Initialize the BluOS Provider."""
-        super().__init__(*args, **kwargs)
-        self.bluos_players = {}
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
