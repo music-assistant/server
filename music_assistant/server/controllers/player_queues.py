@@ -1290,28 +1290,36 @@ class PlayerQueuesController(CoreController):
         assert queue.radio_source, "No Radio item(s) loaded/active!"
         available_base_tracks: list[Track] = []
         base_track_sample_size = 5
-
         # Grab all the available base tracks based on the selected source items.
         # shuffle the source items, just in case
         for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
             ctrl = self.mass.music.get_controller(radio_item.media_type)
-            available_base_tracks += await ctrl.dynamic_base_tracks(
-                radio_item.item_id, radio_item.provider
-            )
+            available_base_tracks += [
+                t
+                for t in await ctrl.dynamic_base_tracks(radio_item.item_id, radio_item.provider)
+                # Avoid duplicate base tracks
+                if t not in available_base_tracks
+            ]
         # Sample tracks from the base tracks, which will be used to calculate the dynamic ones
         base_tracks = random.sample(
             available_base_tracks, min(base_track_sample_size, len(available_base_tracks))
         )
-        dynamic_tracks: list[Track] = []
+        # Use a set to avoid duplicate dynamic tracks
+        dynamic_tracks: set[Track] = set()
         track_ctrl = self.mass.music.get_controller(MediaType.TRACK)
         # Use base tracks + Trackcontroller to obtain similar tracks
         for base_track in base_tracks:
-            dynamic_tracks += await track_ctrl.get_provider_similar_tracks(
-                base_track.item_id, base_track.provider
-            )
+            [
+                dynamic_tracks.add(t)
+                for t in await track_ctrl.get_provider_similar_tracks(
+                    base_track.item_id, base_track.provider
+                )
+                if t not in base_tracks
+            ]
             if len(dynamic_tracks) >= 50:
                 break
         queue_tracks: list[Track] = []
+        dynamic_tracks = list(dynamic_tracks)
         # Only include the sampled base tracks when the radio mode is first initialized
         if is_initial_radio_mode:
             queue_tracks += [base_tracks[0]]
