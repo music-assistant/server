@@ -103,13 +103,13 @@ class RadioController(MediaControllerBase[Radio]):
         await self._set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    async def _get_provider_dynamic_tracks(
+    async def _get_provider_dynamic_base_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
         limit: int = 25,
     ) -> list[Track]:
-        """Generate a dynamic list of tracks based on the item's content."""
+        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         msg = "Dynamic tracks not supported for Radio MediaItem"
         raise NotImplementedError(msg)
 

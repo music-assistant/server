@@ -42,6 +42,7 @@ from music_assistant.constants import (
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.audio import get_stream_details
+from music_assistant.server.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -307,6 +308,10 @@ class PlayerQueuesController(CoreController):
         - start_item: Optional item to start the playlist or album from.
         """
         # ruff: noqa: PLR0915,PLR0912
+        # we use a contextvar to bypass the throttler for this asyncio task/context
+        # this makes sure that playback has priority over other requests that may be
+        # happening in the background
+        BYPASS_THROTTLER.set(True)
         queue = self._queues[queue_id]
         # always fetch the underlying player so we can raise early if its not available
         queue_player = self.mass.players.get(queue_id, True)
@@ -424,7 +429,7 @@ class PlayerQueuesController(CoreController):
             queue.radio_source += radio_source
         # Use collected media items to calculate the radio if radio mode is on
         if radio_mode:
-            tracks = await self._get_radio_tracks(queue_id)
+            tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=True)
 
         # only add valid/available items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available]
@@ -1252,7 +1257,7 @@ class PlayerQueuesController(CoreController):
         if getattr(self, debounce_key, None):
             return
         setattr(self, debounce_key, True)
-        tracks = await self._get_radio_tracks(queue_id)
+        tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
         # fill queue - filter out unavailable items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
         self.load(
@@ -1277,20 +1282,58 @@ class PlayerQueuesController(CoreController):
                 media=self.player_media_from_queue_item(next_item, queue.flow_mode),
             )
 
-    async def _get_radio_tracks(self, queue_id: str) -> list[MediaItemType]:
+    async def _get_radio_tracks(
+        self, queue_id: str, is_initial_radio_mode: bool = False
+    ) -> list[Track]:
         """Call the registered music providers for dynamic tracks."""
         queue = self._queues[queue_id]
         assert queue.radio_source, "No Radio item(s) loaded/active!"
-        tracks: list[MediaItemType] = []
-        # grab dynamic tracks for (all) source items
+        available_base_tracks: list[Track] = []
+        base_track_sample_size = 5
+        # Grab all the available base tracks based on the selected source items.
         # shuffle the source items, just in case
         for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
             ctrl = self.mass.music.get_controller(radio_item.media_type)
-            tracks += await ctrl.dynamic_tracks(radio_item.item_id, radio_item.provider)
-            # make sure we do not grab too much items
-            if len(tracks) >= 50:
+            available_base_tracks += [
+                track
+                for track in await ctrl.dynamic_base_tracks(radio_item.item_id, radio_item.provider)
+                # Avoid duplicate base tracks
+                if track not in available_base_tracks
+            ]
+        # Sample tracks from the base tracks, which will be used to calculate the dynamic ones
+        base_tracks = random.sample(
+            available_base_tracks, min(base_track_sample_size, len(available_base_tracks))
+        )
+        # Use a set to avoid duplicate dynamic tracks
+        dynamic_tracks: set[Track] = set()
+        track_ctrl = self.mass.music.get_controller(MediaType.TRACK)
+        # Use base tracks + Trackcontroller to obtain similar tracks for every base Track
+        for base_track in base_tracks:
+            [
+                dynamic_tracks.add(track)
+                for track in await track_ctrl.get_provider_similar_tracks(
+                    base_track.item_id, base_track.provider
+                )
+                if track not in base_tracks
+            ]
+            if len(dynamic_tracks) >= 50:
                 break
-        return tracks
+        queue_tracks: list[Track] = []
+        dynamic_tracks = list(dynamic_tracks)
+        # Only include the sampled base tracks when the radio mode is first initialized
+        if is_initial_radio_mode:
+            queue_tracks += [base_tracks[0]]
+            # Exhaust base tracks with the pattern of BDDBDDBDD (1 base track + 2 dynamic tracks)
+            if len(base_tracks) > 1:
+                for base_track in base_tracks[1:]:
+                    queue_tracks += [base_track]
+                    queue_tracks += random.sample(dynamic_tracks, 2)
+        # Add dynamic tracks to the queue, make sure to exclude already picked tracks
+        remaining_dynamic_tracks = [t for t in dynamic_tracks if t not in queue_tracks]
+        queue_tracks += random.sample(
+            remaining_dynamic_tracks, min(len(remaining_dynamic_tracks), 25)
+        )
+        return queue_tracks
 
     async def get_artist_tracks(self, artist: Artist) -> list[Track]:
         """Return tracks for given artist, based on user preference."""

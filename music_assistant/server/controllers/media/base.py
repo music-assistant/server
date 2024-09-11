@@ -642,13 +642,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             with suppress(AssertionError):
                 await self.remove_item_from_library(db_id)
 
-    async def dynamic_tracks(
+    async def dynamic_base_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        limit: int = 25,
     ) -> list[Track]:
-        """Return a dynamic list of tracks based on the given item."""
+        """Return a list of base tracks to calculate a list of dynamic tracks."""
         ref_item = await self.get(item_id, provider_instance_id_or_domain)
         for prov_mapping in ref_item.provider_mappings:
             prov = self.mass.get_provider(prov_mapping.provider_instance)
@@ -656,10 +655,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 continue
             if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
                 continue
-            return await self._get_provider_dynamic_tracks(
+            return await self._get_provider_dynamic_base_tracks(
                 prov_mapping.item_id,
                 prov_mapping.provider_instance,
-                limit=limit,
             )
         # Fallback to the default implementation
         return await self._get_dynamic_tracks(ref_item)
@@ -686,13 +684,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """
 
     @abstractmethod
-    async def _get_provider_dynamic_tracks(
+    async def _get_provider_dynamic_base_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        limit: int = 25,
     ) -> list[Track]:
-        """Generate a dynamic list of tracks based on the item's content."""
+        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
 
     @abstractmethod
     async def _get_dynamic_tracks(self, media_item: ItemCls, limit: int = 25) -> list[Track]:

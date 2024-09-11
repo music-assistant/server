@@ -379,21 +379,29 @@ class TracksController(MediaControllerBase[Track]):
             )
         return matches
 
-    async def _get_provider_dynamic_tracks(
+    async def get_provider_similar_tracks(
+        self, item_id: str, provider_instance_id_or_domain: str, limit: int = 25
+    ):
+        """Get a list of similar tracks from the provider, based on the track."""
+        ref_item = await self.get(item_id, provider_instance_id_or_domain)
+        for prov_mapping in ref_item.provider_mappings:
+            prov = self.mass.get_provider(prov_mapping.provider_instance)
+            if prov is None:
+                continue
+            if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
+                continue
+            # Grab similar tracks from the music provider
+            return await prov.get_similar_tracks(prov_track_id=prov_mapping.item_id, limit=limit)
+        return []
+
+    async def _get_provider_dynamic_base_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        limit: int = 25,
     ):
-        """Generate a dynamic list of tracks based on the track."""
+        """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         assert provider_instance_id_or_domain != "library"
-        prov = self.mass.get_provider(provider_instance_id_or_domain)
-        if prov is None:
-            return []
-        if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
-            return []
-        # Grab similar tracks from the music provider
-        return await prov.get_similar_tracks(prov_track_id=item_id, limit=limit)
+        return [await self.get(item_id, provider_instance_id_or_domain)]
 
     async def _get_dynamic_tracks(
         self,
