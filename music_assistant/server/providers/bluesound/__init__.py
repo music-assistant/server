@@ -46,7 +46,6 @@ if TYPE_CHECKING:
 PLAYER_FEATURES_BASE = {
     PlayerFeature.SYNC,
     PlayerFeature.VOLUME_MUTE,
-    PlayerFeature.ENQUEUE_NEXT,
     PlayerFeature.PAUSE,
 }
 
@@ -276,7 +275,6 @@ class BluesoundPlayerProvider(PlayerProvider):
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
                 PlayerFeature.PLAY_ANNOUNCEMENT,
-                PlayerFeature.ENQUEUE_NEXT,
                 PlayerFeature.PAUSE,
             ),
             needs_poll=True,
@@ -374,9 +372,15 @@ class BluesoundPlayerProvider(PlayerProvider):
     async def play_announcement(
         self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
-        """Send announcement to player."""
+        """Send announcement to BluOS player."""
+        mass_player = self.mass.players.get(player_id)
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.Input(announcement.uri, volume_level)
+            await bluos_player.client.volume(level=volume_level)
+            await bluos_player.client.play_url(announcement.uri)
+            await bluos_player.update_attributes()
+            mass_player.state = PLAYBACK_STATE_MAP["play"]
+            mass_player.active_source = None
+            self.mass.players.update(player_id)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
