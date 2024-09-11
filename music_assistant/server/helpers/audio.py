@@ -1231,7 +1231,7 @@ def get_ffmpeg_args(
             resample_filter += f":osr={output_format.sample_rate}"
 
         # bit depth conversion: apply dithering when going down to 16 bits
-        if output_format.bit_depth < input_format.bit_depth:
+        if output_format.bit_depth == 16 and input_format.bit_depth > 16:
             resample_filter += ":osf=s16:dither_method=triangular_hp"
 
         filter_params.append(resample_filter)

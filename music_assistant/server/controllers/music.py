@@ -694,9 +694,9 @@ class MusicController(CoreController):
             f"(provider_instance = '{provider_instance_id_or_domain}' OR "
             f"provider_instance = '{provider_instance_id_or_domain}')",
         ):
-            if row["loudness"] == inf or row["loudness"] == -inf:
+            if row[column] == inf or row[column] == -inf:
                 continue
-            return row["loudness"]
+            return row[column]
         if prefer_album_loudness:
             # try again without preferring album loudness
             return await self.get_loudness(
