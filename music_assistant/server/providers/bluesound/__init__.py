@@ -274,7 +274,6 @@ class BluesoundPlayerProvider(PlayerProvider):
             supported_features=(
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
-                PlayerFeature.PLAY_ANNOUNCEMENT,
                 PlayerFeature.PAUSE,
             ),
             needs_poll=True,
@@ -356,31 +355,17 @@ class BluesoundPlayerProvider(PlayerProvider):
         """Handle PLAY MEDIA for BluOS player using the provided URL."""
         mass_player = self.mass.players.get(player_id)
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.play_url(media.uri, timeout=timeout)
-            # Update media info then optimistically override playback state and source
-            await bluos_player.update_attributes()
-            mass_player.state = PLAYBACK_STATE_MAP["play"]
-            mass_player.active_source = None
-            self.mass.players.update(player_id)
-
-        mass_player = self.mass.players.get(player_id)
+            play_status = await bluos_player.client.play_url(media.uri, timeout=timeout)
+            if play_status == "stream":
+                # Update media info then optimistically override playback state and source
+                await bluos_player.update_attributes()
+                mass_player.state = PLAYBACK_STATE_MAP["play"]
+                mass_player.active_source = None
+                self.mass.players.update(player_id)
 
         # Optionally, handle the playback_state or additional logic here
-        if mass_player.state != "playing":
+        if play_status in ("PlayerUnexpectedResponseError", "PlayerUnreachableError"):
             raise PlayerCommandFailed("Failed to start playback.")
-
-    async def play_announcement(
-        self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
-    ) -> None:
-        """Send announcement to BluOS player."""
-        mass_player = self.mass.players.get(player_id)
-        if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.volume(level=volume_level)
-            await bluos_player.client.play_url(announcement.uri)
-            await bluos_player.update_attributes()
-            mass_player.state = PLAYBACK_STATE_MAP["play"]
-            mass_player.active_source = None
-            self.mass.players.update(player_id)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
