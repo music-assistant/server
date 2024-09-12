@@ -1085,8 +1085,10 @@ class PlayerQueuesController(CoreController):
                 and (next_item := self.get_item(queue_id, next_index))
                 and (
                     queue_item.media_item
+                    and hasattr(queue_item.media_item, "album")
                     and queue_item.media_item.album
                     and next_item.media_item
+                    and hasattr(next_item.media_item, "album")
                     and next_item.media_item.album
                     and queue_item.media_item.album.item_id == next_item.media_item.album.item_id
                 )
@@ -1223,7 +1225,7 @@ class PlayerQueuesController(CoreController):
             if queue.index_in_buffer is not None:
                 task_id = f"enqueue_next_{queue.queue_id}"
                 self.mass.call_later(
-                    1, self._enqueue_next(queue, queue.index_in_buffer), task_id=task_id
+                    1, self._enqueue_next, queue, queue.index_in_buffer, task_id=task_id
                 )
 
         # always send the base event
