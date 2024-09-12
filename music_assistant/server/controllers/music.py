@@ -670,10 +670,12 @@ class MusicController(CoreController):
         media_type: MediaType = MediaType.TRACK,
     ) -> None:
         """Store (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return
         values = {
             "item_id": item_id,
             "media_type": media_type.value,
-            "provider": provider_instance_id_or_domain,
+            "provider": provider.lookup_key,
             "loudness": loudness,
         }
         if album_loudness is not None:
@@ -687,12 +689,14 @@ class MusicController(CoreController):
         media_type: MediaType = MediaType.TRACK,
     ) -> tuple[float, float] | None:
         """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return None
         db_row = await self.database.get_row(
             DB_TABLE_LOUDNESS_MEASUREMENTS,
             {
                 "item_id": item_id,
                 "media_type": media_type.value,
-                "provider": provider_instance_id_or_domain,
+                "provider": provider.lookup_key,
             },
         )
         if db_row and db_row["loudness"] != inf and db_row["loudness"] != -inf:
