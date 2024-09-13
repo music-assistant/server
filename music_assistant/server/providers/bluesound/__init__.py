@@ -57,6 +57,14 @@ PLAYBACK_STATE_MAP = {
     "connecting": PlayerState.IDLE,
 }
 
+PLAYBACK_STATE_POLL_MAP = {
+    "play": PlayerState.PLAYING,
+    "stream": PlayerState.PLAYING,
+    "stop": PlayerState.IDLE,
+    "pause": PlayerState.PAUSED,
+    "connecting": "CONNECTING",
+}
+
 SOURCE_LINE_IN = "line_in"
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"
@@ -130,8 +138,6 @@ class BluesoundPlayer:
 
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
-        self.logger.debug("Update attributes")
-
         self.sync_status = await self.client.sync_status()
         self.status = await self.client.status()
 
@@ -147,9 +153,17 @@ class BluesoundPlayer:
             self.mass_player.volume_level = self.sync_status.volume
         self.mass_player.volume_muted = self.status.mute
 
+        self.logger.debug(
+            "Speaker state: %s vs reported state: %s",
+            PLAYBACK_STATE_POLL_MAP[self.status.state],
+            self.mass_player.state,
+        )
+        if self.mass_player.state == PLAYBACK_STATE_POLL_MAP[self.status.state]:
+            self.mass_player.poll_interval = 30
+
         if self.status.state == "stream":
             mass_active = self.mass.streams.base_url
-        if self.status.state == "stream" and self.status.input_id == "input0":
+        elif self.status.state == "stream" and self.status.input_id == "input0":
             self.mass_player.active_source = SOURCE_LINE_IN
         elif self.status.state == "stream" and self.status.input_id == "Airplay":
             self.mass_player.active_source = SOURCE_AIRPLAY
@@ -158,7 +172,6 @@ class BluesoundPlayer:
         elif self.status.state == "stream" and self.status.input_id == "RadioParadise":
             self.mass_player.active_source = SOURCE_RADIO
         elif self.status.state == "stream" and (mass_active not in self.status.stream_url):
-            self.logger.debug("mass_active")
             self.mass_player.active_source = SOURCE_UNKNOWN
 
         # TODO check pair status
@@ -307,34 +320,35 @@ class BluesoundPlayerProvider(PlayerProvider):
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to BluOS player."""
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.stop()
-            mass_player = self.mass.players.get(player_id)
-            # Optimistic state, reduces interface lag
-            mass_player.state = PLAYBACK_STATE_MAP["stop"]
-            await bluos_player.update_attributes()
+            play_state = await bluos_player.client.stop(timeout=1)
+            if play_state == "stop":
+                bluos_player.mass_player.poll_interval = 1
+            self.logger.debug("Set BluOS state to %s", play_state)
+            # Update media info then optimistically override playback state and source
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to BluOS player."""
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.play()
+            play_state = await bluos_player.client.play(timeout=1)
+            if play_state == "stream":
+                bluos_player.mass_player.poll_interval = 1
+            self.logger.debug("Set BluOS state to %s", play_state)
             # Optimistic state, reduces interface lag
-            mass_player = self.mass.players.get(player_id)
-            mass_player.state = PLAYBACK_STATE_MAP["play"]
-            await bluos_player.update_attributes()
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to BluOS player."""
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.pause()
+            play_state = await bluos_player.client.pause(timeout=1)
+            if play_state == "pause":
+                bluos_player.mass_player.poll_interval = 1
+            self.logger.debug("Set BluOS state to %s", play_state)
             # Optimistic state, reduces interface lag
-            mass_player = self.mass.players.get(player_id)
-            mass_player.state = PLAYBACK_STATE_MAP["pause"]
-            await bluos_player.update_attributes()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to BluOS player."""
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.volume(level=volume_level)
+            await bluos_player.client.volume(level=volume_level, timeout=1)
+            self.logger.debug("Set BluOS speaker volume to %s", volume_level)
             mass_player = self.mass.players.get(player_id)
             # Optimistic state, reduces interface lag
             mass_player.volume_level = volume_level
@@ -353,18 +367,16 @@ class BluesoundPlayerProvider(PlayerProvider):
         self, player_id: str, media: PlayerMedia, timeout: float | None = None
     ) -> None:
         """Handle PLAY MEDIA for BluOS player using the provided URL."""
-        mass_player = self.mass.players.get(player_id)
+        self.logger.debug("Play_media called")
         if bluos_player := self.bluos_players[player_id]:
-            play_status = await bluos_player.client.play_url(media.uri, timeout=timeout)
-            if play_status == "stream":
-                # Update media info then optimistically override playback state and source
-                await bluos_player.update_attributes()
-                mass_player.state = PLAYBACK_STATE_MAP["play"]
-                mass_player.active_source = None
-                self.mass.players.update(player_id)
+            self.mass.players.update(player_id)
+            play_state = await bluos_player.client.play_url(media.uri, timeout=1)
+            if play_state == "stream":
+                bluos_player.mass_player.poll_interval = 1
+            self.logger.debug("Set BluOS state to %s", play_state)
 
         # Optionally, handle the playback_state or additional logic here
-        if play_status in ("PlayerUnexpectedResponseError", "PlayerUnreachableError"):
+        if play_state in ("PlayerUnexpectedResponseError", "PlayerUnreachableError"):
             raise PlayerCommandFailed("Failed to start playback.")
 
     async def poll_player(self, player_id: str) -> None:
