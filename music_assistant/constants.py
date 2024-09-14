@@ -3,7 +3,7 @@
 import pathlib
 from typing import Final
 
-API_SCHEMA_VERSION: Final[int] = 25
+API_SCHEMA_VERSION: Final[int] = 26
 MIN_SCHEMA_VERSION: Final[int] = 24
 
 
