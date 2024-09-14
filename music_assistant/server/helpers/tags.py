@@ -180,6 +180,16 @@ class AudioTags:
         """Return track tag if present."""
         if tag := self.tags.get("track"):
             return try_parse_int(tag.split("/")[0], None)
+        # fallback to parsing from filename (if present)
+        # this can be in the form of 01 - title.mp3
+        # or 01-title.mp3
+        # or 01.title.mp3
+        # or 01 title.mp3
+        # or 1. title.mp3
+        for splitpos in (4, 3, 2, 1):
+            firstpart = self.filename[:splitpos]
+            if firstpart.isnumeric():
+                return try_parse_int(firstpart, None)
         return None
 
     @property
