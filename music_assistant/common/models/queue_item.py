@@ -68,6 +68,8 @@ class QueueItem(DataClassDictMixin):
         if is_track(media_item):
             artists = "/".join(x.name for x in media_item.artists)
             name = f"{artists} - {media_item.name}"
+            if media_item.version:
+                name = f"{name} ({media_item.version})"
             # save a lot of data/bandwidth by simplifying nested objects
             media_item.artists = UniqueList([ItemMapping.from_item(x) for x in media_item.artists])
             if media_item.album:
