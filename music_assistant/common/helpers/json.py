@@ -65,6 +65,6 @@ TargetT = TypeVar("TargetT", bound=DataClassORJSONMixin)
 
 async def load_json_file(path: str, target_class: type[TargetT]) -> TargetT:
     """Load JSON from file."""
-    async with aiofiles.open(path, "r") as _file:
+    async with aiofiles.open(path) as _file:
         content = await _file.read()
         return target_class.from_json(content)
