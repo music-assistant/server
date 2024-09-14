@@ -351,12 +351,21 @@ class DLNAPlayerProvider(PlayerProvider):
             media.uri = media.uri.replace(".flac", ".mp3")
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
-        await dlna_player.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
-        self.logger.debug(
-            "Enqued next track (%s) to player %s",
-            title,
-            dlna_player.player.display_name,
-        )
+        try:
+            await dlna_player.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
+        except UpnpError:
+            self.logger.error(
+                "Enqueuing the next track failed for player %s - "
+                "the player probably doesn't support this. "
+                "Enable 'flow mode' for this player.",
+                dlna_player.player.display_name,
+            )
+        else:
+            self.logger.debug(
+                "Enqued next track (%s) to player %s",
+                title,
+                dlna_player.player.display_name,
+            )
 
     @catch_request_errors
     async def cmd_pause(self, player_id: str) -> None:

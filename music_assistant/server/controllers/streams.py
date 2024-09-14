@@ -24,7 +24,13 @@ from music_assistant.common.models.config_entries import (
     ConfigValueOption,
     ConfigValueType,
 )
-from music_assistant.common.models.enums import ConfigEntryType, ContentType, MediaType, StreamType
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    StreamType,
+    VolumeNormalizationMode,
+)
 from music_assistant.common.models.errors import QueueEmpty
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.streamdetails import StreamDetails
@@ -39,7 +45,10 @@ from music_assistant.constants import (
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
     CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
+    CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
+    CONF_VOLUME_NORMALIZATION_TRACKS,
     MASS_LOGO_ONLINE,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
@@ -49,7 +58,6 @@ from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_chunksize,
-    get_ffmpeg_stream,
     get_hls_radio_stream,
     get_hls_substream,
     get_icy_radio_stream,
@@ -58,6 +66,8 @@ from music_assistant.server.helpers.audio import (
     get_silence,
     get_stream_details,
 )
+from music_assistant.server.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
+from music_assistant.server.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.server.helpers.util import get_ips
 from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
@@ -70,12 +80,13 @@ if TYPE_CHECKING:
 
 
 DEFAULT_STREAM_HEADERS = {
+    "Server": "Music Assistant",
     "transferMode.dlna.org": "Streaming",
     "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
     "Cache-Control": "no-cache,must-revalidate",
     "Pragma": "no-cache",
-    "Connection": "close",
     "Accept-Ranges": "none",
+    "Connection": "close",
 }
 ICY_HEADERS = {
     "icy-name": "Music Assistant",
@@ -147,6 +158,44 @@ class StreamsController(CoreController):
                 "on the given IP and TCP port by players on the local network.",
             ),
             ConfigEntry(
+                key=CONF_VOLUME_NORMALIZATION_RADIO,
+                type=ConfigEntryType.STRING,
+                default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
+                label="Volume normalization method for radio streams",
+                options=(
+                    ConfigValueOption(x.value.replace("_", " ").title(), x.value)
+                    for x in VolumeNormalizationMode
+                ),
+                category="audio",
+            ),
+            ConfigEntry(
+                key=CONF_VOLUME_NORMALIZATION_TRACKS,
+                type=ConfigEntryType.STRING,
+                default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
+                label="Volume normalization method for tracks",
+                options=(
+                    ConfigValueOption(x.value.replace("_", " ").title(), x.value)
+                    for x in VolumeNormalizationMode
+                ),
+                category="audio",
+            ),
+            ConfigEntry(
+                key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
+                type=ConfigEntryType.FLOAT,
+                range=(-20, 10),
+                default_value=-6,
+                label="Fixed/fallback gain adjustment for radio streams",
+                category="audio",
+            ),
+            ConfigEntry(
+                key=CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
+                type=ConfigEntryType.FLOAT,
+                range=(-20, 10),
+                default_value=-6,
+                label="Fixed/fallback gain adjustment for tracks",
+                category="audio",
+            ),
+            ConfigEntry(
                 key=CONF_PUBLISH_IP,
                 type=ConfigEntryType.STRING,
                 default_value=default_ip,
@@ -171,26 +220,6 @@ class StreamsController(CoreController):
                 "not be adjusted in regular setups.",
                 category="advanced",
             ),
-            ConfigEntry(
-                key=CONF_VOLUME_NORMALIZATION_RADIO,
-                type=ConfigEntryType.STRING,
-                default_value="standard",
-                label="Volume normalization method to use for radio streams",
-                description="Radio streams often have varying loudness levels, especially "
-                "during announcements and commercials. \n"
-                "You can choose to enforce dynamic volume normalization to radio streams, "
-                "even if a (average) loudness measurement for the radio station exists. \n\n"
-                "Options: \n"
-                "- Disabled - do not apply volume normalization at all \n"
-                "- Force dynamic - Enforce dynamic volume levelling at all times \n"
-                "- Standard - use normalization based on previous measurement, ",
-                options=(
-                    ConfigValueOption("Disabled", "disabled"),
-                    ConfigValueOption("Force dynamic", "dynamic"),
-                    ConfigValueOption("Standard", "standard"),
-                ),
-                category="advanced",
-            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -211,8 +240,9 @@ class StreamsController(CoreController):
             version,
             "with libsoxr support" if libsoxr_support else "",
         )
-        # copy log level to audio module
+        # copy log level to audio/ffmpeg loggers
         AUDIO_LOGGER.setLevel(self.logger.level)
+        FFMPEG_LOGGER.setLevel(self.logger.level)
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
@@ -305,9 +335,6 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "Content-Type": f"audio/{output_format.output_format_str}",
-            "Accept-Ranges": "none",
-            "Cache-Control": "no-cache",
-            "Connection": "close",
             "icy-name": queue_item.name,
         }
         resp = web.StreamResponse(
@@ -769,23 +796,41 @@ class StreamsController(CoreController):
         filter_params = []
         extra_input_args = []
         # handle volume normalization
-        if streamdetails.enable_volume_normalization and streamdetails.target_loudness is not None:
-            if streamdetails.force_dynamic_volume_normalization or streamdetails.loudness is None:
-                # volume normalization with unknown loudness measurement
-                # use loudnorm filter in dynamic mode
-                # which also collects the measurement on the fly during playback
-                # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
-                filter_rule = (
-                    f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=10.0:offset=0.0"
-                )
-                filter_rule += ":print_format=json"
-                filter_params.append(filter_rule)
-            else:
-                # volume normalization with known loudness measurement
-                # apply fixed volume/gain correction
-                gain_correct = streamdetails.target_loudness - streamdetails.loudness
-                gain_correct = round(gain_correct, 2)
-                filter_params.append(f"volume={gain_correct}dB")
+        enable_volume_normalization = (
+            streamdetails.target_loudness is not None
+            and streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
+        )
+        dynamic_volume_normalization = (
+            streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
+            and enable_volume_normalization
+        )
+        if dynamic_volume_normalization:
+            # volume normalization using loudnorm filter (in dynamic mode)
+            # which also collects the measurement on the fly during playback
+            # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
+            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=10.0:offset=0.0"
+            filter_rule += ":print_format=json"
+            filter_params.append(filter_rule)
+        elif (
+            enable_volume_normalization
+            and streamdetails.volume_normalization_mode == VolumeNormalizationMode.FIXED_GAIN
+        ):
+            # apply used defined fixed volume/gain correction
+            gain_correct: float = await self.mass.config.get_core_config_value(
+                CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO
+                if streamdetails.media_type == MediaType.RADIO
+                else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
+            )
+            gain_correct = round(gain_correct, 2)
+            filter_params.append(f"volume={gain_correct}dB")
+        elif enable_volume_normalization and streamdetails.loudness is not None:
+            # volume normalization with known loudness measurement
+            # apply volume/gain correction
+            gain_correct = streamdetails.target_loudness - streamdetails.loudness
+            gain_correct = round(gain_correct, 2)
+            filter_params.append(f"volume={gain_correct}dB")
+
+        # work out audio source for these streamdetails
         if streamdetails.stream_type == StreamType.CUSTOM:
             audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
                 streamdetails,
@@ -819,8 +864,9 @@ class StreamsController(CoreController):
         if streamdetails.media_type == MediaType.RADIO:
             # pad some silence before the radio stream starts to create some headroom
             # for radio stations that do not provide any look ahead buffer
-            # without this, some radio streams jitter a lot
-            async for chunk in get_silence(2, pcm_format):
+            # without this, some radio streams jitter a lot, especially with dynamic normalization
+            pad_seconds = 5 if dynamic_volume_normalization else 2
+            async for chunk in get_silence(pad_seconds, pcm_format):
                 yield chunk
 
         async for chunk in get_media_stream(

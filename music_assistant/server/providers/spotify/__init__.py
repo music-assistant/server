@@ -585,14 +585,23 @@ class SpotifyProvider(MusicProvider):
         chunk_size = get_chunksize(streamdetails.audio_format)
         stderr = None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False
         self.logger.log(VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot")
-        async with AsyncProcess(
-            args,
-            stdout=True,
-            stderr=stderr,
-            name="librespot",
-        ) as librespot_proc:
-            async for chunk in librespot_proc.iter_any(chunk_size):
-                yield chunk
+        for attempt in range(1, 3):
+            async with AsyncProcess(
+                args,
+                stdout=True,
+                stderr=stderr,
+                name="librespot",
+            ) as librespot_proc:
+                chunks_received = 0
+                async for chunk in librespot_proc.iter_any(chunk_size):
+                    yield chunk
+                    chunks_received += 1
+            if chunks_received:
+                break
+            self.logger.warning(
+                "librespot failed to stream track, retrying... (attempt %s/3)", attempt
+            )
+            await asyncio.sleep(0.5)
 
     def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
