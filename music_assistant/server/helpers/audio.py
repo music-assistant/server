@@ -564,7 +564,12 @@ async def get_icy_radio_stream(
             stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
             if not stream_title:
                 continue
-            stream_title = stream_title.group(1).decode()
+            try:
+                # in 99% of the cases the stream title is utf-8 encoded
+                stream_title = stream_title.group(1).decode("utf-8")
+            except UnicodeDecodeError:
+                # fallback to iso-8859-1
+                stream_title = stream_title.group(1).decode("iso-8859-1", errors="replace")
             cleaned_stream_title = clean_stream_title(stream_title)
             if cleaned_stream_title != streamdetails.stream_title:
                 LOGGER.log(VERBOSE_LOG_LEVEL, "ICY Radio streamtitle original: %s", stream_title)
