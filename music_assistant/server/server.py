@@ -230,7 +230,7 @@ class MusicAssistant:
     async def get_application_log(self) -> str:
         """Return the application log from file."""
         logfile = os.path.join(self.storage_path, "musicassistant.log")
-        async with aiofiles.open(logfile, "r") as _file:
+        async with aiofiles.open(logfile) as _file:
             return await _file.read()
 
     @property

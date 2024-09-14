@@ -611,7 +611,7 @@ class BuiltinProvider(MusicProvider):
             return []
         async with (
             self._playlist_lock,
-            aiofiles.open(playlist_file, "r", encoding="utf-8") as _file,
+            aiofiles.open(playlist_file, encoding="utf-8") as _file,
         ):
             lines = await _file.readlines()
             return [x.strip() for x in lines]

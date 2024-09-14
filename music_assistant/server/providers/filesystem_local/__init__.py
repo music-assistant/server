@@ -539,7 +539,7 @@ class LocalFileSystemProvider(MusicProvider):
         try:
             # get playlist file contents
             playlist_filename = self.get_absolute_path(prov_playlist_id)
-            async with aiofiles.open(playlist_filename, "r", encoding="utf-8") as _file:
+            async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
                 playlist_data = await _file.read()
             if ext in ("m3u", "m3u8"):
                 playlist_lines = parse_m3u(playlist_data)
@@ -591,7 +591,7 @@ class LocalFileSystemProvider(MusicProvider):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
         playlist_filename = self.get_absolute_path(prov_playlist_id)
-        async with aiofiles.open(playlist_filename, "r", encoding="utf-8") as _file:
+        async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
             playlist_data = await _file.read()
         for file_path in prov_track_ids:
             track = await self.get_track(file_path)
@@ -611,7 +611,7 @@ class LocalFileSystemProvider(MusicProvider):
         _, ext = prov_playlist_id.rsplit(".", 1)
         # get playlist file contents
         playlist_filename = self.get_absolute_path(prov_playlist_id)
-        async with aiofiles.open(playlist_filename, "r", encoding="utf-8") as _file:
+        async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
             playlist_data = await _file.read()
         # get current contents first
         if ext in ("m3u", "m3u8"):
@@ -852,7 +852,7 @@ class LocalFileSystemProvider(MusicProvider):
             # found NFO file with metadata
             # https://kodi.wiki/view/NFO_files/Artists
             nfo_file = self.get_absolute_path(nfo_file)
-            async with aiofiles.open(nfo_file, "r") as _file:
+            async with aiofiles.open(nfo_file) as _file:
                 data = await _file.read()
             info = await asyncio.to_thread(xmltodict.parse, data)
             info = info["artist"]
@@ -990,7 +990,7 @@ class LocalFileSystemProvider(MusicProvider):
                 # found NFO file with metadata
                 # https://kodi.wiki/view/NFO_files/Artists
                 nfo_file = self.get_absolute_path(nfo_file)
-                async with aiofiles.open(nfo_file, "r") as _file:
+                async with aiofiles.open(nfo_file) as _file:
                     data = await _file.read()
                 info = await asyncio.to_thread(xmltodict.parse, data)
                 info = info["album"]

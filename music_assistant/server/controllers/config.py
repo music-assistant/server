@@ -658,7 +658,7 @@ class ConfigController:
 
         for filename in (self.filename, f"{self.filename}.backup"):
             try:
-                async with aiofiles.open(filename, "r", encoding="utf-8") as _file:
+                async with aiofiles.open(filename, encoding="utf-8") as _file:
                     self._data = json_loads(await _file.read())
                     LOGGER.debug("Loaded persistent settings from %s", filename)
                     await self._migrate()
