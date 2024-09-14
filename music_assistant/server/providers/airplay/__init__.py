@@ -272,7 +272,6 @@ class RaopStream:
             output_format=AIRPLAY_PCM_FORMAT,
             filter_params=get_player_filter_params(self.mass, player_id),
             audio_output=write,
-            logger=self.airplay_player.logger.getChild("ffmpeg"),
         )
         await self._ffmpeg_proc.start()
         await asyncio.to_thread(os.close, write)

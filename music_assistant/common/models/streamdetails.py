@@ -7,7 +7,7 @@ from typing import Any
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.common.models.enums import MediaType, StreamType
+from music_assistant.common.models.enums import MediaType, StreamType, VolumeNormalizationMode
 from music_assistant.common.models.media_items import AudioFormat
 
 
@@ -44,11 +44,10 @@ class StreamDetails(DataClassDictMixin):
     # the fields below will be set/controlled by the streamcontroller
     seek_position: int = 0
     fade_in: bool = False
-    enable_volume_normalization: bool = False
     loudness: float | None = None
     loudness_album: float | None = None
     prefer_album_loudness: bool = False
-    force_dynamic_volume_normalization: bool = False
+    volume_normalization_mode: VolumeNormalizationMode | None = None
     queue_id: str | None = None
     seconds_streamed: float | None = None
     target_loudness: float | None = None
