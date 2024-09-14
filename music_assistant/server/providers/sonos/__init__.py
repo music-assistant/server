@@ -330,7 +330,7 @@ class SonosPlayer:
         else:
             # player is group child (synced to another player)
             group_parent = self.prov.sonos_players.get(self.client.player.group.coordinator_id)
-            if not group_parent:
+            if not group_parent or not group_parent.client:
                 # handle race condition where the group parent is not yet discovered
                 return
             active_group = group_parent.client.player.group
