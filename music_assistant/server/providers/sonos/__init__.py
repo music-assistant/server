@@ -305,7 +305,7 @@ class SonosPlayer:
         if self.client.player.has_fixed_volume:
             self.mass_player.volume_level = 100
         else:
-            self.mass_player.volume_level = self.client.player.volume_level or 100
+            self.mass_player.volume_level = self.client.player.volume_level or 0
         self.mass_player.volume_muted = self.client.player.volume_muted
 
         # work out 'can sync with' for this player
