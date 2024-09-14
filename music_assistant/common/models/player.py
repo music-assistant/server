@@ -49,12 +49,11 @@ class Player(DataClassDictMixin):
     device_info: DeviceInfo
     supported_features: tuple[PlayerFeature, ...] = field(default=())
 
-    elapsed_time: float = 0
-    elapsed_time_last_updated: float = time.time()
-    state: PlayerState = PlayerState.IDLE
-
-    volume_level: int = 100
-    volume_muted: bool = False
+    elapsed_time: float | None = None
+    elapsed_time_last_updated: float | None = None
+    state: PlayerState | None = None
+    volume_level: int | None = None
+    volume_muted: bool | None = None
 
     # group_childs: Return list of player group child id's or synced child`s.
     # - If this player is a dedicated group player,
@@ -138,8 +137,10 @@ class Player(DataClassDictMixin):
     _prev_volume_level: int = 0
 
     @property
-    def corrected_elapsed_time(self) -> float:
+    def corrected_elapsed_time(self) -> float | None:
         """Return the corrected/realtime elapsed time."""
+        if self.elapsed_time is None or self.elapsed_time_last_updated is None:
+            return None
         if self.state == PlayerState.PLAYING:
             return self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
         return self.elapsed_time
@@ -155,3 +156,19 @@ class Player(DataClassDictMixin):
     def current_item_id(self, uri: str) -> None:
         """Set current_item_id (for backwards compatibility)."""
         self.current_media = PlayerMedia(uri)
+
+    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
+        """Execute action(s) on serialization."""
+        # TEMP: convert values to prevent api breakage
+        # this may be removed after 2.3 has been launched to stable
+        if self.elapsed_time is None:
+            d["elapsed_time"] = 0
+        if self.elapsed_time_last_updated is None:
+            d["elapsed_time_last_updated"] = 0
+        if self.volume_level is None:
+            d["volume_level"] = 0
+        if self.volume_muted is None:
+            d["volume_muted"] = False
+        if self.state is None:
+            d["state"] = PlayerState.IDLE
+        return d

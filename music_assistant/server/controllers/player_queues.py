@@ -949,12 +949,12 @@ class PlayerQueuesController(CoreController):
             if item_id := self._parse_player_current_item_id(queue_id, player):
                 queue.current_index = self.index_by_id(queue_id, item_id)
             if player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-                queue.elapsed_time = int(player.corrected_elapsed_time)
-                queue.elapsed_time_last_updated = player.elapsed_time_last_updated
+                queue.elapsed_time = int(player.corrected_elapsed_time or 0)
+                queue.elapsed_time_last_updated = player.elapsed_time_last_updated or 0
 
         # only update these attributes if the queue is active
         # and has an item loaded so we are able to resume it
-        queue.state = player.state
+        queue.state = player.state or PlayerState.IDLE
         queue.current_item = self.get_item(queue_id, queue.current_index)
         queue.next_item = self._get_next_item(queue_id)
 
@@ -1448,7 +1448,7 @@ class PlayerQueuesController(CoreController):
         """Calculate current queue index and current track elapsed time."""
         # player is playing a constant stream so we need to do this the hard way
         queue_index = 0
-        elapsed_time_queue = player.corrected_elapsed_time
+        elapsed_time_queue = player.corrected_elapsed_time or 0
         total_time = 0
         track_time = 0
         queue_items = self._queue_items[queue.queue_id]
