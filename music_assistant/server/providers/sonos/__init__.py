@@ -54,7 +54,6 @@ PLAYER_FEATURES = (
     PlayerFeature.SYNC,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,
-    PlayerFeature.ENQUEUE_NEXT,
     PlayerFeature.PAUSE,
     PlayerFeature.PLAY_ANNOUNCEMENT,
 )
