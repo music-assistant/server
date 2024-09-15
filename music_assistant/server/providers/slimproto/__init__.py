@@ -861,7 +861,7 @@ class SlimprotoProvider(PlayerProvider):
             )
             self.mass.players.update(_player.player_id)
         # restore volume and power state
-        if last_state := await self.mass.cache.get(f"{CACHE_KEY_PREV_STATE}.{player_id}"):
+        if last_state := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_STATE):
             init_power = last_state[0]
             init_volume = last_state[1]
         else:
