@@ -543,6 +543,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
+        await self.login(force_fresh=True)
         # fetch full track details
         # this will also check if the track is available for streaming
         # and use spotify's track linking feature to serve a substitute track
@@ -788,7 +789,7 @@ class SpotifyProvider(MusicProvider):
         """Log-in Spotify and return Auth/token info."""
         # return existing token if we have one in memory
         if self._auth_info and (
-            self._auth_info["expires_at"] > (time.time() - 1800 if force_fresh else 300)
+            self._auth_info["expires_at"] > (time.time() - 600 if force_fresh else 300)
         ):
             return self._auth_info
         # request new access token using the refresh token
@@ -911,7 +912,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.1)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
@@ -936,7 +937,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.1)
 
             # handle temporary server error
             if response.status in (502, 503):
@@ -962,7 +963,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.1)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
