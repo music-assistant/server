@@ -117,7 +117,7 @@ def throttle_with_retries(
                 try:
                     return await func(self, *args, **kwargs)
                 except ResourceTemporarilyUnavailable as e:
-                    backoff_time += e.backoff_time
+                    backoff_time = e.backoff_time or backoff_time
                     self.logger.info(
                         f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
                     )
