@@ -26,6 +26,33 @@ title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", f
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
 
+VERSION_PARTS = (
+    # list of common version strings
+    "version",
+    "live",
+    "edit",
+    "remix",
+    "mix",
+    "acoustic",
+    "instrumental",
+    "karaoke",
+    "remaster",
+    "versie",
+    "unplugged",
+    "disco",
+    "akoestisch",
+    "deluxe",
+)
+IGNORE_TITLE_PARTS = (
+    # strings that may be stripped off a title part
+    # (most important the featuring parts)
+    "feat.",
+    "featuring",
+    "ft.",
+    "with ",
+    "explicit",
+)
+
 
 def filename_from_string(string: str) -> str:
     """Create filename from unsafe string."""
@@ -79,79 +106,28 @@ def create_sort_name(input_str: str) -> str:
 
 
 def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
-    """Try to parse clean track title and version from the title."""
-    version = ""
-    for splitter in [" (", " [", " - ", " (", " [", "-"]:
-        if splitter in title:
-            title_parts = title.split(splitter)
-            for title_part in title_parts:
-                # look for the end splitter
-                for end_splitter in [")", "]"]:
-                    if end_splitter in title_part:
-                        title_part = title_part.split(end_splitter)[0]  # noqa: PLW2901
-                for version_str in [
-                    "version",
-                    "live",
-                    "edit",
-                    "remix",
-                    "mix",
-                    "acoustic",
-                    "instrumental",
-                    "karaoke",
-                    "remaster",
-                    "versie",
-                    "radio",
-                    "unplugged",
-                    "disco",
-                    "akoestisch",
-                    "deluxe",
-                ]:
-                    if version_str in title_part.lower():
-                        version = title_part
-                        title = title.split(splitter + version)[0]
-    title = clean_title(title)
-    if not version and track_version:
-        version = track_version
-    version = get_version_substitute(version).title()
-    if version == title:
-        version = ""
+    """Try to parse version from the title."""
+    version = track_version or ""
+    for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
+        for title_part in re.findall(regex, title):
+            for ignore_str in IGNORE_TITLE_PARTS:
+                if ignore_str in title_part.lower():
+                    title = title.replace(title_part, "").strip()
+                    continue
+            for version_str in VERSION_PARTS:
+                if version_str not in title_part.lower():
+                    continue
+                version = (
+                    title_part.replace("(", "")
+                    .replace(")", "")
+                    .replace("[", "")
+                    .replace("]", "")
+                    .replace("-", "")
+                    .strip()
+                )
+                title = title.replace(title_part, "").strip()
+                return (title, version)
     return title, version
-
-
-def clean_title(title: str) -> str:
-    """Strip unwanted additional text from title."""
-    for splitter in [" (", " [", " - ", " (", " [", "-"]:
-        if splitter in title:
-            title_parts = title.split(splitter)
-            for title_part in title_parts:
-                # look for the end splitter
-                for end_splitter in [")", "]"]:
-                    if end_splitter in title_part:
-                        title_part = title_part.split(end_splitter)[0]  # noqa: PLW2901
-                for ignore_str in ["feat.", "featuring", "ft.", "with ", "explicit"]:
-                    if ignore_str in title_part.lower():
-                        return title.split(splitter + title_part)[0].strip()
-    return title.strip()
-
-
-def get_version_substitute(version_str: str) -> str:
-    """Transform provider version str to universal version type."""
-    version_str = version_str.lower()
-    # substitute edit and edition with version
-    if "edition" in version_str or "edit" in version_str:
-        version_str = version_str.replace(" edition", " version")
-        version_str = version_str.replace(" edit ", " version")
-    if version_str.startswith("the "):
-        version_str = version_str.split("the ")[1]
-    if "radio mix" in version_str:
-        version_str = "radio version"
-    elif "video mix" in version_str:
-        version_str = "video version"
-    elif "spanglish" in version_str or "spanish" in version_str:
-        version_str = "spanish version"
-    elif "remaster" in version_str:
-        version_str = "remaster"
-    return version_str.strip()
 
 
 def strip_ads(line: str) -> str:

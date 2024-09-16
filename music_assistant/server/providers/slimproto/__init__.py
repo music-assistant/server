@@ -280,6 +280,7 @@ class SlimprotoProvider(PlayerProvider):
                 *base_entries,
                 CONF_ENTRY_CROSSFADE,
                 CONF_ENTRY_CROSSFADE_DURATION,
+                CONF_ENTRY_HTTP_PROFILE_FORCED_2,
                 create_sample_rates_config_entry(96000, 24, 48000, 24),
             )
 
