@@ -1075,7 +1075,7 @@ class PlayerQueuesController(CoreController):
             msg = f"PlayerQueue {queue_id} is not available"
             raise PlayerUnavailableError(msg)
         if current_item_id_or_index is None:
-            cur_index = queue.index_in_buffer
+            cur_index = queue.index_in_buffer or queue.current_index or 0
         elif isinstance(current_item_id_or_index, str):
             cur_index = self.index_by_id(queue_id, current_item_id_or_index)
         else:
