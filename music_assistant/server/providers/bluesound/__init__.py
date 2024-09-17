@@ -12,10 +12,9 @@ from zeroconf import ServiceStateChange
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_ENFORCE_MP3,
-    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     ConfigEntry,
     ConfigValueType,
@@ -232,7 +231,7 @@ class BluesoundPlayerProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.bluos_players: dict[str, BluosPlayer] = {}
+        self.bluos_players: dict[str, BluesoundPlayer] = {}
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -315,16 +314,15 @@ class BluesoundPlayerProvider(PlayerProvider):
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
         base_entries = await super().get_player_config_entries(self.player_id)
-        if not self.bluos_players.get(self.player_id):
+        if not self.bluos_players.get(player_id):
             # TODO fix player entries
             return (*base_entries, CONF_ENTRY_CROSSFADE)
         return (
             *base_entries,
             CONF_ENTRY_HTTP_PROFILE_FORCED_2,
             CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
             CONF_ENTRY_ENFORCE_MP3,
-            CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_ENABLE_ICY_METADATA,
         )
 
@@ -380,9 +378,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             mass_player.volume_mute = muted
             await bluos_player.update_attributes()
 
-    async def play_media(
-        self, player_id: str, media: PlayerMedia, timeout: float | None = None
-    ) -> None:
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA for BluOS player using the provided URL."""
         self.logger.debug("Play_media called")
         if bluos_player := self.bluos_players[player_id]:

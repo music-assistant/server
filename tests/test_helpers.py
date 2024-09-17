@@ -18,18 +18,26 @@ def test_version_extract() -> None:
     title, version = util.parse_title_and_version(test_str)
     assert title == "Bam Bam"
     assert version == "Karaoke Version"
+    test_str = "Bam Bam (feat. Ed Sheeran) [Karaoke Version]"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "Bam Bam"
+    assert version == "Karaoke Version"
     test_str = "SuperSong (2011 Remaster)"
     title, version = util.parse_title_and_version(test_str)
     assert title == "SuperSong"
-    assert version == "Remaster"
+    assert version == "2011 Remaster"
     test_str = "SuperSong (Live at Wembley)"
     title, version = util.parse_title_and_version(test_str)
     assert title == "SuperSong"
-    assert version == "Live At Wembley"
+    assert version == "Live at Wembley"
     test_str = "SuperSong (Instrumental)"
     title, version = util.parse_title_and_version(test_str)
     assert title == "SuperSong"
     assert version == "Instrumental"
+    test_str = "SuperSong (Explicit)"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "SuperSong"
+    assert version == ""
 
 
 async def test_uri_parsing() -> None:

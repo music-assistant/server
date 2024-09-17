@@ -445,3 +445,14 @@ class CacheCategory(IntEnum):
     PLAYER_QUEUE_STATE = 7
     MEDIA_INFO = 8
     LIBRARY_ITEMS = 9
+
+
+class VolumeNormalizationMode(StrEnum):
+    """Enum with possible VolumeNormalization modes."""
+
+    DISABLED = "disabled"
+    DYNAMIC = "dynamic"
+    MEASUREMENT_ONLY = "measurement_only"
+    FALLBACK_FIXED_GAIN = "fallback_fixed_gain"
+    FIXED_GAIN = "fixed_gain"
+    FALLBACK_DYNAMIC = "fallback_dynamic"
