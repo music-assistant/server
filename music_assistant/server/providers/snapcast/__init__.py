@@ -517,7 +517,6 @@ class SnapCastProvider(PlayerProvider):
                     output_format=DEFAULT_SNAPCAST_FORMAT,
                     filter_params=get_player_filter_params(self.mass, player_id),
                     audio_output=stream_path,
-                    logger=self.logger.getChild("ffmpeg"),
                 ) as ffmpeg_proc:
                     player.state = PlayerState.PLAYING
                     player.current_media = media

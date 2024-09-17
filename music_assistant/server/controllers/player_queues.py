@@ -76,6 +76,7 @@ class CompareState(TypedDict):
     current_index: int | None
     elapsed_time: int
     stream_title: str | None
+    content_type: str | None
 
 
 class PlayerQueuesController(CoreController):
@@ -659,7 +660,7 @@ class PlayerQueuesController(CoreController):
         while True:
             try:
                 if (next_index := self._get_next_index(queue_id, idx, True)) is not None:
-                    await self.play_index(queue_id, next_index)
+                    await self.play_index(queue_id, next_index, debounce=True)
                 break
             except MediaNotFoundError:
                 self.logger.warning(
@@ -683,7 +684,7 @@ class PlayerQueuesController(CoreController):
         current_index = self._queues[queue_id].current_index
         if current_index is None:
             return
-        await self.play_index(queue_id, max(current_index - 1, 0))
+        await self.play_index(queue_id, max(current_index - 1, 0), debounce=True)
 
     @api_command("player_queues/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
@@ -765,6 +766,7 @@ class PlayerQueuesController(CoreController):
         index: int | str,
         seek_position: int = 0,
         fade_in: bool = False,
+        debounce: bool = False,
     ) -> None:
         """Play item at index (or item_id) X in queue."""
         queue = self._queues[queue_id]
@@ -785,6 +787,9 @@ class PlayerQueuesController(CoreController):
         queue.flow_mode = player_needs_flow_mode and next_index is not None
         queue.stream_finished = False
         queue.end_of_track_reached = False
+
+        queue.current_item = queue_item
+        self.signal_update(queue_id)
 
         # work out if we are playing an album and if we should prefer album loudness
         if (
@@ -821,13 +826,14 @@ class PlayerQueuesController(CoreController):
         # NOTE that we debounce this a bit to account for someone hitting the next button
         # like a madman. This will prevent the player from being overloaded with requests.
         self.mass.call_later(
-            0.25,
+            1 if debounce else 0.1,
             self.mass.players.play_media,
             player_id=queue_id,
             # transform into PlayerMedia to send to the actual player implementation
             media=self.player_media_from_queue_item(queue_item, queue.flow_mode),
             task_id=f"play_media_{queue_id}",
         )
+        self.signal_update(queue_id)
 
     @api_command("player_queues/transfer")
     async def transfer_queue(
@@ -943,12 +949,12 @@ class PlayerQueuesController(CoreController):
             if item_id := self._parse_player_current_item_id(queue_id, player):
                 queue.current_index = self.index_by_id(queue_id, item_id)
             if player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-                queue.elapsed_time = int(player.corrected_elapsed_time)
-                queue.elapsed_time_last_updated = player.elapsed_time_last_updated
+                queue.elapsed_time = int(player.corrected_elapsed_time or 0)
+                queue.elapsed_time_last_updated = player.elapsed_time_last_updated or 0
 
         # only update these attributes if the queue is active
         # and has an item loaded so we are able to resume it
-        queue.state = player.state
+        queue.state = player.state or PlayerState.IDLE
         queue.current_item = self.get_item(queue_id, queue.current_index)
         queue.next_item = self._get_next_item(queue_id)
 
@@ -979,6 +985,9 @@ class PlayerQueuesController(CoreController):
             current_index=queue.current_index,
             elapsed_time=queue.elapsed_time,
             stream_title=queue.current_item.streamdetails.stream_title
+            if queue.current_item and queue.current_item.streamdetails
+            else None,
+            content_type=queue.current_item.streamdetails.audio_format.output_format_str
             if queue.current_item and queue.current_item.streamdetails
             else None,
         )
@@ -1066,7 +1075,7 @@ class PlayerQueuesController(CoreController):
             msg = f"PlayerQueue {queue_id} is not available"
             raise PlayerUnavailableError(msg)
         if current_item_id_or_index is None:
-            cur_index = queue.index_in_buffer
+            cur_index = queue.index_in_buffer or queue.current_index or 0
         elif isinstance(current_item_id_or_index, str):
             cur_index = self.index_by_id(queue_id, current_item_id_or_index)
         else:
@@ -1148,10 +1157,6 @@ class PlayerQueuesController(CoreController):
         # enqueue the next track as soon as the player reports
         # it has started buffering the given queue item
         task_id = f"enqueue_next_{queue_id}"
-        self.mass.call_later(0.2, self._enqueue_next, queue, item_id, task_id=task_id)
-        # we repeat this task once more after 2 seconds to ensure the player
-        # received the command as it may be missed at the first attempt
-        # due to a race condition
         self.mass.call_later(2, self._enqueue_next, queue, item_id, task_id=task_id)
 
     # Main queue manipulation methods
@@ -1225,7 +1230,7 @@ class PlayerQueuesController(CoreController):
             if queue.index_in_buffer is not None:
                 task_id = f"enqueue_next_{queue.queue_id}"
                 self.mass.call_later(
-                    1, self._enqueue_next, queue, queue.index_in_buffer, task_id=task_id
+                    5, self._enqueue_next, queue, queue.index_in_buffer, task_id=task_id
                 )
 
         # always send the base event
@@ -1443,7 +1448,7 @@ class PlayerQueuesController(CoreController):
         """Calculate current queue index and current track elapsed time."""
         # player is playing a constant stream so we need to do this the hard way
         queue_index = 0
-        elapsed_time_queue = player.corrected_elapsed_time
+        elapsed_time_queue = player.corrected_elapsed_time or 0
         total_time = 0
         track_time = 0
         queue_items = self._queue_items[queue.queue_id]

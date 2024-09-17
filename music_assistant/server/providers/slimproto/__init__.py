@@ -280,6 +280,7 @@ class SlimprotoProvider(PlayerProvider):
                 *base_entries,
                 CONF_ENTRY_CROSSFADE,
                 CONF_ENTRY_CROSSFADE_DURATION,
+                CONF_ENTRY_HTTP_PROFILE_FORCED_2,
                 create_sample_rates_config_entry(96000, 24, 48000, 24),
             )
 
@@ -861,7 +862,7 @@ class SlimprotoProvider(PlayerProvider):
             )
             self.mass.players.update(_player.player_id)
         # restore volume and power state
-        if last_state := await self.mass.cache.get(f"{CACHE_KEY_PREV_STATE}.{player_id}"):
+        if last_state := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_STATE):
             init_power = last_state[0]
             init_volume = last_state[1]
         else:

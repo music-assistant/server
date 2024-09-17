@@ -202,7 +202,7 @@ class AsyncProcess:
             line = await self.read_stderr()
             if line == b"":
                 break
-            line = line.decode().strip()
+            line = line.decode("utf-8", errors="ignore").strip()
             if not line:
                 continue
             yield line

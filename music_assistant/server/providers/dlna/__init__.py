@@ -28,6 +28,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_ENFORCE_MP3,
+    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
     CONF_ENTRY_HTTP_PROFILE,
     ConfigEntry,
     ConfigValueType,
@@ -71,6 +72,9 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_ENABLE_ICY_METADATA,
+    # enable flow mode by default because
+    # most dlna players do not support enqueueing
+    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
     create_sample_rates_config_entry(192000, 24, 96000, 24),
 )
 
@@ -351,12 +355,21 @@ class DLNAPlayerProvider(PlayerProvider):
             media.uri = media.uri.replace(".flac", ".mp3")
         didl_metadata = create_didl_metadata(media)
         title = media.title or media.uri
-        await dlna_player.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
-        self.logger.debug(
-            "Enqued next track (%s) to player %s",
-            title,
-            dlna_player.player.display_name,
-        )
+        try:
+            await dlna_player.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
+        except UpnpError:
+            self.logger.error(
+                "Enqueuing the next track failed for player %s - "
+                "the player probably doesn't support this. "
+                "Enable 'flow mode' for this player.",
+                dlna_player.player.display_name,
+            )
+        else:
+            self.logger.debug(
+                "Enqued next track (%s) to player %s",
+                title,
+                dlna_player.player.display_name,
+            )
 
     @catch_request_errors
     async def cmd_pause(self, player_id: str) -> None:

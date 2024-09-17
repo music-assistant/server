@@ -445,6 +445,7 @@ class ChromecastProvider(PlayerProvider):
             status.player_state,
         )
         # handle castplayer playing from a group
+        group_player: CastPlayer | None = None
         if castplayer.active_group is not None:
             if not (group_player := self.castplayers.get(castplayer.active_group)):
                 return
@@ -471,7 +472,9 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.elapsed_time = status.current_time
 
         # active source
-        if castplayer.cc.app_id == MASS_APP_ID:
+        if group_player:
+            castplayer.player.active_source = group_player.player.active_source
+        elif castplayer.cc.app_id == MASS_APP_ID:
             castplayer.player.active_source = castplayer.player_id
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name

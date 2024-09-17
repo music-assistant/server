@@ -11,7 +11,8 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from contextlib import suppress
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
@@ -155,6 +156,15 @@ def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> st
 def get_port_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
     """Get primary IP address from zeroconf discovery info."""
     return discovery_info.port
+
+
+async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
+    """Force close an async generator."""
+    task = asyncio.create_task(agen.__anext__())
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    await agen.aclose()
 
 
 class TaskManager:
