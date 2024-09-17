@@ -125,7 +125,7 @@ class BluesoundPlayer:
         self.sync_status = SyncStatus
         self.status = Status
         self.poll_state = "Static"
-        self.dynamic_poll_count: int
+        self.dynamic_poll_count: int = 0
         self.mass_player: Player | None = None
         self._listen_task: asyncio.Task | None = None
 
@@ -140,6 +140,7 @@ class BluesoundPlayer:
 
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
+        self.logger.debug("updating %s attributes", self.player_id)
         if self.dynamic_poll_count > 0:
             self.dynamic_poll_count = -1
 
@@ -164,11 +165,11 @@ class BluesoundPlayer:
             self.mass_player.state,
         )
 
-        if (
-            self.poll_state == "dynamic"
-            and self.mass_player.state == PLAYBACK_STATE_POLL_MAP[self.status.state]
+        if self.poll_state == "dynamic" and (
+            self.mass_player.state == PLAYBACK_STATE_POLL_MAP[self.status.state]
             or self.dynamic_poll_count == 0
         ):
+            self.poll_state = "static"
             self.mass_player.poll_interval = 30
 
         if self.status.state == "stream":
@@ -393,6 +394,7 @@ class BluesoundPlayerProvider(PlayerProvider):
                 self.dynamic_poll_count = 6
                 bluos_player.mass_player.poll_interval = 1
             self.logger.debug("Set BluOS state to %s", play_state)
+            await bluos_player.update_attributes()
 
         # Optionally, handle the playback_state or additional logic here
         if play_state in ("PlayerUnexpectedResponseError", "PlayerUnreachableError"):
