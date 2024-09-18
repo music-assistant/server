@@ -447,7 +447,8 @@ class PlayerQueuesController(CoreController):
         else:
             cur_index = queue.current_index or 0
         insert_at_index = cur_index + 1 if self._queue_items.get(queue_id) else 0
-        shuffle = queue.shuffle_enabled and len(queue_items) > 1
+        # Radio modes are already shuffled in a pattern we would like to keep.
+        shuffle = queue.shuffle_enabled and len(queue_items) > 1 and not radio_mode
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
