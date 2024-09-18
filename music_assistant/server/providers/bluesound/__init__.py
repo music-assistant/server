@@ -27,6 +27,9 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.constants import (
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.server.helpers.util import (
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
@@ -56,11 +59,21 @@ PLAYBACK_STATE_MAP = {
     "connecting": PlayerState.IDLE,
 }
 
+PLAYBACK_STATE_POLL_MAP = {
+    "play": PlayerState.PLAYING,
+    "stream": PlayerState.PLAYING,
+    "stop": PlayerState.IDLE,
+    "pause": PlayerState.PAUSED,
+    "connecting": "CONNECTING",
+}
+
 SOURCE_LINE_IN = "line_in"
 SOURCE_AIRPLAY = "airplay"
 SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"
 SOURCE_RADIO = "radio"
+POLL_STATE_STATIC = "static"
+POLL_STATE_DYNAMIC = "dynamic"
 
 
 async def setup(
@@ -115,6 +128,8 @@ class BluesoundPlayer:
         self.client = BluosPlayer(self.ip_address, self.port, self.mass.http_session)
         self.sync_status = SyncStatus
         self.status = Status
+        self.poll_state = POLL_STATE_STATIC
+        self.dynamic_poll_count: int = 0
         self.mass_player: Player | None = None
         self._listen_task: asyncio.Task | None = None
 
@@ -129,7 +144,9 @@ class BluesoundPlayer:
 
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
-        self.logger.debug("Update attributes")
+        self.logger.debug("updating %s attributes", self.player_id)
+        if self.dynamic_poll_count > 0:
+            self.dynamic_poll_count -= 1
 
         self.sync_status = await self.client.sync_status()
         self.status = await self.client.status()
@@ -146,9 +163,24 @@ class BluesoundPlayer:
             self.mass_player.volume_level = self.sync_status.volume
         self.mass_player.volume_muted = self.status.mute
 
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Speaker state: %s vs reported state: %s",
+            PLAYBACK_STATE_POLL_MAP[self.status.state],
+            self.mass_player.state,
+        )
+
+        if (
+            self.poll_state == POLL_STATE_DYNAMIC and self.dynamic_poll_count <= 0
+        ) or self.mass_player.state == PLAYBACK_STATE_POLL_MAP[self.status.state]:
+            self.logger.debug("Changing bluos poll state from %s to static", self.poll_state)
+            self.poll_state = POLL_STATE_STATIC
+            self.mass_player.poll_interval = 30
+            self.mass.players.update(self.player_id)
+
         if self.status.state == "stream":
             mass_active = self.mass.streams.base_url
-        if self.status.state == "stream" and self.status.input_id == "input0":
+        elif self.status.state == "stream" and self.status.input_id == "input0":
             self.mass_player.active_source = SOURCE_LINE_IN
         elif self.status.state == "stream" and self.status.input_id == "Airplay":
             self.mass_player.active_source = SOURCE_AIRPLAY
@@ -157,7 +189,6 @@ class BluesoundPlayer:
         elif self.status.state == "stream" and self.status.input_id == "RadioParadise":
             self.mass_player.active_source = SOURCE_RADIO
         elif self.status.state == "stream" and (mass_active not in self.status.stream_url):
-            self.logger.debug("mass_active")
             self.mass_player.active_source = SOURCE_UNKNOWN
 
         # TODO check pair status
@@ -305,34 +336,39 @@ class BluesoundPlayerProvider(PlayerProvider):
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to BluOS player."""
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.stop()
-            mass_player = self.mass.players.get(player_id)
-            # Optimistic state, reduces interface lag
-            mass_player.state = PLAYBACK_STATE_MAP["stop"]
-            await bluos_player.update_attributes()
+            play_state = await bluos_player.client.stop(timeout=1)
+            if play_state == "stop":
+                bluos_player.poll_state = POLL_STATE_DYNAMIC
+                bluos_player.dynamic_poll_count = 6
+                bluos_player.mass_player.poll_interval = 0.5
+            # Update media info then optimistically override playback state and source
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to BluOS player."""
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.play()
+            play_state = await bluos_player.client.play(timeout=1)
+            if play_state == "stream":
+                bluos_player.poll_state = POLL_STATE_DYNAMIC
+                bluos_player.dynamic_poll_count = 6
+                bluos_player.mass_player.poll_interval = 0.5
             # Optimistic state, reduces interface lag
-            mass_player = self.mass.players.get(player_id)
-            mass_player.state = PLAYBACK_STATE_MAP["play"]
-            await bluos_player.update_attributes()
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to BluOS player."""
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.pause()
+            play_state = await bluos_player.client.pause(timeout=1)
+            if play_state == "pause":
+                bluos_player.poll_state = POLL_STATE_DYNAMIC
+                bluos_player.dynamic_poll_count = 6
+                bluos_player.mass_player.poll_interval = 0.5
+            self.logger.debug("Set BluOS state to %s", play_state)
             # Optimistic state, reduces interface lag
-            mass_player = self.mass.players.get(player_id)
-            mass_player.state = PLAYBACK_STATE_MAP["pause"]
-            await bluos_player.update_attributes()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to BluOS player."""
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.volume(level=volume_level)
+            await bluos_player.client.volume(level=volume_level, timeout=1)
+            self.logger.debug("Set BluOS speaker volume to %s", volume_level)
             mass_player = self.mass.players.get(player_id)
             # Optimistic state, reduces interface lag
             mass_player.volume_level = volume_level
@@ -349,18 +385,20 @@ class BluesoundPlayerProvider(PlayerProvider):
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA for BluOS player using the provided URL."""
-        mass_player = self.mass.players.get(player_id)
+        self.logger.debug("Play_media called")
         if bluos_player := self.bluos_players[player_id]:
-            play_status = await bluos_player.client.play_url(media.uri)
-            if play_status == "stream":
-                # Update media info then optimistically override playback state and source
-                await bluos_player.update_attributes()
-                mass_player.state = PLAYBACK_STATE_MAP["play"]
-                mass_player.active_source = None
-                self.mass.players.update(player_id)
+            self.mass.players.update(player_id)
+            play_state = await bluos_player.client.play_url(media.uri, timeout=1)
+            # Enable dynamic polling
+            if play_state == "stream":
+                bluos_player.poll_state = POLL_STATE_DYNAMIC
+                bluos_player.dynamic_poll_count = 6
+                bluos_player.mass_player.poll_interval = 0.5
+            self.logger.debug("Set BluOS state to %s", play_state)
+            await bluos_player.update_attributes()
 
         # Optionally, handle the playback_state or additional logic here
-        if play_status in ("PlayerUnexpectedResponseError", "PlayerUnreachableError"):
+        if play_state in ("PlayerUnexpectedResponseError", "PlayerUnreachableError"):
             raise PlayerCommandFailed("Failed to start playback.")
 
     async def poll_player(self, player_id: str) -> None:
