@@ -27,6 +27,9 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.constants import (
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.server.helpers.util import (
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
@@ -160,16 +163,16 @@ class BluesoundPlayer:
             self.mass_player.volume_level = self.sync_status.volume
         self.mass_player.volume_muted = self.status.mute
 
-        self.logger.log(VERBOSE_LOG_LEVEL,
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
             "Speaker state: %s vs reported state: %s",
             PLAYBACK_STATE_POLL_MAP[self.status.state],
             self.mass_player.state,
         )
 
         if (
-            (self.poll_state == POLL_STATE_DYNAMI and self.dynamic_poll_count <= 0)
-            or self.mass_player.state == PLAYBACK_STATE_POLL_MAP[self.status.state]
-        ):
+            self.poll_state == POLL_STATE_DYNAMIC and self.dynamic_poll_count <= 0
+        ) or self.mass_player.state == PLAYBACK_STATE_POLL_MAP[self.status.state]:
             self.logger.debug("Changing bluos poll state from %s to static", self.poll_state)
             self.poll_state = POLL_STATE_STATIC
             self.mass_player.poll_interval = 30
