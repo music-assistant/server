@@ -780,11 +780,8 @@ class PlayerQueuesController(CoreController):
         queue.current_index = index
         queue.index_in_buffer = index
         queue.flow_mode_start_index = index
-        player_needs_flow_mode = await self.mass.config.get_player_config_value(
-            queue_id, CONF_FLOW_MODE
-        )
+        queue.flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
         next_index = self._get_next_index(queue_id, index, allow_repeat=False)
-        queue.flow_mode = player_needs_flow_mode and next_index is not None
         queue.stream_finished = False
         queue.end_of_track_reached = False
 
