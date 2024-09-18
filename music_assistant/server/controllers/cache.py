@@ -203,7 +203,7 @@ class CacheController(CoreController):
         for db_row in await self.database.get_rows(DB_TABLE_CACHE):
             # clean up db cache object only if expired
             if db_row["expires"] < cur_timestamp:
-                await self.delete(db_row["id"])
+                await self.database.delete(DB_TABLE_CACHE, {"id": db_row["id"]})
                 cleaned_records += 1
             await asyncio.sleep(0)  # yield to eventloop
         if cleaned_records > 50:
