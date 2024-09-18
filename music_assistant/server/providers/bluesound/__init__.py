@@ -339,7 +339,6 @@ class BluesoundPlayerProvider(PlayerProvider):
                 bluos_player.poll_state = POLL_STATE_DYNAMIC
                 bluos_player.dynamic_poll_count = 6
                 bluos_player.mass_player.poll_interval = 0.5
-            self.logger.debug("Set BluOS state to %s", play_state)
             # Update media info then optimistically override playback state and source
 
     async def cmd_play(self, player_id: str) -> None:
