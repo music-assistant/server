@@ -160,7 +160,7 @@ class BluesoundPlayer:
             self.mass_player.volume_level = self.sync_status.volume
         self.mass_player.volume_muted = self.status.mute
 
-        self.logger.debug(
+        self.logger.log(VERBOSE_LOG_LEVEL,
             "Speaker state: %s vs reported state: %s",
             PLAYBACK_STATE_POLL_MAP[self.status.state],
             self.mass_player.state,
