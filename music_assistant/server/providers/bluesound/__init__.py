@@ -167,8 +167,7 @@ class BluesoundPlayer:
         )
 
         if (
-            self.poll_state == POLL_STATE_DYNAMIC
-            and self.dynamic_poll_count <= 0
+            (self.poll_state == POLL_STATE_DYNAMI and self.dynamic_poll_count <= 0)
             or self.mass_player.state == PLAYBACK_STATE_POLL_MAP[self.status.state]
         ):
             self.logger.debug("Changing bluos poll state from %s to static", self.poll_state)
