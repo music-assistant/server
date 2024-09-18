@@ -171,7 +171,7 @@ class BluesoundPlayer:
             and self.dynamic_poll_count <= 0
             or self.mass_player.state == PLAYBACK_STATE_POLL_MAP[self.status.state]
         ):
-            self.logger.debug("Turning bluos poll state: %s", self.poll_state)
+            self.logger.debug("Changing bluos poll state from %s to static", self.poll_state)
             self.poll_state = POLL_STATE_STATIC
             self.mass_player.poll_interval = 30
             self.mass.players.update(self.player_id)
