@@ -1154,8 +1154,9 @@ class PlayerQueuesController(CoreController):
         self.signal_update(queue_id)
         # enqueue the next track as soon as the player reports
         # it has started buffering the given queue item
-        task_id = f"enqueue_next_{queue_id}"
-        self.mass.call_later(2, self._enqueue_next, queue, item_id, task_id=task_id)
+        if not queue.flow_mode:
+            task_id = f"enqueue_next_{queue_id}"
+            self.mass.call_later(2, self._enqueue_next, queue, item_id, task_id=task_id)
 
     # Main queue manipulation methods
 
