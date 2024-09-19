@@ -25,8 +25,6 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 
 DEFAULT_CHUNKSIZE = 64000
 
-# pylint: disable=invalid-name
-
 
 class AsyncProcess:
     """

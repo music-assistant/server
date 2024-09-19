@@ -16,7 +16,7 @@ RUN uv pip install \
     --no-cache \
     --find-links "https://wheels.home-assistant.io/musllinux/" \
     "music-assistant[server]@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
-    
+
 # Set some labels
 LABEL \
     org.opencontainers.image.title="Music Assistant Server" \
@@ -32,7 +32,7 @@ LABEL \
     io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"
 
-RUN rm -rf dist    
+RUN rm -rf dist
 
 VOLUME [ "/data" ]
 EXPOSE 8095

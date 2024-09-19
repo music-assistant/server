@@ -44,11 +44,7 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.common.models.streamdetails import StreamDetails
-
-# pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
-
-# pylint: enable=no-name-in-module
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
@@ -128,7 +124,7 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001 pylint: disable=W0613
+    instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -166,7 +162,7 @@ async def get_config_entries(
     )
 
 
-class DeezerProvider(MusicProvider):  # pylint: disable=W0223
+class DeezerProvider(MusicProvider):
     """Deezer provider support."""
 
     client: deezer.Client

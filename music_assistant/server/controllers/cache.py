@@ -111,7 +111,7 @@ class CacheController(CoreController):
         ) and (not checksum or db_row["checksum"] == checksum and db_row["expires"] >= cur_time):
             try:
                 data = await asyncio.to_thread(json_loads, db_row["data"])
-            except Exception as exc:  # pylint: disable=broad-except
+            except Exception as exc:
                 LOGGER.error(
                     "Error parsing cache data for %s: %s",
                     memory_key,

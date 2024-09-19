@@ -134,7 +134,6 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
 
 def _enable_posix_spawn() -> None:
     """Enable posix_spawn on Alpine Linux."""
-    # pylint: disable=protected-access
     if subprocess._USE_POSIX_SPAWN:
         return
 

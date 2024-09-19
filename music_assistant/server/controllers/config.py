@@ -665,7 +665,7 @@ class ConfigController:
                     return
             except FileNotFoundError:
                 pass
-            except JSON_DECODE_EXCEPTIONS:  # pylint: disable=catching-non-exception
+            except JSON_DECODE_EXCEPTIONS:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 

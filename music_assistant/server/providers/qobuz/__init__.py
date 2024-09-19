@@ -47,11 +47,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-
-# pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
-
-# pylint: enable=no-name-in-module
 from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.helpers.util import lock
 from music_assistant.server.models.music_provider import MusicProvider
@@ -585,7 +581,6 @@ class QobuzProvider(MusicProvider):
 
     async def _parse_track(self, track_obj: dict) -> Track:
         """Parse qobuz track object to generic layout."""
-        # pylint: disable=too-many-branches
         name, version = parse_title_and_version(track_obj["title"], track_obj.get("version"))
         track = Track(
             item_id=str(track_obj["id"]),
@@ -743,7 +738,6 @@ class QobuzProvider(MusicProvider):
     @throttle_with_retries
     async def _get_data(self, endpoint, sign_request=False, **kwargs):
         """Get data from api."""
-        # pylint: disable=too-many-branches
         self.logger.debug("Handling GET request to %s", endpoint)
         url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
         headers = {"X-App-Id": app_var(0)}

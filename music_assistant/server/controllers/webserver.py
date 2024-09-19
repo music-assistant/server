@@ -298,7 +298,7 @@ class WebsocketClientHandler:
         except asyncio.CancelledError:
             self._logger.debug("Connection closed by client")
 
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             self._logger.exception("Unexpected error inside websocket API")
 
         finally:
@@ -361,7 +361,7 @@ class WebsocketClientHandler:
             elif asyncio.iscoroutine(result):
                 result = await result
             self._send_message(SuccessResultMessage(msg.message_id, result))
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
             else:

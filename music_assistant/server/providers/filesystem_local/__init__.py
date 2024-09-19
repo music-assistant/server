@@ -340,7 +340,7 @@ class LocalFileSystemProvider(MusicProvider):
                     playlist,
                     overwrite_existing=prev_checksum is not None,
                 )
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:
             # we don't want the whole sync to crash on one file so we catch all exceptions here
             self.logger.error(
                 "Error processing %s - %s",
@@ -553,7 +553,7 @@ class LocalFileSystemProvider(MusicProvider):
                     track.position = idx
                     result.append(track)
 
-        except Exception as err:  # pylint: disable=broad-except
+        except Exception as err:
             self.logger.warning(
                 "Error while parsing playlist %s: %s",
                 prov_playlist_id,

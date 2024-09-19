@@ -12,10 +12,8 @@ from typing import Any, TypeVar
 from urllib.parse import urlparse
 from uuid import UUID
 
-# pylint: disable=invalid-name
 T = TypeVar("T")
 CALLBACK_TYPE = Callable[[], None]
-# pylint: enable=invalid-name
 
 keyword_pattern = re.compile("title=|artist=")
 title_pattern = re.compile(r"title=\"(?P<title>.*?)\"")
@@ -207,7 +205,6 @@ async def get_ip() -> str:
 
     def _get_ip() -> str:
         """Get primary IP-address for this host."""
-        # pylint: disable=broad-except,no-member
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             # doesn't even have to be reachable
@@ -251,7 +248,7 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     def _resolve() -> str | None:
         try:
             return socket.gethostbyname(dns_name)
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             # fail gracefully!
             return None
 
@@ -262,7 +259,6 @@ async def get_ip_pton(ip_string: str | None = None) -> bytes:
     """Return socket pton for local ip."""
     if ip_string is None:
         ip_string = await get_ip()
-    # pylint:disable=no-member
     try:
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET, ip_string)
     except OSError:
@@ -272,12 +268,10 @@ async def get_ip_pton(ip_string: str | None = None) -> bytes:
 def get_folder_size(folderpath: str) -> float:
     """Return folder size in gb."""
     total_size = 0
-    # pylint: disable=unused-variable
     for dirpath, _dirnames, filenames in os.walk(folderpath):
         for _file in filenames:
             _fp = os.path.join(dirpath, _file)
             total_size += os.path.getsize(_fp)
-    # pylint: enable=unused-variable
     return total_size / float(1 << 30)
 
 
