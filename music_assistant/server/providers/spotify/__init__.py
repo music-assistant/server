@@ -602,7 +602,7 @@ class SpotifyProvider(MusicProvider):
             self.logger.warning(
                 "librespot failed to stream track, retrying... (attempt %s/3)", attempt
             )
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.1)
 
     def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
@@ -885,7 +885,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.1)
 
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
