@@ -137,7 +137,7 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
         logging.getLogger(__name__).warning(err)
         return None
     if origin is type:
-        return eval(value)  # pylint: disable=eval-used
+        return eval(value)
     if value_type is Any:
         return value
     if value is None and value_type is not NoneType:

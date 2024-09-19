@@ -140,7 +140,7 @@ def catch_log_exception(
             """Catch and log exception."""
             try:
                 await async_func(*args)
-            except Exception:  # pylint: disable=broad-except
+            except Exception:
                 log_exception(format_err, *args)
 
         wrapper_func = async_wrapper
@@ -152,7 +152,7 @@ def catch_log_exception(
             """Catch and log exception."""
             try:
                 func(*args)
-            except Exception:  # pylint: disable=broad-except
+            except Exception:
                 log_exception(format_err, *args)
 
         wrapper_func = wrapper
@@ -168,7 +168,7 @@ def catch_log_coro_exception(
         """Catch and log exception."""
         try:
             return await target
-        except Exception:  # pylint: disable=broad-except
+        except Exception:
             log_exception(format_err, *args)
             return None
 

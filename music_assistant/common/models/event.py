@@ -17,7 +17,5 @@ class MassEvent(DataClassORJSONMixin):
     object_id: str | None = None  # player_id, queue_id or uri
     data: Any = field(
         default=None,
-        metadata={
-            "serialize": lambda v: get_serializable_value(v)  # pylint: disable=unnecessary-lambda
-        },
+        metadata={"serialize": lambda v: get_serializable_value(v)},
     )

@@ -80,17 +80,12 @@ repos:
         always_run: true
         args:
           - --branch=main
-      # - id: pylint
-      #   name: 🌟 Starring code with pylint
-      #   language: system
-      #   types: [python]
-      #   entry: scripts/run-in-env.sh pylint
-      # - id: trailing-whitespace
-      #   name: ✄  Trim Trailing Whitespace
-      #   language: system
-      #   types: [text]
-      #   entry: scripts/run-in-env.sh trailing-whitespace-fixer
-      #   stages: [commit, push, manual]
+      - id: trailing-whitespace
+        name: ✄  Trim Trailing Whitespace
+        language: system
+        types: [text]
+        entry: scripts/run-in-env.sh trailing-whitespace-fixer
+        stages: [commit, push, manual]
       - id: mypy
         name: mypy
         entry: scripts/run-in-env.sh mypy

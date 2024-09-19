@@ -47,7 +47,6 @@ test = [
   "mypy==1.11.2",
   "pre-commit==3.8.0",
   "pre-commit-hooks==4.6.0",
-  "pylint==3.2.7",
   "pytest==8.3.3",
   "pytest-aiohttp==1.0.5",
   "pytest-cov==5.0.0",
@@ -121,61 +120,6 @@ warn_unused_ignores = true
 [tool.ruff.format]
 # Force Linux/MacOS line endings
 line-ending = "lf"
-
-[tool.pylint.MASTER]
-extension-pkg-whitelist = ["orjson"]
-ignore = ["tests"]
-
-[tool.pylint.BASIC]
-good-names = ["_", "id", "on", "Run", "T"]
-
-[tool.pylint.DESIGN]
-max-attributes = 8
-
-[tool.pylint."MESSAGES CONTROL"]
-disable = [
-  "duplicate-code",
-  "format",
-  "unsubscriptable-object",
-  "unused-argument", # handled by ruff
-  "unspecified-encoding", # handled by ruff
-  "isinstance-second-argument-not-valid-type", # conflict with ruff
-  "fixme", # we're still developing  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
-  "too-many-return-statements",
-  "unsupported-assignment-operation",
-  "invalid-name",
-  "redefined-outer-name",
-  "too-many-statements",
-  "deprecated-method",
-  "logging-fstring-interpolation",
-  "attribute-defined-outside-init",
-  "broad-exception-caught",
-  "expression-not-assigned",
-  "consider-using-f-string",
-  "consider-using-with",
-  "arguments-renamed",
-  "protected-access",
-  "too-many-boolean-expressions",
-  "raise-missing-from",
-  "too-many-locals",
-  "abstract-method",
-  "unnecessary-lambda",
-  "stop-iteration-return",
-  "no-else-return",
-  "no-else-raise",
-  "undefined-loop-variable",
-  "too-many-nested-blocks",
-  "too-many-public-methods", # unavoidable?
-  "too-many-arguments", # unavoidable?
-  "too-many-branches", # unavoidable?
-  "too-many-instance-attributes", # unavoidable?
-]
-
-[tool.pylint.SIMILARITIES]
-ignore-imports = true
-
-[tool.pylint.FORMAT]
-max-line-length = 100
 
 [tool.pytest.ini_options]
 addopts = "--cov music_assistant"

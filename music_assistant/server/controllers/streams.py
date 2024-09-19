@@ -98,8 +98,6 @@ FLOW_DEFAULT_SAMPLE_RATE = 48000
 FLOW_DEFAULT_BIT_DEPTH = 24
 
 
-# pylint:disable=too-many-locals
-
 isfile = wrap(os.path.isfile)
 
 

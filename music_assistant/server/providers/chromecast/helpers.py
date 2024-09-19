@@ -228,7 +228,6 @@ class CastStatusListener:
 
         All following callbacks won't be forwarded.
         """
-        # pylint: disable=protected-access
         if self.castplayer.cast_info.is_audio_group:
             self._mz_mgr.remove_multizone(self._uuid)
         else:

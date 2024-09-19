@@ -1125,7 +1125,7 @@ class PlayerController(CoreController):
                         player.available = False
                         player.state = PlayerState.IDLE
                         player.powered = False
-                    except Exception as err:  # pylint: disable=broad-except
+                    except Exception as err:
                         self.logger.warning(
                             "Error while requesting latest state from player %s: %s",
                             player.display_name,

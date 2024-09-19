@@ -105,7 +105,7 @@ class Webserver:
             msg = "Dynamic routes are not enabled"
             raise RuntimeError(msg)
         key = f"{method}.{path}"
-        if key in self._dynamic_routes:  # pylint: disable=unsupported-membership-test
+        if key in self._dynamic_routes:
             msg = f"Route {path} already registered."
             raise RuntimeError(msg)
         self._dynamic_routes[key] = handler

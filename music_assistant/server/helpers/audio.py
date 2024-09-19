@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
-# pylint:disable=consider-using-f-string,too-many-locals,too-many-statements
+
 # ruff: noqa: PLR0915
 
 HTTP_HEADERS = {"User-Agent": "Lavf/60.16.100.MusicAssistant"}
@@ -425,7 +425,6 @@ async def get_media_stream(
 
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=None):
     """Generate a wave header from given params."""
-    # pylint: disable=no-member
     file = BytesIO()
 
     # Generate format chunk

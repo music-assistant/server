@@ -1,4 +1,3 @@
-# pylint: skip-file
 # fmt: off
 # flake8: noqa
 # ruff: noqa

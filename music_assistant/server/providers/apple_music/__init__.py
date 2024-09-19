@@ -38,8 +38,6 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD
-
-# pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.helpers.audio import get_hls_substream
 from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries

@@ -11,7 +11,7 @@ from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
 from music_assistant.common.models.media_items import ImageType, MediaItemImage, MediaItemMetadata
 from music_assistant.server.controllers.cache import use_cache
-from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
+from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.helpers.throttle_retry import Throttler
 from music_assistant.server.models.metadata_provider import MetadataProvider
 

@@ -456,7 +456,6 @@ class MusicAssistant:
 
         try:
             await self.load_provider_config(prov_conf)
-        # pylint: disable=broad-except
         except Exception as exc:
             # if loading failed, we store the error in the config object
             # so we can show something useful to the user
@@ -653,7 +652,7 @@ class MusicAssistant:
                             provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
-                except Exception as exc:  # pylint: disable=broad-except
+                except Exception as exc:
                     LOGGER.exception(
                         "Error while loading manifest for provider %s",
                         provider_domain,
@@ -709,7 +708,7 @@ class MusicAssistant:
 
     def _on_mdns_service_state_change(
         self,
-        zeroconf: Zeroconf,  # pylint: disable=unused-argument
+        zeroconf: Zeroconf,
         service_type: str,
         name: str,
         state_change: ServiceStateChange,
