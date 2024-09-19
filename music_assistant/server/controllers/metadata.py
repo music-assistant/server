@@ -447,9 +447,12 @@ class MetaDataController(CoreController):
             # ensure the item is matched to all providers
             await self.mass.music.artists.match_providers(artist)
 
-            # collect metadata from all (streaming) music providers
-            # NOTE: local providers have already pushed their metadata in the sync
-            for prov_mapping in artist.provider_mappings:
+            # collect metadata from all music providers
+            # note that we sort the providers by priority so that we always
+            # prefer local providers over online providers
+            for prov_mapping in sorted(
+                artist.provider_mappings, key=lambda x: x.priority, reverse=True
+            ):
                 if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
                     continue
                 if prov.lookup_key in unique_keys:
@@ -507,10 +510,13 @@ class MetaDataController(CoreController):
             # ensure the item is matched to all providers (will also get other quality versions)
             await self.mass.music.albums.match_providers(album)
 
-            # collect metadata from all (streaming) music providers
-            # NOTE: local providers have already pushed their metadata in the sync
+            # collect metadata from all music providers
+            # note that we sort the providers by priority so that we always
+            # prefer local providers over online providers
             unique_keys: set[str] = set()
-            for prov_mapping in album.provider_mappings:
+            for prov_mapping in sorted(
+                album.provider_mappings, key=lambda x: x.priority, reverse=True
+            ):
                 if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
                     continue
                 if prov.lookup_key in unique_keys:
