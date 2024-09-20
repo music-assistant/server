@@ -17,13 +17,7 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import ConfigEntryType, PlayerState
 from music_assistant.common.models.player import Player, PlayerMedia
-from music_assistant.constants import (
-    CONF_GROUP_MEMBERS,
-    CONF_PREVENT_SYNC_LEADER_OFF,
-    CONF_SYNC_LEADER,
-    CONF_SYNCGROUP_DEFAULT_ON,
-    SYNCGROUP_PREFIX,
-)
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_SYNC_LEADER, SYNCGROUP_PREFIX
 
 from .provider import Provider
 
@@ -80,34 +74,6 @@ class PlayerProvider(Provider):
                     "will be synced to that player. If you want to force a specific player to be "
                     "the sync leader, select it here.",
                     required=True,
-                ),
-                ConfigEntry(
-                    key=CONF_PREVENT_SYNC_LEADER_OFF,
-                    type=ConfigEntryType.BOOLEAN,
-                    label="Prevent sync leader power off",
-                    default_value=False,
-                    description="With this setting enabled, Music Assistant will disallow powering "
-                    "off the sync leader player if other players are still "
-                    "active in the sync group. This is useful if you want to prevent "
-                    "a short drop in the music while the music is transferred to another player.",
-                    required=True,
-                ),
-                ConfigEntry(
-                    key=CONF_SYNCGROUP_DEFAULT_ON,
-                    type=ConfigEntryType.STRING,
-                    label="Default power ON behavior",
-                    default_value="powered_only",
-                    options=(
-                        ConfigValueOption("Always power ON all child devices", "always_all"),
-                        ConfigValueOption("Always power ON sync leader", "always_leader"),
-                        ConfigValueOption("Start with powered players", "powered_only"),
-                        ConfigValueOption("Ignore", "ignore"),
-                    ),
-                    description="What should happen if you power ON a sync group "
-                    "(or you start playback to it), while no (or not all) players "
-                    "are powered ON ?\n\nShould Music Assistant power ON all players, or only the "
-                    "sync leader, or should it ignore the command if no players are powered ON ?",
-                    required=False,
                 ),
             )
 
