@@ -456,7 +456,8 @@ class SonosPlayerProvider(PlayerProvider):
         # bugfix: correct flow-mode setting as sonos doesn't support it
         # but we did accidentally expose the setting for a couple of releases
         # remove this after MA release 2.5+
-        self.mass.config.set_raw_player_config_value(
+        self.mass.loop.call_soon_threadsafe(
+            self.mass.config.set_raw_player_config_value,
             player_id,
             CONF_FLOW_MODE,
             False,
