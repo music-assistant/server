@@ -349,31 +349,26 @@ async def get_media_stream(
         bytes_sent += len(buffer)
         yield buffer
         del buffer
+        finished = True
+
+    finally:
+        await ffmpeg_proc.close()
 
         if bytes_sent == 0:
             # edge case: no audio data was sent
             streamdetails.stream_error = True
-            finished = False
+            seconds_streamed = 0
             logger.warning("Stream error on %s", streamdetails.uri)
-            # we send a bit of silence so players get at least some data
-            # without it, some players refuse to skip to the next track
-            async for chunk in get_silence(6, pcm_format):
-                yield chunk
-                bytes_sent += len(chunk)
         else:
-            finished = True
-    finally:
-        await ffmpeg_proc.close()
-
-        # try to determine how many seconds we've streamed
-        seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-        logger.debug(
-            "stream %s (with code %s) for %s - seconds streamed: %s",
-            "finished" if finished else "aborted",
-            ffmpeg_proc.returncode,
-            streamdetails.uri,
-            seconds_streamed,
-        )
+            # try to determine how many seconds we've streamed
+            seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
+            logger.debug(
+                "stream %s (with code %s) for %s - seconds streamed: %s",
+                "finished" if finished else "aborted",
+                ffmpeg_proc.returncode,
+                streamdetails.uri,
+                seconds_streamed,
+            )
 
         streamdetails.seconds_streamed = seconds_streamed
         # store accurate duration
@@ -384,7 +379,7 @@ async def get_media_stream(
         if (
             streamdetails.loudness is None
             and streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
-            and (finished or (seconds_streamed >= 60))
+            and (finished or (seconds_streamed >= 300))
         ):
             # if dynamic volume normalization is enabled and the entire track is streamed
             # the loudnorm filter will output the measuremeet in the log,
@@ -419,6 +414,8 @@ async def get_media_stream(
                     streamdetails.provider,
                 )
             )
+            # TODO: move this to the queue controller so we report
+            # actual playback time instead of buffered seconds
             if music_prov := mass.get_provider(streamdetails.provider):
                 mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
 

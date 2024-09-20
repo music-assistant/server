@@ -120,10 +120,14 @@ class FFMpeg(AsyncProcess):
         if TYPE_CHECKING:
             self.audio_input: AsyncGenerator[bytes, None]
         generator_exhausted = False
+        audio_received = False
         try:
             async for chunk in self.audio_input:
+                audio_received = True
                 await self.write(chunk)
             generator_exhausted = True
+            if not audio_received:
+                raise AudioError("No audio data received from source")
         except Exception as err:
             if isinstance(err, asyncio.CancelledError):
                 return
