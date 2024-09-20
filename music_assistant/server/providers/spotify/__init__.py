@@ -596,7 +596,7 @@ class SpotifyProvider(MusicProvider):
             self.logger.debug(
                 "librespot failed to stream track, retrying... (attempt %s/3)", attempt
             )
-        raise AudioError("Failed to stream track %s after 3 attempts", spotify_uri)
+        raise AudioError(f"Failed to stream track {spotify_uri} after 3 attempts")
 
     def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
