@@ -603,18 +603,14 @@ CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
         ConfigValueOption("Profile 2 - no content length", "no_content_length"),
         ConfigValueOption("Profile 3 - forced content length", "forced_content_length"),
     ),
-    default_value="chunked",
+    default_value="no_content_length",
     label="HTTP Profile used for sending audio",
     category="advanced",
     description="This is considered to be a very advanced setting, only adjust this if needed, "
     "for example if your player stops playing halfway streams or if you experience "
-    "other playback related issues. In most cases the default setting, "
-    "'chunked transfer encoding', works just fine. \n\n",
+    "other playback related issues. In most cases the default setting is fine.",
 )
 
-CONF_ENTRY_HTTP_PROFILE_DEFAULT_2 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length"}
-)
 CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
     {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "chunked", "hidden": True}
 )
@@ -677,5 +673,5 @@ BASE_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_HIDE_PLAYER,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_SAMPLE_RATES,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
 )

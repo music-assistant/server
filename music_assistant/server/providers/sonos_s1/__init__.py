@@ -24,7 +24,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-    CONF_ENTRY_HTTP_PROFILE,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
     ConfigEntry,
     ConfigValueType,
     create_sample_rates_config_entry,
@@ -195,7 +195,7 @@ class SonosPlayerProvider(PlayerProvider):
             CONF_ENTRY_SAMPLE_RATES,
             CONF_ENTRY_ENFORCE_MP3,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-            CONF_ENTRY_HTTP_PROFILE,
+            CONF_ENTRY_HTTP_PROFILE_FORCED_1,
         )
 
     def is_device_invisible(self, ip_address: str) -> bool:
