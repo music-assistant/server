@@ -256,42 +256,35 @@ class UniversalGroupProvider(PlayerProvider):
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given UGP group player."""
         group_player = self.mass.players.get(player_id, True)
-
-        if group_player.powered == powered:
-            return  # nothing to do
-
-        # make sure to update the group power state
+        # make sure to (optimistically) update the group power state
         group_player.powered = powered
+        # always stop groupplayer at power off
+        if not powered and group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+            await self.cmd_stop(group_player.player_id)
 
-        any_member_powered = False
         async with TaskManager(self.mass) as tg:
-            for member in self.mass.players.iter_group_members(group_player, only_powered=True):
-                any_member_powered = True
+            for member in self.mass.players.iter_group_members(group_player):
                 if powered:
+                    # handle TURN_ON of the group player by turning on all members
                     if member.state in (PlayerState.PLAYING, PlayerState.PAUSED):
                         # stop playing existing content on member if we start the group player
-                        tg.create_task(self.cmd_stop(member.player_id))
+                        tg.create_task(self.mass.players.cmd_stop(member.player_id))
+                    tg.create_task(self.mass.players.cmd_power(member.player_id, True))
                     # set active source to group player if the group (is going to be) powered
                     member.active_group = group_player.active_group
                     member.active_source = group_player.active_source
+                    # optimistically set the power state to prevent race conditions
                     self.mass.players.update(member.player_id, skip_forward=True)
                 else:
-                    # turn off child player when group turns off
-                    tg.create_task(self.cmd_power(member.player_id, False))
                     # reset active source on player
                     member.active_source = None
                     member.active_group = None
+                    # handle TURN_OFF of the group player by turning off all members
+                    tg.create_task(self.mass.players.cmd_power(member.player_id, False))
+                    # optimistically set the power state to prevent race conditions
                     self.mass.players.update(member.player_id, skip_forward=True)
-            # edge case: group turned on but no members are powered, power them all!
-            # TODO: Do we want to make this configurable ?
-            if not any_member_powered and powered:
-                for member in self.mass.players.iter_group_members(
-                    group_player, only_powered=False
-                ):
-                    tg.create_task(self.cmd_power(member.player_id, True))
-                    member.active_group = group_player.player_id
-                    member.active_source = group_player.active_source
 
+        # optimistically set the group state
         self.mass.players.update(player_id)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
@@ -417,53 +410,6 @@ class UniversalGroupProvider(PlayerProvider):
         self._registered_routes.add(route_path)
 
         return player
-
-    def on_group_child_power(
-        self, group_player: Player, child_player: Player, new_power: bool, group_state: PlayerState
-    ) -> None:
-        """
-        Call when a power command was executed on one of the child player of a PlayerGroup.
-
-        The group state is sent with the state BEFORE the power command was executed.
-        """
-        if not group_player.powered:
-            # guard, this should be caught in the player controller but just in case...
-            return None
-
-        powered_childs = [
-            x
-            for x in self.mass.players.iter_group_members(group_player, True)
-            if not (not new_power and x.player_id == child_player.player_id)
-        ]
-        if new_power and child_player not in powered_childs:
-            powered_childs.append(child_player)
-
-        # if the last player of a group turned off, turn off the group
-        if len(powered_childs) == 0:
-            self.logger.debug(
-                "Group %s has no more powered members, turning off group player",
-                group_player.display_name,
-            )
-            self.mass.create_task(self.cmd_power(group_player.player_id, False))
-            return False
-
-        # if a child player turned ON while the group player is already playing
-        # we just direct it to the existing stream (we dont care about the audio being in sync)
-        if new_power and group_state == PlayerState.PLAYING:
-            base_url = f"{self.mass.streams.base_url}/ugp/{group_player.player_id}.aac"
-            self.mass.create_task(
-                self.mass.players.play_media(
-                    child_player.player_id,
-                    media=PlayerMedia(
-                        uri=f"{base_url}?player_id={child_player.player_id}",
-                        media_type=MediaType.FLOW_STREAM,
-                        title=group_player.display_name,
-                        queue_id=group_player.player_id,
-                    ),
-                )
-            )
-
-        return None
 
     async def _serve_ugp_stream(self, request: web.Request) -> web.Response:
         """Serve the UGP (multi-client) flow stream audio to a player."""
