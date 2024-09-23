@@ -411,14 +411,6 @@ class HomeAssistantPlayers(PlayerProvider):
             supported_features=tuple(supported_features),
             state=StateMap.get(state["state"], PlayerState.IDLE),
         )
-        # bugfix: correct flow-mode setting for players that do not support media_enque
-        # remove this after MA release 2.5+
-        if MediaPlayerEntityFeature.MEDIA_ENQUEUE not in hass_supported_features:
-            self.mass.config.set_raw_player_config_value(
-                player.player_id,
-                CONF_FLOW_MODE,
-                True,
-            )
         if MediaPlayerEntityFeature.GROUPING in hass_supported_features:
             player.can_sync_with = platform_players
         self._update_player_attributes(player, state["attributes"])
