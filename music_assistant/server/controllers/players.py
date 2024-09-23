@@ -44,7 +44,6 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_HIDE_PLAYER,
     CONF_PLAYERS,
-    CONF_SYNC_LEADER,
     CONF_TTS_PRE_ANNOUNCE,
     SYNCGROUP_PREFIX,
 )
@@ -1244,16 +1243,7 @@ class PlayerController(CoreController):
         """Select the active sync leader player for a syncgroup or synced player."""
         if sync_leader := self._get_sync_leader(group_player):
             return sync_leader
-        pref_sync_leader = self.mass.config.get_raw_player_config_value(
-            group_player.player_id, CONF_SYNC_LEADER, "auto"
-        )
-        if (
-            pref_sync_leader != "auto"
-            and (player := self.get(pref_sync_leader))
-            and player.available
-        ):
-            return player
-        # fallback select new sync leader: return the first powered player
+        # select new sync leader: return the first powered player
         for child_player in self.iter_group_members(
             group_player, only_powered=True, only_playing=False
         ):
@@ -1265,7 +1255,7 @@ class PlayerController(CoreController):
             ):
                 continue
             return child_player
-        # fallback select new sync leader: simply return the first player
+        # fallback select new sync leader: simply return the first (available) player
         for child_player in self.iter_group_members(
             group_player, only_powered=False, only_playing=False
         ):
