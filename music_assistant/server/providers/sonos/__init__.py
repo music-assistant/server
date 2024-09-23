@@ -135,21 +135,21 @@ class SonosPlayer:
         self.airplay_player_id = f"ap{self.player_id[7:-5].lower()}"
         self.queue_version: str = shortuuid.random(8)
 
-    @property
-    def airplay_mode(self) -> bool:
-        """Return if the player is in airplay mode."""
-        return cast(
-            bool,
-            self.mass.config.get_raw_player_config_value(self.player_id, CONF_AIRPLAY_MODE, False),
-        )
-
-    def get_linked_airplay_player(self, active_only: bool = True) -> Player | None:
+    def get_linked_airplay_player(
+        self, enabled_only: bool = True, active_only: bool = False
+    ) -> Player | None:
         """Return the linked airplay player if available/enabled."""
-        if active_only and not self.airplay_mode:
+        if enabled_only and not self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_AIRPLAY_MODE
+        ):
             return None
-        if airplay_player := self.mass.players.get(self.airplay_player_id):
-            return airplay_player
-        return None
+        if not (airplay_player := self.mass.players.get(self.airplay_player_id)):
+            return None
+        if not airplay_player.available:
+            return None
+        if active_only and not airplay_player.powered:
+            return None
+        return airplay_player
 
     async def setup(self) -> None:
         """Handle setup of the player."""
@@ -248,7 +248,9 @@ class SonosPlayer:
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        if airplay := self.get_linked_airplay_player(True):
+        if (
+            airplay := self.get_linked_airplay_player(True, True)
+        ) and airplay.state != PlayerState.IDLE:
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting STOP command to linked airplay player.")
             await self.mass.players.cmd_stop(airplay.player_id)
@@ -264,7 +266,9 @@ class SonosPlayer:
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        if airplay := self.get_linked_airplay_player(True):
+        if (
+            airplay := self.get_linked_airplay_player(True, True)
+        ) and airplay.state != PlayerState.IDLE:
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting PLAY command to linked airplay player.")
             await self.mass.players.cmd_play(airplay.player_id)
@@ -276,7 +280,9 @@ class SonosPlayer:
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        if airplay := self.get_linked_airplay_player(True):
+        if (
+            airplay := self.get_linked_airplay_player(True, True)
+        ) and airplay.state != PlayerState.IDLE:
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting PAUSE command to linked airplay player.")
             await self.mass.players.cmd_pause(airplay.player_id)
@@ -330,7 +336,7 @@ class SonosPlayer:
         else:
             # player is group child (synced to another player)
             group_parent = self.prov.sonos_players.get(self.client.player.group.coordinator_id)
-            if not group_parent or not group_parent.client:
+            if not group_parent or not group_parent.client or not group_parent.client.player:
                 # handle race condition where the group parent is not yet discovered
                 return
             active_group = group_parent.client.player.group
@@ -339,7 +345,7 @@ class SonosPlayer:
             self.mass_player.active_source = active_group.coordinator_id
             self.mass_player.can_sync_with = ()
 
-        if (airplay := self.get_linked_airplay_player(True)) and airplay.powered:
+        if airplay := self.get_linked_airplay_player(True):
             # linked airplay player is active, update media from there
             self.mass_player.state = airplay.state
             self.mass_player.powered = airplay.powered
@@ -440,7 +446,7 @@ class SonosPlayer:
 
     def _on_airplay_player_event(self, event: MassEvent) -> None:
         """Handle incoming event from linked airplay player."""
-        if not self.airplay_mode:
+        if not self.mass.config.get_raw_player_config_value(self.player_id, CONF_AIRPLAY_MODE):
             return
         if event.object_id != self.airplay_player_id:
             return
