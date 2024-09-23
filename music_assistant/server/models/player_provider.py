@@ -17,7 +17,7 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.player import Player, PlayerMedia
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_SYNC_LEADER, SYNCGROUP_PREFIX
+from music_assistant.constants import CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
 
 from .provider import Provider
 
@@ -51,28 +51,6 @@ class PlayerProvider(Provider):
                     ),
                     description="Select all players you want to be part of this group",
                     multi_value=True,
-                    required=True,
-                ),
-                ConfigEntry(
-                    key=CONF_SYNC_LEADER,
-                    type=ConfigEntryType.STRING,
-                    label="Preferred sync leader",
-                    default_value="auto",
-                    options=(
-                        *tuple(
-                            ConfigValueOption(x.display_name, x.player_id)
-                            for x in self.mass.players.all(True, False)
-                            if x.player_id
-                            in self.mass.config.get_raw_player_config_value(
-                                player_id, CONF_GROUP_MEMBERS, []
-                            )
-                        ),
-                        ConfigValueOption("Select automatically", "auto"),
-                    ),
-                    description="By default Music Assistant will automatically assign a "
-                    "(random) player as sync leader, meaning the other players in the sync group "
-                    "will be synced to that player. If you want to force a specific player to be "
-                    "the sync leader, select it here.",
                     required=True,
                 ),
             )
