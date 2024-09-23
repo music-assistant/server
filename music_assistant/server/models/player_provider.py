@@ -15,7 +15,7 @@ from music_assistant.common.models.config_entries import (
     ConfigValueOption,
     PlayerConfig,
 )
-from music_assistant.common.models.enums import ConfigEntryType, PlayerState
+from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.player import Player, PlayerMedia
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_SYNC_LEADER, SYNCGROUP_PREFIX
 
@@ -218,16 +218,6 @@ class PlayerProvider(Provider):
 
         This is called by the Player Manager;
         if 'needs_poll' is set to True in the player object.
-        """
-
-    def on_group_child_power(
-        self, group_player: Player, child_player: Player, new_power: bool, group_state: PlayerState
-    ) -> None:
-        """
-        Call when a power command was executed on one of the child players of a PlayerGroup.
-
-        This is used to handle special actions such as (re)syncing.
-        The group state is sent with the state BEFORE the power command was executed.
         """
 
     # DO NOT OVERRIDE BELOW
