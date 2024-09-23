@@ -31,7 +31,6 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import CONF_FLOW_MODE
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.hass import DOMAIN as HASS_DOMAIN
 

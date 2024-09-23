@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import shortuuid
 from aiohttp import web
