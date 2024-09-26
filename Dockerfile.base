@@ -35,7 +35,10 @@ RUN pip install --upgrade pip \
 
 # Configure runtime environmental variables
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
-ENV UV_SYSTEM_PYTHON="1"
+
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 LABEL \
     org.opencontainers.image.title="Music Assistant Base Image" \
