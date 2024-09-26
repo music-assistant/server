@@ -29,13 +29,17 @@ RUN set -x \
 RUN mkdir -p /usr/local/bin/widevine_cdm
 COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
 
+# Configure runtime environmental variables
+ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+WORKDIR /opt/venv
+
 # Upgrade pip + Install uv
 RUN pip install --upgrade pip \
     && pip install uv==0.2.27
 
-# Configure runtime environmental variables
-ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
-ENV UV_SYSTEM_PYTHON="1"
 
 LABEL \
     org.opencontainers.image.title="Music Assistant Base Image" \
