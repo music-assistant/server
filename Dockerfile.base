@@ -29,16 +29,22 @@ RUN set -x \
 RUN mkdir -p /usr/local/bin/widevine_cdm
 COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
 
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv $VIRTUAL_ENV
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
 # Upgrade pip + Install uv
 RUN pip install --upgrade pip \
-    && pip install uv==0.2.27
+    && pip install uv==0.2.27 \
+    # install complicated dependencies (e.g. construct)
+    && uv pip install \
+    --no-cache \
+    --find-links "https://wheels.home-assistant.io/musllinux/" \
+    construct[extras]==2.10.70 \
 
 # Configure runtime environmental variables
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
 
-ENV VIRTUAL_ENV=/opt/venv
-RUN python3 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 LABEL \
     org.opencontainers.image.title="Music Assistant Base Image" \
