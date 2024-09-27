@@ -34,18 +34,18 @@ RUN pip install --upgrade pip \
     && pip install uv==0.2.27
 
 # Configure runtime environmental variables
-ENV USER="mass"
-ENV GROUP="$USER"
-ENV PUID="${PUID:-1000}"
-ENV PGID="${PGID:-1000}"
-ENV UMASK="${UMASK:-}"
-
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
 ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-WORKDIR /opt/venv
-RUN chmod 777 $VIRTUAL_ENV
+
+# create mass user (PID 1000, GID 1000)
+RUN groupadd -g 1000 massgroup && \
+    useradd -m -u 1000 -g massgroup mass \
+    chown -R mass:mass $VIRTUAL_ENV
+
+USER mass
+WORKDIR /home/mass
 
 LABEL \
     org.opencontainers.image.title="Music Assistant Base Image" \
