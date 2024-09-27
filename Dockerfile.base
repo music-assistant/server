@@ -38,11 +38,11 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Upgrade pip + Install uv
 RUN pip install --upgrade pip \
     && pip install uv==0.2.27 \
-    # install complicated dependencies (e.g. construct)
+    # pre-install complicated dependencies (e.g. construct) to prevent oserror on docker
     && uv pip install \
     --no-cache \
     --find-links "https://wheels.home-assistant.io/musllinux/" \
-    construct[extras]==2.10.70
+    construct
 
 LABEL \
     org.opencontainers.image.title="Music Assistant Base Image" \
