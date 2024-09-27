@@ -35,9 +35,6 @@ RUN pip install --upgrade pip \
 
 # Configure runtime environmental variables
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
-ENV VIRTUAL_ENV=/opt/venv
-RUN python3 -m venv $VIRTUAL_ENV
-ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # create mass user (PID 1000, GID 1000)
 RUN addgroup --gid 1000 massgroup && \
@@ -45,6 +42,7 @@ RUN addgroup --gid 1000 massgroup && \
 
 USER mass
 
+ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
