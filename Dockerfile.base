@@ -37,16 +37,13 @@ RUN pip install --upgrade pip \
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
 ENV VIRTUAL_ENV=/opt/venv
 
-# create mass user (PID 1000, GID 1000)
-RUN addgroup --gid 1000 massgroup && \
-    adduser --system --uid 1000 --ingroup massgroup mass && \
-    python3 -m venv $VIRTUAL_ENV && \
-    chown -R mass:massgroup $VIRTUAL_ENV
+# create venv and set some permissions to allow running the container as non-root
+RUN python3 -m venv $VIRTUAL_ENV && \
+    chmod -R 777 $VIRTUAL_ENV && \
+    chmod -R 777 /tmp
 
-USER mass
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-
-WORKDIR /home/mass
+WORKDIR $VIRTUAL_ENV
 
 LABEL \
     org.opencontainers.image.title="Music Assistant Base Image" \
