@@ -38,11 +38,11 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 # Upgrade pip + Install uv
 RUN pip install --upgrade pip \
     && pip install uv==0.2.27 \
-    # pre-install complicated dependencies (e.g. construct) to prevent oserror on docker
+    # pre-install complicated dependencies (e.g. pywidevine) to prevent oserror on docker
     && uv pip install \
     --no-cache \
     --find-links "https://wheels.home-assistant.io/musllinux/" \
-    construct
+    pywidevine==1.8.0
 
 LABEL \
     org.opencontainers.image.title="Music Assistant Base Image" \
