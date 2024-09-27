@@ -41,7 +41,7 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 # create mass user (PID 1000, GID 1000)
 RUN groupadd -g 1000 massgroup && \
-    useradd -m -u 1000 -g massgroup mass \
+    useradd -m -u 1000 -g massgroup mass && \
     chown -R mass:mass $VIRTUAL_ENV
 
 USER mass
