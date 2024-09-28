@@ -197,7 +197,7 @@ class PlayerQueuesController(CoreController):
                 key=CONF_DEFAULT_DONT_STOP_THE_MUSIC,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
-                label="Default option for 'Don't stop the music'",
+                label="Don't stop the music",
                 description="Whether to automatically play similar music at the end of a queue.",
             ),
         )
