@@ -63,6 +63,7 @@ CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
 CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
 CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_option_radio"
 CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
+CONF_DEFAULT_DONT_STOP_THE_MUSIC = "default_dont_stop_the_music"
 
 
 class CompareState(TypedDict):
@@ -192,6 +193,13 @@ class PlayerQueuesController(CoreController):
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
             ),
+            ConfigEntry(
+                key=CONF_DEFAULT_DONT_STOP_THE_MUSIC,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                label="Default option for 'Don't stop the music'",
+                description="Whether to automatically play similar music at the end of a queue.",
+            ),
         )
 
     def __iter__(self) -> Iterator[PlayerQueue]:
@@ -264,6 +272,12 @@ class PlayerQueuesController(CoreController):
             keep_remaining=False,
             shuffle=shuffle_enabled,
         )
+
+    @api_command("player_queues/dont_stop_the_music")
+    def set_dont_stop_the_music(self, queue_id: str, dont_stop_the_music_enabled: bool) -> None:
+        """Configure Don't stop the music setting on the queue."""
+        queue = self._queues[queue_id]
+        queue.dont_stop_the_music_enabled = dont_stop_the_music_enabled
 
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
@@ -344,6 +358,10 @@ class PlayerQueuesController(CoreController):
                     media_item = media_from_dict(item)
                 else:
                     media_item = item
+
+                # Save requested media item to play on the queue so we can use it as a source
+                # for Don't stop the music
+                queue.played_media_item = media_item
 
                 # handle default enqueue option if needed
                 if option is None:
@@ -1049,6 +1067,15 @@ class PlayerQueuesController(CoreController):
                 and queue.current_index
                 and (queue.items - queue.current_index) < 5
             ):
+                self.mass.create_task(self._fill_radio_tracks(queue_id))
+            elif (
+                # We have received the last item in the queue and Don't stop the music is enabled
+                queue.dont_stop_the_music_enabled
+                and queue.current_index
+                and (queue.items - queue.current_index) <= 1
+            ):
+                # Enable radio mode on the originally requested MediaItem in play_media
+                queue.radio_source = [queue.played_media_item]
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
 
     def on_player_remove(self, player_id: str) -> None:
