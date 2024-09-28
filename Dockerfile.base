@@ -29,18 +29,24 @@ RUN set -x \
 RUN mkdir -p /usr/local/bin/widevine_cdm
 COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
 
-# Upgrade pip + Install uv
-RUN pip install --upgrade pip \
-    && pip install uv==0.2.27
+RUN adduser -D app app \
+    && chmod -R 775 /tmp \
+    && chgrp -R app /tmp
+
+WORKDIR /home/app
+USER app
+
 
 # Configure runtime environmental variables
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
-ENV VIRTUAL_ENV=/opt/venv
+ENV VIRTUAL_ENV=/home/app/venv
 
 # create venv and set some permissions to allow running the container as non-root
 RUN python3 -m venv $VIRTUAL_ENV && \
-    chmod -R 777 $VIRTUAL_ENV && \
-    chmod -R 777 /tmp
+    
+    source $VIRTUAL_ENV/bin/activate && \
+    pip install --upgrade pip \
+    && pip install uv==0.4.17
 
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 WORKDIR $VIRTUAL_ENV
