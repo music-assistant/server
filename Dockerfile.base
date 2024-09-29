@@ -29,21 +29,22 @@ RUN set -x \
 RUN mkdir -p /usr/local/bin/widevine_cdm
 COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
 
-RUN adduser -D app app \
-    && chmod -R 775 /tmp \
-    && chgrp -R app /tmp
+# we need to set (very permissive) permissions to the workdir
+# and /tmp to allow running the container as non-root
+# NOTE that home assistant add-ons always run as root (and use apparmor)
+# so we can't specify a user here
+RUN chmod -R 775 /tmp \
+    && mkdir /app \
+    && chgrp -R /app /tmp
 
-WORKDIR /home/app
-USER app
-
+WORKDIR /app
 
 # Configure runtime environmental variables
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
-ENV VIRTUAL_ENV=/home/app/venv
+ENV VIRTUAL_ENV=/app/venv
 
-# create venv and set some permissions to allow running the container as non-root
+# create python venv
 RUN python3 -m venv $VIRTUAL_ENV && \
-
     source $VIRTUAL_ENV/bin/activate && \
     pip install --upgrade pip \
     && pip install uv==0.4.17
