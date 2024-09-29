@@ -43,7 +43,7 @@ ENV VIRTUAL_ENV=/home/app/venv
 
 # create venv and set some permissions to allow running the container as non-root
 RUN python3 -m venv $VIRTUAL_ENV && \
-    
+
     source $VIRTUAL_ENV/bin/activate && \
     pip install --upgrade pip \
     && pip install uv==0.4.17
