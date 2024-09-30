@@ -45,4 +45,4 @@ xmltodict==0.13.0
 yt-dlp==2024.8.6
 yt-dlp-youtube-accesstoken==0.1.1
 ytmusicapi==1.8.1
-zeroconf==0.134.0
+zeroconf==0.135.0
