@@ -79,7 +79,7 @@ def get_album_dir(track_dir: str, album_name: str) -> str | None:
         if compare_strings(album_name, dirname.split(" - ")[-1], False):
             # account for ArtistName - AlbumName format in the directory name
             return parentdir
-        if compare_strings(album_name, dirname.split(" - ")[1].split("(")[0], False):
+        if compare_strings(album_name, dirname.split(" - ")[-1].split("(")[0], False):
             # account for ArtistName - AlbumName (Version) format in the directory name
             return parentdir
         if compare_strings(album_name.split("(")[0], dirname, False):
