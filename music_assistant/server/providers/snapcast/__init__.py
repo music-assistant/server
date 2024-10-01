@@ -588,7 +588,7 @@ class SnapCastProvider(PlayerProvider):
             result = await self._snapserver.stream_add_stream(
                 # NOTE: setting the sampleformat to something else
                 # (like 24 bits bit depth) does not seem to work at all!
-                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2",
+                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2&idle_threshold=60000",
             )
             if "id" not in result:
                 # if the port is already taken, the result will be an error
