@@ -314,15 +314,6 @@ class SonosPlayer:
             self.mass_player.volume_level = self.client.player.volume_level or 0
         self.mass_player.volume_muted = self.client.player.volume_muted
 
-        # work out 'can sync with' for this player
-        self.mass_player.can_sync_with = tuple(
-            x
-            for x in self.prov.sonos_players
-            if x != self.player_id
-            and x in self.prov.sonos_players
-            and self.prov.sonos_players[x].client.household_id == self.client.household_id
-        )
-
         group_parent = None
         if self.client.player.is_coordinator:
             # player is group coordinator
@@ -343,7 +334,6 @@ class SonosPlayer:
             self.mass_player.group_childs = set()
             self.mass_player.synced_to = active_group.coordinator_id
             self.mass_player.active_source = active_group.coordinator_id
-            self.mass_player.can_sync_with = ()
 
         if airplay := self.get_linked_airplay_player(True):
             # linked airplay player is active, update media from there
@@ -745,11 +735,6 @@ class SonosPlayerProvider(PlayerProvider):
             self, player_id, discovery_info=discovery_info, ip_address=address
         )
         await sonos_player.setup()
-        # when we add a new player, update 'can_sync_with' for all other players
-        for other_player_id in self.sonos_players:
-            if other_player_id == player_id:
-                continue
-            self.sonos_players[other_player_id].update_attributes()
 
     async def _handle_sonos_queue_itemwindow(self, request: web.Request) -> web.Response:
         """

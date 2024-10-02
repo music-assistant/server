@@ -276,16 +276,6 @@ class SnapCastProvider(PlayerProvider):
         else:
             return self._get_ma_id(snap_client_id)
 
-    def _can_sync_with(self, player_id: str) -> None:
-        mass_player = self.mass.players.get(player_id)
-        mass_player.can_sync_with = tuple(
-            self._get_ma_id(snap_client.identifier)
-            for snap_client in self._snapserver.clients
-            if self._get_ma_id(snap_client.identifier) != player_id
-        )
-
-        self.mass.players.update(mass_player.player_id)
-
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
@@ -401,7 +391,6 @@ class SnapCastProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.VOLUME_MUTE,
                 ),
-                can_sync_with=[],
                 group_childs=set(),
                 synced_to=self._synced_to(player_id),
             )
@@ -424,7 +413,6 @@ class SnapCastProvider(PlayerProvider):
                     player.active_source = stream.name
             else:
                 player.active_source = player_id
-        self._can_sync_with(player_id)
         self._group_childs(player_id)
         self.mass.players.update(player_id)
 
