@@ -141,8 +141,10 @@ async def get_config_entries(
             default_value=26,
             label="Snapserver chunk size",
             description="Default source stream read chunk size [ms]. "
-            "The server will continously read this number of milliseconds from the source into buffer and pass this buffer to the encoder."
-            "The encoded buffer is sent to the clients. Some codecs have a higher latency and will need more data, e.g. Flac will need ~26ms chunks",
+            "The server will continuously read this number of milliseconds from the source into "
+            "buffer and pass this buffer to the encoder."
+            "The encoded buffer is sent to the clients. Some codecs have a higher"
+            "latency and will need more data, e.g. Flac will need ~26ms chunks",
             required=False,
             category="Built-in Snapserver Settings",
             hidden=not local_snapserver_present,
