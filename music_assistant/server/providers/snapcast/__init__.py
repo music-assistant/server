@@ -20,27 +20,19 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.config_entries import (
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    ConfigEntry,
-    ConfigValueOption,
-    ConfigValueType,
-    create_sample_rates_config_entry,
-)
-from music_assistant.common.models.enums import (
-    ConfigEntryType,
-    ContentType,
-    MediaType,
-    PlayerFeature,
-    PlayerState,
-    PlayerType,
-    ProviderFeature,
-)
+    CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_FLOW_MODE_ENFORCED, ConfigEntry, ConfigValueOption,
+    ConfigValueType, create_sample_rates_config_entry)
+from music_assistant.common.models.enums import (ConfigEntryType, ContentType,
+                                                 MediaType, PlayerFeature,
+                                                 PlayerState, PlayerType,
+                                                 ProviderFeature)
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
-from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
+from music_assistant.common.models.player import (DeviceInfo, Player,
+                                                  PlayerMedia)
+from music_assistant.server.helpers.audio import (FFMpeg, get_ffmpeg_stream,
+                                                  get_player_filter_params)
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -66,9 +58,16 @@ CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
 CONF_STREAM_IDLE_THRESHOLD = "snapcast_stream_idle_threshold"
 
 
+CONF_CATEGORY_GENERIC = "generic"
+CONF_CATEGORY_ADVANCED = "advanced"
+CONF_CATEGORY_BUILT_IN = "Built-in Snapserver Settings"
+
+CONF_HELP_LINK = "https://raw.githubusercontent.com/badaix/snapcast/refs/heads/master/server/etc/snapserver.conf"
+
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
 
+DEFAULT_SNAPSERVER_IP = "127.0.0.1"
 DEFAULT_SNAPSERVER_PORT = 1705
 DEFAULT_SNAPSTREAM_IDLE_THRESHOLD = 60000
 
@@ -126,13 +125,10 @@ async def get_config_entries(
             range=(200, 6000),
             default_value=1000,
             label="Snapserver buffer size",
-            description="Buffer[ms]. The end-to-end latency, "
-            "from capturing a sample on the snapserver until "
-            "the sample is played-out on the client ",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_CHUNK_MS,
@@ -140,15 +136,10 @@ async def get_config_entries(
             range=(10, 100),
             default_value=26,
             label="Snapserver chunk size",
-            description="Default source stream read chunk size [ms]. "
-            "The server will continuously read this number of milliseconds from the source into "
-            "buffer and pass this buffer to the encoder."
-            "The encoded buffer is sent to the clients. Some codecs have a higher"
-            "latency and will need more data, e.g. Flac will need ~26ms chunks",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_INITIAL_VOLUME,
@@ -156,11 +147,10 @@ async def get_config_entries(
             range=(0, 100),
             default_value=25,
             label="Snapserver initial volume",
-            description="Volume assigned to new snapclients [percent]",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_SEND_AUDIO_TO_MUTED,
@@ -168,9 +158,9 @@ async def get_config_entries(
             default_value=False,
             label="Send audio to muted clients",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_TRANSPORT_CODEC,
@@ -195,11 +185,10 @@ async def get_config_entries(
             ),
             default_value="flac",
             label="Snapserver default transport codec",
-            description="This is the codec used by snapserver to send audio to clients",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_USE_EXTERNAL_SERVER,
@@ -207,19 +196,16 @@ async def get_config_entries(
             default_value=not local_snapserver_present,
             label="Use existing Snapserver",
             required=False,
-            description="Music Assistant by default already includes a Snapserver. \n\n"
-            "Checking this option allows you to connect to your own/external existing Snapserver "
-            "and not use the builtin one provided by Music Assistant.",
-            category="advanced" if local_snapserver_present else "generic",
+            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
             type=ConfigEntryType.STRING,
-            default_value="127.0.0.1",
+            default_value=DEFAULT_SNAPSERVER_IP,
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if local_snapserver_present else "generic",
+            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -228,7 +214,7 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if local_snapserver_present else "generic",
+            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
         ),
         ConfigEntry(
             key=CONF_STREAM_IDLE_THRESHOLD,
@@ -236,7 +222,7 @@ async def get_config_entries(
             default_value=DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
             label="Snapcast idle threshold stream parameter",
             required=True,
-            category="advanced",
+            category=CONF_CATEGORY_ADVANCED,
         ),
     )
 
