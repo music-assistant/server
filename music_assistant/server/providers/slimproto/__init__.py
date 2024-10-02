@@ -643,9 +643,6 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.PAUSE,
                     PlayerFeature.VOLUME_MUTE,
                 ),
-                can_sync_with=tuple(
-                    x.player_id for x in self.slimproto.players if x.player_id != player_id
-                ),
             )
             self.mass.players.register_or_update(player)
 
@@ -849,12 +846,6 @@ class SlimprotoProvider(PlayerProvider):
         await self._set_display(slimplayer)
         # update all attributes
         await self._handle_player_update(slimplayer)
-        # update existing players so they can update their `can_sync_with` field
-        for _player in self.players:
-            _player.can_sync_with = tuple(
-                x.player_id for x in self.slimproto.players if x.player_id != _player.player_id
-            )
-            self.mass.players.update(_player.player_id)
         # restore volume and power state
         if last_state := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_STATE):
             init_power = last_state[0]

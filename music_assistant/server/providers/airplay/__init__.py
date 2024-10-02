@@ -893,18 +893,9 @@ class AirplayProvider(PlayerProvider):
                 PlayerFeature.SYNC,
                 PlayerFeature.VOLUME_SET,
             ),
-            can_sync_with=tuple(x for x in self._players if x != player_id),
             volume_level=volume,
         )
         self.mass.players.register_or_update(mass_player)
-        # update can_sync_with field of all other players
-        # this ensure that the field always contains all player ids,
-        # even when a player joins later on
-        for player in self.players:
-            if player.player_id == player_id:
-                continue
-            player.can_sync_with = tuple(x for x in self._players if x != player.player_id)
-            self.mass.players.update(player.player_id)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

@@ -366,16 +366,7 @@ class HomeAssistantPlayers(PlayerProvider):
     ) -> None:
         """Handle setup of a Player from an hass entity."""
         hass_device: HassDevice | None = None
-        platform_players: list[str] = []
         if entity_registry_entry := entity_registry.get(state["entity_id"]):
-            # collect all players from same platform
-            platform_players = [
-                entity_id
-                for entity_id, entity in entity_registry.items()
-                if entity["platform"] == entity_registry_entry["platform"]
-                and state["entity_id"].startswith("media_player")
-                and entity_id != state["entity_id"]
-            ]
             hass_device = device_registry.get(entity_registry_entry["device_id"])
         hass_supported_features = MediaPlayerEntityFeature(
             state["attributes"]["supported_features"]
@@ -410,8 +401,6 @@ class HomeAssistantPlayers(PlayerProvider):
             supported_features=tuple(supported_features),
             state=StateMap.get(state["state"], PlayerState.IDLE),
         )
-        if MediaPlayerEntityFeature.GROUPING in hass_supported_features:
-            player.can_sync_with = platform_players
         self._update_player_attributes(player, state["attributes"])
         self.mass.players.register_or_update(player)
 
