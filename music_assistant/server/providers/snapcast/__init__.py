@@ -20,19 +20,27 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.config_entries import (
-    CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_FLOW_MODE_ENFORCED, ConfigEntry, ConfigValueOption,
-    ConfigValueType, create_sample_rates_config_entry)
-from music_assistant.common.models.enums import (ConfigEntryType, ContentType,
-                                                 MediaType, PlayerFeature,
-                                                 PlayerState, PlayerType,
-                                                 ProviderFeature)
+    CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+    create_sample_rates_config_entry,
+)
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    PlayerFeature,
+    PlayerState,
+    PlayerType,
+    ProviderFeature,
+)
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
-from music_assistant.common.models.player import (DeviceInfo, Player,
-                                                  PlayerMedia)
-from music_assistant.server.helpers.audio import (FFMpeg, get_ffmpeg_stream,
-                                                  get_player_filter_params)
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -62,7 +70,9 @@ CONF_CATEGORY_GENERIC = "generic"
 CONF_CATEGORY_ADVANCED = "advanced"
 CONF_CATEGORY_BUILT_IN = "Built-in Snapserver Settings"
 
-CONF_HELP_LINK = "https://raw.githubusercontent.com/badaix/snapcast/refs/heads/master/server/etc/snapserver.conf"
+CONF_HELP_LINK = (
+    "https://raw.githubusercontent.com/badaix/snapcast/refs/heads/master/server/etc/snapserver.conf"
+)
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
