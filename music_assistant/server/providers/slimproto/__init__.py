@@ -274,16 +274,11 @@ class SlimprotoProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        if not (slimclient := self.slimproto.get_player(player_id)):
-            # most probably a syncgroup
-            return (
-                *base_entries,
-                CONF_ENTRY_CROSSFADE,
-                CONF_ENTRY_CROSSFADE_DURATION,
-                CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-                create_sample_rates_config_entry(96000, 24, 48000, 24),
-            )
-
+        if slimclient := self.slimproto.get_player(player_id):
+            max_sample_rate = int(slimclient.max_sample_rate)
+        else:
+            # player not (yet) connected? use default
+            max_sample_rate = 48000
         # create preset entries (for players that support it)
         preset_entries = ()
         presets = []
@@ -305,7 +300,6 @@ class SlimprotoProvider(PlayerProvider):
             )
             for index in range(1, preset_count + 1)
         )
-
         return (
             base_entries
             + preset_entries
@@ -321,7 +315,7 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_DISPLAY,
                 CONF_ENTRY_VISUALIZATION,
                 CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-                create_sample_rates_config_entry(int(slimclient.max_sample_rate), 24, 48000, 24),
+                create_sample_rates_config_entry(max_sample_rate, 24, 48000, 24),
             )
         )
 

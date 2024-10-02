@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from typing import Any
 
 from music_assistant.common.models.config_entries import (
     BASE_PLAYER_CONFIG_ENTRIES,
@@ -10,14 +11,10 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
-    CONF_ENTRY_PLAYER_ICON_GROUP,
     ConfigEntry,
-    ConfigValueOption,
     PlayerConfig,
 )
-from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.player import Player, PlayerMedia
-from music_assistant.constants import CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
 
 from .provider import Provider
 
@@ -32,29 +29,6 @@ class PlayerProvider(Provider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        if player_id.startswith(SYNCGROUP_PREFIX):
-            # default entries for syncgroups
-            return (
-                *BASE_PLAYER_CONFIG_ENTRIES,
-                CONF_ENTRY_PLAYER_ICON_GROUP,
-                ConfigEntry(
-                    key=CONF_GROUP_MEMBERS,
-                    type=ConfigEntryType.STRING,
-                    label="Group members",
-                    default_value=[],
-                    options=tuple(
-                        ConfigValueOption(x.display_name, x.player_id)
-                        for x in self.mass.players.all(True, False)
-                        if x.player_id != player_id
-                        and x.provider == self.instance_id
-                        and not x.player_id.startswith(SYNCGROUP_PREFIX)
-                    ),
-                    description="Select all players you want to be part of this group",
-                    multi_value=True,
-                    required=True,
-                ),
-            )
-
         return (
             *BASE_PLAYER_CONFIG_ENTRIES,
             # add default entries for announce feature
@@ -69,6 +43,11 @@ class PlayerProvider(Provider):
 
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
+
+    def on_group_child_state(
+        self, group_player_id: str, child_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Call (by player manager) when a childplayer in a (active) group changed state."""
 
     @abstractmethod
     async def cmd_stop(self, player_id: str) -> None:
@@ -170,7 +149,7 @@ class PlayerProvider(Provider):
         Join/add the given player(id) to the given (master) player/sync group.
 
             - player_id: player_id of the player to handle the command.
-            - target_player: player_id of the syncgroup master or group player.
+            - target_player: player_id of the sync leader.
         """
         # will only be called for players with SYNC feature set.
         raise NotImplementedError

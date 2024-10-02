@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from time import time
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import shortuuid
 from aiohttp import web
@@ -235,6 +235,12 @@ class UniversalGroupProvider(PlayerProvider):
             self.mass.config.set_raw_provider_config_value(
                 self.instance_id, CONF_GROUP_PLAYERS, group_players
             )
+
+    def on_group_child_state(
+        self, group_player_id: str, child_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        """Call (by player manager) when a childplayer in a (active) group changed state."""
+        self.update_attributes()
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""

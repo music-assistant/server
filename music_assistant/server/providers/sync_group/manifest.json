@@ -1,0 +1,12 @@
+{
+  "type": "player",
+  "domain": "sync_group",
+  "name": "Sync Group",
+  "description": "Create presets to sync your players.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/player-support/sync_group/",
+  "multi_instance": false,
+  "builtin": true,
+  "icon": "speaker-multiple"
+}
