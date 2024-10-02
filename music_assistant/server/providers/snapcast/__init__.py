@@ -138,7 +138,7 @@ async def get_config_entries(
             key=CONF_SERVER_CHUNK_MS,
             type=ConfigEntryType.INTEGER,
             range=(10, 100),
-            default_value=20,
+            default_value=26,
             label="Snapserver chunk size",
             description="Default source stream read chunk size [ms]. "
             "The server will continously read this number of milliseconds from the source into buffer and pass this buffer to the encoder."
