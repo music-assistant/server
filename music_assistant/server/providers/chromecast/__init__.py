@@ -25,7 +25,7 @@ from music_assistant.common.models.config_entries import (
     create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
-from music_assistant.common.models.errors import PlayerUnavailableError
+from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import CONF_PLAYERS, MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -207,8 +207,17 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self.castplayers[player_id]
         if powered:
             await self._launch_app(castplayer)
-        else:
-            await asyncio.to_thread(castplayer.cc.quit_app)
+            return
+        # handle power off
+        mass_player = castplayer.player
+        if mass_player.active_group:
+            # when playing to a cast group, you can't power off an individual group child
+            msg = (
+                f"{mass_player.display_name} can not be turned off while a cast group is active. "
+                "Turn off the entire cast group instead."
+            )
+            raise PlayerCommandFailed(msg)
+        await asyncio.to_thread(castplayer.cc.quit_app)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""

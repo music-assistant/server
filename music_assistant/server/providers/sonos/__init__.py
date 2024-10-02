@@ -531,15 +531,17 @@ class SonosPlayerProvider(PlayerProvider):
         player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
-        base_entries = await super().get_player_config_entries(player_id)
-        if not (sonos_player := self.sonos_players.get(player_id)):
-            # most probably a syncgroup or the player is not yet discovered
-            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED)
-        return (
-            *base_entries,
+        base_entries = (
+            *await super().get_player_config_entries(player_id),
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             create_sample_rates_config_entry(48000, 24, 48000, 24, True),
+        )
+        if not (sonos_player := self.sonos_players.get(player_id)):
+            # most probably the player is not yet discovered
+            return base_entries
+        return (
+            *base_entries,
             ConfigEntry(
                 key=CONF_AIRPLAY_MODE,
                 type=ConfigEntryType.BOOLEAN,

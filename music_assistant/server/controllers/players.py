@@ -5,11 +5,8 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from collections.abc import Iterable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
-
-import shortuuid
 
 from music_assistant.common.helpers.util import get_changed_values
 from music_assistant.common.models.config_entries import (
@@ -27,18 +24,16 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
-    ProviderFeature,
     ProviderType,
 )
 from music_assistant.common.models.errors import (
     AlreadyRegisteredError,
     PlayerCommandFailed,
     PlayerUnavailableError,
-    ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.media_items import UniqueList
-from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.common.models.player import Player, PlayerMedia
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_GROUP_MEMBERS,
@@ -176,18 +171,14 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
-        player_id = self._check_redirect(player_id)
+        if not skip_forward:
+            player_id = self._check_redirect(player_id)
         player = self.get(player_id, True)
         # Redirect to queue controller if active (as it also handles some other logic)
         # Note that skip_forward will be set by the queue controller
         # to prevent an endless loop.
         if not skip_forward and player.active_source == player_id:
             await self.mass.player_queues.stop(player_id)
-            return
-        # handle syncgroup: redirect to syncgroup-leader if needed
-        if player_id.startswith(SYNCGROUP_PREFIX):
-            if sync_leader := self._get_sync_leader(player):
-                await self.cmd_stop(sync_leader.player_id)
             return
         if player_provider := self.get_player_provider(player_id):
             await player_provider.cmd_stop(player_id)
@@ -199,7 +190,8 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
-        player_id = self._check_redirect(player_id)
+        if not skip_forward:
+            player_id = self._check_redirect(player_id)
         player = self.get(player_id, True)
         if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
@@ -210,23 +202,19 @@ class PlayerController(CoreController):
         if not skip_forward and player.active_source == player_id:
             await self.mass.player_queues.play(player_id)
             return
-        # handle syncgroup: redirect to syncgroup-leader if needed
-        if player_id.startswith(SYNCGROUP_PREFIX):
-            if sync_leader := self._get_sync_leader(player):
-                await self.cmd_play(sync_leader.player_id)
-            return
         player_provider = self.get_player_provider(player_id)
         async with self._player_throttlers[player_id]:
             await player_provider.cmd_play(player_id)
 
     @api_command("players/cmd/pause")
     @handle_player_command
-    async def cmd_pause(self, player_id: str) -> None:
+    async def cmd_pause(self, player_id: str, skip_forward: bool = False) -> None:
         """Send PAUSE command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
-        player_id = self._check_redirect(player_id)
+        if not skip_forward:
+            player_id = self._check_redirect(player_id)
         player = self.get(player_id, True)
         if player.announcement_in_progress:
             self.logger.warning("Ignore command: An announcement is in progress")
@@ -234,11 +222,6 @@ class PlayerController(CoreController):
         if PlayerFeature.PAUSE not in player.supported_features:
             # if player does not support pause, we need to send stop
             await self.cmd_stop(player_id)
-            return
-        # handle syncgroup: redirect to syncgroup-leader if needed
-        if player_id.startswith(SYNCGROUP_PREFIX):
-            if sync_leader := self._get_sync_leader(player):
-                await self.cmd_pause(sync_leader.player_id)
             return
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_pause(player_id)
@@ -270,6 +253,7 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
+        player_id = self._check_redirect(player_id)
         player = self.get(player_id, True)
         if player.state == PlayerState.PLAYING:
             await self.cmd_pause(player_id)
@@ -286,38 +270,12 @@ class PlayerController(CoreController):
         """
         player = self.get(player_id, True)
 
-        # forward to syncgroup if needed
-        if player.type == PlayerType.SYNC_GROUP:
-            await self._handle_syncgroup_power(player, powered)
-            return
-
         if player.powered == powered:
             return  # nothing to do
 
-        # grab info about any groups this player is active in
-        # to handle actions on the group when a (sync)group child turns on/off
-        if active_group_player_id := self._get_active_player_group(player):
-            active_group_player = self.get(active_group_player_id)
-            if not powered and active_group_player.type == PlayerType.SYNC_GROUP:
-                powered_members = list(self.iter_group_members(active_group_player, True))
-                sync_leader = self._get_sync_leader(active_group_player)
-                if len(powered_members) > 1 and (sync_leader == player):
-                    raise PlayerCommandFailed(
-                        f"{player.display_name} is the sync "
-                        "leader of a syncgroup and cannot be turned off"
-                    )
-            elif not powered:
-                raise PlayerCommandFailed(
-                    f"{player.display_name} is part of a playergroup "
-                    "and cannot be turned off right now"
-                )
-
-        else:
-            active_group_player = None
-
         # always stop player at power off
         if (
-            active_group_player is None
+            not player.active_group
             and not powered
             and player.powered
             and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
@@ -343,13 +301,14 @@ class PlayerController(CoreController):
         # always optimistically set the power state to update the UI
         # as fast as possible and prevent race conditions
         player.powered = powered
-        # reset active source
-        player.active_source = None
+        # reset active source on power off
+        if not powered:
+            player.active_source = None
         self.update(player_id)
 
         # handle 'auto play on power on'  feature
         if (
-            not active_group_player
+            not player.active_group
             and powered
             and self.mass.config.get_raw_player_config_value(player_id, CONF_AUTO_PLAY, False)
             and player.active_source in (None, player_id)
@@ -366,7 +325,7 @@ class PlayerController(CoreController):
         """
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
-        if player.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP):
+        if player.type == PlayerType.GROUP:
             # redirect to group volume control
             await self.cmd_group_volume(player_id, volume_level)
             return
@@ -429,13 +388,9 @@ class PlayerController(CoreController):
         group_player = self.get(player_id, True)
 
         if group_player.type == PlayerType.GROUP:
-            # this is a native group player (e.g. universal group or cast group), redirect
+            # this is a native group player (e.g. syncgroup, universal group or cast group)
             await self.cmd_power(player_id, power)
             return
-
-        if group_player.type == PlayerType.SYNC_GROUP:
-            # (permanent) syncgroup power handling
-            await self._handle_syncgroup_power(group_player, power)
 
         if not power and group_player.group_childs:
             # temporary syncgroup (manually synced players)
@@ -523,7 +478,7 @@ class PlayerController(CoreController):
                     player.active_group, url, use_pre_announce, volume_level
                 )
                 return
-            if player.type in (PlayerType.SYNC_GROUP, PlayerType.GROUP) and not player.powered:
+            if player.type == PlayerType.GROUP and not player.powered:
                 # announcement request sent to inactive group, check if any child's are playing
                 if len(list(self.iter_group_members(player, True, True))) > 0:
                     # just for the sake of simplicity we handle this request per-player
@@ -580,17 +535,6 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         - media: The Media that needs to be played on the player.
         """
-        # handle syncgroup: redirect to syncgroup-leader if needed
-        if player_id.startswith(SYNCGROUP_PREFIX):
-            group_player = self.get(player_id, True)
-            if not group_player.powered:
-                await self.cmd_group_power(player_id, True)
-            else:
-                await self._sync_syncgroup(group_player)
-            if sync_leader := self._get_sync_leader(group_player):
-                await self.play_media(sync_leader.player_id, media=media)
-                group_player.state = PlayerState.PLAYING
-            return
         # power on the player if needed
         player = self.get(player_id, True)
         if not player.powered:
@@ -603,15 +547,6 @@ class PlayerController(CoreController):
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
-        if player_id.startswith(SYNCGROUP_PREFIX):
-            # redirect to syncgroup-leader if needed
-            group_player = self.get(player_id, True)
-            if sync_leader := self._get_sync_leader(group_player):
-                await self.enqueue_next_media(
-                    sync_leader.player_id,
-                    media=media,
-                )
-            return
         player_prov = self.mass.players.get_player_provider(player_id)
         async with self._player_throttlers[player_id]:
             await player_prov.enqueue_next_media(player_id=player_id, media=media)
@@ -652,21 +587,16 @@ class PlayerController(CoreController):
             return  # nothing to do
 
         if player.group_childs:
-            if active_group_player_id := self._get_active_player_group(player):
-                # prevent unsyncing of a syncgroup leader
-                active_group_player = self.get(active_group_player_id)
-                powered_members = list(self.iter_group_members(active_group_player, True))
-                sync_leader = self._get_sync_leader(active_group_player)
-                if len(powered_members) > 1 and (sync_leader == player):
-                    raise PlayerCommandFailed(
-                        f"{player.display_name} is the sync "
-                        "leader of a syncgroup and cannot be unsynced"
-                    )
-            # unsync all children of a syncgroup
-            for child_player_id in list(player.group_childs):
-                if child_player_id == player_id:
-                    continue
-                await self.cmd_unsync(child_player_id)
+            # player is a syncgroup leader
+            if player.active_group:
+                # power down the group player if it is a syncgroup
+                await self.cmd_group_power(player.active_group, False)
+            else:
+                # simply unsync all children of a syncgroup
+                for child_player_id in list(player.group_childs):
+                    if child_player_id == player_id:
+                        continue
+                    await self.cmd_unsync(child_player_id)
 
         # reset active source player if it is unsynced
         player.active_source = None
@@ -702,13 +632,9 @@ class PlayerController(CoreController):
                     "Player %s is already synced, unsyncing first", child_player.name
                 )
                 await self.cmd_unsync(child_player.player_id)
-            elif child_player_id not in parent_player.can_sync_with:
-                self.logger.warning(
-                    "Player %s can not be synced with %s",
-                    child_player.display_name,
-                    parent_player.display_name,
-                )
-                continue
+            # power on the player if needed
+            if not child_player.powered:
+                await self.cmd_power(child_player.player_id, True)
             # if we reach here, all checks passed
             final_player_ids.append(child_player_id)
             # set active source if player is synced
@@ -769,9 +695,6 @@ class PlayerController(CoreController):
         if not player.enabled:
             return
 
-        # initialize sync groups as soon as a player is registered
-        self.mass.loop.create_task(self._register_syncgroups())
-
         self.logger.info(
             "Player registered: %s/%s",
             player_id,
@@ -815,7 +738,8 @@ class PlayerController(CoreController):
             return
         player = self._players[player_id]
         # calculate active group and active source
-        player.active_group = self._get_active_player_group(player)
+        if player.active_group is None:
+            player.active_group = self._get_active_player_group(player)
         if player.active_source is None:
             player.active_source = self._get_active_source(player)
         player.volume_level = player.volume_level or 0  # guard for None volume
@@ -824,7 +748,7 @@ class PlayerController(CoreController):
             player.group_childs = set()
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
-        if player.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP):
+        if player.type == PlayerType.GROUP:
             player.volume_level = player.group_volume
         # prefer any overridden name from config
         player.display_name = (
@@ -839,21 +763,9 @@ class PlayerController(CoreController):
             player.player_id,
             CONF_ENTRY_PLAYER_ICON.key,
             CONF_ENTRY_PLAYER_ICON_GROUP.default_value
-            if player.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP)
+            if player.type == PlayerType.GROUP
             else CONF_ENTRY_PLAYER_ICON.default_value,
         )
-        # handle syncgroup - get attributes from sync leader
-        if player.player_id.startswith(SYNCGROUP_PREFIX):
-            sync_leader = self._get_sync_leader(player)
-            if sync_leader and sync_leader.active_source == player.active_source:
-                player.state = sync_leader.state
-                player.active_source = sync_leader.active_source
-                player.current_media = sync_leader.current_media
-                player.elapsed_time = sync_leader.elapsed_time
-                player.elapsed_time_last_updated = sync_leader.elapsed_time_last_updated
-            else:
-                player.state = PlayerState.IDLE
-                player.active_source = player.player_id
 
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
@@ -879,21 +791,17 @@ class PlayerController(CoreController):
 
         if skip_forward:
             return
+
         # update/signal group player(s) child's when group updates
-        if player.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP):
-            for child_player in self.iter_group_members(player):
-                if child_player.player_id == player.player_id:
-                    continue
-                self.update(child_player.player_id, skip_forward=True)
+        # if player.type == PlayerType.GROUP:
+        #     for child_player in self.iter_group_members(player):
+        #         if child_player.player_id == player.player_id:
+        #             continue
+        #         self.update(child_player.player_id, skip_forward=True)
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
-            player_prov = self.get_player_provider(group_player.player_id)
-            if not player_prov:
-                continue
-            if group_player.player_id.startswith(SYNCGROUP_PREFIX):
-                self.update(group_player.player_id, skip_forward=True)
-            else:
-                self.mass.create_task(player_prov.poll_player(group_player.player_id))
+            if player_prov := self.get_player_provider(group_player.player_id):
+                player_prov.on_group_child_state(group_player.player_id, player, changed_values)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -944,7 +852,7 @@ class PlayerController(CoreController):
         player = self.get(player_id, True)
         if player.synced_to:
             sync_leader = self.get(player.synced_to, True)
-            self.logger.warning(
+            self.logger.info(
                 "Player %s is synced to %s and can not accept "
                 "playback related commands itself, "
                 "redirected the command to the sync leader.",
@@ -952,6 +860,25 @@ class PlayerController(CoreController):
                 sync_leader.name,
             )
             return player.synced_to
+        if player.active_group:
+            self.logger.info(
+                "Player %s is part of a playergroup and can not accept "
+                "playback related commands itself, "
+                "redirected the command to the group leader.",
+                player.name,
+            )
+            return player.active_group
+        if (
+            player.active_source
+            and player.active_source != player.player_id
+            and self.get(player.active_source)
+        ):
+            self.logger.info(
+                "Player %s has a different source active, "
+                "redirected the command to the source player.",
+                player.name,
+            )
+            return player.active_source
         return player_id
 
     def _get_player_groups(
@@ -961,7 +888,7 @@ class PlayerController(CoreController):
         for _player in self:
             if _player.player_id == player.player_id:
                 continue
-            if _player.type not in (PlayerType.GROUP, PlayerType.SYNC_GROUP):
+            if _player.type != PlayerType.GROUP:
                 continue
             if available_only and not _player.available:
                 continue
@@ -1020,13 +947,7 @@ class PlayerController(CoreController):
         only_playing: bool = False,
     ) -> Iterator[Player]:
         """Get (child) players attached to a grouped player."""
-        if group_player.type == PlayerType.SYNC_GROUP:
-            member_ids = self.mass.config.get_raw_player_config_value(
-                group_player.player_id, CONF_GROUP_MEMBERS
-            )
-        else:
-            member_ids = list(group_player.group_childs)
-        for child_id in member_ids:
+        for child_id in list(group_player.group_childs):
             if child_player := self.get(child_id, False):
                 if not child_player.available:
                     continue
@@ -1110,178 +1031,6 @@ class PlayerController(CoreController):
             provider.on_player_config_removed(player_id)
         if not player:
             self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
-
-    # Syncgroup specific functions/helpers
-
-    @api_command("players/create_syncgroup")
-    async def create_syncgroup(self, name: str, members: list[str]) -> Player:
-        """Create a new Sync Group with name and members.
-
-        - name: Name for the new group to create.
-        - members: A list of player_id's that should be part of this group.
-
-        Returns the newly created player on success.
-        """
-        base_player = self.get(members[0], True)
-        # perform basic checks
-        if (player_prov := self.mass.get_provider(base_player.provider)) is None:
-            msg = f"Provider {base_player.provider} is not available!"
-            raise ProviderUnavailableError(msg)
-        if ProviderFeature.SYNC_PLAYERS not in player_prov.supported_features:
-            msg = f"Provider {player_prov.name} does not support creating groups"
-            raise UnsupportedFeaturedException(msg)
-        new_group_id = f"{SYNCGROUP_PREFIX}{shortuuid.random(8).lower()}"
-        # cleanup list, just in case the frontend sends some garbage
-        members = [
-            x
-            for x in members
-            if (x in base_player.can_sync_with or x == base_player.player_id)
-            and not x.startswith(SYNCGROUP_PREFIX)
-        ]
-        # create default config with the user chosen name
-        self.mass.config.create_default_player_config(
-            new_group_id,
-            player_prov.instance_id,
-            name=name,
-            enabled=True,
-            values={CONF_GROUP_MEMBERS: members},
-        )
-        return self.register_syncgroup(group_player_id=new_group_id, name=name, members=members)
-
-    def register_syncgroup(self, group_player_id: str, name: str, members: Iterable[str]) -> Player:
-        """Register a (virtual/fake) syncgroup player."""
-        # extract player features from first/random player
-        for member in members:
-            if first_player := self.mass.players.get(member):
-                break
-        else:
-            # edge case: no child player is (yet) available; postpone register
-            return None
-        player_prov = self.mass.get_provider(first_player.provider)
-        if TYPE_CHECKING:
-            assert player_prov
-        player = Player(
-            player_id=group_player_id,
-            provider=player_prov.instance_id,
-            type=PlayerType.SYNC_GROUP,
-            name=name,
-            available=True,
-            powered=False,
-            device_info=DeviceInfo(model="SyncGroup", manufacturer=player_prov.name),
-            supported_features=first_player.supported_features,
-            group_childs=set(members),
-            active_source=group_player_id,
-        )
-        self.mass.players.register_or_update(player)
-        return player
-
-    async def _handle_syncgroup_power(self, group_player: Player, power: bool) -> None:
-        """Handle power command on a SyncGroup."""
-        # make sure to (optimistically) update the group power state
-        group_player.powered = power
-
-        # always stop (group/master)player at power off
-        if not power and group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-            await self.cmd_stop(group_player.player_id)
-
-        async with TaskManager(self.mass) as tg:
-            for member in self.iter_group_members(group_player):
-                if power:
-                    # handle TURN_ON of the group player by turning on all members
-                    if member.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-                        # stop playing existing content on member if we start the group player
-                        tg.create_task(self.cmd_stop(member.player_id))
-                    tg.create_task(self.cmd_power(member.player_id, True))
-                    # set active source to group player if the group (is going to be) powered
-                    member.active_group = group_player.active_group
-                    member.active_source = group_player.active_source
-                    # optimistically set the power state to prevent race conditions
-                    self.update(member.player_id, skip_forward=True)
-                else:
-                    # reset active source on player
-                    member.active_source = None
-                    member.active_group = None
-                    # handle TURN_OFF of the group player by turning off all members
-                    tg.create_task(self.cmd_power(member.player_id, False))
-                    # optimistically set the power state to prevent race conditions
-                    self.update(member.player_id, skip_forward=True)
-
-        if power:
-            await self._sync_syncgroup(group_player)
-        # optimistically set the group state
-        self.update(group_player.player_id)
-
-    async def _register_syncgroups(self) -> None:
-        """Register all (virtual/fake) syncgroup players."""
-        player_configs = await self.mass.config.get_player_configs()
-        for player_config in player_configs:
-            if not player_config.player_id.startswith(SYNCGROUP_PREFIX):
-                continue
-            members = self.mass.config.get_raw_player_config_value(
-                player_config.player_id, CONF_GROUP_MEMBERS
-            )
-            self.register_syncgroup(
-                group_player_id=player_config.player_id,
-                name=player_config.name or player_config.default_name,
-                members=members,
-            )
-
-    def _get_sync_leader(self, group_player: Player) -> Player | None:
-        """Get the active sync leader player for a syncgroup or synced player."""
-        if group_player.synced_to:
-            # should not happen but just in case...
-            return self.get(group_player.synced_to)
-        # current sync leader: return the (first/only) player that has group childs
-        for child_player in self.iter_group_members(
-            group_player, only_powered=False, only_playing=False
-        ):
-            if child_player.group_childs:
-                return child_player
-        return None
-
-    def _select_sync_leader(self, group_player: Player) -> Player | None:
-        """Select the active sync leader player for a syncgroup or synced player."""
-        if sync_leader := self._get_sync_leader(group_player):
-            return sync_leader
-        # select new sync leader: return the first powered player
-        for child_player in self.iter_group_members(
-            group_player, only_powered=True, only_playing=False
-        ):
-            if child_player.active_group not in (None, group_player.player_id):
-                continue
-            if (
-                child_player.active_source
-                and child_player.active_source != group_player.active_source
-            ):
-                continue
-            return child_player
-        # fallback select new sync leader: simply return the first (available) player
-        for child_player in self.iter_group_members(
-            group_player, only_powered=False, only_playing=False
-        ):
-            return child_player
-        # this really should not be possible
-        raise RuntimeError("Impossible to select sync leader for syncgroup")
-
-    async def _sync_syncgroup(self, group_player: Player) -> None:
-        """Sync all (possible) players of a syncgroup."""
-        sync_leader = self._select_sync_leader(group_player)
-        members_to_sync: list[str] = []
-        for member in self.iter_group_members(group_player):
-            if not member.can_sync_with:
-                continue
-            if sync_leader.player_id == member.player_id:
-                # skip sync leader
-                continue
-            if member.synced_to == sync_leader.player_id:
-                # already synced
-                continue
-            if member.synced_to and member.synced_to != sync_leader.player_id:
-                # unsync first
-                await self.cmd_unsync(member.player_id)
-            members_to_sync.append(member.player_id)
-        if members_to_sync:
-            await self.cmd_sync_many(sync_leader.player_id, members_to_sync)
 
     async def _play_announcement(
         self,
