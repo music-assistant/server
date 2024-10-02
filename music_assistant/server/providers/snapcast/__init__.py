@@ -122,7 +122,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_SERVER_BUFFER_SIZE,
             type=ConfigEntryType.INTEGER,
-            range=(500, 6000),
+            range=(200, 6000),
             default_value=1000,
             label="Snapserver buffer size",
             description="Buffer[ms]. The end-to-end latency, "
