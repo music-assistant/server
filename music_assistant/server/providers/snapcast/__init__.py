@@ -62,11 +62,14 @@ CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"
 CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_built_in_codec"
 CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
+CONF_STREAM_IDLE_THRESHOLD = "snapcast_stream_idle_threshold"
+
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
 
 DEFAULT_SNAPSERVER_PORT = 1705
+DEFAULT_SNAPSTREAM_IDLE_THRESHOLD = 60000
 
 SNAPWEB_DIR: Final[pathlib.Path] = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
 
@@ -210,6 +213,14 @@ async def get_config_entries(
             depends_on=CONF_USE_EXTERNAL_SERVER,
             category="advanced" if local_snapserver_present else "generic",
         ),
+        ConfigEntry(
+            key=CONF_STREAM_IDLE_THRESHOLD,
+            type=ConfigEntryType.INTEGER,
+            default_value=DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
+            label="Snapcast idle threshold stream parameter",
+            required=True,
+            category="Stream Settings",
+        ),
     )
 
 
@@ -277,6 +288,7 @@ class SnapCastProvider(PlayerProvider):
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
+        self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
         self._stream_tasks = {}
         self._ids_map = bidict({})
 
@@ -588,7 +600,7 @@ class SnapCastProvider(PlayerProvider):
             result = await self._snapserver.stream_add_stream(
                 # NOTE: setting the sampleformat to something else
                 # (like 24 bits bit depth) does not seem to work at all!
-                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2&idle_threshold=60000",
+                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2&idle_threshold={self._snapcast_stream_idle_threshold}",
             )
             if "id" not in result:
                 # if the port is already taken, the result will be an error
