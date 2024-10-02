@@ -236,7 +236,7 @@ async def get_config_entries(
             default_value=DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
             label="Snapcast idle threshold stream parameter",
             required=True,
-            category="Stream Settings",
+            category="advanced",
         ),
     )
 
