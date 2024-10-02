@@ -59,6 +59,7 @@ CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
 CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
+CONF_SERVER_CHUNK_MS = "snapcast_server_built_in_chunk_ms"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"
 CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_built_in_codec"
 CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
@@ -128,6 +129,20 @@ async def get_config_entries(
             description="Buffer[ms]. The end-to-end latency, "
             "from capturing a sample on the snapserver until "
             "the sample is played-out on the client ",
+            required=False,
+            category="Built-in Snapserver Settings",
+            hidden=not local_snapserver_present,
+            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_CHUNK_MS,
+            type=ConfigEntryType.INTEGER,
+            range=(10, 100),
+            default_value=20,
+            label="Snapserver chunk size",
+            description="Default source stream read chunk size [ms]. "
+            "The server will continously read this number of milliseconds from the source into buffer and pass this buffer to the encoder."
+            "The encoded buffer is sent to the clients. Some codecs have a higher latency and will need more data, e.g. Flac will need ~26ms chunks",
             required=False,
             category="Built-in Snapserver Settings",
             hidden=not local_snapserver_present,
@@ -277,6 +292,7 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
             self._snapcast_server_buffer_size = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
+            self._snapcast_server_chunk_ms = self.config.get_value(CONF_SERVER_CHUNK_MS)
             self._snapcast_server_initial_volume = self.config.get_value(CONF_SERVER_INITIAL_VOLUME)
             self._snapcast_server_send_to_muted = self.config.get_value(
                 CONF_SERVER_SEND_AUDIO_TO_MUTED
@@ -670,6 +686,7 @@ class SnapCastProvider(PlayerProvider):
             "--tcp.enabled=true",
             f"--tcp.port={self._snapcast_server_control_port}",
             f"--stream.buffer={self._snapcast_server_buffer_size}",
+            f"--stream.chunk_ms={self._snapcast_server_chunk_ms}",
             f"--stream.codec={self._snapcast_server_transport_codec}",
             f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
