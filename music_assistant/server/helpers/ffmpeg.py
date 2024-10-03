@@ -133,7 +133,7 @@ class FFMpeg(AsyncProcess):
                 return
             self.logger.error(
                 "Stream error: %s",
-                str(err),
+                str(err) or err.__class__.__name__,
                 exc_info=err if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
             )
         finally:
