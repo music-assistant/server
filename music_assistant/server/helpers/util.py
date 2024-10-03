@@ -44,20 +44,6 @@ async def install_package(package: str) -> None:
     args = ["uv", "pip", "install", "--no-cache", "--find-links", HA_WHEELS, package]
     return_code, output = await check_output(*args)
 
-    if return_code != 0 and "Permission denied" in output.decode():
-        # try again with regular pip
-        # uv pip seems to have issues with permissions on docker installs
-        args = [
-            "pip",
-            "install",
-            "--no-cache-dir",
-            "--no-input",
-            "--find-links",
-            HA_WHEELS,
-            package,
-        ]
-        return_code, output = await check_output(*args)
-
     if return_code != 0:
         msg = f"Failed to install package {package}\n{output.decode()}"
         raise RuntimeError(msg)
