@@ -220,21 +220,22 @@ class UniversalGroupProvider(PlayerProvider):
             members = self._filter_members(members)
             player.group_childs = members
             self.mass.config.set_raw_player_config_value(
-                config.player_id, CONF_GROUP_PLAYERS, members
+                config.player_id, CONF_GROUP_MEMBERS, members
             )
             self.mass.players.update(config.player_id)
 
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
-        # ensure that any group players get removed
-        group_players = self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_GROUP_PLAYERS, {}
-        )
-        if player_id in group_players:
-            del group_players[player_id]
-            self.mass.config.set_raw_provider_config_value(
-                self.instance_id, CONF_GROUP_PLAYERS, group_players
-            )
+        if not (group_player := self.mass.players.get(player_id)):
+            return
+        if group_player.powered:
+            # edge case: the group player is powered and being removed
+            for member in self.mass.players.iter_group_members(group_player, only_powered=True):
+                member.active_group = None
+                if member.state == PlayerState.IDLE:
+                    continue
+                self.mass.create_task(self.mass.players.cmd_stop(member.player_id))
+            self.mass.players.remove(group_player.player_id, False)
 
     def on_group_child_state(
         self, group_player_id: str, child_player: Player, changed_values: dict[str, tuple[Any, Any]]
@@ -276,15 +277,20 @@ class UniversalGroupProvider(PlayerProvider):
                         # stop playing existing content on member if we start the group player
                         tg.create_task(self.mass.players.cmd_stop(member.player_id))
                     tg.create_task(self.mass.players.cmd_power(member.player_id, True))
-                    # set active source to group player if the group (is going to be) powered
-                    member.active_group = group_player.active_group
+                    # set active group to group player if the group (is going to be) powered
+                    member.active_group = group_player.player_id
                     member.active_source = group_player.active_source
                     # optimistically set the power state to prevent race conditions
                     self.mass.players.update(member.player_id, skip_forward=True)
                 else:
-                    # reset active source on player
-                    member.active_source = None
+                    # handle TURN_OFF of the group player by turning off all members
+                    if member.active_group != group_player.player_id:
+                        # the member is (somehow) not part of this group
+                        # bit of an edge case, but still good to guard here
+                        continue
+                    # reset active group on player when the group is turned off
                     member.active_group = None
+                    member.active_source = None
                     # handle TURN_OFF of the group player by turning off all members
                     tg.create_task(self.mass.players.cmd_power(member.player_id, False))
                     # optimistically set the power state to prevent race conditions

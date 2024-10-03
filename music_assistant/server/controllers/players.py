@@ -737,11 +737,7 @@ class PlayerController(CoreController):
         if player_id not in self._players:
             return
         player = self._players[player_id]
-        # calculate active group and active source
-        if player.active_group is None:
-            player.active_group = self._get_active_player_group(player)
-        if player.active_source is None:
-            player.active_source = self._get_active_source(player)
+        player.active_source = self._get_active_source(player)
         player.volume_level = player.volume_level or 0  # guard for None volume
         # correct group_members if needed
         if player.group_childs == {player.player_id}:
@@ -793,11 +789,11 @@ class PlayerController(CoreController):
             return
 
         # update/signal group player(s) child's when group updates
-        # if player.type == PlayerType.GROUP:
-        #     for child_player in self.iter_group_members(player):
-        #         if child_player.player_id == player.player_id:
-        #             continue
-        #         self.update(child_player.player_id, skip_forward=True)
+        if player.type == PlayerType.GROUP:
+            for child_player in self.iter_group_members(player):
+                if child_player.player_id == player.player_id:
+                    continue
+                self.update(child_player.player_id, skip_forward=True)
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
             if player_prov := self.get_player_provider(group_player.player_id):
@@ -917,8 +913,7 @@ class PlayerController(CoreController):
         if player.synced_to and (parent_player := self.get(player.synced_to)):
             return parent_player.active_source
         # fallback to the first active group player
-        if player.active_group:
-            group_player = self.get(player.active_group)
+        if player.active_group and (group_player := self.get(player.active_group)):
             return self._get_active_source(group_player)
         # defaults to the player's own player id if not active source set
         return player.active_source or player.player_id
@@ -1024,12 +1019,11 @@ class PlayerController(CoreController):
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
         if (player := self.mass.players.get(player_id)) and player.available:
-            player.enabled = False
             self.mass.players.update(player_id, force_update=True)
         if player and (provider := self.mass.get_provider(player.provider)):
-            assert isinstance(provider, PlayerProvider)
+            provider = cast(PlayerProvider, provider)
             provider.on_player_config_removed(player_id)
-        if not player:
+        if not self.mass.players.get(player_id):
             self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     async def _play_announcement(
