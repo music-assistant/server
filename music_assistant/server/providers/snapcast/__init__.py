@@ -68,7 +68,7 @@ CONF_STREAM_IDLE_THRESHOLD = "snapcast_stream_idle_threshold"
 
 CONF_CATEGORY_GENERIC = "generic"
 CONF_CATEGORY_ADVANCED = "advanced"
-CONF_CATEGORY_BUILT_IN = "Built-in Snapserver Settings"
+CONF_CATEGORY_BUILT_IN = "builtin_snapserver"
 
 CONF_HELP_LINK = (
     "https://raw.githubusercontent.com/badaix/snapcast/refs/heads/master/server/etc/snapserver.conf"
