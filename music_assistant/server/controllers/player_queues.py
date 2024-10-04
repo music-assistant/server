@@ -908,11 +908,17 @@ class PlayerQueuesController(CoreController):
                     str(err),
                 )
         if queue is None:
+            dont_stop_the_music_enabled = self.mass.config.get_raw_core_config_value(
+                self.domain,
+                CONF_DEFAULT_DONT_STOP_THE_MUSIC,
+                True,
+            )
             queue = PlayerQueue(
                 queue_id=queue_id,
                 active=False,
                 display_name=player.display_name,
                 available=player.available,
+                dont_stop_the_music_enabled=dont_stop_the_music_enabled,
                 items=0,
             )
             queue_items = []
