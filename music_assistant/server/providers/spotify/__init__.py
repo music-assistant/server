@@ -576,7 +576,7 @@ class SpotifyProvider(MusicProvider):
                 "pipe",
                 "--single-track",
                 spotify_uri,
-                "--token",
+                "--access-token",
                 auth_info["access_token"],
             ]
             if seek_position:

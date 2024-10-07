@@ -6,8 +6,8 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
-  BASE_IMAGE_VERSION_STABLE: "1.0.10"
-  BASE_IMAGE_VERSION_BETA: "1.0.10"
+  BASE_IMAGE_VERSION_STABLE: "1.1.2"
+  BASE_IMAGE_VERSION_BETA: "1.1.2"
 
 jobs:
   build-artifact:
@@ -76,7 +76,7 @@ jobs:
           path: dist/
       - name: Publish release to PyPI
         if: ${{ github.event.release.prerelease == false }}
-        uses: pypa/gh-action-pypi-publish@v1.10.2
+        uses: pypa/gh-action-pypi-publish@v1.10.3
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
@@ -103,7 +103,7 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.6.1
+        uses: docker/setup-buildx-action@v3.7.1
       - name: Version number for tags
         id: tags
         shell: bash
@@ -113,7 +113,7 @@ jobs:
           echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
       - name: Build and Push release
-        uses: docker/build-push-action@v6.8.0
+        uses: docker/build-push-action@v6.9.0
         if: ${{ github.event.release.prerelease == false }}
         with:
           context: .
@@ -130,7 +130,7 @@ jobs:
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
             BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_STABLE }}
       - name: Build and Push pre-release
-        uses: docker/build-push-action@v6.8.0
+        uses: docker/build-push-action@v6.9.0
         if: ${{ github.event.release.prerelease == true }}
         with:
           context: .

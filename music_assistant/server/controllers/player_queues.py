@@ -305,7 +305,7 @@ class PlayerQueuesController(CoreController):
             # we need to restart playback
             self.mass.create_task(self.resume(queue_id))
         else:
-            self.mass.create_task(self._enqueue_next(queue, queue.current_index))
+            self.mass.call_later(5, self._enqueue_next(queue, queue.current_index))
 
     @api_command("player_queues/play_media")
     async def play_media(

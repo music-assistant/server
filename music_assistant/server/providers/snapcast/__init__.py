@@ -59,14 +59,27 @@ CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
 CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
+CONF_SERVER_CHUNK_MS = "snapcast_server_built_in_chunk_ms"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"
 CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_built_in_codec"
 CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
+CONF_STREAM_IDLE_THRESHOLD = "snapcast_stream_idle_threshold"
+
+
+CONF_CATEGORY_GENERIC = "generic"
+CONF_CATEGORY_ADVANCED = "advanced"
+CONF_CATEGORY_BUILT_IN = "Built-in Snapserver Settings"
+
+CONF_HELP_LINK = (
+    "https://raw.githubusercontent.com/badaix/snapcast/refs/heads/master/server/etc/snapserver.conf"
+)
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
 
+DEFAULT_SNAPSERVER_IP = "127.0.0.1"
 DEFAULT_SNAPSERVER_PORT = 1705
+DEFAULT_SNAPSTREAM_IDLE_THRESHOLD = 60000
 
 SNAPWEB_DIR: Final[pathlib.Path] = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
 
@@ -119,16 +132,24 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_SERVER_BUFFER_SIZE,
             type=ConfigEntryType.INTEGER,
-            range=(500, 6000),
+            range=(200, 6000),
             default_value=1000,
             label="Snapserver buffer size",
-            description="Buffer[ms]. The end-to-end latency, "
-            "from capturing a sample on the snapserver until "
-            "the sample is played-out on the client ",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_CHUNK_MS,
+            type=ConfigEntryType.INTEGER,
+            range=(10, 100),
+            default_value=26,
+            label="Snapserver chunk size",
+            required=False,
+            category=CONF_CATEGORY_BUILT_IN,
+            hidden=not local_snapserver_present,
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_INITIAL_VOLUME,
@@ -136,11 +157,10 @@ async def get_config_entries(
             range=(0, 100),
             default_value=25,
             label="Snapserver initial volume",
-            description="Volume assigned to new snapclients [percent]",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_SEND_AUDIO_TO_MUTED,
@@ -148,9 +168,9 @@ async def get_config_entries(
             default_value=False,
             label="Send audio to muted clients",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_SERVER_TRANSPORT_CODEC,
@@ -175,11 +195,10 @@ async def get_config_entries(
             ),
             default_value="flac",
             label="Snapserver default transport codec",
-            description="This is the codec used by snapserver to send audio to clients",
             required=False,
-            category="Built-in Snapserver Settings",
+            category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
-            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+            help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
             key=CONF_USE_EXTERNAL_SERVER,
@@ -187,19 +206,16 @@ async def get_config_entries(
             default_value=not local_snapserver_present,
             label="Use existing Snapserver",
             required=False,
-            description="Music Assistant by default already includes a Snapserver. \n\n"
-            "Checking this option allows you to connect to your own/external existing Snapserver "
-            "and not use the builtin one provided by Music Assistant.",
-            category="advanced" if local_snapserver_present else "generic",
+            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
             type=ConfigEntryType.STRING,
-            default_value="127.0.0.1",
+            default_value=DEFAULT_SNAPSERVER_IP,
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if local_snapserver_present else "generic",
+            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -208,7 +224,15 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if local_snapserver_present else "generic",
+            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
+        ),
+        ConfigEntry(
+            key=CONF_STREAM_IDLE_THRESHOLD,
+            type=ConfigEntryType.INTEGER,
+            default_value=DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
+            label="Snapcast idle threshold stream parameter",
+            required=True,
+            category=CONF_CATEGORY_ADVANCED,
         ),
     )
 
@@ -266,6 +290,7 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
             self._snapcast_server_buffer_size = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
+            self._snapcast_server_chunk_ms = self.config.get_value(CONF_SERVER_CHUNK_MS)
             self._snapcast_server_initial_volume = self.config.get_value(CONF_SERVER_INITIAL_VOLUME)
             self._snapcast_server_send_to_muted = self.config.get_value(
                 CONF_SERVER_SEND_AUDIO_TO_MUTED
@@ -277,6 +302,7 @@ class SnapCastProvider(PlayerProvider):
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
+        self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
         self._stream_tasks = {}
         self._ids_map = bidict({})
 
@@ -588,7 +614,7 @@ class SnapCastProvider(PlayerProvider):
             result = await self._snapserver.stream_add_stream(
                 # NOTE: setting the sampleformat to something else
                 # (like 24 bits bit depth) does not seem to work at all!
-                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2",
+                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2&idle_threshold={self._snapcast_stream_idle_threshold}",
             )
             if "id" not in result:
                 # if the port is already taken, the result will be an error
@@ -656,8 +682,9 @@ class SnapCastProvider(PlayerProvider):
             "--http.port=1780",
             f"--http.doc_root={SNAPWEB_DIR}",
             "--tcp.enabled=true",
-            "--tcp.port=1705",
-            f"--stream.buffer={self._snapcast_server_control_port}",
+            f"--tcp.port={self._snapcast_server_control_port}",
+            f"--stream.buffer={self._snapcast_server_buffer_size}",
+            f"--stream.chunk_ms={self._snapcast_server_chunk_ms}",
             f"--stream.codec={self._snapcast_server_transport_codec}",
             f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
