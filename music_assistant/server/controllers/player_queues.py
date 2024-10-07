@@ -278,6 +278,7 @@ class PlayerQueuesController(CoreController):
         """Configure Don't stop the music setting on the queue."""
         queue = self._queues[queue_id]
         queue.dont_stop_the_music_enabled = dont_stop_the_music_enabled
+        self.signal_update(queue_id=queue_id)
 
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
@@ -868,6 +869,7 @@ class PlayerQueuesController(CoreController):
         source_items = self._queue_items[source_queue_id]
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
+        target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.resume_pos = source_queue.elapsed_time
         target_queue.current_index = source_queue.current_index
