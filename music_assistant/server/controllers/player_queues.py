@@ -346,6 +346,9 @@ class PlayerQueuesController(CoreController):
         # clear queue if needed
         if option == QueueOption.REPLACE:
             self.clear(queue_id)
+        # Clear the 'played media item' list when a new queue is requested
+        if option not in (QueueOption.ADD, QueueOption.NEXT):
+            queue.played_media_item = []
 
         tracks: list[MediaItemType] = []
         radio_source: list[MediaItemType] = []
@@ -361,8 +364,10 @@ class PlayerQueuesController(CoreController):
                     media_item = item
 
                 # Save requested media item to play on the queue so we can use it as a source
-                # for Don't stop the music
-                queue.played_media_item = media_item
+                # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
+                queue.played_media_item.append(media_item)
+                if len(queue.played_media_item) > 10:
+                    queue.played_media_item.pop(0)
 
                 # handle default enqueue option if needed
                 if option is None:
@@ -443,7 +448,7 @@ class PlayerQueuesController(CoreController):
                 self.logger.warning("Skipping %s: %s", item, str(err))
 
         # overwrite or append radio source items
-        if option not in (QueueOption.ADD, QueueOption.PLAY, QueueOption.NEXT):
+        if option not in (QueueOption.ADD, QueueOption.NEXT):
             queue.radio_source = radio_source
         else:
             queue.radio_source += radio_source
@@ -1083,7 +1088,7 @@ class PlayerQueuesController(CoreController):
                 and (queue.items - queue.current_index) <= 1
             ):
                 # Enable radio mode on the originally requested MediaItem in play_media
-                queue.radio_source = [queue.played_media_item]
+                queue.radio_source = queue.played_media_item
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
 
     def on_player_remove(self, player_id: str) -> None:
