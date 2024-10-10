@@ -637,8 +637,8 @@ class SnapCastProvider(PlayerProvider):
 
     async def _create_default_stream(self) -> None:
         """Create new stream on snapcast server named default case not exist."""
-        stream_set = {stream.name for stream in self._snapserver.streams}
-        if "default" not in stream_set:
+        all_streams = {stream.name for stream in self._snapserver.streams}
+        if "default" not in all_streams:
             await self._snapserver.stream_add_stream("pipe:///tmp/snapfifo?name=default")
 
     def _set_childs_state(self, player_id: str) -> None:
