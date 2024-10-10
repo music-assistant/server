@@ -10,20 +10,10 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
-    CONF_ENTRY_PLAYER_ICON_GROUP,
     ConfigEntry,
-    ConfigValueOption,
     PlayerConfig,
 )
-from music_assistant.common.models.enums import ConfigEntryType, PlayerState
 from music_assistant.common.models.player import Player, PlayerMedia
-from music_assistant.constants import (
-    CONF_GROUP_MEMBERS,
-    CONF_PREVENT_SYNC_LEADER_OFF,
-    CONF_SYNC_LEADER,
-    CONF_SYNCGROUP_DEFAULT_ON,
-    SYNCGROUP_PREFIX,
-)
 
 from .provider import Provider
 
@@ -38,79 +28,6 @@ class PlayerProvider(Provider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        if player_id.startswith(SYNCGROUP_PREFIX):
-            # default entries for syncgroups
-            return (
-                *BASE_PLAYER_CONFIG_ENTRIES,
-                CONF_ENTRY_PLAYER_ICON_GROUP,
-                ConfigEntry(
-                    key=CONF_GROUP_MEMBERS,
-                    type=ConfigEntryType.STRING,
-                    label="Group members",
-                    default_value=[],
-                    options=tuple(
-                        ConfigValueOption(x.display_name, x.player_id)
-                        for x in self.mass.players.all(True, False)
-                        if x.player_id != player_id
-                        and x.provider == self.instance_id
-                        and not x.player_id.startswith(SYNCGROUP_PREFIX)
-                    ),
-                    description="Select all players you want to be part of this group",
-                    multi_value=True,
-                    required=True,
-                ),
-                ConfigEntry(
-                    key=CONF_SYNC_LEADER,
-                    type=ConfigEntryType.STRING,
-                    label="Preferred sync leader",
-                    default_value="auto",
-                    options=(
-                        *tuple(
-                            ConfigValueOption(x.display_name, x.player_id)
-                            for x in self.mass.players.all(True, False)
-                            if x.player_id
-                            in self.mass.config.get_raw_player_config_value(
-                                player_id, CONF_GROUP_MEMBERS, []
-                            )
-                        ),
-                        ConfigValueOption("Select automatically", "auto"),
-                    ),
-                    description="By default Music Assistant will automatically assign a "
-                    "(random) player as sync leader, meaning the other players in the sync group "
-                    "will be synced to that player. If you want to force a specific player to be "
-                    "the sync leader, select it here.",
-                    required=True,
-                ),
-                ConfigEntry(
-                    key=CONF_PREVENT_SYNC_LEADER_OFF,
-                    type=ConfigEntryType.BOOLEAN,
-                    label="Prevent sync leader power off",
-                    default_value=False,
-                    description="With this setting enabled, Music Assistant will disallow powering "
-                    "off the sync leader player if other players are still "
-                    "active in the sync group. This is useful if you want to prevent "
-                    "a short drop in the music while the music is transferred to another player.",
-                    required=True,
-                ),
-                ConfigEntry(
-                    key=CONF_SYNCGROUP_DEFAULT_ON,
-                    type=ConfigEntryType.STRING,
-                    label="Default power ON behavior",
-                    default_value="powered_only",
-                    options=(
-                        ConfigValueOption("Always power ON all child devices", "always_all"),
-                        ConfigValueOption("Always power ON sync leader", "always_leader"),
-                        ConfigValueOption("Start with powered players", "powered_only"),
-                        ConfigValueOption("Ignore", "ignore"),
-                    ),
-                    description="What should happen if you power ON a sync group "
-                    "(or you start playback to it), while no (or not all) players "
-                    "are powered ON ?\n\nShould Music Assistant power ON all players, or only the "
-                    "sync leader, or should it ignore the command if no players are powered ON ?",
-                    required=False,
-                ),
-            )
-
         return (
             *BASE_PLAYER_CONFIG_ENTRIES,
             # add default entries for announce feature
@@ -133,12 +50,13 @@ class PlayerProvider(Provider):
         - player_id: player_id of the player to handle the command.
         """
 
-    @abstractmethod
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
+        # will only be called for players with Pause feature set.
+        raise NotImplementedError
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
@@ -148,6 +66,7 @@ class PlayerProvider(Provider):
         # will only be called for players with Pause feature set.
         raise NotImplementedError
 
+    @abstractmethod
     async def play_media(
         self,
         player_id: str,
@@ -226,7 +145,7 @@ class PlayerProvider(Provider):
         Join/add the given player(id) to the given (master) player/sync group.
 
             - player_id: player_id of the player to handle the command.
-            - target_player: player_id of the syncgroup master or group player.
+            - target_player: player_id of the sync leader.
         """
         # will only be called for players with SYNC feature set.
         raise NotImplementedError
@@ -247,21 +166,22 @@ class PlayerProvider(Provider):
             # default implementation, simply call the cmd_sync for all child players
             await self.cmd_sync(child_id, target_player)
 
+    async def on_group_child_power(
+        self, group_player_id: str, child_player_id: str, powered: bool
+    ) -> None:
+        """Call when a child player of a group player is powered on/off."""
+        # default implementation, simply redirect the request to the group player
+        self.logger.warning(
+            "Detected a player power command to a player that is part of a group. "
+            "Redirecting to group player..."
+        )
+        await self.mass.players.cmd_power(group_player_id, powered)
+
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
 
         This is called by the Player Manager;
         if 'needs_poll' is set to True in the player object.
-        """
-
-    def on_group_child_power(
-        self, group_player: Player, child_player: Player, new_power: bool, group_state: PlayerState
-    ) -> None:
-        """
-        Call when a power command was executed on one of the child players of a PlayerGroup.
-
-        This is used to handle special actions such as (re)syncing.
-        The group state is sent with the state BEFORE the power command was executed.
         """
 
     # DO NOT OVERRIDE BELOW

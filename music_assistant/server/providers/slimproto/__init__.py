@@ -8,7 +8,6 @@ import statistics
 import time
 from collections import deque
 from collections.abc import Iterator
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -61,7 +60,7 @@ from music_assistant.constants import (
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
-from music_assistant.server.providers.ugp import UniversalGroupProvider
+from music_assistant.server.providers.player_group import PlayerGroupProvider
 
 from .multi_client_stream import MultiClientStream
 
@@ -274,16 +273,11 @@ class SlimprotoProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        if not (slimclient := self.slimproto.get_player(player_id)):
-            # most probably a syncgroup
-            return (
-                *base_entries,
-                CONF_ENTRY_CROSSFADE,
-                CONF_ENTRY_CROSSFADE_DURATION,
-                CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-                create_sample_rates_config_entry(96000, 24, 48000, 24),
-            )
-
+        if slimclient := self.slimproto.get_player(player_id):
+            max_sample_rate = int(slimclient.max_sample_rate)
+        else:
+            # player not (yet) connected? use default
+            max_sample_rate = 48000
         # create preset entries (for players that support it)
         preset_entries = ()
         presets = []
@@ -305,7 +299,6 @@ class SlimprotoProvider(PlayerProvider):
             )
             for index in range(1, preset_count + 1)
         )
-
         return (
             base_entries
             + preset_entries
@@ -321,7 +314,7 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_DISPLAY,
                 CONF_ENTRY_VISUALIZATION,
                 CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-                create_sample_rates_config_entry(int(slimclient.max_sample_rate), 24, 48000, 24),
+                create_sample_rates_config_entry(max_sample_rate, 24, 48000, 24),
             )
         )
 
@@ -385,9 +378,9 @@ class SlimprotoProvider(PlayerProvider):
             )
         elif media.queue_id.startswith("ugp_"):
             # special case: UGP stream
-            ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
-            ugp_stream = ugp_provider.streams[media.queue_id]
-            audio_source = ugp_stream.subscribe_raw()
+            ugp_provider: PlayerGroupProvider = self.mass.get_provider("player_group")
+            ugp_stream = ugp_provider.ugp_streams[media.queue_id]
+            audio_source = ugp_stream.subscribe()
         elif media.queue_id and media.queue_item_id:
             # regular queue stream request
             audio_source = self.mass.streams.get_flow_stream(
@@ -557,6 +550,8 @@ class SlimprotoProvider(PlayerProvider):
         parent_player.group_childs.add(child_player.player_id)
         child_player.synced_to = parent_player.player_id
         # check if we should (re)start or join a stream session
+        # TODO: support late joining of a client into an existing stream session
+        # so it doesn't need to be restarted anymore.
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
         if active_queue.state == PlayerState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
@@ -571,23 +566,26 @@ class SlimprotoProvider(PlayerProvider):
             )
         else:
             # make sure that the player manager gets an update
-            self.mass.players.update(child_player.player_id, skip_forward=True)
-            self.mass.players.update(parent_player.player_id, skip_forward=True)
+            self.mass.players.update(child_player.player_id, skip_redirect=True)
+            self.mass.players.update(parent_player.player_id, skip_redirect=True)
 
     async def cmd_unsync(self, player_id: str) -> None:
-        """Handle UNSYNC command for given player."""
-        child_player = self.mass.players.get(player_id)
-        parent_player = self.mass.players.get(child_player.synced_to)
-        # make sure to send stop to the player
-        await self.cmd_stop(child_player.player_id)
-        child_player.synced_to = None
-        with suppress(KeyError):
-            parent_player.group_childs.remove(child_player.player_id)
-        if parent_player.group_childs == {parent_player.player_id}:
-            # last child vanished; the sync group is dissolved
-            parent_player.group_childs.remove(parent_player.player_id)
-        self.mass.players.update(child_player.player_id)
-        self.mass.players.update(parent_player.player_id)
+        """Handle UNSYNC command for given player.
+
+        Remove the given player from any syncgroups it currently is synced to.
+
+            - player_id: player_id of the player to handle the command.
+        """
+        player = self.mass.players.get(player_id, raise_unavailable=True)
+        if player.synced_to:
+            group_leader = self.mass.players.get(player.synced_to, raise_unavailable=True)
+            group_leader.group_childs.remove(player_id)
+            player.synced_to = None
+            if slimclient := self.slimproto.get_player(player_id):
+                await slimclient.stop()
+            # make sure that the player manager gets an update
+            self.mass.players.update(player.player_id, skip_redirect=True)
+            self.mass.players.update(group_leader.player_id, skip_redirect=True)
 
     def _client_callback(
         self,
@@ -648,9 +646,6 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.PAUSE,
                     PlayerFeature.VOLUME_MUTE,
-                ),
-                can_sync_with=tuple(
-                    x.player_id for x in self.slimproto.players if x.player_id != player_id
                 ),
             )
             self.mass.players.register_or_update(player)
@@ -855,12 +850,6 @@ class SlimprotoProvider(PlayerProvider):
         await self._set_display(slimplayer)
         # update all attributes
         await self._handle_player_update(slimplayer)
-        # update existing players so they can update their `can_sync_with` field
-        for _player in self.players:
-            _player.can_sync_with = tuple(
-                x.player_id for x in self.slimproto.players if x.player_id != _player.player_id
-            )
-            self.mass.players.update(_player.player_id)
         # restore volume and power state
         if last_state := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_STATE):
             init_power = last_state[0]

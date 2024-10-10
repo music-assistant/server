@@ -190,11 +190,8 @@ class CastStatusListener:
         if group_player := self.prov.castplayers.get(group_uuid):
             if group_player.cc.media_controller.is_active:
                 self.castplayer.active_group = group_uuid
-                self.castplayer.player.active_source = group_uuid
-                self.castplayer.player.state = group_player.player.state
             elif group_uuid == self.castplayer.active_group:
                 self.castplayer.active_group = None
-                self.castplayer.player.active_source = self.castplayer.player.player_id
 
         self.prov.logger.log(
             VERBOSE_LOG_LEVEL,

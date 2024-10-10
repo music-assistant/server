@@ -65,10 +65,7 @@ CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
 CONF_HTTP_PROFILE: Final[str] = "http_profile"
-CONF_SYNC_LEADER: Final[str] = "sync_leader"
 CONF_BYPASS_NORMALIZATION_RADIO: Final[str] = "bypass_normalization_radio"
-CONF_PREVENT_SYNC_LEADER_OFF: Final[str] = "prevent_sync_leader_off"
-CONF_SYNCGROUP_DEFAULT_ON: Final[str] = "syncgroup_default_on"
 CONF_ENABLE_ICY_METADATA: Final[str] = "enable_icy_metadata"
 CONF_VOLUME_NORMALIZATION_RADIO: Final[str] = "volume_normalization_radio"
 CONF_VOLUME_NORMALIZATION_TRACKS: Final[str] = "volume_normalization_tracks"
@@ -111,6 +108,5 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "music",
     "player_queues",
 )
-SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")

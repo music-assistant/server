@@ -207,8 +207,9 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self.castplayers[player_id]
         if powered:
             await self._launch_app(castplayer)
-        else:
-            await asyncio.to_thread(castplayer.cc.quit_app)
+            return
+        # handle power off
+        await asyncio.to_thread(castplayer.cc.quit_app)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -474,10 +475,26 @@ class ChromecastProvider(PlayerProvider):
         # active source
         if group_player:
             castplayer.player.active_source = group_player.player.active_source
+            castplayer.player.active_group = group_player.player.player_id
         elif castplayer.cc.app_id == MASS_APP_ID:
             castplayer.player.active_source = castplayer.player_id
+            castplayer.player.active_group = None
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name
+            castplayer.player.active_group = None
+
+        if status.content_id:
+            castplayer.player.current_media = PlayerMedia(
+                uri=status.content_id,
+                title=status.title,
+                artist=status.artist,
+                album=status.album_name,
+                image_url=status.images[0].url if status.images else None,
+                duration=status.duration,
+                media_type=MediaType.TRACK,
+            )
+        else:
+            castplayer.player.current_media = None
 
         # current media
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
