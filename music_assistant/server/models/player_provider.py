@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Any
 
 from music_assistant.common.models.config_entries import (
     BASE_PLAYER_CONFIG_ENTRIES,
@@ -44,11 +43,6 @@ class PlayerProvider(Provider):
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
 
-    def on_group_child_state(
-        self, group_player_id: str, child_player: Player, changed_values: dict[str, tuple[Any, Any]]
-    ) -> None:
-        """Call (by player manager) when a childplayer in a (active) group changed state."""
-
     @abstractmethod
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
@@ -56,12 +50,13 @@ class PlayerProvider(Provider):
         - player_id: player_id of the player to handle the command.
         """
 
-    @abstractmethod
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
+        # will only be called for players with Pause feature set.
+        raise NotImplementedError
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
@@ -71,6 +66,7 @@ class PlayerProvider(Provider):
         # will only be called for players with Pause feature set.
         raise NotImplementedError
 
+    @abstractmethod
     async def play_media(
         self,
         player_id: str,
@@ -169,6 +165,17 @@ class PlayerProvider(Provider):
         for child_id in child_player_ids:
             # default implementation, simply call the cmd_sync for all child players
             await self.cmd_sync(child_id, target_player)
+
+    async def on_group_child_power(
+        self, group_player_id: str, child_player_id: str, powered: bool
+    ) -> None:
+        """Call when a child player of a group player is powered on/off."""
+        # default implementation, simply redirect the request to the group player
+        self.logger.warning(
+            "Detected a player power command to a player that is part of a group. "
+            "Redirecting to group player..."
+        )
+        await self.mass.players.cmd_power(group_player_id, powered)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.

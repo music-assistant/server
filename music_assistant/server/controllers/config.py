@@ -47,11 +47,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 DEFAULT_SAVE_DELAY = 5
 
-BASE_KEYS = (
-    *PlayerConfig.to_dict().keys(),
-    *ProviderConfig.to_dict().keys(),
-    *CoreConfig.to_dict().keys(),
-)
+BASE_KEYS = ("enabled", "name", "available", "default_name", "provider", "type")
 
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)

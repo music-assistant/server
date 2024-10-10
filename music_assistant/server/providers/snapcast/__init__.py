@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
-    from music_assistant.server.providers.ugp import UniversalGroupProvider
+    from music_assistant.server.providers.player_group import PlayerGroupProvider
 
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
@@ -469,16 +469,19 @@ class SnapCastProvider(PlayerProvider):
             for mass_child_id in list(mass_player.group_childs):
                 if mass_child_id != player_id:
                     await self.cmd_unsync(mass_child_id)
-        else:
-            mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
-            mass_sync_master_player.group_childs.remove(player_id)
-            mass_player.synced_to = None
-            snap_client_id = self._get_snapclient_id(player_id)
-            group = self._get_snapgroup(player_id)
-            await group.remove_client(snap_client_id)
+            return
+        mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
+        mass_sync_master_player.group_childs.remove(player_id)
+        mass_player.synced_to = None
+        snap_client_id = self._get_snapclient_id(player_id)
+        group = self._get_snapgroup(player_id)
+        await group.remove_client(snap_client_id)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
+        # make sure that the player manager gets an update
+        self.mass.players.update(player_id, skip_redirect=True)
+        self.mass.players.update(mass_player.synced_to, skip_redirect=True)
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -506,8 +509,8 @@ class SnapCastProvider(PlayerProvider):
             )
         elif media.queue_id.startswith("ugp_"):
             # special case: UGP stream
-            ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
-            ugp_stream = ugp_provider.streams[media.queue_id]
+            ugp_provider: PlayerGroupProvider = self.mass.get_provider("ugp")
+            ugp_stream = ugp_provider.ugp_streams[media.queue_id]
             input_format = ugp_stream.output_format
             audio_source = ugp_stream.subscribe()
         elif media.queue_id and media.queue_item_id:

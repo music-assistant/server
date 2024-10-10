@@ -38,13 +38,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    MASS_LOGO_ONLINE,
-    SYNCGROUP_PREFIX,
-    VERBOSE_LOG_LEVEL,
-)
-from music_assistant.server.helpers.util import TaskManager
+from music_assistant.constants import CONF_CROSSFADE, MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -691,16 +685,6 @@ class SonosPlayerProvider(PlayerProvider):
         self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         """Handle (provider native) playback of an announcement on given player."""
-        if player_id.startswith(SYNCGROUP_PREFIX):
-            # handle syncgroup, unwrap to all underlying child's
-            async with TaskManager(self.mass) as tg:
-                if group_player := self.mass.players.get(player_id):
-                    # execute on all child players
-                    for child_player_id in group_player.group_childs:
-                        tg.create_task(
-                            self.play_announcement(child_player_id, announcement, volume_level)
-                        )
-            return
         sonos_player = self.sonos_players[player_id]
         self.logger.debug(
             "Playing announcement %s using websocket audioclip on %s",

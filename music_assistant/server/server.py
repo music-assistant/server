@@ -404,11 +404,20 @@ class MusicAssistant:
         command: str,
         handler: Callable,
     ) -> None:
-        """Dynamically register a command on the API."""
+        """
+        Dynamically register a command on the API.
+
+        Returns handle to unregister.
+        """
         if command in self.command_handlers:
             msg = f"Command {command} is already registered"
             raise RuntimeError(msg)
         self.command_handlers[command] = APICommandHandler.parse(command, handler)
+
+        def unregister() -> None:
+            self.command_handlers.pop(command)
+
+        return unregister
 
     async def load_provider_config(
         self,
