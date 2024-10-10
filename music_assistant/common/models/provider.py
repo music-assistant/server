@@ -64,6 +64,7 @@ class ProviderInstance(DataClassORJSONMixin):
     domain: str
     name: str
     instance_id: str
+    lookup_key: str
     supported_features: list[ProviderFeature]
     available: bool
     icon: str | None = None

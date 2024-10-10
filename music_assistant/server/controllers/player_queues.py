@@ -600,7 +600,7 @@ class PlayerQueuesController(CoreController):
             queue.stream_finished = None
             queue.end_of_track_reached = None
         # forward the actual command to the player controller
-        await self.mass.players.cmd_stop(queue_id, skip_forward=True)
+        await self.mass.players.cmd_stop(queue_id, skip_redirect=True)
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -619,7 +619,7 @@ class PlayerQueuesController(CoreController):
             and queue.state == PlayerState.PAUSED
         ):
             # forward the actual command to the player controller
-            await self.mass.players.cmd_play(queue_id, skip_forward=True)
+            await self.mass.players.cmd_play(queue_id, skip_redirect=True)
         else:
             await self.resume(queue_id)
 

@@ -108,6 +108,5 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "music",
     "player_queues",
 )
-SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")
