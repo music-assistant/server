@@ -553,7 +553,12 @@ class PlayerGroupProvider(PlayerProvider):
             model_name = "Sync Group"
             manufacturer = self.mass.get_provider(group_type).name
             if child_player := next((x for x in player_provider.players), None):
-                player_features.update(child_player.supported_features)
+                for feature in (
+                    PlayerFeature.PAUSE,
+                    PlayerFeature.VOLUME_MUTE,
+                ):
+                    if feature in child_player.supported_features:
+                        player_features.add(feature)
         else:
             # this may happen if the provider is not available yet
             model_name = "Sync Group"

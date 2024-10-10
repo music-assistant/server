@@ -874,26 +874,15 @@ class PlayerController(CoreController):
             if player.player_id in _player.group_childs:
                 yield _player
 
-    def _get_active_player_group(self, player: Player) -> str | None:
-        """Return the currently active groupplayer for the given player (if any)."""
-        # prefer active source group
-        for group_player in self._get_player_groups(player, available_only=True, powered_only=True):
-            if player.active_source in (group_player.player_id, group_player.active_source):
-                return group_player.player_id
-        # fallback to just the first powered group
-        for group_player in self._get_player_groups(player, available_only=True, powered_only=True):
-            return group_player.player_id
-        return None
-
     def _get_active_source(self, player: Player) -> str:
         """Return the active_source id for given player."""
         # if player is synced, return group leader's active source
         if player.synced_to and (parent_player := self.get(player.synced_to)):
             return parent_player.active_source
-        # fallback to the first active group player
+        # if player has group active, return those details
         if player.active_group and (group_player := self.get(player.active_group)):
             return self._get_active_source(group_player)
-        # defaults to the player's own player id if not active source set
+        # defaults to the player's own player id if no active source set
         return player.active_source or player.player_id
 
     def _get_group_volume_level(self, player: Player) -> int:
