@@ -25,7 +25,7 @@ from music_assistant.common.models.config_entries import (
     create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
-from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
+from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import CONF_PLAYERS, MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -209,14 +209,6 @@ class ChromecastProvider(PlayerProvider):
             await self._launch_app(castplayer)
             return
         # handle power off
-        mass_player = castplayer.player
-        if mass_player.active_group:
-            # when playing to a cast group, you can't power off an individual group child
-            msg = (
-                f"{mass_player.display_name} can not be turned off while a cast group is active. "
-                "Turn off the entire cast group instead."
-            )
-            raise PlayerCommandFailed(msg)
         await asyncio.to_thread(castplayer.cc.quit_app)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
@@ -483,10 +475,26 @@ class ChromecastProvider(PlayerProvider):
         # active source
         if group_player:
             castplayer.player.active_source = group_player.player.active_source
+            castplayer.player.active_group = group_player.player.player_id
         elif castplayer.cc.app_id == MASS_APP_ID:
             castplayer.player.active_source = castplayer.player_id
+            castplayer.player.active_group = None
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name
+            castplayer.player.active_group = None
+
+        if status.content_id:
+            castplayer.player.current_media = PlayerMedia(
+                uri=status.content_id,
+                title=status.title,
+                artist=status.artist,
+                album=status.album_name,
+                image_url=status.images[0].url if status.images else None,
+                duration=status.duration,
+                media_type=MediaType.TRACK,
+            )
+        else:
+            castplayer.player.current_media = None
 
         # current media
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
