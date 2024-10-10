@@ -40,7 +40,11 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
+from music_assistant.server.helpers.audio import (
+    FFMpeg,
+    get_ffmpeg_stream,
+    get_player_filter_params,
+)
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -206,7 +210,9 @@ async def get_config_entries(
             default_value=not local_snapserver_present,
             label="Use existing Snapserver",
             required=False,
-            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
+            category=(
+                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
+            ),
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
@@ -215,7 +221,9 @@ async def get_config_entries(
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
+            category=(
+                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
+            ),
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -224,7 +232,9 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
+            category=(
+                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
+            ),
         ),
         ConfigEntry(
             key=CONF_STREAM_IDLE_THRESHOLD,
@@ -325,7 +335,7 @@ class SnapCastProvider(PlayerProvider):
             )
             # register callback for when the connection gets lost to the snapserver
             self._snapserver.set_on_disconnect_callback(self._handle_disconnect)
-
+            await self._create_default_stream()
         except OSError as err:
             msg = "Unable to start the Snapserver connection ?"
             raise SetupFailedError(msg) from err
@@ -625,6 +635,12 @@ class SnapCastProvider(PlayerProvider):
         msg = "Unable to create stream - No free port found?"
         raise RuntimeError(msg)
 
+    async def _create_default_stream(self) -> None:
+        """Create new stream on snapcast server named default case not exist."""
+        all_streams = {stream.name for stream in self._snapserver.streams}
+        if "default" not in all_streams:
+            await self._snapserver.stream_add_stream("pipe:///tmp/snapfifo?name=default")
+
     def _set_childs_state(self, player_id: str) -> None:
         """Set the state of the child`s of the player."""
         mass_player = self.mass.players.get(player_id)
@@ -667,7 +683,8 @@ class SnapCastProvider(PlayerProvider):
                 setattr(self, attr_name, True)
             except NonUniqueNameException:
                 self.logger.debug(
-                    "Could not register mdns record for %s as its already in use", zeroconf_type
+                    "Could not register mdns record for %s as its already in use",
+                    zeroconf_type,
                 )
             except Exception as err:
                 self.logger.exception(
@@ -717,7 +734,8 @@ class SnapCastProvider(PlayerProvider):
     def _handle_disconnect(self, exc: Exception) -> None:
         """Handle disconnect callback from snapserver."""
         self.logger.info(
-            "Connection to SnapServer lost, reason: %s. Reloading provider in 5 seconds.", str(exc)
+            "Connection to SnapServer lost, reason: %s. Reloading provider in 5 seconds.",
+            str(exc),
         )
         # schedule a reload of the provider
         self.mass.call_later(5, self.mass.load_provider(self.instance_id, allow_retry=True))
