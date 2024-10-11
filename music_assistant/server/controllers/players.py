@@ -574,8 +574,26 @@ class PlayerController(CoreController):
         if not (player.synced_to or player.group_childs):
             return  # nothing to do
 
-        # reset active source player if it is unsynced
+        # (optimistically) reset active source player if it is unsynced
         player.active_source = None
+
+        # handle (edge)case where un unsync command is sent to a sync leader;
+        # we dissolve the entire syncgroup in this case.
+        # while maybe not strictly needed to do this for all player providers,
+        # we do this to keep the functionality consistent across all providers
+        if player.group_childs:
+            self.logger.warning(
+                "Detected unsync command to player %s which is a sync(group) leader, "
+                "all sync members will be unsynced!",
+                player.name,
+            )
+            async with TaskManager(self.mass) as tg:
+                for group_child_id in player.group_childs:
+                    if group_child_id == player_id:
+                        continue
+                    tg.create_task(self.cmd_unsync(group_child_id))
+            return
+
         # forward command to the player provider
         if player_provider := self.get_player_provider(player_id):
             await player_provider.cmd_unsync(player_id)
@@ -585,8 +603,17 @@ class PlayerController(CoreController):
         """Create temporary sync group by joining given players to target player."""
         parent_player: Player = self.get(target_player, True)
         if PlayerFeature.SYNC not in parent_player.supported_features:
-            msg = f"Player {parent_player.name} does not support (un)sync commands"
+            msg = f"Player {parent_player.name} does not support sync commands"
             raise UnsupportedFeaturedException(msg)
+
+        if parent_player.synced_to:
+            # guard edge case: player already synced to another player
+            raise PlayerCommandFailed(
+                "Player %s is already synced to another player on its own, "
+                "you need to unsync it first before you can join other players to it.",
+                parent_player.name,
+            )
+
         # filter all player ids on compatibility and availability
         final_player_ids: UniqueList[str] = UniqueList()
         for child_player_id in child_player_ids:
@@ -596,16 +623,16 @@ class PlayerController(CoreController):
                 self.logger.warning("Player %s is not available", child_player_id)
                 continue
             if PlayerFeature.SYNC not in child_player.supported_features:
-                self.logger.warning(
-                    "Player %s does not support (un)sync commands", child_player.name
-                )
+                # this should not happen, but just in case bad things happen, guard it
+                self.logger.warning("Player %s does not support sync commands", child_player.name)
                 continue
             if child_player.synced_to and child_player.synced_to == target_player:
                 continue  # already synced to this target
             elif child_player.synced_to:
                 # player already synced to another player, unsync first
                 self.logger.warning(
-                    "Player %s is already synced, unsyncing first", child_player.name
+                    "Player %s is already synced to another player, unsyncing first",
+                    child_player.name,
                 )
                 await self.cmd_unsync(child_player.player_id)
             # power on the player if needed
@@ -614,7 +641,7 @@ class PlayerController(CoreController):
             # if we reach here, all checks passed
             final_player_ids.append(child_player_id)
             # set active source if player is synced
-            child_player.active_source = parent_player.active_source
+            child_player.active_source = parent_player.player_id
 
         # forward command to the player provider after all (base) sanity checks
         player_provider = self.get_player_provider(target_player)
