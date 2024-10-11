@@ -19,7 +19,7 @@ RUN set -x \
     # install ffmpeg from community repo
     && apk add --no-cache ffmpeg --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
     # install snapcast from community repo
-    && apk add --no-cache snapcast --repository=https://dl-cdn.alpinelinux.org/edge/v3.20/community \
+    && apk add --no-cache snapcast --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community \
     # install libnfs from community repo
     && apk add --no-cache libnfs --repository=https://dl-cdn.alpinelinux.org/alpine/v3.20/community \
     # install openssl-dev (needed for airplay)
