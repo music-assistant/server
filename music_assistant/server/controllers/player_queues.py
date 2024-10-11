@@ -348,7 +348,7 @@ class PlayerQueuesController(CoreController):
             self.clear(queue_id)
         # Clear the 'played media item' list when a new queue is requested
         if option not in (QueueOption.ADD, QueueOption.NEXT):
-            queue.played_media_item = []
+            queue.enqueued_media_items = []
 
         tracks: list[MediaItemType] = []
         radio_source: list[MediaItemType] = []
@@ -365,9 +365,9 @@ class PlayerQueuesController(CoreController):
 
                 # Save requested media item to play on the queue so we can use it as a source
                 # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
-                queue.played_media_item.append(media_item)
-                if len(queue.played_media_item) > 10:
-                    queue.played_media_item.pop(0)
+                queue.enqueued_media_items.append(media_item)
+                if len(queue.enqueued_media_items) > 10:
+                    queue.enqueued_media_items.pop(0)
 
                 # handle default enqueue option if needed
                 if option is None:
@@ -1088,7 +1088,7 @@ class PlayerQueuesController(CoreController):
                 and (queue.items - queue.current_index) <= 1
             ):
                 # Enable radio mode on the originally requested MediaItem in play_media
-                queue.radio_source = queue.played_media_item
+                queue.radio_source = queue.enqueued_media_items
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
 
     def on_player_remove(self, player_id: str) -> None:
