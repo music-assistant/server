@@ -1,10 +1,4 @@
-"""
-MusicAssistant Players Controller.
-
-Handles all logic to control supported players,
-which are provided by Player Providers.
-
-"""
+"""Logic to play music from MusicProviders to supported players."""
 
 from __future__ import annotations
 
@@ -259,9 +253,7 @@ class PlayerController(CoreController):
 
     @api_command("players/cmd/power")
     @handle_player_command
-    async def cmd_power(
-        self, player_id: str, powered: bool, skip_redirect: bool = False, skip_update: bool = False
-    ) -> None:
+    async def cmd_power(self, player_id: str, powered: bool, skip_redirect: bool = False) -> None:
         """Send POWER command to given player.
 
         - player_id: player_id of the player to handle the command.
@@ -272,17 +264,13 @@ class PlayerController(CoreController):
         if player.powered == powered:
             return  # nothing to do
 
-        if player.active_group and not powered and not skip_redirect:
-            # this is simply not possible (well, not without major headaches)
-            # the player is part of a permanent (sync)group and the user tries to power off
-            # one child player... we can't allow this, as it would break the group so we
-            # power off the whole group instead.
-            self.logger.info(
-                "Detected a power OFF command to player %s which is part of a (active) group. "
-                "This command will be redirected to the entire group.",
-                player.name,
-            )
-            await self.cmd_power(player.active_group, False)
+        # redirect to active group player if player is group child
+        if not skip_redirect and player.active_group:
+            if group_player_provider := self.get_player_provider(player.active_group):
+                async with self._player_throttlers[player.active_group]:
+                    await group_player_provider.on_group_child_power(
+                        player.active_group, player_id, powered
+                    )
             return
 
         # always stop player at power off
@@ -294,13 +282,14 @@ class PlayerController(CoreController):
             await self.cmd_stop(player_id)
 
         # unsync player at power off
-        if not powered and (player.synced_to):
+        if not powered and (
+            player.synced_to or (player.type == PlayerType.PLAYER and player.group_childs)
+        ):
             await self.cmd_unsync(player_id)
-        # power off all synced childs when player is a sync leader
-        elif not powered and player.type == PlayerType.PLAYER and player.group_childs:
-            async with TaskManager(self.mass) as tg:
-                for member in self.iter_group_members(player, True):
-                    tg.create_task(self.cmd_power(member.player_id, False))
+        # elif not powered and player.type == PlayerType.PLAYER and player.group_childs:
+        #     async with TaskManager(self.mass) as tg:
+        #         for member in self.iter_group_members(player, True):
+        #             tg.create_task(self.cmd_power(member.player_id, False))
 
         # handle actual power command
         if PlayerFeature.POWER in player.supported_features:
@@ -318,9 +307,7 @@ class PlayerController(CoreController):
         # reset active source on power off
         if not powered:
             player.active_source = None
-
-        if not skip_update:
-            self.update(player_id)
+        self.update(player_id)
 
         # handle 'auto play on power on' feature
         if (
@@ -528,7 +515,6 @@ class PlayerController(CoreController):
         finally:
             player.announcement_in_progress = False
 
-    @handle_player_command
     async def play_media(
         self, player_id: str, media: PlayerMedia, skip_redirect: bool = False
     ) -> None:
@@ -587,25 +573,9 @@ class PlayerController(CoreController):
             return
         if not (player.synced_to or player.group_childs):
             return  # nothing to do
-        if player.active_group:
-            raise PlayerCommandFailed(
-                "Command denied: player %s is part of (active) group %s",
-                player.display_name,
-                player.active_group,
-            )
 
-        if player.active_group:
-            # this is simply not possible (well, not without major headaches)
-            # the player is part of a permanent (sync)group and the user tries to unsync
-            # one child player... we can't allow this, as it would break the group so we
-            # power unsync the whole group instead.
-            self.logger.info(
-                "Detected a power OFF command to player %s which is part of a (active) group. "
-                "This command will be redirected by turning off the entire group!",
-                player.name,
-            )
-            await self.cmd_power(player.active_group, False)
-            return
+        # (optimistically) reset active source player if it is unsynced
+        player.active_source = None
 
         # handle (edge)case where un unsync command is sent to a sync leader;
         # we dissolve the entire syncgroup in this case.
@@ -624,15 +594,9 @@ class PlayerController(CoreController):
                     tg.create_task(self.cmd_unsync(group_child_id))
             return
 
-        # (optimistically) reset active source player if it is unsynced
-        player.active_source = None
-
         # forward command to the player provider
         if player_provider := self.get_player_provider(player_id):
             await player_provider.cmd_unsync(player_id)
-        # if the command succeeded we optimistically reset the sync state
-        # this is to prevent race conditions and to update the UI as fast as possible
-        player.synced_to = None
 
     @api_command("players/cmd/sync_many")
     async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
@@ -645,8 +609,9 @@ class PlayerController(CoreController):
         if parent_player.synced_to:
             # guard edge case: player already synced to another player
             raise PlayerCommandFailed(
-                f"Player {parent_player.name} is already synced to another player on its own, "
+                "Player %s is already synced to another player on its own, "
                 "you need to unsync it first before you can join other players to it.",
+                parent_player.name,
             )
 
         # filter all player ids on compatibility and availability
@@ -663,14 +628,7 @@ class PlayerController(CoreController):
                 continue
             if child_player.synced_to and child_player.synced_to == target_player:
                 continue  # already synced to this target
-
-            if child_player.group_childs:
-                # guard edge case: childplayer is already a sync leader on its own
-                raise PlayerCommandFailed(
-                    f"Player {child_player.name} is already synced with other players, "
-                    "you need to unsync it first before you can join it to another player.",
-                )
-            if child_player.synced_to:
+            elif child_player.synced_to:
                 # player already synced to another player, unsync first
                 self.logger.warning(
                     "Player %s is already synced to another player, unsyncing first",
@@ -679,7 +637,7 @@ class PlayerController(CoreController):
                 await self.cmd_unsync(child_player.player_id)
             # power on the player if needed
             if not child_player.powered:
-                await self.cmd_power(child_player.player_id, True, skip_update=True)
+                await self.cmd_power(child_player.player_id, True)
             # if we reach here, all checks passed
             final_player_ids.append(child_player_id)
             # set active source if player is synced
