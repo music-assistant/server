@@ -21,7 +21,7 @@ server = [
   "faust-cchardet>=2.1.18",
   "aiodns>=3.0.0",
   "Brotli>=1.0.9",
-  "aiohttp==3.10.5",
+  "aiohttp==3.10.8",
   "aiofiles==24.1.0",
   "aiorun==2024.8.1",
   "certifi==2024.8.30",
@@ -37,7 +37,7 @@ server = [
   "xmltodict==0.13.0",
   "orjson==3.10.7",
   "shortuuid==1.0.13",
-  "zeroconf==0.134.0",
+  "zeroconf==0.135.0",
   "cryptography==43.0.1",
   "ifaddr==0.2.0",
 ]
@@ -52,7 +52,7 @@ test = [
   "pytest-cov==5.0.0",
   "syrupy==4.7.1",
   "tomli==2.0.1",
-  "ruff==0.6.7",
+  "ruff==0.6.8",
 ]
 
 [project.scripts]

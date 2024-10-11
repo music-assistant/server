@@ -67,6 +67,30 @@ def test_compare_artist() -> None:
     artist_b.name = artist_a.name
     artist_b.external_ids = {(media_items.ExternalID.MB_ARTIST, "1234")}
     assert compare.compare_artist(artist_a, artist_b) is False
+    # test on external id mismatch while name matches
+    artist_a = media_items.Artist(
+        item_id="1",
+        provider="test1",
+        name="Artist A",
+        external_ids={(media_items.ExternalID.MB_ARTIST, "123")},
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="1", provider_domain="test", provider_instance="test1"
+            )
+        },
+    )
+    artist_b = media_items.Artist(
+        item_id="1",
+        provider="test2",
+        name="Artist A",
+        external_ids={(media_items.ExternalID.MB_ARTIST, "abc")},
+        provider_mappings={
+            media_items.ProviderMapping(
+                item_id="2", provider_domain="test", provider_instance="test2"
+            )
+        },
+    )
+    assert compare.compare_artist(artist_a, artist_b) is False
 
 
 def test_compare_album() -> None:

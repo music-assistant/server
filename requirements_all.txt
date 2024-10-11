@@ -3,7 +3,7 @@
 Brotli>=1.0.9
 aiodns>=3.0.0
 aiofiles==24.1.0
-aiohttp==3.10.5
+aiohttp==3.10.8
 aiojellyfin==0.10.1
 aiorun==2024.8.1
 aioslimproto==3.0.1
@@ -45,4 +45,4 @@ xmltodict==0.13.0
 yt-dlp==2024.8.6
 yt-dlp-youtube-accesstoken==0.1.1
 ytmusicapi==1.8.1
-zeroconf==0.134.0
+zeroconf==0.135.0
