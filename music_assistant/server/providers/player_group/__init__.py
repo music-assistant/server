@@ -558,11 +558,9 @@ class PlayerGroupProvider(PlayerProvider):
             for feature in (
                 PlayerFeature.PAUSE,
                 PlayerFeature.VOLUME_MUTE,
-                PlayerFeature.PLAY_ANNOUNCEMENT,
             ):
                 if all(x for x in player_provider.players if feature in x.supported_features):
                     player_features.add(feature)
-            player_features.add(PlayerFeature.SYNC)
         else:
             raise PlayerUnavailableError(f"Provider for syncgroup {group_type} is not available!")
 
