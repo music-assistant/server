@@ -76,7 +76,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     soco_config.EVENTS_MODULE = events_asyncio
-    soco_config.REQUEST_TIMEOUT = 9.5
     zonegroupstate.EVENT_CACHE_TIMEOUT = SUBSCRIPTION_TIMEOUT
     prov = SonosPlayerProvider(mass, manifest, config)
     # set-up soco logging
