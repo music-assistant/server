@@ -166,17 +166,6 @@ class PlayerProvider(Provider):
             # default implementation, simply call the cmd_sync for all child players
             await self.cmd_sync(child_id, target_player)
 
-    async def on_group_child_power(
-        self, group_player_id: str, child_player_id: str, powered: bool
-    ) -> None:
-        """Call when a child player of a group player is powered on/off."""
-        # default implementation, simply redirect the request to the group player
-        self.logger.warning(
-            "Detected a player power command to a player that is part of a group. "
-            "Redirecting to group player..."
-        )
-        await self.mass.players.cmd_power(group_player_id, powered)
-
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
 
