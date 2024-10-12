@@ -8,6 +8,7 @@ allowing the user to create 'presets' of players to sync together (of the same t
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from time import time
 from typing import TYPE_CHECKING, Final, cast
 
@@ -37,6 +38,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
 )
 from music_assistant.common.models.errors import (
+    PlayerUnavailableError,
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
@@ -131,11 +133,6 @@ async def get_config_entries(
 
 class PlayerGroupProvider(PlayerProvider):
     """Base/builtin provider for creating (permanent) player groups."""
-
-    @property
-    def supported_features(self) -> tuple[ProviderFeature, ...]:
-        """Return the features supported by this Provider."""
-        return ()
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -393,10 +390,10 @@ class PlayerGroupProvider(PlayerProvider):
         """Handle PLAY MEDIA on given player."""
         group_player = self.mass.players.get(player_id)
         # power on (or resync) if needed
-        if not group_player.powered:
-            await self.cmd_power(player_id, True)
-        elif player_id.startswith(SYNCGROUP_PREFIX):
+        if group_player.powered and player_id.startswith(SYNCGROUP_PREFIX):
             await self._sync_syncgroup(group_player)
+        else:
+            await self.cmd_power(player_id, True)
 
         # set the state optimistically
         group_player.current_media = media
@@ -463,6 +460,7 @@ class PlayerGroupProvider(PlayerProvider):
                             title=group_player.display_name,
                             queue_id=group_player.player_id,
                         ),
+                        skip_redirect=True,
                     )
                 )
 
@@ -473,7 +471,7 @@ class PlayerGroupProvider(PlayerProvider):
             # this shouldn't happen, but just in case
             raise UnsupportedFeaturedException("Command is not supported for UGP players")
         if sync_leader := self._get_sync_leader(group_player):
-            await self.enqueue_next_media(
+            await self.mass.players.enqueue_next_media(
                 sync_leader.player_id,
                 media=media,
             )
@@ -526,18 +524,23 @@ class PlayerGroupProvider(PlayerProvider):
                 continue  # already registered
             members = player_config.get_value(CONF_GROUP_MEMBERS)
             group_type = player_config.get_value(CONF_GROUP_TYPE)
-            self._register_group_player(
-                player_config.player_id,
-                group_type,
-                player_config.name or player_config.default_name,
-                members,
-            )
+            with suppress(PlayerUnavailableError):
+                self._register_group_player(
+                    player_config.player_id,
+                    group_type,
+                    player_config.name or player_config.default_name,
+                    members,
+                )
 
     def _register_group_player(
         self, group_player_id: str, group_type: str, name: str, members: Iterable[str]
     ) -> Player:
         """Register a syncgroup player."""
         player_features = {PlayerFeature.POWER, PlayerFeature.VOLUME_SET}
+
+        if not (self.mass.players.get(x) for x in members):
+            raise PlayerUnavailableError("One or more members are not available!")
+
         if group_type == GROUP_TYPE_UNIVERSAL:
             model_name = "Universal Group"
             manufacturer = self.name
@@ -552,17 +555,16 @@ class PlayerGroupProvider(PlayerProvider):
                 player_provider = cast(PlayerProvider, player_provider)
             model_name = "Sync Group"
             manufacturer = self.mass.get_provider(group_type).name
-            if child_player := next((x for x in player_provider.players), None):
-                for feature in (
-                    PlayerFeature.PAUSE,
-                    PlayerFeature.VOLUME_MUTE,
-                ):
-                    if feature in child_player.supported_features:
-                        player_features.add(feature)
+            for feature in (
+                PlayerFeature.PAUSE,
+                PlayerFeature.VOLUME_MUTE,
+                PlayerFeature.PLAY_ANNOUNCEMENT,
+            ):
+                if all(x for x in player_provider.players if feature in x.supported_features):
+                    player_features.add(feature)
+            player_features.add(PlayerFeature.SYNC)
         else:
-            # this may happen if the provider is not available yet
-            model_name = "Sync Group"
-            manufacturer = self.name
+            raise PlayerUnavailableError(f"Provider for syncgroup {group_type} is not available!")
 
         player = Player(
             player_id=group_player_id,

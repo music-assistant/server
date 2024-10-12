@@ -18,6 +18,7 @@ from pychromecast.discovery import CastBrowser, SimpleCastListener
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.common.models.config_entries import (
+    BASE_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     ConfigEntry,
@@ -172,9 +173,13 @@ class ChromecastProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         cast_player = self.castplayers.get(player_id)
+        if cast_player and cast_player.player.type == PlayerType.GROUP:
+            return (
+                *BASE_PLAYER_CONFIG_ENTRIES,
+                *PLAYER_CONFIG_ENTRIES,
+                CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
+            )
         base_entries = await super().get_player_config_entries(player_id)
-        if cast_player and cast_player.cast_info.is_audio_group:
-            return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_CAST_GROUP)
         return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_CAST)
 
     def on_player_config_changed(
@@ -207,9 +212,17 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self.castplayers[player_id]
         if powered:
             await self._launch_app(castplayer)
-            return
-        # handle power off
-        await asyncio.to_thread(castplayer.cc.quit_app)
+        else:
+            castplayer.player.active_group = None
+            castplayer.player.active_source = None
+            await asyncio.to_thread(castplayer.cc.quit_app)
+        # optimistically update the group childs
+        if castplayer.player.type == PlayerType.GROUP:
+            active_group = castplayer.player.active_group or castplayer.player.player_id
+            for child_id in castplayer.player.group_childs:
+                if child := self.castplayers.get(child_id):
+                    child.player.powered = powered
+                    child.player.active_group = active_group if powered else None
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -382,7 +395,7 @@ class ChromecastProvider(PlayerProvider):
             self.castplayers[player_id] = castplayer
 
             castplayer.status_listener = CastStatusListener(self, castplayer, self.mz_mgr)
-            if cast_info.is_audio_group and not cast_info.is_multichannel_group:
+            if castplayer.player.type == PlayerType.GROUP:
                 mz_controller = MultizoneController(cast_info.uuid)
                 castplayer.cc.register_handler(mz_controller)
                 castplayer.mz_controller = mz_controller
@@ -474,16 +487,18 @@ class ChromecastProvider(PlayerProvider):
 
         # active source
         if group_player:
-            castplayer.player.active_source = group_player.player.active_source
-            castplayer.player.active_group = group_player.player.player_id
+            castplayer.player.active_source = (
+                group_player.player.active_source or group_player.player.player_id
+            )
+            castplayer.player.active_group = (
+                group_player.player.active_group or group_player.player.player_id
+            )
         elif castplayer.cc.app_id == MASS_APP_ID:
             castplayer.player.active_source = castplayer.player_id
-            castplayer.player.active_group = None
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name
-            castplayer.player.active_group = None
 
-        if status.content_id:
+        if status.content_id and not status.player_is_idle:
             castplayer.player.current_media = PlayerMedia(
                 uri=status.content_id,
                 title=status.title,
@@ -496,7 +511,24 @@ class ChromecastProvider(PlayerProvider):
         else:
             castplayer.player.current_media = None
 
-        # current media
+        # weird workaround which is needed for multichannel group childs
+        # (e.g. a stereo pair within a cast group)
+        # where it does not receive updates from the group,
+        # so we need to update the group child(s) manually
+        if castplayer.player.type == PlayerType.GROUP and castplayer.player.powered:
+            for child_id in castplayer.player.group_childs:
+                if child := self.castplayers.get(child_id):
+                    if not child.cast_info.is_multichannel_group:
+                        continue
+                    child.player.state = castplayer.player.state
+                    child.player.current_media = castplayer.player.current_media
+                    child.player.elapsed_time = castplayer.player.elapsed_time
+                    child.player.elapsed_time_last_updated = (
+                        castplayer.player.elapsed_time_last_updated
+                    )
+                    child.player.active_source = castplayer.player.active_source
+                    child.player.active_group = castplayer.player.active_group
+
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
     def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
@@ -527,7 +559,7 @@ class ChromecastProvider(PlayerProvider):
                 manufacturer=castplayer.cast_info.manufacturer,
             )
             self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
-            if new_available and not castplayer.cast_info.is_audio_group:
+            if new_available and castplayer.player.type != PlayerType.GROUP:
                 # Poll current group status
                 for group_uuid in self.mz_mgr.get_multizone_memberships(castplayer.cast_info.uuid):
                     group_media_controller = self.mz_mgr.get_multizone_mediacontroller(group_uuid)
