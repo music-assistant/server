@@ -68,17 +68,14 @@ class Player(DataClassDictMixin):
     active_source: str | None = None
 
     # active_source: return player_id of the active group for this player (if any)
-    # if the player is grouped and a group is active, this will be set to the group's player_id
+    # if the player is grouped and a group is active,
+    # this should be set to the group's player_id by the group player implementation.
     active_group: str | None = None
 
     # current_media: return current active/loaded item on the player
     # this may be a MA queue item, url, uri or some provider specific string
     # includes metadata if supported by the provider/player
     current_media: PlayerMedia | None = None
-
-    # can_sync_with: return tuple of player_ids that can be synced to/with this player
-    # usually this is just a list of all player_ids within the playerprovider
-    can_sync_with: tuple[str, ...] = field(default=())
 
     # synced_to: player_id of the player this player is currently synced to
     # also referred to as "sync master"

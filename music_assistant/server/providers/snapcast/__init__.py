@@ -40,7 +40,11 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
+from music_assistant.server.helpers.audio import (
+    FFMpeg,
+    get_ffmpeg_stream,
+    get_player_filter_params,
+)
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -53,7 +57,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
-    from music_assistant.server.providers.ugp import UniversalGroupProvider
+    from music_assistant.server.providers.player_group import PlayerGroupProvider
 
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
@@ -206,7 +210,9 @@ async def get_config_entries(
             default_value=not local_snapserver_present,
             label="Use existing Snapserver",
             required=False,
-            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
+            category=(
+                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
+            ),
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
@@ -215,7 +221,9 @@ async def get_config_entries(
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
+            category=(
+                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
+            ),
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -224,7 +232,9 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category=CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC,
+            category=(
+                CONF_CATEGORY_ADVANCED if local_snapserver_present else CONF_CATEGORY_GENERIC
+            ),
         ),
         ConfigEntry(
             key=CONF_STREAM_IDLE_THRESHOLD,
@@ -265,16 +275,6 @@ class SnapCastProvider(PlayerProvider):
             return new_id
         else:
             return self._get_ma_id(snap_client_id)
-
-    def _can_sync_with(self, player_id: str) -> None:
-        mass_player = self.mass.players.get(player_id)
-        mass_player.can_sync_with = tuple(
-            self._get_ma_id(snap_client.identifier)
-            for snap_client in self._snapserver.clients
-            if self._get_ma_id(snap_client.identifier) != player_id
-        )
-
-        self.mass.players.update(mass_player.player_id)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -325,7 +325,7 @@ class SnapCastProvider(PlayerProvider):
             )
             # register callback for when the connection gets lost to the snapserver
             self._snapserver.set_on_disconnect_callback(self._handle_disconnect)
-
+            await self._create_default_stream()
         except OSError as err:
             msg = "Unable to start the Snapserver connection ?"
             raise SetupFailedError(msg) from err
@@ -391,7 +391,6 @@ class SnapCastProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.VOLUME_MUTE,
                 ),
-                can_sync_with=[],
                 group_childs=set(),
                 synced_to=self._synced_to(player_id),
             )
@@ -414,7 +413,6 @@ class SnapCastProvider(PlayerProvider):
                     player.active_source = stream.name
             else:
                 player.active_source = player_id
-        self._can_sync_with(player_id)
         self._group_childs(player_id)
         self.mass.players.update(player_id)
 
@@ -471,16 +469,19 @@ class SnapCastProvider(PlayerProvider):
             for mass_child_id in list(mass_player.group_childs):
                 if mass_child_id != player_id:
                     await self.cmd_unsync(mass_child_id)
-        else:
-            mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
-            mass_sync_master_player.group_childs.remove(player_id)
-            mass_player.synced_to = None
-            snap_client_id = self._get_snapclient_id(player_id)
-            group = self._get_snapgroup(player_id)
-            await group.remove_client(snap_client_id)
+            return
+        mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
+        mass_sync_master_player.group_childs.remove(player_id)
+        mass_player.synced_to = None
+        snap_client_id = self._get_snapclient_id(player_id)
+        group = self._get_snapgroup(player_id)
+        await group.remove_client(snap_client_id)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
+        # make sure that the player manager gets an update
+        self.mass.players.update(player_id, skip_redirect=True)
+        self.mass.players.update(mass_player.synced_to, skip_redirect=True)
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -508,8 +509,8 @@ class SnapCastProvider(PlayerProvider):
             )
         elif media.queue_id.startswith("ugp_"):
             # special case: UGP stream
-            ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
-            ugp_stream = ugp_provider.streams[media.queue_id]
+            ugp_provider: PlayerGroupProvider = self.mass.get_provider("ugp")
+            ugp_stream = ugp_provider.ugp_streams[media.queue_id]
             input_format = ugp_stream.output_format
             audio_source = ugp_stream.subscribe()
         elif media.queue_id and media.queue_item_id:
@@ -625,6 +626,12 @@ class SnapCastProvider(PlayerProvider):
         msg = "Unable to create stream - No free port found?"
         raise RuntimeError(msg)
 
+    async def _create_default_stream(self) -> None:
+        """Create new stream on snapcast server named default case not exist."""
+        all_streams = {stream.name for stream in self._snapserver.streams}
+        if "default" not in all_streams:
+            await self._snapserver.stream_add_stream("pipe:///tmp/snapfifo?name=default")
+
     def _set_childs_state(self, player_id: str) -> None:
         """Set the state of the child`s of the player."""
         mass_player = self.mass.players.get(player_id)
@@ -667,7 +674,8 @@ class SnapCastProvider(PlayerProvider):
                 setattr(self, attr_name, True)
             except NonUniqueNameException:
                 self.logger.debug(
-                    "Could not register mdns record for %s as its already in use", zeroconf_type
+                    "Could not register mdns record for %s as its already in use",
+                    zeroconf_type,
                 )
             except Exception as err:
                 self.logger.exception(
@@ -717,7 +725,8 @@ class SnapCastProvider(PlayerProvider):
     def _handle_disconnect(self, exc: Exception) -> None:
         """Handle disconnect callback from snapserver."""
         self.logger.info(
-            "Connection to SnapServer lost, reason: %s. Reloading provider in 5 seconds.", str(exc)
+            "Connection to SnapServer lost, reason: %s. Reloading provider in 5 seconds.",
+            str(exc),
         )
         # schedule a reload of the provider
         self.mass.call_later(5, self.mass.load_provider(self.instance_id, allow_retry=True))

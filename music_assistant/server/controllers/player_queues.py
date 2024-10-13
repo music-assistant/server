@@ -1,4 +1,15 @@
-"""Logic to play music from MusicProviders to supported players."""
+"""
+MusicAssistant Player Queues Controller.
+
+Handles all logic to PLAY Media Items, provided by Music Providers to supported players.
+
+It is loosely coupled to the MusicAssistant Music Controller and Player Controller.
+A Music Assistant Player always has a PlayerQueue associated with it
+which holds the queue items and state.
+
+The PlayerQueue is in that case the active source of the player,
+but it can also be something else, hence the loose coupling.
+"""
 
 from __future__ import annotations
 
@@ -305,7 +316,8 @@ class PlayerQueuesController(CoreController):
             # we need to restart playback
             self.mass.create_task(self.resume(queue_id))
         else:
-            self.mass.call_later(5, self._enqueue_next(queue, queue.current_index))
+            task_id = f"enqueue_next_{queue_id}"
+            self.mass.call_later(2, self._enqueue_next, queue, queue.current_index, task_id=task_id)
 
     @api_command("player_queues/play_media")
     async def play_media(
@@ -623,7 +635,7 @@ class PlayerQueuesController(CoreController):
             queue.stream_finished = None
             queue.end_of_track_reached = None
         # forward the actual command to the player controller
-        await self.mass.players.cmd_stop(queue_id, skip_forward=True)
+        await self.mass.players.cmd_stop(queue_id, skip_redirect=True)
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -642,7 +654,7 @@ class PlayerQueuesController(CoreController):
             and queue.state == PlayerState.PAUSED
         ):
             # forward the actual command to the player controller
-            await self.mass.players.cmd_play(queue_id, skip_forward=True)
+            await self.mass.players.cmd_play(queue_id, skip_redirect=True)
         else:
             await self.resume(queue_id)
 
@@ -871,6 +883,17 @@ class PlayerQueuesController(CoreController):
             raise PlayerUnavailableError("Queue {target_queue_id} is not available")
         if auto_play is None:
             auto_play = source_queue.state == PlayerState.PLAYING
+
+        target_player = self.mass.players.get(target_queue_id)
+        if target_player.active_group or target_player.synced_to:
+            # edge case: the user wants to move playback from the group as a whole, to a single
+            # player in the group or it is grouped and the command targeted at the single player.
+            # We need to dissolve the group first.
+            await self.mass.players.cmd_power(
+                target_player.active_group or target_player.synced_to, False
+            )
+            await asyncio.sleep(3)
+
         source_items = self._queue_items[source_queue_id]
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
@@ -882,6 +905,7 @@ class PlayerQueuesController(CoreController):
             target_queue.current_item = source_queue.current_item
             target_queue.current_item.queue_id = target_queue_id
         self.clear(source_queue_id)
+
         self.load(target_queue_id, source_items, keep_remaining=False, keep_played=False)
         for item in source_items:
             item.queue_id = target_queue_id
@@ -1196,7 +1220,7 @@ class PlayerQueuesController(CoreController):
         # it has started buffering the given queue item
         if not queue.flow_mode:
             task_id = f"enqueue_next_{queue_id}"
-            self.mass.call_later(2, self._enqueue_next, queue, item_id, task_id=task_id)
+            self.mass.call_later(5, self._enqueue_next, queue, item_id, task_id=task_id)
 
     # Main queue manipulation methods
 

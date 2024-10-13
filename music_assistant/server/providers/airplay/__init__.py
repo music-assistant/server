@@ -48,7 +48,7 @@ from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.server import MusicAssistant
 from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
-from music_assistant.server.helpers.util import TaskManager
+from music_assistant.server.helpers.util import TaskManager, lock
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
-    from music_assistant.server.providers.ugp import UniversalGroupProvider
+    from music_assistant.server.providers.player_group import PlayerGroupProvider
 
 DOMAIN = "airplay"
 
@@ -645,6 +645,7 @@ class AirplayProvider(PlayerProvider):
         airplay_player = self._players[player_id]
         await airplay_player.cmd_pause()
 
+    @lock
     async def play_media(
         self,
         player_id: str,
@@ -674,8 +675,8 @@ class AirplayProvider(PlayerProvider):
                 )
             elif media.queue_id.startswith("ugp_"):
                 # special case: UGP stream
-                ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
-                ugp_stream = ugp_provider.streams[media.queue_id]
+                ugp_provider: PlayerGroupProvider = self.mass.get_provider("player_group")
+                ugp_stream = ugp_provider.ugp_streams[media.queue_id]
                 input_format = ugp_stream.output_format
                 audio_source = ugp_stream.subscribe()
             elif media.queue_id and media.queue_item_id:
@@ -750,6 +751,7 @@ class AirplayProvider(PlayerProvider):
         # store last state in cache
         await self.mass.cache.set(player_id, volume_level, base_key=CACHE_KEY_PREV_VOLUME)
 
+    @lock
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
 
@@ -790,9 +792,10 @@ class AirplayProvider(PlayerProvider):
             )
         else:
             # make sure that the player manager gets an update
-            self.mass.players.update(child_player.player_id, skip_forward=True)
-            self.mass.players.update(parent_player.player_id, skip_forward=True)
+            self.mass.players.update(child_player.player_id, skip_redirect=True)
+            self.mass.players.update(parent_player.player_id, skip_redirect=True)
 
+    @lock
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
 
@@ -801,15 +804,16 @@ class AirplayProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
         """
         player = self.mass.players.get(player_id, raise_unavailable=True)
-        if not player.synced_to:
-            return
-        group_leader = self.mass.players.get(player.synced_to, raise_unavailable=True)
-        group_leader.group_childs.remove(player_id)
-        player.synced_to = None
-        await self.cmd_stop(player_id)
-        # make sure that the player manager gets an update
-        self.mass.players.update(player.player_id, skip_forward=True)
-        self.mass.players.update(group_leader.player_id, skip_forward=True)
+        if player.synced_to:
+            group_leader = self.mass.players.get(player.synced_to, raise_unavailable=True)
+            if player_id in group_leader.group_childs:
+                group_leader.group_childs.remove(player_id)
+            player.synced_to = None
+            airplay_player = self._players.get(player_id)
+            await airplay_player.cmd_stop()
+            # make sure that the player manager gets an update
+            self.mass.players.update(player.player_id, skip_redirect=True)
+            self.mass.players.update(group_leader.player_id, skip_redirect=True)
 
     async def _getcliraop_binary(self):
         """Find the correct raop/airplay binary belonging to the platform."""
@@ -893,18 +897,9 @@ class AirplayProvider(PlayerProvider):
                 PlayerFeature.SYNC,
                 PlayerFeature.VOLUME_SET,
             ),
-            can_sync_with=tuple(x for x in self._players if x != player_id),
             volume_level=volume,
         )
         self.mass.players.register_or_update(mass_player)
-        # update can_sync_with field of all other players
-        # this ensure that the field always contains all player ids,
-        # even when a player joins later on
-        for player in self.players:
-            if player.player_id == player_id:
-                continue
-            player.can_sync_with = tuple(x for x in self._players if x != player.player_id)
-            self.mass.players.update(player.player_id)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

@@ -38,13 +38,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    MASS_LOGO_ONLINE,
-    SYNCGROUP_PREFIX,
-    VERBOSE_LOG_LEVEL,
-)
-from music_assistant.server.helpers.util import TaskManager
+from music_assistant.constants import CONF_CROSSFADE, MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -314,15 +308,6 @@ class SonosPlayer:
             self.mass_player.volume_level = self.client.player.volume_level or 0
         self.mass_player.volume_muted = self.client.player.volume_muted
 
-        # work out 'can sync with' for this player
-        self.mass_player.can_sync_with = tuple(
-            x
-            for x in self.prov.sonos_players
-            if x != self.player_id
-            and x in self.prov.sonos_players
-            and self.prov.sonos_players[x].client.household_id == self.client.household_id
-        )
-
         group_parent = None
         if self.client.player.is_coordinator:
             # player is group coordinator
@@ -343,7 +328,6 @@ class SonosPlayer:
             self.mass_player.group_childs = set()
             self.mass_player.synced_to = active_group.coordinator_id
             self.mass_player.active_source = active_group.coordinator_id
-            self.mass_player.can_sync_with = ()
 
         if airplay := self.get_linked_airplay_player(True):
             # linked airplay player is active, update media from there
@@ -531,15 +515,17 @@ class SonosPlayerProvider(PlayerProvider):
         player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
-        base_entries = await super().get_player_config_entries(player_id)
-        if not (sonos_player := self.sonos_players.get(player_id)):
-            # most probably a syncgroup or the player is not yet discovered
-            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED)
-        return (
-            *base_entries,
+        base_entries = (
+            *await super().get_player_config_entries(player_id),
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             create_sample_rates_config_entry(48000, 24, 48000, 24, True),
+        )
+        if not (sonos_player := self.sonos_players.get(player_id)):
+            # most probably the player is not yet discovered
+            return base_entries
+        return (
+            *base_entries,
             ConfigEntry(
                 key=CONF_AIRPLAY_MODE,
                 type=ConfigEntryType.BOOLEAN,
@@ -699,16 +685,6 @@ class SonosPlayerProvider(PlayerProvider):
         self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         """Handle (provider native) playback of an announcement on given player."""
-        if player_id.startswith(SYNCGROUP_PREFIX):
-            # handle syncgroup, unwrap to all underlying child's
-            async with TaskManager(self.mass) as tg:
-                if group_player := self.mass.players.get(player_id):
-                    # execute on all child players
-                    for child_player_id in group_player.group_childs:
-                        tg.create_task(
-                            self.play_announcement(child_player_id, announcement, volume_level)
-                        )
-            return
         sonos_player = self.sonos_players[player_id]
         self.logger.debug(
             "Playing announcement %s using websocket audioclip on %s",
@@ -743,11 +719,6 @@ class SonosPlayerProvider(PlayerProvider):
             self, player_id, discovery_info=discovery_info, ip_address=address
         )
         await sonos_player.setup()
-        # when we add a new player, update 'can_sync_with' for all other players
-        for other_player_id in self.sonos_players:
-            if other_player_id == player_id:
-                continue
-            self.sonos_players[other_player_id].update_attributes()
 
     async def _handle_sonos_queue_itemwindow(self, request: web.Request) -> web.Response:
         """

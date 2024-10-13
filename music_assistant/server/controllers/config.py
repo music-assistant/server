@@ -26,7 +26,7 @@ from music_assistant.common.models.config_entries import (
     ProviderConfig,
 )
 from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import InvalidDataError, ProviderUnavailableError
+from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.constants import (
     CONF_CORE,
     CONF_PLAYERS,
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 DEFAULT_SAVE_DELAY = 5
 
+BASE_KEYS = ("enabled", "name", "available", "default_name", "provider", "type")
 
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
@@ -590,11 +591,13 @@ class ConfigController:
             raise KeyError(msg)
         if encrypted:
             value = self.encrypt_string(value)
-        # also update the cached value in the provider itself
-        if not (prov := self.mass.get_provider(provider_instance, return_unavailable=True)):
-            raise ProviderUnavailableError(provider_instance)
-        prov.config.values[key].value = value
+        if key in BASE_KEYS:
+            self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+            return
         self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value)
+        # also update the cached value in the provider itself
+        if prov := self.mass.get_provider(provider_instance, return_unavailable=True):
+            prov.config.values[key].value = value
 
     def set_raw_core_config_value(self, core_module: str, key: str, value: ConfigValueType) -> None:
         """
@@ -617,7 +620,10 @@ class ConfigController:
             # only allow setting raw values if main entry exists
             msg = f"Invalid player_id: {player_id}"
             raise KeyError(msg)
-        self.set(f"{CONF_PLAYERS}/{player_id}/values/{key}", value)
+        if key in BASE_KEYS:
+            self.set(f"{CONF_PLAYERS}/{player_id}/{key}", value)
+        else:
+            self.set(f"{CONF_PLAYERS}/{player_id}/values/{key}", value)
 
     def save(self, immediate: bool = False) -> None:
         """Schedule save of data to disk."""

@@ -21,7 +21,7 @@ server = [
   "faust-cchardet>=2.1.18",
   "aiodns>=3.0.0",
   "Brotli>=1.0.9",
-  "aiohttp==3.10.8",
+  "aiohttp==3.10.9",
   "aiofiles==24.1.0",
   "aiorun==2024.8.1",
   "certifi==2024.8.30",
@@ -31,7 +31,7 @@ server = [
   "python-slugify==8.0.4",
   "mashumaro==3.13.1",
   "memory-tempfile==2.2.3",
-  "music-assistant-frontend==2.8.13",
+  "music-assistant-frontend==2.9.1",
   "pillow==10.4.0",
   "unidecode==1.3.8",
   "xmltodict==0.13.0",
@@ -50,9 +50,9 @@ test = [
   "pytest==8.3.3",
   "pytest-aiohttp==1.0.5",
   "pytest-cov==5.0.0",
-  "syrupy==4.7.1",
+  "syrupy==4.7.2",
   "tomli==2.0.1",
-  "ruff==0.6.8",
+  "ruff==0.6.9",
 ]
 
 [project.scripts]
