@@ -942,7 +942,7 @@ class PlayerQueuesController(CoreController):
                     str(err),
                 )
         if queue is None:
-            providers_available_with_dynamic_tracks = any(
+            providers_available_with_similar_tracks = any(
                 ProviderFeature.SIMILAR_TRACKS in provider.supported_features
                 for provider in self.mass.music.providers
             )
@@ -950,7 +950,7 @@ class PlayerQueuesController(CoreController):
                 self.domain,
                 CONF_DEFAULT_DONT_STOP_THE_MUSIC,
                 # Ensure there is a provider that supports dynamic tracks
-                DONT_STOP_THE_MUSIC_DEFAULT_VALUE and providers_available_with_dynamic_tracks,
+                DONT_STOP_THE_MUSIC_DEFAULT_VALUE and providers_available_with_similar_tracks,
             )
             queue = PlayerQueue(
                 queue_id=queue_id,
