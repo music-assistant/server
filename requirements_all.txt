@@ -37,7 +37,7 @@ pywidevine==1.8.0
 radios==0.3.1
 shortuuid==1.0.13
 snapcast==2.3.6
-soco==0.30.4
+soco==0.30.5
 soundcloudpy==0.1.0
 tidalapi==0.7.6
 unidecode==1.3.8
