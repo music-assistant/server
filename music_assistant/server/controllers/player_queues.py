@@ -1579,5 +1579,4 @@ class PlayerQueuesController(CoreController):
         queue.radio_source = [
             await self.mass.music.get_item_by_uri(uri) for uri in queue.enqueued_media_items
         ]
-        # schedule the next item in the queue
-        self.mass.create_task(self._fill_radio_tracks(queue.queue_id))
+        await self._fill_radio_tracks(queue.queue_id)
