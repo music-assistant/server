@@ -37,7 +37,7 @@ class PlayerQueue(DataClassDictMixin):
     current_item: QueueItem | None = None
     next_item: QueueItem | None = None
     radio_source: list[MediaItemType] = field(default_factory=list)
-    # Use a list[str] here for the uri's to avoid having to store full MediaItem objects
+    # Use a list of media item uri's here to avoid having to store full MediaItem objects
     enqueued_media_items: list[str] = field(default_factory=list)
     flow_mode: bool = False
     resume_pos: int = 0
