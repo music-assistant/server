@@ -31,6 +31,7 @@ from music_assistant.common.models.enums import (
     EventType,
     MediaType,
     PlayerState,
+    ProviderFeature,
     QueueOption,
     RepeatMode,
 )
@@ -74,6 +75,9 @@ CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
 CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
 CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_option_radio"
 CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
+CONF_DEFAULT_DONT_STOP_THE_MUSIC = "default_dont_stop_the_music"
+DONT_STOP_THE_MUSIC_DEFAULT_VALUE = True
+RADIO_TRACK_MAX_DURATION_SECS = 20 * 60  # 20 minutes
 
 
 class CompareState(TypedDict):
@@ -203,6 +207,13 @@ class PlayerQueuesController(CoreController):
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
             ),
+            ConfigEntry(
+                key=CONF_DEFAULT_DONT_STOP_THE_MUSIC,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DONT_STOP_THE_MUSIC_DEFAULT_VALUE,
+                label="Don't stop the music",
+                description="Whether to automatically play similar music at the end of a queue.",
+            ),
         )
 
     def __iter__(self) -> Iterator[PlayerQueue]:
@@ -276,6 +287,13 @@ class PlayerQueuesController(CoreController):
             shuffle=shuffle_enabled,
         )
 
+    @api_command("player_queues/dont_stop_the_music")
+    def set_dont_stop_the_music(self, queue_id: str, dont_stop_the_music_enabled: bool) -> None:
+        """Configure Don't stop the music setting on the queue."""
+        queue = self._queues[queue_id]
+        queue.dont_stop_the_music_enabled = dont_stop_the_music_enabled
+        self.signal_update(queue_id=queue_id)
+
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
@@ -343,6 +361,9 @@ class PlayerQueuesController(CoreController):
         # clear queue if needed
         if option == QueueOption.REPLACE:
             self.clear(queue_id)
+        # Clear the 'played media item' list when a new queue is requested
+        if option not in (QueueOption.ADD, QueueOption.NEXT):
+            queue.enqueued_media_items = []
 
         tracks: list[MediaItemType] = []
         radio_source: list[MediaItemType] = []
@@ -356,6 +377,12 @@ class PlayerQueuesController(CoreController):
                     media_item = media_from_dict(item)
                 else:
                     media_item = item
+
+                # Save requested media item to play on the queue so we can use it as a source
+                # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
+                queue.enqueued_media_items.append(media_item.uri)
+                if len(queue.enqueued_media_items) > 10:
+                    queue.enqueued_media_items.pop(0)
 
                 # handle default enqueue option if needed
                 if option is None:
@@ -436,7 +463,7 @@ class PlayerQueuesController(CoreController):
                 self.logger.warning("Skipping %s: %s", item, str(err))
 
         # overwrite or append radio source items
-        if option not in (QueueOption.ADD, QueueOption.PLAY, QueueOption.NEXT):
+        if option not in (QueueOption.ADD, QueueOption.NEXT):
             queue.radio_source = radio_source
         else:
             queue.radio_source += radio_source
@@ -873,6 +900,7 @@ class PlayerQueuesController(CoreController):
         source_items = self._queue_items[source_queue_id]
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
+        target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.resume_pos = source_queue.elapsed_time
         target_queue.current_index = source_queue.current_index
@@ -914,11 +942,22 @@ class PlayerQueuesController(CoreController):
                     str(err),
                 )
         if queue is None:
+            providers_available_with_similar_tracks = any(
+                ProviderFeature.SIMILAR_TRACKS in provider.supported_features
+                for provider in self.mass.music.providers
+            )
+            dont_stop_the_music_enabled = self.mass.config.get_raw_core_config_value(
+                self.domain,
+                CONF_DEFAULT_DONT_STOP_THE_MUSIC,
+                # Ensure there is a provider that supports dynamic tracks
+                DONT_STOP_THE_MUSIC_DEFAULT_VALUE and providers_available_with_similar_tracks,
+            )
             queue = PlayerQueue(
                 queue_id=queue_id,
                 active=False,
                 display_name=player.display_name,
                 available=player.available,
+                dont_stop_the_music_enabled=dont_stop_the_music_enabled,
                 items=0,
             )
             queue_items = []
@@ -1074,6 +1113,13 @@ class PlayerQueuesController(CoreController):
                 and (queue.items - queue.current_index) < 5
             ):
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
+            elif (
+                # We have received the last item in the queue and Don't stop the music is enabled
+                queue.dont_stop_the_music_enabled
+                and queue.current_index
+                and (queue.items - queue.current_index) <= 1
+            ):
+                self.mass.create_task(self._schedule_dont_stop_the_music(queue))
 
     def on_player_remove(self, player_id: str) -> None:
         """Call when a player is removed from the registry."""
@@ -1393,6 +1439,8 @@ class PlayerQueuesController(CoreController):
                     base_track.item_id, base_track.provider
                 )
                 if track not in base_tracks
+                # Ignore tracks that are too long for radio mode, e.g. mixes
+                and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
             ]
             if len(dynamic_tracks) >= 50:
                 break
@@ -1525,3 +1573,10 @@ class PlayerQueuesController(CoreController):
             if self.get_item(queue_id, current_item_id):
                 return current_item_id
         return None
+
+    async def _schedule_dont_stop_the_music(self, queue: PlayerQueue):
+        """Auto turn on Radio Mode based on enqueued Media Items."""
+        queue.radio_source = [
+            await self.mass.music.get_item_by_uri(uri) for uri in queue.enqueued_media_items
+        ]
+        await self._fill_radio_tracks(queue.queue_id)
