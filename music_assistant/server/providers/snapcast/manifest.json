@@ -4,7 +4,7 @@
   "name": "Snapcast",
   "description": "Support for snapcast server and clients.",
   "codeowners": ["@SantigoSotoC"],
-  "requirements": ["snapcast==2.3.6", "bidict==0.23.1"],
+  "requirements": ["snapcast-mod==2.4.6", "bidict==0.23.1"],
   "documentation": "https://music-assistant.io/player-support/snapcast/",
   "multi_instance": false,
   "builtin": false
