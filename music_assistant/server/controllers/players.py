@@ -587,12 +587,6 @@ class PlayerController(CoreController):
             return
         if not (player.synced_to or player.group_childs):
             return  # nothing to do
-        if player.active_group:
-            raise PlayerCommandFailed(
-                "Command denied: player %s is part of (active) group %s",
-                player.display_name,
-                player.active_group,
-            )
 
         if player.active_group:
             # this is simply not possible (well, not without major headaches)
@@ -600,7 +594,7 @@ class PlayerController(CoreController):
             # one child player... we can't allow this, as it would break the group so we
             # power unsync the whole group instead.
             self.logger.info(
-                "Detected a power OFF command to player %s which is part of a (active) group. "
+                "Detected a (un)sync command to player %s which is part of a (active) group. "
                 "This command will be redirected by turning off the entire group!",
                 player.name,
             )
@@ -664,7 +658,7 @@ class PlayerController(CoreController):
             if child_player.synced_to and child_player.synced_to == target_player:
                 continue  # already synced to this target
 
-            if child_player.group_childs:
+            if child_player.group_childs and child_player.state != PlayerState.IDLE:
                 # guard edge case: childplayer is already a sync leader on its own
                 raise PlayerCommandFailed(
                     f"Player {child_player.name} is already synced with other players, "
