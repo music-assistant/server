@@ -559,7 +559,7 @@ class ChromecastProvider(PlayerProvider):
                 manufacturer=castplayer.cast_info.manufacturer,
             )
             self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
-            if new_available and castplayer.player.type != PlayerType.GROUP:
+            if new_available and castplayer.player.type == PlayerType.PLAYER:
                 # Poll current group status
                 for group_uuid in self.mz_mgr.get_multizone_memberships(castplayer.cast_info.uuid):
                     group_media_controller = self.mz_mgr.get_multizone_mediacontroller(group_uuid)

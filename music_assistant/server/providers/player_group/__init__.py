@@ -222,8 +222,8 @@ class PlayerGroupProvider(PlayerProvider):
         group_members.options = tuple(
             ConfigValueOption(x.display_name, x.player_id)
             for x in self.mass.players.all(True, False)
-            if x.provider != self.instance_id
-            and (player_prov := self.mass.get_provider(x.provider))
+            if (player_prov := self.mass.get_provider(x.provider))
+            and group_type == player_prov.lookup_key
             and ProviderFeature.SYNC_PLAYERS in player_prov.supported_features
         )
 
@@ -395,13 +395,6 @@ class PlayerGroupProvider(PlayerProvider):
         else:
             await self.cmd_power(player_id, True)
 
-        # set the state optimistically
-        group_player.current_media = media
-        group_player.elapsed_time = 0
-        group_player.elapsed_time_last_updated = time() - 1
-        group_player.state = PlayerState.PLAYING
-        self.mass.players.update(player_id)
-
         # handle play_media for sync group
         if player_id.startswith(SYNCGROUP_PREFIX):
             # simply forward the command to the sync leader
@@ -445,6 +438,13 @@ class PlayerGroupProvider(PlayerProvider):
         # start the stream task
         self.ugp_streams[player_id] = UGPStream(audio_source=audio_source, audio_format=UGP_FORMAT)
         base_url = f"{self.mass.streams.base_url}/ugp/{player_id}.aac"
+
+        # set the state optimistically
+        group_player.current_media = media
+        group_player.elapsed_time = 0
+        group_player.elapsed_time_last_updated = time() - 1
+        group_player.state = PlayerState.PLAYING
+        self.mass.players.update(player_id)
 
         # forward to downstream play_media commands
         async with TaskManager(self.mass) as tg:
@@ -505,7 +505,7 @@ class PlayerGroupProvider(PlayerProvider):
         # create default config with the user chosen name
         self.mass.config.create_default_player_config(
             new_group_id,
-            player_prov.instance_id,
+            self.instance_id,
             name=name,
             enabled=True,
             values={CONF_GROUP_MEMBERS: members, CONF_GROUP_TYPE: group_type},
@@ -614,7 +614,7 @@ class PlayerGroupProvider(PlayerProvider):
         ):
             return child_player
         # this really should not be possible
-        raise RuntimeError("Impossible to select sync leader for syncgroup")
+        raise RuntimeError("No players available to form syncgroup")
 
     async def _sync_syncgroup(self, group_player: Player) -> None:
         """Sync all (possible) players of a syncgroup."""
@@ -642,8 +642,12 @@ class PlayerGroupProvider(PlayerProvider):
         """Update attributes of a player."""
         for child_player in self.mass.players.iter_group_members(player, active_only=True):
             # just grab the first active player
+            if child_player.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
+                continue
+            if child_player.synced_to:
+                continue
             player.state = child_player.state
-            if player.current_media:
+            if child_player.current_media:
                 player.current_media = child_player.current_media
             player.elapsed_time = child_player.elapsed_time
             player.elapsed_time_last_updated = child_player.elapsed_time_last_updated
@@ -701,13 +705,15 @@ class PlayerGroupProvider(PlayerProvider):
 
         return resp
 
-    def _filter_members(self, provider: str, members: list[str]) -> list[str]:
+    def _filter_members(self, group_type: str, members: list[str]) -> list[str]:
         """Filter out members that are not valid players."""
-        if provider != GROUP_TYPE_UNIVERSAL:
+        if group_type != GROUP_TYPE_UNIVERSAL:
+            player_provider = self.mass.get_provider(group_type)
             return [
                 x
                 for x in members
-                if (player := self.mass.players.get(x)) and player.provider == provider
+                if (player := self.mass.players.get(x))
+                and player.provider in (player_provider.instance_id, self.instance_id)
             ]
         # cleanup members - filter out impossible choices
         syncgroup_childs: list[str] = []

@@ -1155,6 +1155,8 @@ class PlayerQueuesController(CoreController):
             if next_index is None:
                 raise QueueEmpty("No more tracks left in the queue.")
             queue_item = self.get_item(queue_id, next_index)
+            if queue_item is None:
+                raise QueueEmpty("No more tracks left in the queue.")
 
             # work out if we are playing an album and if we should prefer album loudness
             if (
