@@ -447,8 +447,12 @@ class SnapCastProvider(PlayerProvider):
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send MUTE command to given player."""
+        ma_player = self.mass.players.get(player_id, raise_unavailable=False)
         snap_client_id = self._get_snapclient_id(player_id)
-        await self._snapserver.client(snap_client_id).set_muted(muted)
+        snapclient = self._snapserver.client(snap_client_id)
+        await snapclient.set_muted(muted)
+        ma_player.volume_muted = snapclient.muted
+        self.mass.players.update(player_id)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Sync Snapcast player."""
