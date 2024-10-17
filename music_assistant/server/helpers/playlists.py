@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from aiohttp import client_exceptions
 
 from music_assistant.common.models.errors import InvalidDataError
+from music_assistant.server.helpers.util import detect_charset
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
@@ -146,10 +147,12 @@ async def fetch_playlist(mass: MusicAssistant, url: str) -> list[PlaylistItem]:
     """Parse an online m3u or pls playlist."""
     try:
         async with mass.http_session.get(url, allow_redirects=True, timeout=5) as resp:
-            charset = resp.charset or "utf-8"
             try:
-                playlist_data = (await resp.content.read(64 * 1024)).decode(charset)
-            except ValueError as err:
+                raw_data = await resp.content.read(64 * 1024)
+                # NOTE: using resp.charset is not reliable, we need to detect it ourselves
+                encoding = await detect_charset(raw_data)
+                playlist_data = raw_data.decode(encoding, errors="replace")
+            except (ValueError, UnicodeDecodeError) as err:
                 msg = f"Could not decode playlist {url}"
                 raise InvalidDataError(msg) from err
     except TimeoutError as err:

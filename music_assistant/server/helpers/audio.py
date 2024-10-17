@@ -604,7 +604,8 @@ async def get_hls_radio_stream(
         ) as resp:
             resp.raise_for_status()
             raw_data = await resp.read()
-            encoding = resp.charset or await detect_charset(raw_data)
+            # NOTE: using resp.charset is not reliable, we need to detect it ourselves
+            encoding = await detect_charset(raw_data)
             substream_m3u_data = raw_data.decode(encoding)
         # get chunk-parts from the substream
         hls_chunks = parse_m3u(substream_m3u_data)
@@ -681,7 +682,8 @@ async def get_hls_substream(
     ) as resp:
         resp.raise_for_status()
         raw_data = await resp.read()
-        encoding = resp.charset or await detect_charset(raw_data)
+        # NOTE: using resp.charset is not reliable, we need to detect it ourselves
+        encoding = await detect_charset(raw_data)
         master_m3u_data = raw_data.decode(encoding)
     substreams = parse_m3u(master_m3u_data)
     if any(x for x in substreams if x.length and not x.key):
