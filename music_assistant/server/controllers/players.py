@@ -756,7 +756,7 @@ class PlayerController(CoreController):
         self.register(player)
 
     def remove(self, player_id: str, cleanup_config: bool = True) -> None:
-        """Remove a player from the registry."""
+        """Remove a player from the player manager."""
         player = self._players.pop(player_id, None)
         if player is None:
             return
@@ -820,6 +820,10 @@ class PlayerController(CoreController):
         if not player.enabled and not force_update:
             # ignore updates for disabled players
             return
+
+        # correct available state if needed
+        if not player.enabled:
+            player.available = False
 
         # always signal update to the playerqueue
         self.mass.player_queues.on_player_update(player, changed_values)
@@ -1028,32 +1032,33 @@ class PlayerController(CoreController):
                         self.mass.loop.call_soon(self.update, player_id)
             await asyncio.sleep(1)
 
-    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
+    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        player_disabled = "enabled" in changed_keys and not config.enabled
+        # signal player provider that the config changed
+        if player_provider := self.mass.get_provider(config.provider):
+            with suppress(PlayerUnavailableError):
+                await player_provider.on_player_config_change(config, changed_keys)
         if not (player := self.mass.players.get(config.player_id)):
             return
-        if config.enabled:
-            player_prov = self.mass.players.get_player_provider(config.player_id)
-            self.mass.create_task(player_prov.poll_player(config.player_id))
-        player.enabled = config.enabled
-        # signal player provider that the config changed
-        with suppress(PlayerUnavailableError):
-            if provider := self.mass.get_provider(config.provider):
-                provider.on_player_config_changed(config, changed_keys)
-        self.mass.players.update(config.player_id, force_update=True)
+        if player_disabled:
+            # edge case: ensure that the player is powered off if the player gets disabled
+            await self.cmd_power(config.player_id, False)
+            player.available = False
         # if the player was playing, restart playback
-        if player and player.state == PlayerState.PLAYING:
-            self.mass.create_task(self.mass.player_queues.resume(player.active_source))
-
-    def on_player_config_removed(self, player_id: str) -> None:
-        """Call (by config manager) when the configuration of a player is removed."""
-        if (player := self.mass.players.get(player_id)) and player.available:
-            self.mass.players.update(player_id, force_update=True)
-        if player and (provider := self.mass.get_provider(player.provider)):
-            provider = cast(PlayerProvider, provider)
-            provider.on_player_config_removed(player_id)
-        if not self.mass.players.get(player_id):
-            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
+        elif not player_disabled and player.state == PlayerState.PLAYING:
+            self.mass.call_later(1, self.mass.player_queues.resume(player.active_source))
+        # check for group memberships that need to be updated
+        if player_disabled and player.active_group and player_provider:
+            # try to remove from the group
+            group_player = self.mass.players.get(player.active_group)
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+                await player_provider.set_members(
+                    player.active_group,
+                    [x for x in group_player.group_childs if x != player.player_id],
+                )
+        player.enabled = config.enabled
+        self.mass.players.update(config.player_id, force_update=True)
 
     async def _play_announcement(
         self,

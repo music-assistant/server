@@ -145,8 +145,8 @@ class ChromecastProvider(PlayerProvider):
         else:
             logging.getLogger("pychromecast").setLevel(self.logger.level + 10)
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
+    async def discover_players(self) -> None:
+        """Discover Cast players on the network."""
         # start discovery in executor
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
@@ -181,16 +181,6 @@ class ChromecastProvider(PlayerProvider):
             )
         base_entries = await super().get_player_config_entries(player_id)
         return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_CAST)
-
-    def on_player_config_changed(
-        self,
-        config: PlayerConfig,
-        changed_keys: set[str],
-    ) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-        super().on_player_config_changed(config, changed_keys)
-        if "enabled" in changed_keys and config.player_id not in self.castplayers:
-            self.mass.create_task(self.mass.load_provider, self.instance_id)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""

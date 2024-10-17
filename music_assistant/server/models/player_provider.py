@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+from zeroconf import ServiceStateChange
+from zeroconf.asyncio import AsyncServiceInfo
+
 from music_assistant.common.models.config_entries import (
     BASE_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -13,6 +16,7 @@ from music_assistant.common.models.config_entries import (
     ConfigEntry,
     PlayerConfig,
 )
+from music_assistant.common.models.errors import UnsupportedFeaturedException
 from music_assistant.common.models.player import Player, PlayerMedia
 
 from .provider import Provider
@@ -26,6 +30,10 @@ class PlayerProvider(Provider):
     Player Provider implementations should inherit from this base model.
     """
 
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await self.discover_players()
+
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return (
@@ -37,11 +45,19 @@ class PlayerProvider(Provider):
             CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
         )
 
-    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
+    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
-
-    def on_player_config_removed(self, player_id: str) -> None:
-        """Call (by config manager) when the configuration of a player is removed."""
+        # default implemenation: feel free to override
+        if (
+            "enabled" in changed_keys
+            and config.enabled
+            and not self.mass.players.get(config.player_id)
+        ):
+            # if a player gets enabled, trigger discovery
+            task_id = f"discover_players_{self.instance_id}"
+            self.mass.call_later(5, self.discover_players, task_id=task_id)
+        else:
+            await self.poll_player(config.player_id)
 
     @abstractmethod
     async def cmd_stop(self, player_id: str) -> None:
@@ -172,6 +188,32 @@ class PlayerProvider(Provider):
         This is called by the Player Manager;
         if 'needs_poll' is set to True in the player object.
         """
+
+    async def remove_player(self, player_id: str) -> None:
+        """Remove a player."""
+        # will only be called for players with REMOVE_PLAYER feature set.
+        raise NotImplementedError
+
+    async def discover_players(self) -> None:
+        """Discover players for this provider."""
+        # This will be called (once) when the player provider is loaded into MA.
+        # Default implementation is mdns discovery, which will also automatically
+        # discovery players during runtime. If a provider overrides this method and
+        # doesn't use mdns, it is responsible for periodically searching for new players.
+        for mdns_type in self.manifest.mdns_discovery or []:
+            for mdns_name in set(self.mass.aiozc.zeroconf.cache.cache):
+                if mdns_type not in mdns_name or mdns_type == mdns_name:
+                    continue
+                info = AsyncServiceInfo(mdns_type, mdns_name)
+                if await info.async_request(self.mass.aiozc.zeroconf, 3000):
+                    await self.on_mdns_service_state_change(
+                        mdns_name, ServiceStateChange.Added, info
+                    )
+
+    async def set_members(self, player_id: str, members: list[str]) -> None:
+        """Set members for a groupplayer."""
+        # will only be called for (group)players with SET_MEMBERS feature set.
+        raise UnsupportedFeaturedException
 
     # DO NOT OVERRIDE BELOW
 

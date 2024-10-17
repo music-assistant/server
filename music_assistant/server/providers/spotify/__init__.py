@@ -255,9 +255,6 @@ class SpotifyProvider(MusicProvider):
         # try login which will raise if it fails
         await self.login()
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""

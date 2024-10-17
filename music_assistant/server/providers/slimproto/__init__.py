@@ -260,6 +260,7 @@ class SlimprotoProvider(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
         self.slimproto.subscribe(self._client_callback)
         self.mass.streams.register_dynamic_route(
             "/slimproto/multi", self._serve_multi_client_stream
@@ -318,13 +319,12 @@ class SlimprotoProvider(PlayerProvider):
             )
         )
 
-    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
+    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
-        super().on_player_config_changed(config, changed_keys)
-
         if slimplayer := self.slimproto.get_player(config.player_id):
-            self.mass.create_task(self._set_preset_items(slimplayer))
-            self.mass.create_task(self._set_display(slimplayer))
+            await self._set_preset_items(slimplayer)
+            await self._set_display(slimplayer)
+        await super().on_player_config_change(config, changed_keys)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""

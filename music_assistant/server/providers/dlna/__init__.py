@@ -270,10 +270,6 @@ class DLNAPlayerProvider(PlayerProvider):
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await self._run_discovery()
-
     async def unload(self) -> None:
         """
         Handle unload/close of the provider.
@@ -293,19 +289,18 @@ class DLNAPlayerProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         return base_entries + PLAYER_CONFIG_ENTRIES
 
-    def on_player_config_changed(
+    async def on_player_config_change(
         self,
         config: PlayerConfig,
         changed_keys: set[str],
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
-        super().on_player_config_changed(config, changed_keys)
-        # run discovery to catch any re-enabled players
-        self.mass.create_task(self._run_discovery())
-        # reset player features based on config values
-        if not (dlna_player := self.dlnaplayers.get(config.player_id)):
-            return
-        self._set_player_features(dlna_player)
+        if dlna_player := self.dlnaplayers.get(config.player_id):
+            # reset player features based on config values
+            self._set_player_features(dlna_player)
+        else:
+            # run discovery to catch any re-enabled players
+            self.mass.create_task(self.discover_players())
 
     @catch_request_errors
     async def cmd_stop(self, player_id: str) -> None:
@@ -423,7 +418,7 @@ class DLNAPlayerProvider(PlayerProvider):
         finally:
             dlna_player.force_poll = False
 
-    async def _run_discovery(self, use_multicast: bool = False) -> None:
+    async def discover_players(self, use_multicast: bool = False) -> None:
         """Discover DLNA players on the network."""
         if self._discovery_running:
             return
@@ -469,7 +464,7 @@ class DLNAPlayerProvider(PlayerProvider):
             self._discovery_running = False
 
         def reschedule() -> None:
-            self.mass.create_task(self._run_discovery(use_multicast=not use_multicast))
+            self.mass.create_task(self.discover_players(use_multicast=not use_multicast))
 
         # reschedule self once finished
         self.mass.loop.call_later(300, reschedule)

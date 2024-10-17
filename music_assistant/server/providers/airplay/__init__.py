@@ -865,7 +865,6 @@ class AirplayProvider(PlayerProvider):
         if address is None:
             return
         self.logger.debug("Discovered Airplay device %s on %s", display_name, address)
-        self._players[player_id] = AirPlayPlayer(self, player_id, info, address)
         manufacturer, model = get_model_from_am(info.decoded_properties.get("am"))
         if "apple tv" in model.lower():
             # For now, we ignore the Apple TV until we implement the authentication.
@@ -878,6 +877,7 @@ class AirplayProvider(PlayerProvider):
         if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
             return
+        self._players[player_id] = AirPlayPlayer(self, player_id, info, address)
         if not (volume := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_VOLUME)):
             volume = FALLBACK_VOLUME
         mass_player = Player(

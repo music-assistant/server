@@ -183,6 +183,7 @@ class HomeAssistantPlayers(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
         player_ids: list[str] = self.config.get_value(CONF_PLAYERS)
         # prefetch the device- and entity registry
         device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}

@@ -157,10 +157,6 @@ class SonosPlayerProvider(PlayerProvider):
         self.creation_lock = asyncio.Lock()
         self._known_invisible: set[SoCo] = set()
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await self._run_discovery()
-
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         if self._discovery_reschedule_timer:
@@ -358,7 +354,7 @@ class SonosPlayerProvider(PlayerProvider):
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
-    async def _run_discovery(self) -> None:
+    async def discover_players(self) -> None:
         """Discover Sonos players on the network."""
         if self._discovery_running:
             return
@@ -398,7 +394,7 @@ class SonosPlayerProvider(PlayerProvider):
 
         def reschedule() -> None:
             self._discovery_reschedule_timer = None
-            self.mass.create_task(self._run_discovery())
+            self.mass.create_task(self.discover_players())
 
         # reschedule self once finished
         self._discovery_reschedule_timer = self.mass.loop.call_later(1800, reschedule)
