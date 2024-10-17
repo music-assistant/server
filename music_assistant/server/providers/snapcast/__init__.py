@@ -450,6 +450,7 @@ class SnapCastProvider(PlayerProvider):
         ma_player = self.mass.players.get(player_id, raise_unavailable=False)
         snap_client_id = self._get_snapclient_id(player_id)
         snapclient = self._snapserver.client(snap_client_id)
+        # Using optimistic value because the library does not return the response from the api
         await snapclient.set_muted(muted)
         ma_player.volume_muted = snapclient.muted
         self.mass.players.update(player_id)
