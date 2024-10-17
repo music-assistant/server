@@ -47,7 +47,7 @@ class PlayerProvider(Provider):
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
-        # default implemenation: feel free to override
+        # default implementation: feel free to override
         if (
             "enabled" in changed_keys
             and config.enabled

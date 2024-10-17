@@ -19,14 +19,12 @@ from aiosonos.const import SonosEvent
 from aiosonos.exceptions import ConnectionFailed, FailedCommand
 from aiosonos.utils import get_discovery_info
 from zeroconf import IPVersion, ServiceStateChange
-from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     ConfigEntry,
     ConfigValueType,
-    PlayerConfig,
     create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
@@ -45,6 +43,8 @@ from music_assistant.constants import CONF_CROSSFADE, MASS_LOGO_ONLINE, VERBOSE_
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    from zeroconf.asyncio import AsyncServiceInfo
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant

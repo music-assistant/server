@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from pychromecast.models import CastInfo
     from pychromecast.socket_client import ConnectionStatus
 
-    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
+    from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
