@@ -19,6 +19,7 @@ from importlib.metadata import version as pkg_version
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar
 
+import cchardet as chardet
 import ifaddr
 import memory_tempfile
 from zeroconf import IPVersion
@@ -179,6 +180,14 @@ async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
     with suppress(asyncio.CancelledError):
         await task
     await agen.aclose()
+
+
+async def detect_charset(data: bytes, fallback="utf-8") -> str:
+    """Detect charset of raw data."""
+    try:
+        return (await asyncio.to_thread(chardet.detect, data))["encoding"]
+    except (ImportError, AttributeError):
+        return fallback
 
 
 class TaskManager:
