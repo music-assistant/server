@@ -200,6 +200,8 @@ class PlayerProvider(Provider):
         # Default implementation is mdns discovery, which will also automatically
         # discovery players during runtime. If a provider overrides this method and
         # doesn't use mdns, it is responsible for periodically searching for new players.
+        if not self.available:
+            return
         for mdns_type in self.manifest.mdns_discovery or []:
             for mdns_name in set(self.mass.aiozc.zeroconf.cache.cache):
                 if mdns_type not in mdns_name or mdns_type == mdns_name:

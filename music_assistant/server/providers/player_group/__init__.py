@@ -267,10 +267,11 @@ class PlayerGroupProvider(PlayerProvider):
             members = config.get_value(CONF_GROUP_MEMBERS)
             # ensure we filter invalid members
             members = self._filter_members(config.get_value(CONF_GROUP_TYPE), members)
-            if player := self.mass.players.get(config.player_id):
-                player.group_childs = members
-                if player.powered:
-                    await self._sync_syncgroup(player)
+            if group_player := self.mass.players.get(config.player_id):
+                group_player.group_childs = members
+                if group_player.powered:
+                    # power on group player (which will also resync) if needed
+                    await self.cmd_power(group_player.player_id, True)
         await super().on_player_config_change(config, changed_keys)
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -374,11 +375,8 @@ class PlayerGroupProvider(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         group_player = self.mass.players.get(player_id)
-        # power on (or resync) if needed
-        if group_player.powered and player_id.startswith(SYNCGROUP_PREFIX):
-            await self._sync_syncgroup(group_player)
-        else:
-            await self.cmd_power(player_id, True)
+        # power on (which will also resync) if needed
+        await self.cmd_power(player_id, True)
 
         # handle play_media for sync group
         if player_id.startswith(SYNCGROUP_PREFIX):
@@ -619,7 +617,7 @@ class PlayerGroupProvider(PlayerProvider):
         """Sync all (possible) players of a syncgroup."""
         sync_leader = self._select_sync_leader(group_player)
         members_to_sync: list[str] = []
-        for member in self.mass.players.iter_group_members(group_player, active_only=True):
+        for member in self.mass.players.iter_group_members(group_player, active_only=False):
             if sync_leader.player_id == member.player_id:
                 # skip sync leader
                 continue

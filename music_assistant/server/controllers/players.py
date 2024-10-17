@@ -648,7 +648,7 @@ class PlayerController(CoreController):
         for child_player_id in child_player_ids:
             if child_player_id == target_player:
                 continue
-            if not (child_player := self.get(child_player_id)):
+            if not (child_player := self.get(child_player_id)) or not child_player.available:
                 self.logger.warning("Player %s is not available", child_player_id)
                 continue
             if PlayerFeature.SYNC not in child_player.supported_features:
@@ -980,7 +980,7 @@ class PlayerController(CoreController):
         """Get (child) players attached to a group player or syncgroup."""
         for child_id in list(group_player.group_childs):
             if child_player := self.get(child_id, False):
-                if not child_player.available:
+                if not child_player.available or not child_player.enabled:
                     continue
                 if not (not only_powered or child_player.powered):
                     continue
