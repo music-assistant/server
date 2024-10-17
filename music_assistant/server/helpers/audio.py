@@ -228,8 +228,8 @@ async def get_stream_details(
 
     # work out how to handle radio stream
     if (
-        streamdetails.media_type in (MediaType.RADIO, StreamType.ICY, StreamType.HLS)
-        and streamdetails.stream_type == StreamType.HTTP
+        streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
+        and streamdetails.media_type == MediaType.RADIO
     ):
         resolved_url, is_icy, is_hls = await resolve_radio_stream(mass, streamdetails.path)
         streamdetails.path = resolved_url
