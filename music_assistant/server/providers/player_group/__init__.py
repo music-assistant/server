@@ -324,6 +324,19 @@ class PlayerGroupProvider(PlayerProvider):
         if not powered and group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             await self.cmd_stop(group_player.player_id)
 
+        # always (re)fetch the configured group members at power on
+        if not group_player.powered:
+            group_member_ids = self.mass.config.get_raw_player_config_value(
+                player_id, CONF_GROUP_MEMBERS
+            )
+            group_player.group_childs = {
+                x
+                for x in group_member_ids
+                if (child_player := self.mass.players.get(x))
+                and child_player.available
+                and child_player.enabled
+            }
+
         async with TaskManager(self.mass) as tg:
             if powered:
                 # handle TURN_ON of the group player by turning on all members
