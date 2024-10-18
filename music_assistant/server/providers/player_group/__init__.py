@@ -225,13 +225,10 @@ class PlayerGroupProvider(PlayerProvider):
             )
         # handle config entries for syncgroup players
         group_members = CONF_ENTRY_GROUP_MEMBERS
-        group_members.options = tuple(
-            ConfigValueOption(x.display_name, x.player_id)
-            for x in self.mass.players.all(True, False)
-            if (player_prov := self.mass.get_provider(x.provider))
-            and group_type == player_prov.lookup_key
-            and ProviderFeature.SYNC_PLAYERS in player_prov.supported_features
-        )
+        if player_prov := self.mass.get_provider(group_type):
+            group_members.options = tuple(
+                ConfigValueOption(x.display_name, x.player_id) for x in player_prov.players
+            )
 
         # grab additional details from one of the provider's players
         if not (player_provider := self.mass.get_provider(group_type)):
