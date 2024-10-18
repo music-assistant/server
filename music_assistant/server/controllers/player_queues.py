@@ -653,6 +653,7 @@ class PlayerQueuesController(CoreController):
             return
         if (
             (queue := self._queues.get(queue_id))
+            and queue.active
             and queue_player.powered
             and queue.state == PlayerState.PAUSED
         ):

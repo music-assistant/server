@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import shortuuid
 from aiohttp import web
+from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import ContainerType, MusicService, SonosCapability
 from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
 from aiosonos.api.models import PlayBackState as SonosPlayBackState
@@ -704,8 +705,10 @@ class SonosPlayerProvider(PlayerProvider):
         if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", name)
             return
-        if not (discovery_info := await get_discovery_info(self.mass.http_session, address)):
-            self.logger.debug("Ignoring %s in discovery as it is not reachable.", name)
+        try:
+            discovery_info = await get_discovery_info(self.mass.http_session, address)
+        except ClientError as err:
+            self.logger.debug("Ignoring %s in discovery as it is not reachable: %s", name, str(err))
             return
         display_name = discovery_info["device"].get("name") or name
         if SonosCapability.PLAYBACK not in discovery_info["device"]["capabilities"]:

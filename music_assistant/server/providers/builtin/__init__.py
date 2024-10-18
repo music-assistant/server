@@ -141,6 +141,7 @@ class BuiltinProvider(MusicProvider):
         self._playlists_dir = os.path.join(self.mass.storage_path, "playlists")
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
+        await super().loaded_in_mass()
 
     @property
     def is_streaming_provider(self) -> bool:

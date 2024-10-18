@@ -127,3 +127,9 @@ class ProviderPermissionDenied(MusicAssistantError):
     """Error thrown when a provider action is denied because of permissions."""
 
     error_code = 18
+
+
+class ActionUnavailable(MusicAssistantError):
+    """Error thrown when a action is denied because is is (temporary) unavailable/not possible."""
+
+    error_code = 19

@@ -52,7 +52,10 @@ from music_assistant.common.models.media_items import (
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
-from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.server.helpers.throttle_retry import (
+    ThrottlerManager,
+    throttle_with_retries,
+)
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -122,8 +125,8 @@ _P = ParamSpec("_P")
 class TidalQualityEnum(StrEnum):
     """Enum for Tidal Quality."""
 
-    HIGH_LOSSLESS = "HIGH_LOSSLESS"  # "High - 16bit, 44.1kHz"
-    HI_RES = "HI_RES"  # "Max - Up to 24bit, 192kHz"
+    HIGH_LOSSLESS = "LOSSLESS"  # "High - 16bit, 44.1kHz"
+    HI_RES = "HI_RES_LOSSLESS"  # "Max - Up to 24bit, 192kHz"
 
 
 async def setup(
@@ -577,7 +580,7 @@ class TidalProvider(MusicProvider):
             raise MediaNotFoundError(msg)
         stream: TidalStream = await get_stream(track)
         manifest = stream.get_stream_manifest()
-        if manifest.is_MPD:
+        if stream.is_mpd:
             # for mpeg-dash streams we just pass the complete base64 manifest
             url = f"data:application/dash+xml;base64,{manifest.manifest}"
         else:
@@ -826,7 +829,7 @@ class TidalProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.FLAC,
-                        bit_depth=24 if track_obj.is_HiRes else 16,
+                        bit_depth=24 if track_obj.is_hi_res_lossless else 16,
                     ),
                     url=f"https://tidal.com/track/{track_id}",
                     available=track_obj.available,
@@ -943,6 +946,9 @@ class TidalProvider(MusicProvider):
             # parse info with ffprobe (and store in cache)
             media_info = await parse_tags(url)
             await self.mass.cache.set(
-                item_id, media_info.raw, category=cache_category, base_key=cache_base_key
+                item_id,
+                media_info.raw,
+                category=cache_category,
+                base_key=cache_base_key,
             )
         return media_info

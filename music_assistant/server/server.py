@@ -621,19 +621,6 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         await self._update_available_providers_cache()
-        # run initial discovery after load
-        for mdns_type in provider.manifest.mdns_discovery or []:
-            for mdns_name in set(self.aiozc.zeroconf.cache.cache):
-                if mdns_type not in mdns_name or mdns_type == mdns_name:
-                    continue
-                info = AsyncServiceInfo(mdns_type, mdns_name)
-                if await info.async_request(self.aiozc.zeroconf, 3000):
-                    await provider.on_mdns_service_state_change(
-                        mdns_name, ServiceStateChange.Added, info
-                    )
-        # if this is a music provider, start sync
-        if provider.type == ProviderType.MUSIC:
-            self.music.start_sync(providers=[provider.instance_id])
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""

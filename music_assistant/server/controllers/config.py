@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -25,8 +26,13 @@ from music_assistant.common.models.config_entries import (
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import InvalidDataError
+from music_assistant.common.models.enums import EventType, ProviderFeature, ProviderType
+from music_assistant.common.models.errors import (
+    ActionUnavailable,
+    InvalidDataError,
+    PlayerCommandFailed,
+    UnsupportedFeaturedException,
+)
 from music_assistant.constants import (
     CONF_CORE,
     CONF_PLAYERS,
@@ -374,11 +380,12 @@ class ConfigController:
         """Save/update PlayerConfig."""
         config = await self.get_player_config(player_id)
         changed_keys = config.update(values)
-
         if not changed_keys:
             # no changes
             return None
-
+        # validate/handle the update in the player manager
+        await self.mass.players.on_player_config_change(config, changed_keys)
+        # actually store changes (if the above did not raise)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         self.set(conf_key, config.to_raw())
         # send config updated event
@@ -387,8 +394,6 @@ class ConfigController:
             object_id=config.player_id,
             data=config,
         )
-        # signal update to the player manager
-        self.mass.players.on_player_config_changed(config, changed_keys)
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
@@ -398,11 +403,32 @@ class ConfigController:
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         existing = self.get(conf_key)
         if not existing:
-            msg = f"Player {player_id} does not exist"
+            msg = f"Player configuration for {player_id} does not exist"
             raise KeyError(msg)
+        player = self.mass.players.get(player_id)
+        player_prov = player.provider if player else existing["provider"]
+        player_provider = self.mass.get_provider(player_prov)
+        if player_provider and ProviderFeature.REMOVE_PLAYER in player_provider.supported_features:
+            # provider supports removal of player (e.g. group player)
+            await player_provider.remove_player(player_id)
+        elif player and player_provider and player.available:
+            # removing a player config while it is active is not allowed
+            # unless the provider repoirts it has the remove_player feature (e.g. group player)
+            raise ActionUnavailable("Can not remove config for an active player!")
+        # check for group memberships that need to be updated
+        if player and player.active_group and player_provider:
+            # try to remove from the group
+            group_player = self.mass.players.get(player.active_group)
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+                await player_provider.set_members(
+                    player.active_group,
+                    [x for x in group_player.group_childs if x != player.player_id],
+                )
+        # tell the player manager to remove the player if its lingering around
+        # set cleanup_flag to false otherwise we end up in an infinite loop
+        self.mass.players.remove(player_id, cleanup_config=False)
+        # remove the actual config if all of the above passed
         self.remove(conf_key)
-        # signal update to the player manager
-        self.mass.players.on_player_config_removed(player_id)
 
     def create_default_player_config(
         self,
