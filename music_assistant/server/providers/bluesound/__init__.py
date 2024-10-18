@@ -269,7 +269,6 @@ class BluesoundPlayerProvider(PlayerProvider):
                 if not mass_player.available:
                     self.logger.debug("Player back online: %s", mass_player.display_name)
                     bluos_player.client.sync()
-                    mass_player.available = True
                 bluos_player.discovery_info = info
                 self.mass.players.update(self.player_id)
                 return

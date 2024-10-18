@@ -235,18 +235,10 @@ class MyDemoPlayerprovider(PlayerProvider):
         # Please note that you need to call the super() method to get the default entries.
         return ()
 
-    def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
+    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         # OPTIONAL
-        # this callback will be called whenever a player config changes
-        # you can use this to react to changes in player configuration
-        # but this is completely optional and you can leave it out if not needed.
-
-    def on_player_config_removed(self, player_id: str) -> None:
-        """Call (by config manager) when the configuration of a player is removed."""
-        # OPTIONAL
-        # ensure that any group players get removed
-        # this callback will be called whenever a player config is removed
+        # this will be called whenever a player config changes
         # you can use this to react to changes in player configuration
         # but this is completely optional and you can leave it out if not needed.
 

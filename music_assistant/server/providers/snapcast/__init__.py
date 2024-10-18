@@ -40,11 +40,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.server.helpers.audio import (
-    FFMpeg,
-    get_ffmpeg_stream,
-    get_player_filter_params,
-)
+from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -332,6 +328,7 @@ class SnapCastProvider(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
         # initial load of players
         self._handle_update()
 
@@ -342,14 +339,6 @@ class SnapCastProvider(PlayerProvider):
             await self.cmd_stop(player_id)
         self._snapserver.stop()
         await self._stop_builtin_server()
-
-    def on_player_config_removed(self, player_id: str) -> None:
-        """Call (by config manager) when the configuration of a player is removed."""
-        super().on_player_config_removed(player_id)
-        if self._use_builtin_server:
-            self.mass.create_task(
-                self._snapserver.delete_client(self._get_snapclient_id(player_id))
-            )
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""

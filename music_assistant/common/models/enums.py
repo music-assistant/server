@@ -368,6 +368,7 @@ class ProviderFeature(StrEnum):
     # PLAYERPROVIDER FEATURES
     #
     SYNC_PLAYERS = "sync_players"
+    REMOVE_PLAYER = "remove_player"
 
     #
     # METADATAPROVIDER FEATURES
