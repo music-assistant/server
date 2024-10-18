@@ -601,6 +601,7 @@ class PlayerGroupProvider(PlayerProvider):
             await player_provider.cmd_unsync(child_player.player_id)
             child_player.active_group = None
             child_player.active_source = None
+        group_player.group_childs = {x for x in group_player.group_childs if x != player_id}
         if is_sync_leader and was_playing:
             # unsyncing the sync leader will stop the group so we need to resume
             self.mass.call_later(2, self.mass.players.cmd_play, group_player.player_id)
@@ -692,6 +693,14 @@ class PlayerGroupProvider(PlayerProvider):
             group_player, only_powered=False, only_playing=False, active_only=False
         ):
             if child_player.group_childs:
+                return child_player
+        # Return the (first/only) player
+        # this is to handle the edge case where players are not
+        # yet synced or there simply is just one player
+        for child_player in self.mass.players.iter_group_members(
+            group_player, only_powered=False, only_playing=False, active_only=False
+        ):
+            if not child_player.synced_to:
                 return child_player
         return None
 
