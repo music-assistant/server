@@ -640,6 +640,7 @@ class AirplayProvider(PlayerProvider):
             raise RuntimeError("Player is synced")
         if player.group_childs:
             # pause is not supported while synced, use stop instead
+            self.logger.debug("Player is synced, using STOP instead of PAUSE")
             await self.cmd_stop(player_id)
             return
         airplay_player = self._players[player_id]
@@ -792,8 +793,8 @@ class AirplayProvider(PlayerProvider):
             )
         else:
             # make sure that the player manager gets an update
-            self.mass.players.update(child_player.player_id, skip_redirect=True)
-            self.mass.players.update(parent_player.player_id, skip_redirect=True)
+            self.mass.players.update(child_player.player_id, skip_forward=True)
+            self.mass.players.update(parent_player.player_id, skip_forward=True)
 
     @lock
     async def cmd_unsync(self, player_id: str) -> None:
@@ -812,8 +813,8 @@ class AirplayProvider(PlayerProvider):
             airplay_player = self._players.get(player_id)
             await airplay_player.cmd_stop()
             # make sure that the player manager gets an update
-            self.mass.players.update(player.player_id, skip_redirect=True)
-            self.mass.players.update(group_leader.player_id, skip_redirect=True)
+            self.mass.players.update(player.player_id, skip_forward=True)
+            self.mass.players.update(group_leader.player_id, skip_forward=True)
 
     async def _getcliraop_binary(self):
         """Find the correct raop/airplay binary belonging to the platform."""

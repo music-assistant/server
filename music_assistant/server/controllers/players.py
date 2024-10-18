@@ -170,55 +170,55 @@ class PlayerController(CoreController):
 
     @api_command("players/cmd/stop")
     @handle_player_command
-    async def cmd_stop(self, player_id: str, skip_redirect: bool = False) -> None:
+    async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
-        player = self._get_player_with_redirect(player_id, skip_redirect=skip_redirect)
-        # Redirect to queue controller if active (as it also handles some other logic)
-        # Note that skip_redirect will be set by the queue controller
-        # to prevent an endless loop.
-        if not skip_redirect and player.active_source == player_id:
-            await self.mass.player_queues.stop(player_id)
+        player = self._get_player_with_redirect(player_id)
+        # Redirect to queue controller if it is active
+        if active_queue := self.mass.player_queues.get(player.active_source):
+            await self.mass.player_queues.stop(active_queue.queue_id)
             return
-        if player_provider := self.get_player_provider(player_id):
-            await player_provider.cmd_stop(player_id)
+        # send to player provider
+        async with self._player_throttlers[player_id]:
+            if player_provider := self.get_player_provider(player_id):
+                await player_provider.cmd_stop(player_id)
 
     @api_command("players/cmd/play")
     @handle_player_command
-    async def cmd_play(self, player_id: str, skip_redirect: bool = False) -> None:
+    async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
-        player = self._get_player_with_redirect(player_id, skip_redirect=skip_redirect)
-        if player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
+        player = self._get_player_with_redirect(player_id)
+        # Redirect to queue controller if it is active
+        active_source = player.active_source or player.player_id
+        if (active_queue := self.mass.player_queues.get(active_source)) and active_queue.items:
+            await self.mass.player_queues.play(active_queue.queue_id)
             return
-        # Redirect to queue controller if active (as it also handles some other logic)
-        # Note that skip_redirect will be set by the queue controller
-        # to prevent an endless loop.
-        if not skip_redirect and player.active_source == player_id:
-            await self.mass.player_queues.play(player_id)
-            return
+        # send to player provider
         player_provider = self.get_player_provider(player_id)
         async with self._player_throttlers[player_id]:
             await player_provider.cmd_play(player_id)
 
     @api_command("players/cmd/pause")
     @handle_player_command
-    async def cmd_pause(self, player_id: str, skip_redirect: bool = False) -> None:
+    async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
-        player = self._get_player_with_redirect(player_id, skip_redirect=skip_redirect)
+        player = self._get_player_with_redirect(player_id)
         if player.announcement_in_progress:
             self.logger.warning("Ignore command: An announcement is in progress")
             return
         if PlayerFeature.PAUSE not in player.supported_features:
             # if player does not support pause, we need to send stop
+            self.logger.info(
+                "Player %s does not support pause, using STOP instead", player.display_name
+            )
             await self.cmd_stop(player_id)
             return
         player_provider = self.get_player_provider(player_id)
@@ -243,7 +243,8 @@ class PlayerController(CoreController):
                 await self.cmd_stop(_player_id)
 
         # we auto stop a player from paused when its paused for 30 seconds
-        self.mass.create_task(_watch_pause(player_id))
+        if not player.announcement_in_progress:
+            self.mass.create_task(_watch_pause(player_id))
 
     @api_command("players/cmd/play_pause")
     async def cmd_play_pause(self, player_id: str) -> None:
@@ -251,17 +252,64 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
-        player = self._get_player_with_redirect(player_id, skip_redirect=False)
+        player = self._get_player_with_redirect(player_id)
         if player.state == PlayerState.PLAYING:
             await self.cmd_pause(player_id)
         else:
             await self.cmd_play(player_id)
 
+    @api_command("players/cmd/seek")
+    async def cmd_seek(self, player_id: str, position: int) -> None:
+        """Handle SEEK command for given player.
+
+        - player_id: player_id of the player to handle the command.
+        - position: position in seconds to seek to in the current playing item.
+        """
+        player = self._get_player_with_redirect(player_id)
+        # Redirect to queue controller if it is active
+        active_source = player.active_source or player.player_id
+        if active_queue := self.mass.player_queues.get(active_source):
+            await self.mass.player_queues.seek(active_queue.queue_id, position)
+            return
+        if PlayerFeature.SEEK not in player.supported_features:
+            msg = f"Player {player.display_name} does not support seeking"
+            raise UnsupportedFeaturedException(msg)
+        player_prov = self.mass.players.get_player_provider(player_id)
+        await player_prov.cmd_seek(player_id, position)
+
+    @api_command("players/cmd/next")
+    async def cmd_next_track(self, player_id: str) -> None:
+        """Handle NEXT TRACK command for given player."""
+        player = self._get_player_with_redirect(player_id)
+        # Redirect to queue controller if it is active
+        active_source = player.active_source or player.player_id
+        if active_queue := self.mass.player_queues.get(active_source):
+            await self.mass.player_queues.next(active_queue.queue_id)
+            return
+        if PlayerFeature.NEXT_PREVIOUS not in player.supported_features:
+            msg = f"Player {player.display_name} does not support skipping to the next track."
+            raise UnsupportedFeaturedException(msg)
+        player_prov = self.mass.players.get_player_provider(player_id)
+        await player_prov.cmd_next(player_id)
+
+    @api_command("players/cmd/previous")
+    async def cmd_previous_track(self, player_id: str) -> None:
+        """Handle PREVIOUS TRACK command for given player."""
+        player = self._get_player_with_redirect(player_id)
+        # Redirect to queue controller if it is active
+        active_source = player.active_source or player.player_id
+        if active_queue := self.mass.player_queues.get(active_source):
+            await self.mass.player_queues.previous(active_queue.queue_id)
+            return
+        if PlayerFeature.NEXT_PREVIOUS not in player.supported_features:
+            msg = f"Player {player.display_name} does not support skipping to the previous track."
+            raise UnsupportedFeaturedException(msg)
+        player_prov = self.mass.players.get_player_provider(player_id)
+        await player_prov.cmd_previous(player_id)
+
     @api_command("players/cmd/power")
     @handle_player_command
-    async def cmd_power(
-        self, player_id: str, powered: bool, skip_redirect: bool = False, skip_update: bool = False
-    ) -> None:
+    async def cmd_power(self, player_id: str, powered: bool, skip_update: bool = False) -> None:
         """Send POWER command to given player.
 
         - player_id: player_id of the player to handle the command.
@@ -272,7 +320,7 @@ class PlayerController(CoreController):
         if player.powered == powered:
             return  # nothing to do
 
-        if player.active_group and not powered and not skip_redirect:
+        if player.active_group and not powered:
             # this is simply not possible (well, not without major headaches)
             # the player is part of a permanent (sync)group and the user tries to power off
             # one child player... we can't allow this, as it would break the group so we
@@ -426,20 +474,6 @@ class PlayerController(CoreController):
         async with self._player_throttlers[player_id]:
             await player_provider.cmd_volume_mute(player_id, muted)
 
-    @api_command("players/cmd/seek")
-    async def cmd_seek(self, player_id: str, position: int) -> None:
-        """Handle SEEK command for given player (directly).
-
-        - player_id: player_id of the player to handle the command.
-        - position: position in seconds to seek to in the current playing item.
-        """
-        player = self._get_player_with_redirect(player_id)
-        if PlayerFeature.SEEK not in player.supported_features:
-            msg = f"Player {player.display_name} does not support seeking"
-            raise UnsupportedFeaturedException(msg)
-        player_prov = self.mass.players.get_player_provider(player_id)
-        await player_prov.cmd_seek(player_id, position)
-
     @api_command("players/cmd/play_announcement")
     async def play_announcement(
         self,
@@ -529,15 +563,13 @@ class PlayerController(CoreController):
             player.announcement_in_progress = False
 
     @handle_player_command
-    async def play_media(
-        self, player_id: str, media: PlayerMedia, skip_redirect: bool = False
-    ) -> None:
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player.
 
         - player_id: player_id of the player to handle the command.
         - media: The Media that needs to be played on the player.
         """
-        player = self._get_player_with_redirect(player_id, skip_redirect=skip_redirect)
+        player = self._get_player_with_redirect(player_id)
         # power on the player if needed
         if not player.powered:
             await self.cmd_power(player_id, True)
@@ -768,7 +800,7 @@ class PlayerController(CoreController):
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     def update(
-        self, player_id: str, skip_redirect: bool = False, force_update: bool = False
+        self, player_id: str, skip_forward: bool = False, force_update: bool = False
     ) -> None:
         """Update player state."""
         if self.mass.closing:
@@ -833,13 +865,13 @@ class PlayerController(CoreController):
 
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
-        if skip_redirect:
+        if skip_forward:
             return
 
         # update/signal group player(s) child's when group updates
         if player.type == PlayerType.GROUP:
             for child_player in self.iter_group_members(player, exclude_self=True):
-                self.update(child_player.player_id, skip_redirect=True)
+                self.update(child_player.player_id, skip_forward=True)
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
             if player_prov := self.mass.get_provider(group_player.provider):
@@ -889,11 +921,9 @@ class PlayerController(CoreController):
         # ensure the result is an integer
         return None if volume_level is None else int(volume_level)
 
-    def _get_player_with_redirect(self, player_id: str, skip_redirect: bool = False) -> Player:
+    def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
         player = self.get(player_id, True)
-        if skip_redirect:
-            return player
         if player.synced_to and (sync_leader := self.get(player.synced_to)):
             self.logger.info(
                 "Player %s is synced to %s and can not accept "

@@ -36,6 +36,7 @@ from music_assistant.common.models.enums import (
     RepeatMode,
 )
 from music_assistant.common.models.errors import (
+    InvalidCommand,
     MediaNotFoundError,
     MusicAssistantError,
     PlayerUnavailableError,
@@ -633,12 +634,17 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if queue := self.get(queue_id):
+        queue_player: Player = self.mass.players.get(queue_id, True)
+        if queue_player.announcement_in_progress:
+            self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
+        if (queue := self.get(queue_id)) and queue.active:
             queue.resume_pos = queue.corrected_elapsed_time
             queue.stream_finished = None
             queue.end_of_track_reached = None
-        # forward the actual command to the player controller
-        await self.mass.players.cmd_stop(queue_id, skip_redirect=True)
+        # forward the actual command to the player provider
+        if player_provider := self.mass.players.get_player_provider(queue.queue_id):
+            await player_provider.cmd_stop(queue_id)
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -654,13 +660,14 @@ class PlayerQueuesController(CoreController):
         if (
             (queue := self._queues.get(queue_id))
             and queue.active
-            and queue_player.powered
-            and queue.state == PlayerState.PAUSED
+            and queue_player.state == PlayerState.PAUSED
         ):
-            # forward the actual command to the player controller
-            await self.mass.players.cmd_play(queue_id, skip_redirect=True)
-        else:
-            await self.resume(queue_id)
+            # forward the actual play/unpause command to the player provider
+            if player_provider := self.mass.players.get_player_provider(queue.queue_id):
+                await player_provider.cmd_play(queue_id)
+                return
+        # player is not paused, perform resume instead
+        await self.resume(queue_id)
 
     @api_command("player_queues/pause")
     async def pause(self, queue_id: str) -> None:
@@ -754,14 +761,19 @@ class PlayerQueuesController(CoreController):
         if queue_player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        if (queue := self.get(queue_id)) is None or not queue.active:
-            # TODO: forward to underlying player if not active
+        if not (queue := self.get(queue_id)):
             return
-        assert queue.current_item, "No item loaded"
-        assert queue.current_item.media_item.media_type == MediaType.TRACK
-        assert queue.current_item.duration
-        assert position < queue.current_item.duration
-        await self.play_index(queue_id, queue.current_index, position)
+        if not queue.current_item:
+            raise InvalidCommand(f"Queue {queue_player.display_name} has no item(s) loaded.")
+        if (
+            queue.current_item.media_item.media_type != MediaType.TRACK
+            or not queue.current_item.duration
+        ):
+            raise InvalidCommand("Can not seek on non track items.")
+        position = max(0, int(position))
+        if position > queue.current_item.duration:
+            raise InvalidCommand("Can not seek outside of duration range.")
+        await self.play_index(queue_id, queue.current_index, seek_position=position)
 
     @api_command("player_queues/resume")
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:

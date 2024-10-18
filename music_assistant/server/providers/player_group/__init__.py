@@ -277,42 +277,42 @@ class PlayerGroupProvider(PlayerProvider):
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         group_player = self.mass.players.get(player_id)
+        # syncgroup: forward command to sync leader
         if player_id.startswith(SYNCGROUP_PREFIX):
-            # syncgroup: forward command to sync leader
             if sync_leader := self._get_sync_leader(group_player):
-                await self.mass.players.cmd_stop(sync_leader.player_id, skip_redirect=True)
-        else:
-            # ugp: forward command to all active members
-            async with TaskManager(self.mass) as tg:
-                for member in self.mass.players.iter_group_members(group_player, active_only=True):
-                    if member.state not in (PlayerState.PAUSED, PlayerState.PLAYING):
-                        continue
-                    tg.create_task(self.mass.players.cmd_stop(member.player_id, skip_redirect=True))
-            # abort the stream session
-            if (stream := self.ugp_streams.pop(player_id, None)) and not stream.done:
-                await stream.stop()
-        # set state optimistically
-        group_player.state = PlayerState.IDLE
-        self.mass.players.update(player_id)
+                if player_provider := self.mass.get_provider(sync_leader.provider):
+                    await player_provider.cmd_stop(sync_leader.player_id)
+            return
+        # ugp: forward command to all members
+        async with TaskManager(self.mass) as tg:
+            for member in self.mass.players.iter_group_members(group_player, active_only=True):
+                if player_provider := self.mass.get_provider(member.provider):
+                    tg.create_task(player_provider.cmd_stop(member.player_id))
+        # abort the stream session
+        if (stream := self.ugp_streams.pop(player_id, None)) and not stream.done:
+            await stream.stop()
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
         group_player = self.mass.players.get(player_id)
         if not player_id.startswith(SYNCGROUP_PREFIX):
             # this shouldn't happen, but just in case
-            raise UnsupportedFeaturedException("Command is not supported for UGP players")
+            raise UnsupportedFeaturedException
         # forward command to sync leader
         if sync_leader := self._get_sync_leader(group_player):
-            await self.mass.players.cmd_play(sync_leader.player_id, skip_redirect=True)
+            if player_provider := self.mass.get_provider(sync_leader.provider):
+                await player_provider.cmd_play(sync_leader.player_id)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         group_player = self.mass.players.get(player_id)
         if not player_id.startswith(SYNCGROUP_PREFIX):
-            raise UnsupportedFeaturedException("Command is not supported for UGP players")
+            # this shouldn't happen, but just in case
+            raise UnsupportedFeaturedException
         # forward command to sync leader
         if sync_leader := self._get_sync_leader(group_player):
-            await self.mass.players.cmd_pause(sync_leader.player_id, skip_redirect=True)
+            if player_provider := self.mass.get_provider(sync_leader.provider):
+                await player_provider.cmd_pause(sync_leader.player_id)
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Handle POWER command to group player."""
@@ -337,40 +337,37 @@ class PlayerGroupProvider(PlayerProvider):
                 and child_player.enabled
             }
 
-        async with TaskManager(self.mass) as tg:
-            if powered:
-                # handle TURN_ON of the group player by turning on all members
-                for member in self.mass.players.iter_group_members(
-                    group_player, only_powered=False, active_only=False
+        if powered:
+            # handle TURN_ON of the group player by turning on all members
+            for member in self.mass.players.iter_group_members(
+                group_player, only_powered=False, active_only=False
+            ):
+                player_provider = self.mass.get_provider(member.provider)
+                assert player_provider  # for typing
+                if (
+                    member.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+                    and member.active_source != group_player.active_source
                 ):
-                    if (
-                        member.state in (PlayerState.PLAYING, PlayerState.PAUSED)
-                        and member.active_source != group_player.active_source
-                    ):
-                        # stop playing existing content on member if we start the group player
-                        tg.create_task(
-                            self.mass.players.cmd_stop(member.player_id, skip_redirect=True)
-                        )
-                    if not member.powered:
-                        tg.create_task(
-                            self.mass.players.cmd_power(member.player_id, True, skip_redirect=True)
-                        )
-                    # set active source to group player if the group (is going to be) powered
-                    member.active_group = group_player.player_id
-                    member.active_source = group_player.active_source
-            else:
+                    # stop playing existing content on member if we start the group player
+                    await player_provider.cmd_stop(member.player_id)
+                if not member.powered:
+                    member.active_group = None  # needed to prevent race conditions
+                    await self.mass.players.cmd_power(member.player_id, True)
+                # set active source to group player if the group (is going to be) powered
+                member.active_group = group_player.player_id
+                member.active_source = group_player.active_source
+        else:
+            # handle TURN_OFF of the group player by turning off all members
+            for member in self.mass.players.iter_group_members(
+                group_player, only_powered=True, active_only=True
+            ):
+                # reset active group on player when the group is turned off
+                member.active_group = None
+                member.active_source = None
                 # handle TURN_OFF of the group player by turning off all members
-                for member in self.mass.players.iter_group_members(
-                    group_player, only_powered=True, active_only=True
-                ):
-                    # reset active group on player when the group is turned off
-                    member.active_group = None
-                    member.active_source = None
-                    # handle TURN_OFF of the group player by turning off all members
-                    if member.powered:
-                        tg.create_task(
-                            self.mass.players.cmd_power(member.player_id, False, skip_redirect=True)
-                        )
+                if member.powered:
+                    await self.mass.players.cmd_power(member.player_id, False)
+
         if powered and player_id.startswith(SYNCGROUP_PREFIX):
             await self._sync_syncgroup(group_player)
         # optimistically set the group state
@@ -394,10 +391,14 @@ class PlayerGroupProvider(PlayerProvider):
         # handle play_media for sync group
         if player_id.startswith(SYNCGROUP_PREFIX):
             # simply forward the command to the sync leader
-            if sync_leader := self._select_sync_leader(group_player):
-                await self.mass.players.play_media(
-                    sync_leader.player_id, media=media, skip_redirect=True
-                )
+            sync_leader = self._select_sync_leader(group_player)
+            assert sync_leader  # for typing
+            player_provider = self.mass.get_provider(sync_leader.provider)
+            assert player_provider  # for typing
+            await player_provider.play_media(
+                sync_leader.player_id,
+                media=media,
+            )
             return
 
         # handle play_media for UGP group
@@ -447,8 +448,10 @@ class PlayerGroupProvider(PlayerProvider):
             for member in self.mass.players.iter_group_members(
                 group_player, only_powered=True, active_only=True
             ):
+                player_provider = self.mass.get_provider(member.provider)
+                assert player_provider  # for typing
                 tg.create_task(
-                    self.mass.players.play_media(
+                    player_provider.play_media(
                         member.player_id,
                         media=PlayerMedia(
                             uri=f"{base_url}?player_id={member.player_id}",
@@ -456,7 +459,6 @@ class PlayerGroupProvider(PlayerProvider):
                             title=group_player.display_name,
                             queue_id=group_player.player_id,
                         ),
-                        skip_redirect=True,
                     )
                 )
 
@@ -516,13 +518,8 @@ class PlayerGroupProvider(PlayerProvider):
             return
         if group_player.powered:
             # edge case: the group player is powered and being removed
-            for member in self.mass.players.iter_group_members(group_player, only_powered=True):
-                member.active_group = None
-                if member.state == PlayerState.IDLE:
-                    continue
-                if member.synced_to:
-                    continue
-                await self.mass.players.cmd_stop(member.player_id, skip_redirect=True)
+            # make sure to turn it off first (which will also unsync a syncgroup)
+            await self.cmd_power(player_id, False)
 
     async def _register_all_players(self) -> None:
         """Register all (virtual/fake) group players in the Player controller."""
@@ -631,15 +628,15 @@ class PlayerGroupProvider(PlayerProvider):
         sync_leader = self._select_sync_leader(group_player)
         members_to_sync: list[str] = []
         for member in self.mass.players.iter_group_members(group_player, active_only=False):
+            if member.synced_to and member.synced_to != sync_leader.player_id:
+                # unsync first
+                await self.mass.players.cmd_unsync(member.player_id)
             if sync_leader.player_id == member.player_id:
                 # skip sync leader
                 continue
             if member.synced_to == sync_leader.player_id:
                 # already synced
                 continue
-            if member.synced_to and member.synced_to != sync_leader.player_id:
-                # unsync first
-                await self.mass.players.cmd_unsync(member.player_id)
             members_to_sync.append(member.player_id)
         if members_to_sync:
             await self.mass.players.cmd_sync_many(sync_leader.player_id, members_to_sync)

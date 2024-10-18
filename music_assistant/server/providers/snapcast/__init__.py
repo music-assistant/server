@@ -474,8 +474,8 @@ class SnapCastProvider(PlayerProvider):
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
         # make sure that the player manager gets an update
-        self.mass.players.update(player_id, skip_redirect=True)
-        self.mass.players.update(mass_player.synced_to, skip_redirect=True)
+        self.mass.players.update(player_id, skip_forward=True)
+        self.mass.players.update(mass_player.synced_to, skip_forward=True)
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""

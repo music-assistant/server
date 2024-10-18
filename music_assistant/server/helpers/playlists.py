@@ -29,6 +29,8 @@ HLS_CONTENT_TYPES = (
 class IsHLSPlaylist(InvalidDataError):
     """The playlist from an HLS stream and should not be parsed."""
 
+    encrypted: bool = False
+
 
 @dataclass
 class PlaylistItem:
@@ -163,7 +165,7 @@ async def fetch_playlist(mass: MusicAssistant, url: str) -> list[PlaylistItem]:
         raise InvalidDataError(msg) from err
 
     if "#EXT-X-VERSION:" in playlist_data or "#EXT-X-STREAM-INF:" in playlist_data:
-        raise IsHLSPlaylist
+        raise IsHLSPlaylist(encrypted="#EXT-X-KEY:" in playlist_data)
 
     if url.endswith((".m3u", ".m3u8")):
         playlist = parse_m3u(playlist_data)

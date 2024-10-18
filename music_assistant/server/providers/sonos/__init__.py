@@ -337,7 +337,20 @@ class SonosPlayer:
             self.mass_player.active_source = airplay.active_source
             self.mass_player.elapsed_time = airplay.elapsed_time
             self.mass_player.elapsed_time_last_updated = airplay.elapsed_time_last_updated
+            # mark 'next_previous' feature as unsupported when airplay mode is active
+            if PlayerFeature.NEXT_PREVIOUS in self.mass_player.supported_features:
+                self.mass_player.supported_features = (
+                    x
+                    for x in self.mass_player.supported_features
+                    if x != PlayerFeature.NEXT_PREVIOUS
+                )
             return
+        # ensure 'next_previous' feature is supported when airplay mode is not active
+        if PlayerFeature.NEXT_PREVIOUS not in self.mass_player.supported_features:
+            self.mass_player.supported_features = (
+                *self.mass_player.supported_features,
+                PlayerFeature.NEXT_PREVIOUS,
+            )
 
         # map playback state
         self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
@@ -656,6 +669,16 @@ class SonosPlayerProvider(PlayerProvider):
         await sonos_player.client.player.group.play_stream_url(
             media.uri, {"name": media.title, "type": "track"}
         )
+
+    async def cmd_next(self, player_id: str) -> None:
+        """Handle NEXT TRACK command for given player."""
+        if sonos_player := self.sonos_players[player_id]:
+            await sonos_player.client.player.group.skip_to_next_track()
+
+    async def cmd_previous(self, player_id: str) -> None:
+        """Handle PREVIOUS TRACK command for given player."""
+        if sonos_player := self.sonos_players[player_id]:
+            await sonos_player.client.player.group.skip_to_previous_track()
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""

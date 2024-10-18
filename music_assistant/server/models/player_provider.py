@@ -147,12 +147,22 @@ class PlayerProvider(Provider):
         raise NotImplementedError
 
     async def cmd_seek(self, player_id: str, position: int) -> None:
-        """Handle SEEK command for given queue.
+        """Handle SEEK command for given player.
 
         - player_id: player_id of the player to handle the command.
         - position: position in seconds to seek to in the current playing item.
         """
         # will only be called for players with Seek feature set.
+        raise NotImplementedError
+
+    async def cmd_next(self, player_id: str) -> None:
+        """Handle NEXT TRACK command for given player."""
+        # will only be called for players with 'next_previous' feature set.
+        raise NotImplementedError
+
+    async def cmd_previous(self, player_id: str) -> None:
+        """Handle PREVIOUS TRACK command for given player."""
+        # will only be called for players with 'next_previous' feature set.
         raise NotImplementedError
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:

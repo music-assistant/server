@@ -42,7 +42,7 @@ from music_assistant.constants import (
 )
 
 from .ffmpeg import FFMpeg, get_ffmpeg_stream
-from .playlists import HLS_CONTENT_TYPES, IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
+from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, check_output, communicate
 from .tags import parse_tags
 from .throttle_retry import BYPASS_THROTTLER
@@ -231,12 +231,9 @@ async def get_stream_details(
         streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
         and streamdetails.media_type == MediaType.RADIO
     ):
-        resolved_url, is_icy, is_hls = await resolve_radio_stream(mass, streamdetails.path)
+        resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
         streamdetails.path = resolved_url
-        if is_hls:
-            streamdetails.stream_type = StreamType.HLS
-        elif is_icy:
-            streamdetails.stream_type = StreamType.ICY
+        streamdetails.stream_type = stream_type
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
     # handle skip/fade_in details
@@ -475,7 +472,7 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
     return file.getvalue()
 
 
-async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, bool, bool]:
+async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, StreamType]:
     """
     Resolve a streaming radio URL.
 
@@ -484,14 +481,12 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
 
     Returns tuple;
     - unfolded URL as string
-    - bool if the URL represents a ICY (radio) stream.
-    - bool uf the URL represents a HLS stream/playlist.
+    - StreamType to determine ICY (radio) or HLS stream.
     """
-    cache_base_key = "resolved_radio"
+    cache_base_key = "resolved_radio_info"
     if cache := await mass.cache.get(url, base_key=cache_base_key):
         return cache
-    is_hls = False
-    is_icy = False
+    stream_type = StreamType.HTTP
     resolved_url = url
     timeout = ClientTimeout(total=0, connect=10, sock_read=5)
     try:
@@ -502,8 +497,8 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
             resp.raise_for_status()
             if not resp.headers:
                 raise InvalidDataError("no headers found")
-        is_icy = headers.get("icy-metaint") is not None
-        is_hls = headers.get("content-type") in HLS_CONTENT_TYPES
+        if headers.get("icy-metaint") is not None:
+            stream_type = StreamType.ICY
         if (
             url.endswith((".m3u", ".m3u8", ".pls"))
             or ".m3u?" in url
@@ -522,14 +517,14 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
                         # unfold first url of playlist
                         return await resolve_radio_stream(mass, line.path)
                     raise InvalidDataError("No content found in playlist")
-            except IsHLSPlaylist:
-                is_hls = True
+            except IsHLSPlaylist as err:
+                stream_type = StreamType.ENCRYPTED_HLS if err.encrypted else StreamType.HLS
 
     except Exception as err:
         LOGGER.warning("Error while parsing radio URL %s: %s", url, err)
-        return (url, is_icy, is_hls)
+        return (url, stream_type)
 
-    result = (resolved_url, is_icy, is_hls)
+    result = (resolved_url, stream_type)
     cache_expiration = 3600 * 3
     await mass.cache.set(url, result, expiration=cache_expiration, base_key=cache_base_key)
     return result
@@ -671,6 +666,7 @@ async def get_hls_radio_stream(
 async def get_hls_substream(
     mass: MusicAssistant,
     url: str,
+    allow_encrypted: bool = False,
 ) -> PlaylistItem:
     """Select the (highest quality) HLS substream for given HLS playlist/URL."""
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
@@ -683,8 +679,11 @@ async def get_hls_substream(
         raw_data = await resp.read()
         encoding = resp.charset or await detect_charset(raw_data)
         master_m3u_data = raw_data.decode(encoding)
+    if not allow_encrypted and "EXT-X-KEY:METHOD=AES-128" in master_m3u_data:
+        # for now we don't support encrypted HLS streams
+        raise InvalidDataError("HLS stream is encrypted, not supported")
     substreams = parse_m3u(master_m3u_data)
-    if any(x for x in substreams if x.length and not x.key):
+    if any(x for x in substreams if x.length or x.key):
         # this is already a substream!
         return PlaylistItem(
             path=url,
