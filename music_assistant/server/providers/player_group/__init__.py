@@ -105,6 +105,18 @@ CONFIG_ENTRY_UGP_NOTE = ConfigEntry(
     "the Universal Group only to group players of different ecosystems.",
     required=False,
 )
+CONFIG_ENTRY_DYNAMIC_MEMBERS = ConfigEntry(
+    key="dynamic_members",
+    type=ConfigEntryType.BOOLEAN,
+    label="Enable dynamic members (experimental)",
+    description="Allow members to (temporary) join/leave the group dynamically, "
+    "so the group more or less behaves the same like manually syncing players together, "
+    "with the main difference being that the groupplayer will hold the queue. \n\n"
+    "NOTE: This is an experimental feature which we are testing out. "
+    "You may run into some unexpected behavior!",
+    default_value=False,
+    required=False,
+)
 
 
 async def setup(
@@ -255,6 +267,7 @@ class PlayerGroupProvider(PlayerProvider):
         return (
             *base_entries,
             group_members,
+            CONFIG_ENTRY_DYNAMIC_MEMBERS,
             *(entry for entry in child_config_entries if entry.key in allowed_conf_entries),
         )
 
@@ -269,6 +282,18 @@ class PlayerGroupProvider(PlayerProvider):
                 if group_player.powered:
                     # power on group player (which will also resync) if needed
                     await self.cmd_power(group_player.player_id, True)
+        if f"values/{CONFIG_ENTRY_DYNAMIC_MEMBERS.key}" in changed_keys:
+            # dynamic members feature changed
+            if group_player := self.mass.players.get(config.player_id):
+                if PlayerFeature.SYNC in group_player.supported_features:
+                    group_player.supported_features = tuple(
+                        x for x in group_player.supported_features if x != PlayerFeature.SYNC
+                    )
+                else:
+                    group_player.supported_features = (
+                        *group_player.supported_features,
+                        PlayerFeature.SYNC,
+                    )
         await super().on_player_config_change(config, changed_keys)
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -518,6 +543,71 @@ class PlayerGroupProvider(PlayerProvider):
             # make sure to turn it off first (which will also unsync a syncgroup)
             await self.cmd_power(player_id, False)
 
+    async def cmd_sync(self, player_id: str, target_player: str) -> None:
+        """Handle SYNC command for given player.
+
+        Join/add the given player(id) to the given (master) player/sync group.
+
+            - player_id: player_id of the player to handle the command.
+            - target_player: player_id of the sync leader.
+        """
+        group_player = self.mass.players.get(target_player, raise_unavailable=True)
+        if TYPE_CHECKING:
+            group_player = cast(Player, group_player)
+        dynamic_members_enabled = self.mass.config.get_raw_player_config_value(
+            group_player.player_id,
+            CONFIG_ENTRY_DYNAMIC_MEMBERS.key,
+            CONFIG_ENTRY_DYNAMIC_MEMBERS.default_value,
+        )
+        group_type = self.mass.config.get_raw_player_config_value(
+            group_player.player_id, CONF_ENTRY_GROUP_TYPE.key, CONF_ENTRY_GROUP_TYPE.default_value
+        )
+        if not dynamic_members_enabled:
+            raise UnsupportedFeaturedException(
+                f"Adjusting group members is not allowed for group {group_player.display_name}"
+            )
+        new_members = self._filter_members(group_type, [*group_player.group_childs, player_id])
+        group_player.group_childs = new_members
+        if group_player.powered:
+            # power on group player (which will also resync) if needed
+            await self.cmd_power(target_player, True)
+
+    async def cmd_unsync_member(self, player_id: str, target_player: str) -> None:
+        """Handle UNSYNC command for given player.
+
+        Remove the given player(id) from the given (master) player/sync group.
+
+            - player_id: player_id of the (child) player to unsync from the group.
+            - target_player: player_id of the group player.
+        """
+        group_player = self.mass.players.get(target_player, raise_unavailable=True)
+        child_player = self.mass.players.get(player_id, raise_unavailable=True)
+        if TYPE_CHECKING:
+            group_player = cast(Player, group_player)
+            child_player = cast(Player, child_player)
+        dynamic_members_enabled = self.mass.config.get_raw_player_config_value(
+            group_player.player_id,
+            CONFIG_ENTRY_DYNAMIC_MEMBERS.key,
+            CONFIG_ENTRY_DYNAMIC_MEMBERS.default_value,
+        )
+        if not dynamic_members_enabled:
+            raise UnsupportedFeaturedException(
+                f"Adjusting group members is not allowed for group {group_player.display_name}"
+            )
+        is_sync_leader = len(child_player.group_childs) > 0
+        was_playing = child_player.state == PlayerState.PLAYING
+        # forward command to the player provider
+        if player_provider := self.mass.players.get_player_provider(child_player.player_id):
+            await player_provider.cmd_unsync(child_player.player_id)
+            child_player.active_group = None
+            child_player.active_source = None
+        if is_sync_leader and was_playing:
+            # unsyncing the sync leader will stop the group so we need to resume
+            self.mass.call_later(2, self.mass.players.cmd_play, group_player.player_id)
+        elif group_player.powered:
+            # power on group player (which will also resync) if needed
+            await self.cmd_power(group_player.player_id, True)
+
     async def _register_all_players(self) -> None:
         """Register all (virtual/fake) group players in the Player controller."""
         player_configs = await self.mass.config.get_player_configs(
@@ -567,6 +657,13 @@ class PlayerGroupProvider(PlayerProvider):
                     player_features.add(feature)
         else:
             raise PlayerUnavailableError(f"Provider for syncgroup {group_type} is not available!")
+
+        if self.mass.config.get_raw_player_config_value(
+            group_player_id,
+            CONFIG_ENTRY_DYNAMIC_MEMBERS.key,
+            CONFIG_ENTRY_DYNAMIC_MEMBERS.default_value,
+        ):
+            player_features.add(PlayerFeature.SYNC)
 
         player = Player(
             player_id=group_player_id,

@@ -52,6 +52,7 @@ from music_assistant.server.helpers.throttle_retry import Throttler
 from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.player_provider import PlayerProvider
+from music_assistant.server.providers.player_group import PlayerGroupProvider
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine, Iterator
@@ -319,19 +320,6 @@ class PlayerController(CoreController):
 
         if player.powered == powered:
             return  # nothing to do
-
-        if player.active_group and not powered:
-            # this is simply not possible (well, not without major headaches)
-            # the player is part of a permanent (sync)group and the user tries to power off
-            # one child player... we can't allow this, as it would break the group so we
-            # power off the whole group instead.
-            self.logger.info(
-                "Detected a power OFF command to player %s which is part of a (active) group. "
-                "This command will be redirected to the entire group.",
-                player.name,
-            )
-            await self.cmd_power(player.active_group, False)
-            return
 
         # always stop player at power off
         if (
@@ -620,17 +608,14 @@ class PlayerController(CoreController):
         if not (player.synced_to or player.group_childs):
             return  # nothing to do
 
-        if player.active_group:
-            # this is simply not possible (well, not without major headaches)
+        if player.active_group and (
+            (group_provider := self.get_player_provider(player.active_group))
+            and group_provider.domain == "player_group"
+        ):
             # the player is part of a permanent (sync)group and the user tries to unsync
-            # one child player... we can't allow this, as it would break the group so we
-            # power unsync the whole group instead.
-            self.logger.info(
-                "Detected a (un)sync command to player %s which is part of a (active) group. "
-                "This command will be redirected by turning off the entire group!",
-                player.name,
-            )
-            await self.cmd_power(player.active_group, False)
+            # redirect the command to the group provider
+            group_provider = cast(PlayerGroupProvider, group_provider)
+            await group_provider.cmd_unsync_member(player_id, player.active_group)
             return
 
         # handle (edge)case where un unsync command is sent to a sync leader;
