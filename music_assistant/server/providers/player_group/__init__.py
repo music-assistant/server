@@ -688,19 +688,20 @@ class PlayerGroupProvider(PlayerProvider):
         if group_player.synced_to:
             # should not happen but just in case...
             return self.mass.players.get(group_player.synced_to)
+        if len(group_player.group_childs) == 1:
+            # Return the (first/only) player
+            # this is to handle the edge case where players are not
+            # yet synced or there simply is just one player
+            for child_player in self.mass.players.iter_group_members(
+                group_player, only_powered=False, only_playing=False, active_only=False
+            ):
+                if not child_player.synced_to:
+                    return child_player
         # Return the (first/only) player that has group childs
         for child_player in self.mass.players.iter_group_members(
             group_player, only_powered=False, only_playing=False, active_only=False
         ):
             if child_player.group_childs:
-                return child_player
-        # Return the (first/only) player
-        # this is to handle the edge case where players are not
-        # yet synced or there simply is just one player
-        for child_player in self.mass.players.iter_group_members(
-            group_player, only_powered=False, only_playing=False, active_only=False
-        ):
-            if not child_player.synced_to:
                 return child_player
         return None
 

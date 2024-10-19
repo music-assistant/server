@@ -182,9 +182,9 @@ class PlayerController(CoreController):
             await self.mass.player_queues.stop(active_queue.queue_id)
             return
         # send to player provider
-        async with self._player_throttlers[player_id]:
-            if player_provider := self.get_player_provider(player_id):
-                await player_provider.cmd_stop(player_id)
+        async with self._player_throttlers[player.player_id]:
+            if player_provider := self.get_player_provider(player.player_id):
+                await player_provider.cmd_stop(player.player_id)
 
     @api_command("players/cmd/play")
     @handle_player_command
@@ -200,9 +200,9 @@ class PlayerController(CoreController):
             await self.mass.player_queues.play(active_queue.queue_id)
             return
         # send to player provider
-        player_provider = self.get_player_provider(player_id)
-        async with self._player_throttlers[player_id]:
-            await player_provider.cmd_play(player_id)
+        player_provider = self.get_player_provider(player.player_id)
+        async with self._player_throttlers[player.player_id]:
+            await player_provider.cmd_play(player.player_id)
 
     @api_command("players/cmd/pause")
     @handle_player_command
@@ -220,10 +220,10 @@ class PlayerController(CoreController):
             self.logger.info(
                 "Player %s does not support pause, using STOP instead", player.display_name
             )
-            await self.cmd_stop(player_id)
+            await self.cmd_stop(player.player_id)
             return
-        player_provider = self.get_player_provider(player_id)
-        await player_provider.cmd_pause(player_id)
+        player_provider = self.get_player_provider(player.player_id)
+        await player_provider.cmd_pause(player.player_id)
 
         async def _watch_pause(_player_id: str) -> None:
             player = self.get(_player_id, True)
@@ -255,9 +255,9 @@ class PlayerController(CoreController):
         """
         player = self._get_player_with_redirect(player_id)
         if player.state == PlayerState.PLAYING:
-            await self.cmd_pause(player_id)
+            await self.cmd_pause(player.player_id)
         else:
-            await self.cmd_play(player_id)
+            await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/seek")
     async def cmd_seek(self, player_id: str, position: int) -> None:
@@ -275,8 +275,8 @@ class PlayerController(CoreController):
         if PlayerFeature.SEEK not in player.supported_features:
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
-        player_prov = self.mass.players.get_player_provider(player_id)
-        await player_prov.cmd_seek(player_id, position)
+        player_prov = self.mass.players.get_player_provider(player.player_id)
+        await player_prov.cmd_seek(player.player_id, position)
 
     @api_command("players/cmd/next")
     async def cmd_next_track(self, player_id: str) -> None:
@@ -290,8 +290,8 @@ class PlayerController(CoreController):
         if PlayerFeature.NEXT_PREVIOUS not in player.supported_features:
             msg = f"Player {player.display_name} does not support skipping to the next track."
             raise UnsupportedFeaturedException(msg)
-        player_prov = self.mass.players.get_player_provider(player_id)
-        await player_prov.cmd_next(player_id)
+        player_prov = self.mass.players.get_player_provider(player.player_id)
+        await player_prov.cmd_next(player.player_id)
 
     @api_command("players/cmd/previous")
     async def cmd_previous_track(self, player_id: str) -> None:
@@ -305,8 +305,8 @@ class PlayerController(CoreController):
         if PlayerFeature.NEXT_PREVIOUS not in player.supported_features:
             msg = f"Player {player.display_name} does not support skipping to the previous track."
             raise UnsupportedFeaturedException(msg)
-        player_prov = self.mass.players.get_player_provider(player_id)
-        await player_prov.cmd_previous(player_id)
+        player_prov = self.mass.players.get_player_provider(player.player_id)
+        await player_prov.cmd_previous(player.player_id)
 
     @api_command("players/cmd/power")
     @handle_player_command
@@ -473,8 +473,6 @@ class PlayerController(CoreController):
     ) -> None:
         """Handle playback of an announcement (url) on given player."""
         player = self.get(player_id, True)
-        while player.announcement_in_progress:
-            await asyncio.sleep(0.5)
         if not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
         try:
@@ -561,10 +559,10 @@ class PlayerController(CoreController):
         player = self._get_player_with_redirect(player_id)
         # power on the player if needed
         if not player.powered:
-            await self.cmd_power(player_id, True)
-        player_prov = self.mass.players.get_player_provider(player_id)
+            await self.cmd_power(player.player_id, True)
+        player_prov = self.mass.players.get_player_provider(player.player_id)
         await player_prov.play_media(
-            player_id=player_id,
+            player_id=player.player_id,
             media=media,
         )
 
@@ -799,6 +797,17 @@ class PlayerController(CoreController):
         # correct group_members if needed
         if player.group_childs == {player.player_id}:
             player.group_childs = set()
+        # Auto correct player state if player is synced (or group child)
+        # This is because some players/providers do not accurately update this info
+        # for the sync child's.
+        if player.synced_to and (sync_leader := self.get(player.synced_to)):
+            player.state = sync_leader.state
+            player.elapsed_time = sync_leader.elapsed_time
+            player.elapsed_time_last_updated = sync_leader.elapsed_time_last_updated
+            player.powered = sync_leader.powered or player.powered
+        # correct power state if needed
+        if player.state == PlayerState.PLAYING and not player.powered:
+            player.powered = True
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
         if player.type == PlayerType.GROUP:
@@ -851,13 +860,12 @@ class PlayerController(CoreController):
 
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
-        if skip_forward:
+        if skip_forward and not force_update:
             return
 
         # update/signal group player(s) child's when group updates
-        if player.type == PlayerType.GROUP:
-            for child_player in self.iter_group_members(player, exclude_self=True):
-                self.update(child_player.player_id, skip_forward=True)
+        for child_player in self.iter_group_members(player, exclude_self=True):
+            self.update(child_player.player_id, skip_forward=True)
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
             if player_prov := self.mass.get_provider(group_player.provider):
