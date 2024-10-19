@@ -190,7 +190,6 @@ class CacheController(CoreController):
             query_parts.append(f"sub_key LIKE '%{key_filter}%'")
         query = "WHERE " + " AND ".join(query_parts) if query_parts else None
         await self.database.delete(DB_TABLE_CACHE, query=query)
-        await self.database.vacuum()
         self.logger.info("Clearing database DONE")
 
     async def auto_cleanup(self) -> None:
@@ -206,10 +205,6 @@ class CacheController(CoreController):
                 await self.database.delete(DB_TABLE_CACHE, {"id": db_row["id"]})
                 cleaned_records += 1
             await asyncio.sleep(0)  # yield to eventloop
-        if cleaned_records > 50:
-            self.logger.debug("Compacting database...")
-            await self.database.vacuum()
-            self.logger.debug("Compacting database done")
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
     async def _setup_database(self) -> None:
@@ -248,7 +243,7 @@ class CacheController(CoreController):
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
         await self.__create_database_indexes()
-        # compact db
+        # compact db (vacuum) at startup
         self.logger.debug("Compacting database...")
         try:
             await self.database.vacuum()

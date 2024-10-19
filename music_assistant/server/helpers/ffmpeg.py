@@ -124,6 +124,8 @@ class FFMpeg(AsyncProcess):
         try:
             async for chunk in TimedAsyncGenerator(self.audio_input, 300):
                 audio_received = True
+                if self.proc and self.proc.returncode is not None:
+                    raise AudioError("Parent process already exited")
                 await self.write(chunk)
             generator_exhausted = True
             if not audio_received:
