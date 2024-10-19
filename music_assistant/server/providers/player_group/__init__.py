@@ -349,7 +349,7 @@ class PlayerGroupProvider(PlayerProvider):
         # always (re)fetch the configured group members at power on
         if not group_player.powered:
             group_member_ids = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_GROUP_MEMBERS
+                player_id, CONF_GROUP_MEMBERS, []
             )
             group_player.group_childs = {
                 x
@@ -397,8 +397,8 @@ class PlayerGroupProvider(PlayerProvider):
         self.mass.players.update(group_player.player_id)
         if not powered:
             # reset the group members when powered off
-            group_player.group_childs = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_GROUP_MEMBERS
+            group_player.group_childs = set(
+                self.mass.config.get_raw_player_config_value(player_id, CONF_GROUP_MEMBERS, [])
             )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
