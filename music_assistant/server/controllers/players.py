@@ -321,6 +321,10 @@ class PlayerController(CoreController):
         if player.powered == powered:
             return  # nothing to do
 
+        # unsync player at power off
+        if not powered and (player.synced_to):
+            await self.cmd_unsync(player_id)
+
         # always stop player at power off
         if (
             not powered
@@ -329,9 +333,6 @@ class PlayerController(CoreController):
         ):
             await self.cmd_stop(player_id)
 
-        # unsync player at power off
-        if not powered and (player.synced_to):
-            await self.cmd_unsync(player_id)
         # power off all synced childs when player is a sync leader
         elif not powered and player.type == PlayerType.PLAYER and player.group_childs:
             async with TaskManager(self.mass) as tg:
