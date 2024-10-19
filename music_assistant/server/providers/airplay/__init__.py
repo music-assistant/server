@@ -900,7 +900,7 @@ class AirplayProvider(PlayerProvider):
             ),
             volume_level=volume,
         )
-        self.mass.players.register_or_update(mass_player)
+        await self.mass.players.register_or_update(mass_player)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

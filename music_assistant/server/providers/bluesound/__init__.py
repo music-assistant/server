@@ -302,7 +302,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             needs_poll=True,
             poll_interval=30,
         )
-        self.mass.players.register(mass_player)
+        await self.mass.players.register(mass_player)
 
         # TODO sync
         await bluos_player.update_attributes()

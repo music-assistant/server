@@ -37,12 +37,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_ENFORCE_MP3,
-    CONF_FLOW_MODE,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import CONF_CROSSFADE, CONF_ENFORCE_MP3, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -447,19 +442,8 @@ class SonosPlayerProvider(PlayerProvider):
                 *mass_player.supported_features,
                 PlayerFeature.VOLUME_SET,
             )
-
-        # bugfix: correct flow-mode setting as sonos doesn't support it
-        # but we did accidentally expose the setting for a couple of releases
-        # remove this after MA release 2.5+
-        self.mass.loop.call_soon_threadsafe(
-            self.mass.config.set_raw_player_config_value,
-            player_id,
-            CONF_FLOW_MODE,
-            False,
-        )
-
-        self.mass.loop.call_soon_threadsafe(
-            self.mass.players.register_or_update, sonos_player.mass_player
+        asyncio.run_coroutine_threadsafe(
+            self.mass.players.register_or_update(sonos_player.mass_player), loop=self.mass.loop
         )
 
 

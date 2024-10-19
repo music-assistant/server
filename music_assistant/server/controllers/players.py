@@ -322,13 +322,14 @@ class PlayerController(CoreController):
             return  # nothing to do
 
         # unsync player at power off
+        player_was_synced = player.synced_to is not None
         if not powered and (player.synced_to):
             await self.cmd_unsync(player_id)
 
         # always stop player at power off
         if (
             not powered
-            and not player.synced_to
+            and not player_was_synced
             and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
         ):
             await self.cmd_stop(player_id)
@@ -348,6 +349,7 @@ class PlayerController(CoreController):
         else:
             # allow the stop command to process and prevent race conditions
             await asyncio.sleep(0.2)
+            await self.mass.cache.set(player_id, powered, base_key="player_power")
 
         # always optimistically set the power state to update the UI
         # as fast as possible and prevent race conditions
@@ -475,20 +477,26 @@ class PlayerController(CoreController):
         player = self.get(player_id, True)
         if not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
+        if player.announcement_in_progress:
+            raise PlayerCommandFailed(
+                f"An announcement is already in progress to player {player.display_name}"
+            )
         try:
             # mark announcement_in_progress on player
             player.announcement_in_progress = True
-            # determine if the player(group) has native announcements support
+            # determine if the player has native announcements support
             native_announce_support = PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features
-            if not native_announce_support and player.synced_to:
-                # redirect to sync master if player is group child
-                self.logger.warning(
-                    "Detected announcement request to a player that is currently synced, "
-                    "this will be redirected to the entire syncgroup."
+            # determine pre-announce from (group)player config
+            if use_pre_announce is None and "tts" in url:
+                use_pre_announce = await self.mass.config.get_player_config_value(
+                    player_id,
+                    CONF_TTS_PRE_ANNOUNCE,
                 )
-                await self.play_announcement(player.synced_to, url, use_pre_announce, volume_level)
-                return
             if not native_announce_support and player.active_group:
+                for group_member in self.iter_group_members(player, True, True):
+                    if PlayerFeature.PLAY_ANNOUNCEMENT in group_member.supported_features:
+                        native_announce_support = True
+                        break
                 # redirect to group player if playergroup is active
                 self.logger.warning(
                     "Detected announcement request to a player which has a group active, "
@@ -498,33 +506,30 @@ class PlayerController(CoreController):
                     player.active_group, url, use_pre_announce, volume_level
                 )
                 return
-            if player.type == PlayerType.GROUP and not player.powered:
-                # announcement request sent to inactive group, check if any child's are playing
-                if len(list(self.iter_group_members(player, True, True))) > 0:
-                    # just for the sake of simplicity we handle this request per-player
-                    # so we can restore the individual players again.
-                    self.logger.warning(
-                        "Detected announcement request to an inactive playergroup, "
-                        "while one or more individual players are playing. "
-                        "This announcement will be redirected to the individual players."
-                    )
-                    async with TaskManager(self.mass) as tg:
-                        for group_member in player.group_childs:
-                            tg.create_task(
-                                self.play_announcement(
-                                    group_member,
-                                    url=url,
-                                    use_pre_announce=use_pre_announce,
-                                    volume_level=volume_level,
-                                )
-                            )
-                    return
-            # determine pre-announce from (group)player config
-            if use_pre_announce is None and "tts" in url:
-                use_pre_announce = await self.mass.config.get_player_config_value(
-                    player_id,
-                    CONF_TTS_PRE_ANNOUNCE,
+
+            # if player type is group with all members supporting announcements
+            # or if the groupplayer is not powered, we forward the request to each individual player
+            if player.type == PlayerType.GROUP and (
+                all(
+                    x
+                    for x in self.iter_group_members(player)
+                    if PlayerFeature.PLAY_ANNOUNCEMENT in x.supported_features
                 )
+                or not player.powered
+            ):
+                # forward the request to each individual player
+                async with TaskManager(self.mass) as tg:
+                    for group_member in player.group_childs:
+                        tg.create_task(
+                            self.play_announcement(
+                                group_member,
+                                url=url,
+                                use_pre_announce=use_pre_announce,
+                                volume_level=volume_level,
+                            )
+                        )
+                return
+
             self.logger.info(
                 "Playback announcement to player %s (with pre-announce: %s): %s",
                 player.display_name,
@@ -715,7 +720,7 @@ class PlayerController(CoreController):
         self._players[player.player_id] = player
         self.update(player.player_id)
 
-    def register(self, player: Player) -> None:
+    async def register(self, player: Player) -> None:
         """Register a new player on the controller."""
         if self.mass.closing:
             return
@@ -750,6 +755,12 @@ class PlayerController(CoreController):
         if not player.enabled:
             return
 
+        # restore powered state from cache
+        if player.state == PlayerState.PLAYING:
+            player.powered = True
+        elif (cache := await self.mass.cache.get(player_id, base_key="player_power")) is not None:
+            player.powered = cache
+
         self.logger.info(
             "Player registered: %s/%s",
             player_id,
@@ -759,7 +770,7 @@ class PlayerController(CoreController):
         # always call update to fix special attributes like display name, group volume etc.
         self.update(player.player_id)
 
-    def register_or_update(self, player: Player) -> None:
+    async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
         if self.mass.closing:
             return
@@ -769,7 +780,7 @@ class PlayerController(CoreController):
             self.update(player.player_id)
             return
 
-        self.register(player)
+        await self.register(player)
 
     def remove(self, player_id: str, cleanup_config: bool = True) -> None:
         """Remove a player from the player manager."""
@@ -792,6 +803,7 @@ class PlayerController(CoreController):
         if player_id not in self._players:
             return
         player = self._players[player_id]
+        prev_state = self._prev_states.get(player_id, {})
         player.active_source = self._get_active_source(player)
         player.volume_level = player.volume_level or 0  # guard for None volume
         # correct group_members if needed
@@ -804,10 +816,6 @@ class PlayerController(CoreController):
             player.state = sync_leader.state
             player.elapsed_time = sync_leader.elapsed_time
             player.elapsed_time_last_updated = sync_leader.elapsed_time_last_updated
-            player.powered = sync_leader.powered or player.powered
-        # correct power state if needed
-        if player.state == PlayerState.PLAYING and not player.powered:
-            player.powered = True
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
         if player.type == PlayerType.GROUP:
@@ -829,8 +837,11 @@ class PlayerController(CoreController):
             else CONF_ENTRY_PLAYER_ICON.default_value,
         )
 
+        # correct available state if needed
+        if not player.enabled:
+            player.available = False
+
         # basic throttle: do not send state changed events if player did not actually change
-        prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
         changed_values = get_changed_values(
             prev_state,
@@ -847,10 +858,6 @@ class PlayerController(CoreController):
         if not player.enabled and not force_update:
             # ignore updates for disabled players
             return
-
-        # correct available state if needed
-        if not player.enabled:
-            player.available = False
 
         # always signal update to the playerqueue
         self.mass.player_queues.on_player_update(player, changed_values)
@@ -935,18 +942,6 @@ class PlayerController(CoreController):
                 player.name,
             )
             return active_group
-        if (
-            player.active_source
-            and player.active_source != player.player_id
-            and (active_source := self.get(player.active_source))
-        ):
-            self.logger.info(
-                "Player %s has a different source active (%s), "
-                "redirected the command to the source player.",
-                player.name,
-                active_source.display_name,
-            )
-            return active_source
         return player
 
     def _get_player_groups(
@@ -1106,11 +1101,19 @@ class PlayerController(CoreController):
         """
         prev_power = player.powered
         prev_state = player.state
+        prev_synced_to = player.synced_to
         queue = self.mass.player_queues.get_active_queue(player.player_id)
         prev_queue_active = queue.active
         prev_item_id = player.current_item_id
+        # unsync player if its currently synced
+        if prev_synced_to:
+            self.logger.debug(
+                "Announcement to player %s - unsyncing player...",
+                player.display_name,
+            )
+            await self.cmd_unsync(player.player_id)
         # stop player if its currently playing
-        if prev_state in (PlayerState.PLAYING, PlayerState.PAUSED):
+        elif prev_state in (PlayerState.PLAYING, PlayerState.PAUSED):
             self.logger.debug(
                 "Announcement to player %s - stop existing content (%s)...",
                 player.display_name,
@@ -1179,6 +1182,8 @@ class PlayerController(CoreController):
         if not prev_power:
             await self.cmd_power(player.player_id, False)
             return
+        elif prev_synced_to:
+            await self.cmd_sync(player.player_id, prev_synced_to)
         elif prev_queue_active and prev_state == PlayerState.PLAYING:
             await self.mass.player_queues.resume(queue.queue_id, True)
         elif prev_state == PlayerState.PLAYING:

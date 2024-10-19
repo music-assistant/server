@@ -402,8 +402,8 @@ class ChromecastProvider(PlayerProvider):
                 castplayer.mz_controller = mz_controller
 
             castplayer.cc.start()
-            self.mass.loop.call_soon_threadsafe(
-                self.mass.players.register_or_update, castplayer.player
+            asyncio.run_coroutine_threadsafe(
+                self.mass.players.register_or_update(castplayer.player), loop=self.mass.loop
             )
 
     def _on_chromecast_removed(self, uuid, service, cast_info) -> None:
