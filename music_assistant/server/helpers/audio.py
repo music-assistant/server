@@ -679,15 +679,21 @@ async def get_hls_substream(
         raw_data = await resp.read()
         encoding = resp.charset or await detect_charset(raw_data)
         master_m3u_data = raw_data.decode(encoding)
-    if not allow_encrypted and "EXT-X-KEY:METHOD=AES-128" in master_m3u_data:
-        # for now we don't support encrypted HLS streams
+    if not allow_encrypted and "EXT-X-KEY:METHOD=" in master_m3u_data:
+        # for now we do not (yet) support encrypted HLS streams
         raise InvalidDataError("HLS stream is encrypted, not supported")
     substreams = parse_m3u(master_m3u_data)
-    if any(x for x in substreams if x.length or x.key):
-        # this is already a substream!
-        return PlaylistItem(
-            path=url,
-        )
+    # There is a chance that we did not get a master playlist with subplaylists
+    # but just a single master/sub playlist with the actual audio stream(s)
+    # so we need to detect if the playlist child's contain audio streams or
+    # sub-playlists.
+    if any(
+        x
+        for x in substreams
+        if (x.length or x.path.endswith((".mp4", ".aac")))
+        and not x.path.endswith((".m3u", ".m3u8"))
+    ):
+        return PlaylistItem(path=url, key=substreams[0].key)
     # sort substreams on best quality (highest bandwidth) when available
     if any(x for x in substreams if x.stream_info):
         substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
