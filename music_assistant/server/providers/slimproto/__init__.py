@@ -648,7 +648,7 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_MUTE,
                 ),
             )
-            self.mass.players.register_or_update(player)
+            await self.mass.players.register_or_update(player)
 
         # update player state on player events
         player.available = True

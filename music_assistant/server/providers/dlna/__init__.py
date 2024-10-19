@@ -532,7 +532,7 @@ class DLNAPlayerProvider(PlayerProvider):
 
             self._set_player_features(dlna_player)
             dlna_player.update_attributes()
-            self.mass.players.register_or_update(dlna_player.player)
+            await self.mass.players.register_or_update(dlna_player.player)
 
     async def _device_connect(self, dlna_player: DLNAPlayer) -> None:
         """Connect DLNA/DMR Device."""

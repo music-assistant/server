@@ -395,6 +395,11 @@ class PlayerGroupProvider(PlayerProvider):
         # optimistically set the group state
         group_player.powered = powered
         self.mass.players.update(group_player.player_id)
+        if not powered:
+            # reset the group members when powered off
+            group_player.group_childs = self.mass.config.get_raw_player_config_value(
+                player_id, CONF_GROUP_MEMBERS
+            )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -530,7 +535,7 @@ class PlayerGroupProvider(PlayerProvider):
             enabled=True,
             values={CONF_GROUP_MEMBERS: members, CONF_GROUP_TYPE: group_type},
         )
-        return self._register_group_player(
+        return await self._register_group_player(
             group_player_id=new_group_id, group_type=group_type, name=name, members=members
         )
 
@@ -620,14 +625,14 @@ class PlayerGroupProvider(PlayerProvider):
             members = player_config.get_value(CONF_GROUP_MEMBERS)
             group_type = player_config.get_value(CONF_GROUP_TYPE)
             with suppress(PlayerUnavailableError):
-                self._register_group_player(
+                await self._register_group_player(
                     player_config.player_id,
                     group_type,
                     player_config.name or player_config.default_name,
                     members,
                 )
 
-    def _register_group_player(
+    async def _register_group_player(
         self, group_player_id: str, group_type: str, name: str, members: Iterable[str]
     ) -> Player:
         """Register a syncgroup player."""
@@ -679,7 +684,7 @@ class PlayerGroupProvider(PlayerProvider):
             active_source=group_player_id,
         )
 
-        self.mass.players.register_or_update(player)
+        await self.mass.players.register_or_update(player)
         self._update_attributes(player)
         return player
 
@@ -688,19 +693,20 @@ class PlayerGroupProvider(PlayerProvider):
         if group_player.synced_to:
             # should not happen but just in case...
             return self.mass.players.get(group_player.synced_to)
+        if len(group_player.group_childs) == 1:
+            # Return the (first/only) player
+            # this is to handle the edge case where players are not
+            # yet synced or there simply is just one player
+            for child_player in self.mass.players.iter_group_members(
+                group_player, only_powered=False, only_playing=False, active_only=False
+            ):
+                if not child_player.synced_to:
+                    return child_player
         # Return the (first/only) player that has group childs
         for child_player in self.mass.players.iter_group_members(
             group_player, only_powered=False, only_playing=False, active_only=False
         ):
             if child_player.group_childs:
-                return child_player
-        # Return the (first/only) player
-        # this is to handle the edge case where players are not
-        # yet synced or there simply is just one player
-        for child_player in self.mass.players.iter_group_members(
-            group_player, only_powered=False, only_playing=False, active_only=False
-        ):
-            if not child_player.synced_to:
                 return child_player
         return None
 

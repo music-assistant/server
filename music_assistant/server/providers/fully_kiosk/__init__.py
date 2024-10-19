@@ -138,7 +138,7 @@ class FullyKioskProvider(PlayerProvider):
                 needs_poll=True,
                 poll_interval=10,
             )
-        self.mass.players.register_or_update(player)
+        await self.mass.players.register_or_update(player)
         self._handle_player_update()
 
     def _handle_player_update(self) -> None:

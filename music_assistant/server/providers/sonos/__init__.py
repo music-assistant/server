@@ -181,7 +181,7 @@ class SonosPlayer:
             supported_features=tuple(supported_features),
         )
         self.update_attributes()
-        self.mass.players.register_or_update(mass_player)
+        await self.mass.players.register_or_update(mass_player)
 
         # register callback for state changed
         self.client.subscribe(
@@ -649,7 +649,7 @@ class SonosPlayerProvider(PlayerProvider):
                 self.mass.call_later(5, self.cmd_sync_many(player_id, group_childs))
             return
 
-        if media.queue_id.startswith("ugp_"):
+        if media.queue_id and media.queue_id.startswith("ugp_"):
             # Special UGP stream - handle with play URL
             await sonos_player.client.player.group.play_stream_url(media.uri, None)
             return
