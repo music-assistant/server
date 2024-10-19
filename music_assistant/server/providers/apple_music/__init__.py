@@ -39,7 +39,7 @@ from music_assistant.common.models.media_items import (
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.server.helpers.app_vars import app_var
-from music_assistant.server.helpers.audio import get_hls_substream
+from music_assistant.server.helpers.playlists import fetch_playlist
 from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -721,8 +721,14 @@ class AppleMusicProvider(MusicProvider):
         ctrp256_urls = [asset["URL"] for asset in stream_assets if asset["flavor"] == "28:ctrp256"]
         if len(ctrp256_urls) == 0:
             raise MediaNotFoundError("No ctrp256 URL found for song.")
-        playlist_item = await get_hls_substream(self.mass, ctrp256_urls[0])
-        track_url = playlist_item.path
+        playlist_url = ctrp256_urls[0]
+        playlist_items = await fetch_playlist(self.mass, ctrp256_urls[0], raise_on_hls=False)
+        # Apple returns a HLS (substream) playlist but instead of chunks,
+        # each item is just the whole file. So we simply grab the first playlist item.
+        playlist_item = playlist_items[0]
+        # path is relative, stitch it together
+        base_path = playlist_url.rsplit("/", 1)[0]
+        track_url = base_path + "/" + playlist_items[0].path
         key = playlist_item.key
         return (track_url, key)
 
