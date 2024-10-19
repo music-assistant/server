@@ -122,7 +122,7 @@ class FFMpeg(AsyncProcess):
         generator_exhausted = False
         audio_received = False
         try:
-            async for chunk in TimedAsyncGenerator(self.audio_input, 30):
+            async for chunk in TimedAsyncGenerator(self.audio_input, 300):
                 audio_received = True
                 await self.write(chunk)
             generator_exhausted = True
@@ -169,7 +169,7 @@ async def get_ffmpeg_stream(
     ) as ffmpeg_proc:
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
-        async for chunk in TimedAsyncGenerator(iterator, 60):
+        async for chunk in iterator:
             yield chunk
 
 
