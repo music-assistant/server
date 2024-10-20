@@ -50,6 +50,7 @@ from .const import (
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
+    CONF_READ_AHEAD_BUFFER,
     FALLBACK_VOLUME,
 )
 from .helpers import convert_airplay_volume, get_model_from_am, get_primary_ip_address
@@ -94,6 +95,18 @@ PLAYER_CONFIG_ENTRIES = (
         label="Device password",
         description="Some devices require a password to connect/play.",
         category="airplay",
+    ),
+    ConfigEntry(
+        key=CONF_READ_AHEAD_BUFFER,
+        type=ConfigEntryType.INTEGER,
+        default_value=1000,
+        required=False,
+        label="Audio buffer (ms)",
+        description="Amount of buffer (in milliseconds), "
+        "the player should keep to absorb network throughput jitter. "
+        "If you experience audio dropouts, try increasing this value.",
+        category="airplay",
+        range=(500, 3000),
     ),
     # airplay has fixed sample rate/bit depth so make this config entry static and hidden
     create_sample_rates_config_entry(44100, 16, 44100, 16, True),

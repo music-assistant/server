@@ -25,6 +25,7 @@ from .const import (
     CONF_BIND_INTERFACE,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
+    CONF_READ_AHEAD_BUFFER,
 )
 
 if TYPE_CHECKING:
@@ -90,7 +91,7 @@ class RaopStreamSession:
         # get current ntp and start RaopStream per player
         _, stdout = await check_output(self.prov.cliraop_bin, "-ntp")
         start_ntp = int(stdout.strip())
-        wait_start = 1250 + (250 * len(self._sync_clients))
+        wait_start = 1500 + (250 * len(self._sync_clients))
         async with self._lock:
             await asyncio.gather(
                 *[x.raop_stream.start(start_ntp, wait_start) for x in self._sync_clients],
@@ -188,6 +189,9 @@ class RaopStream:
             extra_args += ["-debug", "5"]
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
+        read_ahead = await self.mass.config.get_player_config_value(
+            player_id, CONF_READ_AHEAD_BUFFER
+        )
 
         # create os pipes to pipe ffmpeg to cliraop
         read, write = await asyncio.to_thread(os.pipe)
@@ -213,6 +217,8 @@ class RaopStream:
             str(self.airplay_player.discovery_info.port),
             "-wait",
             str(wait_start - sync_adjust),
+            "-latency",
+            str(read_ahead),
             "-volume",
             str(mass_player.volume_level),
             *extra_args,
