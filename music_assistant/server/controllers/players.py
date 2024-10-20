@@ -275,7 +275,7 @@ class PlayerController(CoreController):
         if PlayerFeature.SEEK not in player.supported_features:
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
-        player_prov = self.mass.players.get_player_provider(player.player_id)
+        player_prov = self.get_player_provider(player.player_id)
         await player_prov.cmd_seek(player.player_id, position)
 
     @api_command("players/cmd/next")
@@ -290,7 +290,7 @@ class PlayerController(CoreController):
         if PlayerFeature.NEXT_PREVIOUS not in player.supported_features:
             msg = f"Player {player.display_name} does not support skipping to the next track."
             raise UnsupportedFeaturedException(msg)
-        player_prov = self.mass.players.get_player_provider(player.player_id)
+        player_prov = self.get_player_provider(player.player_id)
         await player_prov.cmd_next(player.player_id)
 
     @api_command("players/cmd/previous")
@@ -305,7 +305,7 @@ class PlayerController(CoreController):
         if PlayerFeature.NEXT_PREVIOUS not in player.supported_features:
             msg = f"Player {player.display_name} does not support skipping to the previous track."
             raise UnsupportedFeaturedException(msg)
-        player_prov = self.mass.players.get_player_provider(player.player_id)
+        player_prov = self.get_player_provider(player.player_id)
         await player_prov.cmd_previous(player.player_id)
 
     @api_command("players/cmd/power")
@@ -565,7 +565,7 @@ class PlayerController(CoreController):
         # power on the player if needed
         if not player.powered:
             await self.cmd_power(player.player_id, True)
-        player_prov = self.mass.players.get_player_provider(player.player_id)
+        player_prov = self.get_player_provider(player.player_id)
         await player_prov.play_media(
             player_id=player.player_id,
             media=media,
@@ -573,7 +573,7 @@ class PlayerController(CoreController):
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
-        player_prov = self.mass.players.get_player_provider(player_id)
+        player_prov = self.get_player_provider(player_id)
         async with self._player_throttlers[player_id]:
             await player_prov.enqueue_next_media(player_id=player_id, media=media)
 
@@ -1058,7 +1058,7 @@ class PlayerController(CoreController):
         if player_provider := self.mass.get_provider(config.provider):
             with suppress(PlayerUnavailableError):
                 await player_provider.on_player_config_change(config, changed_keys)
-        if not (player := self.mass.players.get(config.player_id)):
+        if not (player := self.get(config.player_id)):
             return
         if player_disabled:
             # edge case: ensure that the player is powered off if the player gets disabled
@@ -1070,14 +1070,13 @@ class PlayerController(CoreController):
         # check for group memberships that need to be updated
         if player_disabled and player.active_group and player_provider:
             # try to remove from the group
-            group_player = self.mass.players.get(player.active_group)
+            group_player = self.get(player.active_group)
             with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
                 await player_provider.set_members(
                     player.active_group,
                     [x for x in group_player.group_childs if x != player.player_id],
                 )
         player.enabled = config.enabled
-        self.mass.players.update(config.player_id, force_update=True)
 
     async def _play_announcement(
         self,
