@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Awaitable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant.common.helpers.util import select_free_port
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -46,7 +47,6 @@ from sxm.models import QualitySize, RegionChoice, XMChannel
 CONF_SXM_USERNAME = "sxm_email_address"
 CONF_SXM_PASSWORD = "sxm_password"
 CONF_SXM_REGION = "sxm_region"
-CONF_SXM_PROXY_PORT = "sxm_proxy_port"
 
 
 async def setup(
@@ -87,19 +87,12 @@ async def get_config_entries(
             key=CONF_SXM_REGION,
             type=ConfigEntryType.STRING,
             default_value="US",
-            options=tuple(ConfigValueOption(x, x) for x in ("US", "CA")),
+            options=(
+                ConfigValueOption(title="United States", value="US"),
+                ConfigValueOption(title="Canada", value="CA"),
+            ),
             label="Region",
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_SXM_PROXY_PORT,
-            type=ConfigEntryType.INTEGER,
-            label="SXM local server port",
-            description="The local port for hosting the SXM proxy server",
             required=True,
-            default_value=9999,
-            value=values.get(CONF_SXM_PROXY_PORT) if values else None,
-            category="advanced",
         ),
     )
 
@@ -130,8 +123,6 @@ class SiriusXMProvider(MusicProvider):
         username: str = self.config.get_value(CONF_SXM_USERNAME)
         password: str = self.config.get_value(CONF_SXM_PASSWORD)
 
-        bind_port: int = self.config.get_value(CONF_SXM_PROXY_PORT)
-
         region: RegionChoice = (
             RegionChoice.US if self.config.get_value(CONF_SXM_REGION) == "US" else RegionChoice.CA
         )
@@ -154,6 +145,8 @@ class SiriusXMProvider(MusicProvider):
 
         # Set up the sxm server for streaming
         bind_ip = "127.0.0.1"
+        bind_port = await select_free_port(8100, 9999)
+
         self._base_url = f"{bind_ip}:{bind_port}"
         http_handler = sxm.http.make_http_handler(self._client)
 
@@ -168,7 +161,7 @@ class SiriusXMProvider(MusicProvider):
             ],
         )
 
-        self.logger.info(f"SXM Proxy server running at {bind_ip}:{bind_port}")
+        self.logger.debug(f"SXM Proxy server running at {bind_ip}:{bind_port}")
 
     async def unload(self) -> None:
         """
