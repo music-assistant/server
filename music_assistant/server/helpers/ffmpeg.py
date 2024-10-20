@@ -219,7 +219,7 @@ def get_ffmpeg_args(
         # append reconnect options for direct stream from http
         input_args += [
             # Reconnect automatically when disconnected before EOF is hit.
-            "reconnect",
+            "-reconnect",
             "1",
             # Set the maximum delay in seconds after which to give up reconnecting.
             "-reconnect_delay_max",
