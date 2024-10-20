@@ -22,6 +22,7 @@ from zeroconf import IPVersion, ServiceStateChange
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     ConfigEntry,
     ConfigValueType,
@@ -29,6 +30,7 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
+    ContentType,
     EventType,
     PlayerFeature,
     PlayerState,
@@ -533,6 +535,7 @@ class SonosPlayerProvider(PlayerProvider):
             *await super().get_player_config_entries(player_id),
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+            CONF_ENTRY_ENFORCE_MP3,
             create_sample_rates_config_entry(48000, 24, 48000, 24, True),
         )
         if not (sonos_player := self.sonos_players.get(player_id)):
@@ -666,6 +669,10 @@ class SonosPlayerProvider(PlayerProvider):
             return
 
         # play a single uri/url
+        if self.mass.config.get_raw_player_config_value(
+            player_id, CONF_ENTRY_ENFORCE_MP3.key, CONF_ENTRY_ENFORCE_MP3.default_value
+        ):
+            media.uri = media.uri.replace(".flac", ".mp3")
         await sonos_player.client.player.group.play_stream_url(
             media.uri, {"name": media.title, "type": "track"}
         )
@@ -773,6 +780,9 @@ class SonosPlayerProvider(PlayerProvider):
             limit=upcoming_window_size + previous_window_size,
             offset=max(queue_index - previous_window_size, 0),
         )
+        enforce_mp3 = self.mass.config.get_raw_player_config_value(
+            sonos_player_id, CONF_ENTRY_ENFORCE_MP3.key, CONF_ENTRY_ENFORCE_MP3.default_value
+        )
         sonos_queue_items = [
             {
                 "id": item.queue_item_id,
@@ -780,7 +790,9 @@ class SonosPlayerProvider(PlayerProvider):
                 "policies": {},
                 "track": {
                     "type": "track",
-                    "mediaUrl": self.mass.streams.resolve_stream_url(item),
+                    "mediaUrl": self.mass.streams.resolve_stream_url(
+                        item, output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC
+                    ),
                     "contentType": "audio/flac",
                     "service": {
                         "name": "Music Assistant",
