@@ -36,6 +36,7 @@ from music_assistant.common.models.enums import (
     RepeatMode,
 )
 from music_assistant.common.models.errors import (
+    InvalidCommand,
     MediaNotFoundError,
     MusicAssistantError,
     PlayerUnavailableError,
@@ -257,15 +258,9 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/shuffle")
     def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle setting on the the queue."""
-        # always fetch the underlying player so we can raise early if its not available
-        queue_player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         queue = self._queues[queue_id]
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change
-
         queue.shuffle_enabled = shuffle_enabled
         queue_items = self._queue_items[queue_id]
         cur_index = queue.index_in_buffer or queue.current_index
@@ -275,7 +270,6 @@ class PlayerQueuesController(CoreController):
         else:
             next_items = []
             next_index = 0
-
         if not shuffle_enabled:
             # shuffle disabled, try to restore original sort order of the remaining items
             next_items.sort(key=lambda x: x.sort_index, reverse=False)
@@ -297,11 +291,6 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
-        # always fetch the underlying player so we can raise early if its not available
-        queue_player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         queue = self._queues[queue_id]
         if queue.repeat_mode == repeat_mode:
             return  # no change
@@ -320,6 +309,7 @@ class PlayerQueuesController(CoreController):
             self.mass.create_task(self.resume(queue_id))
         else:
             task_id = f"enqueue_next_{queue_id}"
+            self.logger.info("Repeat mode detected, enqueue next item")
             self.mass.call_later(2, self._enqueue_next, queue, queue.current_index, task_id=task_id)
 
     @api_command("player_queues/play_media")
@@ -558,11 +548,6 @@ class PlayerQueuesController(CoreController):
         - pos_shift: move item x positions up if negative value
         - pos_shift:  move item to top of queue as next item if 0.
         """
-        # always fetch the underlying player so we can raise early if its not available
-        queue_player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         queue = self._queues[queue_id]
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index <= queue.index_in_buffer:
@@ -587,11 +572,6 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/delete_item")
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
-        # always fetch the underlying player so we can raise early if its not available
-        queue_player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         if isinstance(item_id_or_index, str):
             item_index = self.index_by_id(queue_id, item_id_or_index)
         else:
@@ -609,11 +589,6 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/clear")
     def clear(self, queue_id: str) -> None:
         """Clear all items in the queue."""
-        # always fetch the underlying player so we can raise early if its not available
-        queue_player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         queue = self._queues[queue_id]
         queue.radio_source = []
         queue.stream_finished = None
@@ -633,12 +608,13 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if queue := self.get(queue_id):
+        if (queue := self.get(queue_id)) and queue.active:
             queue.resume_pos = queue.corrected_elapsed_time
             queue.stream_finished = None
             queue.end_of_track_reached = None
-        # forward the actual command to the player controller
-        await self.mass.players.cmd_stop(queue_id, skip_redirect=True)
+        # forward the actual command to the player provider
+        if player_provider := self.mass.players.get_player_provider(queue.queue_id):
+            await player_provider.cmd_stop(queue_id)
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -648,19 +624,17 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         queue_player: Player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         if (
             (queue := self._queues.get(queue_id))
             and queue.active
-            and queue_player.powered
-            and queue.state == PlayerState.PAUSED
+            and queue_player.state == PlayerState.PAUSED
         ):
-            # forward the actual command to the player controller
-            await self.mass.players.cmd_play(queue_id, skip_redirect=True)
-        else:
-            await self.resume(queue_id)
+            # forward the actual play/unpause command to the player provider
+            if player_provider := self.mass.players.get_player_provider(queue.queue_id):
+                await player_provider.cmd_play(queue_id)
+                return
+        # player is not paused, perform resume instead
+        await self.resume(queue_id)
 
     @api_command("player_queues/pause")
     async def pause(self, queue_id: str) -> None:
@@ -690,10 +664,6 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        queue_player: Player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         if (queue := self.get(queue_id)) is None or not queue.active:
             # TODO: forward to underlying player if not active
             return
@@ -715,10 +685,6 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        queue_player: Player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         if (queue := self.get(queue_id)) is None or not queue.active:
             # TODO: forward to underlying player if not active
             return
@@ -734,10 +700,6 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the queue to handle the command.
         - seconds: number of seconds to skip in track. Use negative value to skip back.
         """
-        queue_player: Player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         if (queue := self.get(queue_id)) is None or not queue.active:
             # TODO: forward to underlying player if not active
             return
@@ -750,18 +712,20 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the queue to handle the command.
         - position: position in seconds to seek to in the current playing item.
         """
+        if not (queue := self.get(queue_id)):
+            return
         queue_player: Player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
-        if (queue := self.get(queue_id)) is None or not queue.active:
-            # TODO: forward to underlying player if not active
-            return
-        assert queue.current_item, "No item loaded"
-        assert queue.current_item.media_item.media_type == MediaType.TRACK
-        assert queue.current_item.duration
-        assert position < queue.current_item.duration
-        await self.play_index(queue_id, queue.current_index, position)
+        if not queue.current_item:
+            raise InvalidCommand(f"Queue {queue_player.display_name} has no item(s) loaded.")
+        if (
+            queue.current_item.media_item.media_type != MediaType.TRACK
+            or not queue.current_item.duration
+        ):
+            raise InvalidCommand("Can not seek on non track items.")
+        position = max(0, int(position))
+        if position > queue.current_item.duration:
+            raise InvalidCommand("Can not seek outside of duration range.")
+        await self.play_index(queue_id, queue.current_index, seek_position=position)
 
     @api_command("player_queues/resume")
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
@@ -1397,15 +1361,12 @@ class PlayerQueuesController(CoreController):
 
     async def _enqueue_next(self, queue: PlayerQueue, current_index: int | str) -> None:
         """Enqueue the next item in the queue."""
-        if (player := self.mass.players.get(queue.queue_id)) and player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         if isinstance(current_index, str):
             current_index = self.index_by_id(queue.queue_id, current_index)
         with suppress(QueueEmpty):
             next_item = await self.preload_next_item(queue.queue_id, current_index)
             await self.mass.players.enqueue_next_media(
-                player_id=player.player_id,
+                player_id=queue.queue_id,
                 media=self.player_media_from_queue_item(next_item, queue.flow_mode),
             )
 

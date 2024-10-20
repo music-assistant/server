@@ -122,8 +122,10 @@ class FFMpeg(AsyncProcess):
         generator_exhausted = False
         audio_received = False
         try:
-            async for chunk in TimedAsyncGenerator(self.audio_input, 30):
+            async for chunk in TimedAsyncGenerator(self.audio_input, 300):
                 audio_received = True
+                if self.proc and self.proc.returncode is not None:
+                    raise AudioError("Parent process already exited")
                 await self.write(chunk)
             generator_exhausted = True
             if not audio_received:
@@ -169,7 +171,7 @@ async def get_ffmpeg_stream(
     ) as ffmpeg_proc:
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
-        async for chunk in TimedAsyncGenerator(iterator, 60):
+        async for chunk in iterator:
             yield chunk
 
 
@@ -216,16 +218,24 @@ def get_ffmpeg_args(
     if input_path.startswith("http"):
         # append reconnect options for direct stream from http
         input_args += [
-            "-reconnect",
+            # Reconnect automatically when disconnected before EOF is hit.
+            "reconnect",
             "1",
-            "-reconnect_streamed",
+            # Set the maximum delay in seconds after which to give up reconnecting.
+            "-reconnect_delay_max",
+            "30",
+            # If set then even streamed/non seekable streams will be reconnected on errors.
+            "reconnect_streamed",
             "1",
         ]
         if major_version > 4:
             # these options are only supported in ffmpeg > 5
             input_args += [
+                # Reconnect automatically in case of TCP/TLS errors during connect.
                 "-reconnect_on_network_error",
                 "1",
+                # A comma separated list of HTTP status codes to reconnect on.
+                # The list can include specific status codes (e.g. 503) or the strings 4xx / 5xx.
                 "-reconnect_on_http_error",
                 "5xx,4xx",
             ]

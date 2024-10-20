@@ -218,7 +218,7 @@ class MyDemoPlayerprovider(PlayerProvider):
             ),
         )
         # register the player with the player manager
-        self.mass.players.register(mass_player)
+        await self.mass.players.register(mass_player)
 
         # once the player is registered, you can either instruct the player manager to
         # poll the player for state changes or you can implement your own logic to

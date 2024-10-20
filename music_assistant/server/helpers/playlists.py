@@ -29,6 +29,8 @@ HLS_CONTENT_TYPES = (
 class IsHLSPlaylist(InvalidDataError):
     """The playlist from an HLS stream and should not be parsed."""
 
+    encrypted: bool = False
+
 
 @dataclass
 class PlaylistItem:
@@ -143,7 +145,9 @@ def parse_pls(pls_data: str) -> list[PlaylistItem]:
     return playlist
 
 
-async def fetch_playlist(mass: MusicAssistant, url: str) -> list[PlaylistItem]:
+async def fetch_playlist(
+    mass: MusicAssistant, url: str, raise_on_hls: bool = True
+) -> list[PlaylistItem]:
     """Parse an online m3u or pls playlist."""
     try:
         async with mass.http_session.get(url, allow_redirects=True, timeout=5) as resp:
@@ -162,8 +166,10 @@ async def fetch_playlist(mass: MusicAssistant, url: str) -> list[PlaylistItem]:
         msg = f"Error while fetching playlist {url}"
         raise InvalidDataError(msg) from err
 
-    if "#EXT-X-VERSION:" in playlist_data or "#EXT-X-STREAM-INF:" in playlist_data:
-        raise IsHLSPlaylist
+    if raise_on_hls and "#EXT-X-VERSION:" in playlist_data or "#EXT-X-STREAM-INF:" in playlist_data:
+        exc = IsHLSPlaylist()
+        exc.encrypted = "#EXT-X-KEY:" in playlist_data
+        raise exc
 
     if url.endswith((".m3u", ".m3u8")):
         playlist = parse_m3u(playlist_data)

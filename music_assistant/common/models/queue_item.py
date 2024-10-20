@@ -44,11 +44,6 @@ class QueueItem(DataClassDictMixin):
             streamdetails.pop("expires", None)
             streamdetails.pop("path", None)
             streamdetails.pop("decryption_key", None)
-            # pop loudness from streamdetails in api to keep api from breaking
-            # (due to the loudness field's type change in 2.3)
-            # this may be removed after 2.3 has been launched to stable
-            streamdetails.pop("loudness", None)
-            streamdetails.pop("loudness_album", None)
         return d
 
     @property

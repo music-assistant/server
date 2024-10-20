@@ -197,6 +197,16 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self.castplayers[player_id]
         await asyncio.to_thread(castplayer.cc.media_controller.pause)
 
+    async def cmd_next(self, player_id: str) -> None:
+        """Handle NEXT TRACK command for given player."""
+        castplayer = self.castplayers[player_id]
+        await asyncio.to_thread(castplayer.cc.media_controller.queue_next)
+
+    async def cmd_previous(self, player_id: str) -> None:
+        """Handle PREVIOUS TRACK command for given player."""
+        castplayer = self.castplayers[player_id]
+        await asyncio.to_thread(castplayer.cc.media_controller.queue_prev)
+
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
         castplayer = self.castplayers[player_id]
@@ -377,6 +387,7 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.VOLUME_MUTE,
                         PlayerFeature.VOLUME_SET,
                         PlayerFeature.PAUSE,
+                        PlayerFeature.NEXT_PREVIOUS,
                     ),
                     enabled_by_default=enabled_by_default,
                     needs_poll=True,
@@ -391,8 +402,8 @@ class ChromecastProvider(PlayerProvider):
                 castplayer.mz_controller = mz_controller
 
             castplayer.cc.start()
-            self.mass.loop.call_soon_threadsafe(
-                self.mass.players.register_or_update, castplayer.player
+            asyncio.run_coroutine_threadsafe(
+                self.mass.players.register_or_update(castplayer.player), loop=self.mass.loop
             )
 
     def _on_chromecast_removed(self, uuid, service, cast_info) -> None:
@@ -415,12 +426,6 @@ class ChromecastProvider(PlayerProvider):
             status.app_id,
             status.volume_level,
         )
-        castplayer.player.name = castplayer.cast_info.friendly_name
-        castplayer.player.volume_level = int(status.volume_level * 100)
-        castplayer.player.volume_muted = status.volume_muted
-        castplayer.player.powered = (
-            castplayer.cc.app_id is not None and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
-        )
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.STEREO_PAIR
@@ -437,6 +442,25 @@ class ChromecastProvider(PlayerProvider):
                 PlayerFeature.PAUSE,
             )
 
+        # update player status
+        castplayer.player.name = castplayer.cast_info.friendly_name
+        castplayer.player.volume_level = int(status.volume_level * 100)
+        castplayer.player.volume_muted = status.volume_muted
+        new_powered = (
+            castplayer.cc.app_id is not None and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
+        )
+        if (
+            castplayer.player.powered
+            and not new_powered
+            and castplayer.player.type == PlayerType.GROUP
+        ):
+            # group is being powered off, update group childs
+            for child_id in castplayer.player.group_childs:
+                if child := self.castplayers.get(child_id):
+                    child.player.powered = False
+                    child.player.active_group = None
+                    child.player.active_source = None
+        castplayer.player.powered = new_powered
         # send update to player manager
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 

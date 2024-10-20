@@ -383,12 +383,16 @@ class SnapCastProvider(PlayerProvider):
                 group_childs=set(),
                 synced_to=self._synced_to(player_id),
             )
-        self.mass.players.register_or_update(player)
+        asyncio.run_coroutine_threadsafe(
+            self.mass.players.register_or_update(player), loop=self.mass.loop
+        )
 
     def _handle_player_update(self, snap_client: Snapclient) -> None:
         """Process Snapcast update to Player controller."""
         player_id = self._get_ma_id(snap_client.identifier)
         player = self.mass.players.get(player_id)
+        if not player:
+            return
         player.name = snap_client.friendly_name
         player.volume_level = snap_client.volume
         player.volume_muted = snap_client.muted
@@ -430,7 +434,7 @@ class SnapCastProvider(PlayerProvider):
                 stream_task.cancel()
         player.state = PlayerState.IDLE
         self._set_childs_state(player_id)
-        self.mass.players.register_or_update(player)
+        self.mass.players.update(player_id)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
 
@@ -474,8 +478,8 @@ class SnapCastProvider(PlayerProvider):
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
         # make sure that the player manager gets an update
-        self.mass.players.update(player_id, skip_redirect=True)
-        self.mass.players.update(mass_player.synced_to, skip_redirect=True)
+        self.mass.players.update(player_id, skip_forward=True)
+        self.mass.players.update(mass_player.synced_to, skip_forward=True)
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""

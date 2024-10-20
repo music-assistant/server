@@ -8,7 +8,6 @@ import os
 import re
 import struct
 import time
-from collections import deque
 from collections.abc import AsyncGenerator
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -42,9 +41,8 @@ from music_assistant.constants import (
 )
 
 from .ffmpeg import FFMpeg, get_ffmpeg_stream
-from .playlists import HLS_CONTENT_TYPES, IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
+from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, check_output, communicate
-from .tags import parse_tags
 from .throttle_retry import BYPASS_THROTTLER
 from .util import TimedAsyncGenerator, create_tempfile, detect_charset
 
@@ -231,12 +229,9 @@ async def get_stream_details(
         streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
         and streamdetails.media_type == MediaType.RADIO
     ):
-        resolved_url, is_icy, is_hls = await resolve_radio_stream(mass, streamdetails.path)
+        resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
         streamdetails.path = resolved_url
-        if is_hls:
-            streamdetails.stream_type = StreamType.HLS
-        elif is_icy:
-            streamdetails.stream_type = StreamType.ICY
+        streamdetails.stream_type = stream_type
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
     # handle skip/fade_in details
@@ -297,7 +292,7 @@ async def get_media_stream(
     try:
         await ffmpeg_proc.start()
         async for chunk in TimedAsyncGenerator(
-            ffmpeg_proc.iter_chunked(pcm_format.pcm_sample_size), 60
+            ffmpeg_proc.iter_chunked(pcm_format.pcm_sample_size), 300
         ):
             # for radio streams we just yield all chunks directly
             if streamdetails.media_type == MediaType.RADIO:
@@ -475,7 +470,7 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
     return file.getvalue()
 
 
-async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, bool, bool]:
+async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, StreamType]:
     """
     Resolve a streaming radio URL.
 
@@ -484,14 +479,12 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
 
     Returns tuple;
     - unfolded URL as string
-    - bool if the URL represents a ICY (radio) stream.
-    - bool uf the URL represents a HLS stream/playlist.
+    - StreamType to determine ICY (radio) or HLS stream.
     """
-    cache_base_key = "resolved_radio"
+    cache_base_key = "resolved_radio_info"
     if cache := await mass.cache.get(url, base_key=cache_base_key):
         return cache
-    is_hls = False
-    is_icy = False
+    stream_type = StreamType.HTTP
     resolved_url = url
     timeout = ClientTimeout(total=0, connect=10, sock_read=5)
     try:
@@ -502,8 +495,8 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
             resp.raise_for_status()
             if not resp.headers:
                 raise InvalidDataError("no headers found")
-        is_icy = headers.get("icy-metaint") is not None
-        is_hls = headers.get("content-type") in HLS_CONTENT_TYPES
+        if headers.get("icy-metaint") is not None:
+            stream_type = StreamType.ICY
         if (
             url.endswith((".m3u", ".m3u8", ".pls"))
             or ".m3u?" in url
@@ -522,14 +515,14 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
                         # unfold first url of playlist
                         return await resolve_radio_stream(mass, line.path)
                     raise InvalidDataError("No content found in playlist")
-            except IsHLSPlaylist:
-                is_hls = True
+            except IsHLSPlaylist as err:
+                stream_type = StreamType.ENCRYPTED_HLS if err.encrypted else StreamType.HLS
 
     except Exception as err:
         LOGGER.warning("Error while parsing radio URL %s: %s", url, err)
-        return (url, is_icy, is_hls)
+        return (url, stream_type)
 
-    result = (resolved_url, is_icy, is_hls)
+    result = (resolved_url, stream_type)
     cache_expiration = 3600 * 3
     await mass.cache.set(url, result, expiration=cache_expiration, base_key=cache_base_key)
     return result
@@ -577,97 +570,6 @@ async def get_icy_radio_stream(
                 streamdetails.stream_title = cleaned_stream_title
 
 
-async def get_hls_radio_stream(
-    mass: MusicAssistant,
-    url: str,
-    streamdetails: StreamDetails,
-) -> AsyncGenerator[bytes, None]:
-    """Get radio audio stream from HTTP HLS playlist."""
-    logger = LOGGER.getChild("hls_stream")
-    logger.debug("Start streaming HLS stream for url %s", url)
-    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
-    prev_chunks: deque[str] = deque(maxlen=50)
-    has_playlist_metadata: bool | None = None
-    has_id3_metadata: bool | None = None
-    # we simply select the best quality substream here
-    # if we ever want to support adaptive stream selection based on bandwidth
-    # we need to move the substream selection into the loop below and make it
-    # bandwidth aware. For now we just assume domestic high bandwidth where
-    # the user wants the best quality possible at all times.
-    playlist_item = await get_hls_substream(mass, url)
-    substream_url = playlist_item.path
-    empty_loops = 0
-    while True:
-        logger.log(VERBOSE_LOG_LEVEL, "start streaming chunks from substream %s", substream_url)
-        async with mass.http_session.get(
-            substream_url, headers=HTTP_HEADERS, timeout=timeout
-        ) as resp:
-            resp.raise_for_status()
-            raw_data = await resp.read()
-            encoding = resp.charset or await detect_charset(raw_data)
-            substream_m3u_data = raw_data.decode(encoding)
-        # get chunk-parts from the substream
-        hls_chunks = parse_m3u(substream_m3u_data)
-        chunk_seconds = 0
-        time_start = time.time()
-        for chunk_item in hls_chunks:
-            if chunk_item.path in prev_chunks:
-                continue
-            chunk_length = int(chunk_item.length) if chunk_item.length else 6
-            chunk_item_url = chunk_item.path
-            if not chunk_item_url.startswith("http"):
-                # path is relative, stitch it together
-                base_path = substream_url.rsplit("/", 1)[0]
-                chunk_item_url = base_path + "/" + chunk_item.path
-            # handle (optional) in-playlist (timed) metadata
-            if has_playlist_metadata is None:
-                has_playlist_metadata = chunk_item.title not in (None, "")
-                logger.debug("Station support for in-playlist metadata: %s", has_playlist_metadata)
-            if has_playlist_metadata and chunk_item.title != "no desc":
-                # bbc (and maybe others?) set the title to 'no desc'
-                cleaned_stream_title = clean_stream_title(chunk_item.title)
-                if cleaned_stream_title != streamdetails.stream_title:
-                    logger.log(
-                        VERBOSE_LOG_LEVEL, "HLS Radio streamtitle original: %s", chunk_item.title
-                    )
-                    logger.log(
-                        VERBOSE_LOG_LEVEL, "HLS Radio streamtitle cleaned: %s", cleaned_stream_title
-                    )
-                    streamdetails.stream_title = cleaned_stream_title
-            logger.log(VERBOSE_LOG_LEVEL, "playing chunk %s", chunk_item)
-            # prevent that we play this chunk again if we loop through
-            prev_chunks.append(chunk_item.path)
-            async with mass.http_session.get(
-                chunk_item_url, headers=HTTP_HEADERS, timeout=timeout
-            ) as resp:
-                yield await resp.content.read()
-            chunk_seconds += chunk_length
-            # handle (optional) in-band (m3u) metadata
-            if has_id3_metadata is not None and has_playlist_metadata:
-                continue
-            if has_id3_metadata in (None, True):
-                tags = await parse_tags(chunk_item_url)
-                has_id3_metadata = tags.title and tags.title not in chunk_item.path
-                logger.debug("Station support for in-band (ID3) metadata: %s", has_id3_metadata)
-
-        # end of playlist reached - we loop around to get the next playlist with chunks
-        # safeguard for an endless loop
-        # this may happen if we're simply going too fast for the live stream
-        # we already throttle it a bit but we may end up in a situation where something is wrong
-        # and we want to break out of this loop, hence this check
-        if chunk_seconds == 0:
-            empty_loops += 1
-            await asyncio.sleep(1)
-        else:
-            empty_loops = 0
-        if empty_loops == 50:
-            logger.warning("breaking out of endless loop")
-            break
-        # ensure that we're not going to fast - otherwise we get the same substream playlist
-        while (time.time() - time_start) < (chunk_seconds - 1):
-            await asyncio.sleep(0.5)
-
-
 async def get_hls_substream(
     mass: MusicAssistant,
     url: str,
@@ -684,11 +586,17 @@ async def get_hls_substream(
         encoding = resp.charset or await detect_charset(raw_data)
         master_m3u_data = raw_data.decode(encoding)
     substreams = parse_m3u(master_m3u_data)
-    if any(x for x in substreams if x.length and not x.key):
-        # this is already a substream!
-        return PlaylistItem(
-            path=url,
-        )
+    # There is a chance that we did not get a master playlist with subplaylists
+    # but just a single master/sub playlist with the actual audio stream(s)
+    # so we need to detect if the playlist child's contain audio streams or
+    # sub-playlists.
+    if any(
+        x
+        for x in substreams
+        if (x.length or x.path.endswith((".mp4", ".aac")))
+        and not x.path.endswith((".m3u", ".m3u8"))
+    ):
+        return PlaylistItem(path=url, key=substreams[0].key)
     # sort substreams on best quality (highest bandwidth) when available
     if any(x for x in substreams if x.stream_info):
         substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
