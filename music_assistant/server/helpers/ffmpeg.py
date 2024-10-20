@@ -219,13 +219,13 @@ def get_ffmpeg_args(
         # append reconnect options for direct stream from http
         input_args += [
             # Reconnect automatically when disconnected before EOF is hit.
-            "reconnect",
+            "-reconnect",
             "1",
             # Set the maximum delay in seconds after which to give up reconnecting.
             "-reconnect_delay_max",
             "30",
             # If set then even streamed/non seekable streams will be reconnected on errors.
-            "reconnect_streamed",
+            "-reconnect_streamed",
             "1",
         ]
         if major_version > 4:
