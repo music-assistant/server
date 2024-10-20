@@ -1262,13 +1262,6 @@ class PlayerQueuesController(CoreController):
                     base_key=queue_id,
                 )
             )
-            # signal preload of next item (to ensure the player loads the correct next item)
-            if queue.index_in_buffer is not None:
-                task_id = f"enqueue_next_{queue.queue_id}"
-                self.mass.call_later(
-                    5, self._enqueue_next, queue, queue.index_in_buffer, task_id=task_id
-                )
-
         # always send the base event
         self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
         # save state
