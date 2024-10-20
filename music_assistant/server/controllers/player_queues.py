@@ -309,6 +309,7 @@ class PlayerQueuesController(CoreController):
             self.mass.create_task(self.resume(queue_id))
         else:
             task_id = f"enqueue_next_{queue_id}"
+            self.logger.info("Repeat mode detected, enqueue next item")
             self.mass.call_later(2, self._enqueue_next, queue, queue.current_index, task_id=task_id)
 
     @api_command("player_queues/play_media")

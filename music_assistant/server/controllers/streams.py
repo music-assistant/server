@@ -58,7 +58,6 @@ from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_chunksize,
-    get_hls_radio_stream,
     get_hls_substream,
     get_icy_radio_stream,
     get_media_stream,
@@ -836,20 +835,20 @@ class StreamsController(CoreController):
             )
         elif streamdetails.stream_type == StreamType.ICY:
             audio_source = get_icy_radio_stream(self.mass, streamdetails.path, streamdetails)
-        elif streamdetails.stream_type == StreamType.HLS:
+        elif streamdetails.stream_type in (StreamType.HLS, StreamType.ENCRYPTED_HLS):
+            substream = await get_hls_substream(self.mass, streamdetails.path)
+            audio_source = substream.path
             if streamdetails.media_type == MediaType.RADIO:
                 # Especially the BBC streams struggle when they're played directly
-                # with ffmpeg, so we use our own HLS stream parser/logic
-                audio_source = get_hls_radio_stream(self.mass, streamdetails.path, streamdetails)
-            else:
-                # normal tracks we just let ffmpeg deal with it
-                substream = await get_hls_substream(self.mass, streamdetails.path)
-                audio_source = substream.path
-        elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
-            audio_source = streamdetails.path
-            extra_input_args += ["-decryption_key", streamdetails.decryption_key]
+                # with ffmpeg, where they just stop after some minutes,
+                # so we tell ffmpeg to loop around in this case.
+                extra_input_args += ["-stream_loop", "-1", "-re"]
         else:
             audio_source = streamdetails.path
+
+        # add support for decryption key provided in streamdetails
+        if streamdetails.decryption_key:
+            extra_input_args += ["-decryption_key", streamdetails.decryption_key]
 
         # handle seek support
         if (

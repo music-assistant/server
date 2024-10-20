@@ -394,6 +394,7 @@ class ConfigController:
             object_id=config.player_id,
             data=config,
         )
+        self.mass.players.update(config.player_id, force_update=True)
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
