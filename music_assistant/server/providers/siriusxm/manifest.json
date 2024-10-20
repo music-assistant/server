@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "siriusxm",
+  "name": "SiriusXM",
+  "description": "Support for the SiriusXM streaming radio provider in Music Assistant.",
+  "codeowners": ["@btoconnor"],
+  "requirements": ["sxm==0.2.8"],
+  "documentation": "https://music-assistant.io/music-providers/siriusxm/",
+  "multi_instance": false
+}
