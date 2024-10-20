@@ -570,51 +570,9 @@ async def get_icy_radio_stream(
                 streamdetails.stream_title = cleaned_stream_title
 
 
-async def get_hls_radio_stream(
-    mass: MusicAssistant,
-    url: str,
-    streamdetails: StreamDetails,
-) -> AsyncGenerator[bytes, None]:
-    """Get radio audio stream from HTTP HLS playlist."""
-    logger = LOGGER.getChild("hls_stream")
-    logger.debug("Start streaming HLS stream for url %s", url)
-    # we simply select the best quality substream here
-    # if we ever want to support adaptive stream selection based on bandwidth
-    # we need to move the substream selection into the loop below and make it
-    # bandwidth aware. For now we just assume domestic high bandwidth where
-    # the user wants the best quality possible at all times.
-    playlist_item = await get_hls_substream(mass, url)
-    substream_url = playlist_item.path
-    loops = 50 if streamdetails.media_type != MediaType.RADIO else 1
-    while loops:
-        logger.log(VERBOSE_LOG_LEVEL, "start streaming chunks from substream %s", substream_url)
-        # We simply let ffmpeg deal with parsing the HLS playlist and stichting chunks together.
-        # However we do not feed the playlist URL to ffmpeg directly to give us the possibility
-        # to monitor the stream title and other metadata for radio streams in the future.
-        # Also, we've seen cases where ffmpeg sometimes chokes in a stream and aborts, which is not
-        # very useful for radio streams which you want to simply go on forever, so we need to loop
-        # and restart ffmpeg in case of an error.
-        input_format = AudioFormat(content_type=ContentType.UNKNOWN)
-        audio_format_detected = False
-        async for chunk in get_ffmpeg_stream(
-            audio_input=substream_url,
-            input_format=input_format,
-            output_format=AudioFormat(content_type=ContentType.WAV),
-        ):
-            yield chunk
-            if audio_format_detected:
-                continue
-            if input_format.content_type not in (ContentType.UNKNOWN, ContentType.WAV):
-                # we need to determine the audio format from the first chunk
-                streamdetails.audio_format = input_format
-                audio_format_detected = True
-        loops -= 1
-
-
 async def get_hls_substream(
     mass: MusicAssistant,
     url: str,
-    allow_encrypted: bool = False,
 ) -> PlaylistItem:
     """Select the (highest quality) HLS substream for given HLS playlist/URL."""
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
@@ -627,9 +585,6 @@ async def get_hls_substream(
         raw_data = await resp.read()
         encoding = resp.charset or await detect_charset(raw_data)
         master_m3u_data = raw_data.decode(encoding)
-    if not allow_encrypted and "EXT-X-KEY:METHOD=" in master_m3u_data:
-        # for now we do not (yet) support encrypted HLS streams
-        raise InvalidDataError("HLS stream is encrypted, not supported")
     substreams = parse_m3u(master_m3u_data)
     # There is a chance that we did not get a master playlist with subplaylists
     # but just a single master/sub playlist with the actual audio stream(s)

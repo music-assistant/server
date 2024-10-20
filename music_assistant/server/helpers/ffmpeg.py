@@ -218,10 +218,8 @@ def get_ffmpeg_args(
     if input_path.startswith("http"):
         # append reconnect options for direct stream from http
         input_args += [
-            "-reconnect",
-            "1",
-            "-reconnect_streamed",
-            "1",
+            "-reconnect_delay_max",
+            "8",
         ]
         if major_version > 4:
             # these options are only supported in ffmpeg > 5
