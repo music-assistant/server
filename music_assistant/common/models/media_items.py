@@ -83,6 +83,7 @@ class AudioFormat(DataClassDictMixin):
         # lossy content, bit_rate is most important score
         # but prefer some codecs over others
         # calculate a rough score based on bit rate per channel
+        bit_rate = self.bit_rate or 320
         bit_rate_score = (bit_rate / self.channels) / 100
         if self.content_type in (ContentType.AAC, ContentType.OGG):
             bit_rate_score += 1
