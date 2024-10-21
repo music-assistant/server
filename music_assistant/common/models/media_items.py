@@ -100,6 +100,13 @@ class AudioFormat(DataClassDictMixin):
             return False
         return self.output_format_str == other.output_format_str
 
+    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
+        """Execute action(s) on serialization."""
+        # bit_rate is now optional. Set default value to keep compatibility
+        # TODO: remove this after release of MA 2.5
+        d["bit_rate"] = d["bit_rate"] or 0
+        return d
+
 
 @dataclass(kw_only=True)
 class ProviderMapping(DataClassDictMixin):
