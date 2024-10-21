@@ -1,6 +1,9 @@
 """
 Sonos Player provider for Music Assistant for speakers running the S2 firmware.
 
+Based on the aiosonos library, which leverages the new websockets API of the Sonos S2 firmware.
+https://github.com/music-assistant/aiosonos
+
 SonosPlayer: Holds the details of the (discovered) Sonosplayer.
 """
 
