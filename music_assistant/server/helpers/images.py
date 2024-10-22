@@ -78,7 +78,7 @@ async def get_image_thumb(
         except UnidentifiedImageError:
             raise FileNotFoundError(f"Invalid image: {path_or_url}")
         if size:
-            img.thumbnail((size, size), Image.LANCZOS)
+            img.thumbnail((size, size), Image.Resampling.LANCZOS)
 
         mode = "RGBA" if image_format == "PNG" else "RGB"
         img.convert(mode).save(data, image_format, optimize=True)
