@@ -7,14 +7,14 @@ repos:
         types: [python]
         entry: scripts/run-in-env.sh ruff check --fix
         require_serial: true
-        stages: [commit, push, manual]
+        stages: [pre-commit, pre-push, manual]
       - id: ruff-format
         name: 🐶 Ruff Formatter
         language: system
         types: [python]
         entry: scripts/run-in-env.sh ruff format
         require_serial: true
-        stages: [commit, push, manual]
+        stages: [pre-commit, pre-push, manual]
       - id: check-ast
         name: 🐍 Check Python AST
         language: system
@@ -34,7 +34,7 @@ repos:
         language: system
         types: [text, executable]
         entry: scripts/run-in-env.sh check-executables-have-shebangs
-        stages: [commit, push, manual]
+        stages: [pre-commit, pre-push, manual]
       - id: check-json
         name: ｛ Check JSON files
         language: system
@@ -71,7 +71,7 @@ repos:
         language: system
         types: [text]
         entry: scripts/run-in-env.sh end-of-file-fixer
-        stages: [commit, push, manual]
+        stages: [pre-commit, pre-push, manual]
       - id: no-commit-to-branch
         name: 🛑 Don't commit to main branch
         language: system
@@ -85,7 +85,7 @@ repos:
         language: system
         types: [text]
         entry: scripts/run-in-env.sh trailing-whitespace-fixer
-        stages: [commit, push, manual]
+        stages: [pre-commit, pre-push, manual]
       - id: mypy
         name: mypy
         entry: scripts/run-in-env.sh mypy
