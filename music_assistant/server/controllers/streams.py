@@ -82,10 +82,8 @@ DEFAULT_STREAM_HEADERS = {
     "Server": "Music Assistant",
     "transferMode.dlna.org": "Streaming",
     "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
-    "Cache-Control": "no-cache,must-revalidate",
+    "Cache-Control": "no-cache",
     "Pragma": "no-cache",
-    "Accept-Ranges": "none",
-    "Connection": "close",
 }
 ICY_HEADERS = {
     "icy-name": "Music Assistant",
@@ -325,13 +323,10 @@ class StreamsController(CoreController):
             default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
             default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
-        http_profile: str = await self.mass.config.get_player_config_value(
-            queue_id, CONF_HTTP_PROFILE
-        )
+
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "Content-Type": f"audio/{output_format.output_format_str}",
             "icy-name": queue_item.name,
         }
         resp = web.StreamResponse(
@@ -339,10 +334,13 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
-        if http_profile == "forced_content_length":
-            resp.content_length = get_chunksize(
-                output_format, queue_item.streamdetails.duration or 120
-            )
+        resp.content_type = f"audio/{output_format.output_format_str}"
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
+        )
+        if http_profile == "forced_content_length" and queue_item.duration:
+            # guess content length based on duration
+            resp.content_length = get_chunksize(output_format, queue_item.duration)
         elif http_profile == "chunked":
             resp.enable_chunked_encoding()
 
@@ -435,17 +433,11 @@ class StreamsController(CoreController):
         icy_meta_interval = 256000 if icy_preference == "full" else 16384
 
         # prepare request, add some DLNA/UPNP compatible headers
-        http_profile: str = await self.mass.config.get_player_config_value(
-            queue_id, CONF_HTTP_PROFILE
-        )
-        # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
             **ICY_HEADERS,
-            "Content-Type": f"audio/{output_format.output_format_str}",
             "Accept-Ranges": "none",
-            "Cache-Control": "no-cache",
-            "Connection": "close",
+            "Content-Type": f"audio/{output_format.output_format_str}",
         }
         if enable_icy:
             headers["icy-metaint"] = str(icy_meta_interval)
@@ -455,10 +447,15 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
+        http_profile: str = await self.mass.config.get_player_config_value(
+            queue_id, CONF_HTTP_PROFILE
+        )
         if http_profile == "forced_content_length":
-            resp.content_length = get_chunksize(output_format, 24 * 2600)
+            # just set an insane high content length to make sure the player keeps playing
+            resp.content_length = get_chunksize(output_format, 12 * 3600)
         elif http_profile == "chunked":
             resp.enable_chunked_encoding()
+
         await resp.prepare(request)
 
         # return early if this is not a GET request
@@ -534,16 +531,35 @@ class StreamsController(CoreController):
         # work out output format/details
         fmt = request.match_info.get("fmt", announcement_url.rsplit(".")[-1])
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
-        # prepare request, add some DLNA/UPNP compatible headers
-        headers = {
-            **DEFAULT_STREAM_HEADERS,
-            "Content-Type": f"audio/{audio_format.output_format_str}",
-        }
+
+        http_profile: str = await self.mass.config.get_player_config_value(
+            player_id, CONF_HTTP_PROFILE
+        )
+        if http_profile == "forced_content_length":
+            # given the fact that an announcement is just a short audio clip,
+            # just send it over completely at once so we have a fixed content length
+            data = b""
+            async for chunk in self.get_announcement_stream(
+                announcement_url=announcement_url,
+                output_format=audio_format,
+                use_pre_announce=use_pre_announce,
+            ):
+                data += chunk
+            return web.Response(
+                body=data,
+                content_type=f"audio/{audio_format.output_format_str}",
+                headers=DEFAULT_STREAM_HEADERS,
+            )
+
         resp = web.StreamResponse(
             status=200,
             reason="OK",
-            headers=headers,
+            headers=DEFAULT_STREAM_HEADERS,
         )
+        resp.content_type = f"audio/{audio_format.output_format_str}"
+        if http_profile == "chunked":
+            resp.enable_chunked_encoding()
+
         await resp.prepare(request)
 
         # return early if this is not a GET request
