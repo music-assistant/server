@@ -205,6 +205,10 @@ class SiriusXMProvider(MusicProvider):
         """Get streamdetails for a track/radio."""
         hls_path = f"http://{self._base_url}/{item_id}.m3u8"
 
+        # Keep a reference to the current `StreamDetails` object so that we can
+        # update the `stream_title` attribute as callbacks come in from the
+        # sxm-client with the channel's live data.
+        # See `_channel_updated` for where this is handled.
         self._current_stream_details = StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
