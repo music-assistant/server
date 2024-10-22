@@ -62,7 +62,7 @@
       dict({
         'audio_format': dict({
           'bit_depth': 16,
-          'bit_rate': 320,
+          'bit_rate': 0,
           'channels': 2,
           'content_type': '?',
           'output_format_str': '?',
@@ -145,7 +145,7 @@
       dict({
         'audio_format': dict({
           'bit_depth': 16,
-          'bit_rate': 320,
+          'bit_rate': 0,
           'channels': 2,
           'content_type': '?',
           'output_format_str': '?',
@@ -214,7 +214,7 @@
       dict({
         'audio_format': dict({
           'bit_depth': 16,
-          'bit_rate': 320,
+          'bit_rate': 0,
           'channels': 2,
           'content_type': '?',
           'output_format_str': '?',
@@ -289,7 +289,7 @@
       dict({
         'audio_format': dict({
           'bit_depth': 16,
-          'bit_rate': 320,
+          'bit_rate': 0,
           'channels': 2,
           'content_type': '?',
           'output_format_str': '?',
@@ -371,7 +371,7 @@
       dict({
         'audio_format': dict({
           'bit_depth': 16,
-          'bit_rate': 320,
+          'bit_rate': 0,
           'channels': 2,
           'content_type': 'mp3',
           'output_format_str': 'mp3',
@@ -448,7 +448,7 @@
       dict({
         'audio_format': dict({
           'bit_depth': 16,
-          'bit_rate': 320,
+          'bit_rate': 0,
           'channels': 2,
           'content_type': 'aac',
           'output_format_str': 'aac',
@@ -554,7 +554,7 @@
       dict({
         'audio_format': dict({
           'bit_depth': 16,
-          'bit_rate': 320,
+          'bit_rate': 0,
           'channels': 2,
           'content_type': 'aac',
           'output_format_str': 'aac',

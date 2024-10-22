@@ -800,14 +800,18 @@ def get_chunksize(
     fmt: AudioFormat,
     seconds: int = 1,
 ) -> int:
-    """Get a default chunksize for given contenttype."""
-    pcm_size = int(fmt.sample_rate * (fmt.bit_depth / 8) * 2 * seconds)
+    """Get a default chunk/file size for given contenttype in bytes."""
+    pcm_size = int(fmt.sample_rate * (fmt.bit_depth / 8) * fmt.channels * seconds)
     if fmt.content_type.is_pcm() or fmt.content_type == ContentType.WAV:
         return pcm_size
     if fmt.content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
         return pcm_size
+    if fmt.bit_rate:
+        return int(((fmt.bit_rate * 1000) / 8) * seconds)
     if fmt.content_type in (ContentType.FLAC, ContentType.WAVPACK, ContentType.ALAC):
-        return int(pcm_size * 0.8)
+        # assume 74.7% compression ratio (level 0)
+        # source: https://z-issue.com/wp/flac-compression-level-comparison/
+        return int(pcm_size * 0.747)
     if fmt.content_type in (ContentType.MP3, ContentType.OGG):
         return int((320000 / 8) * seconds)
     if fmt.content_type in (ContentType.AAC, ContentType.M4A):
