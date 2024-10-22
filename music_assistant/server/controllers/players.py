@@ -685,7 +685,7 @@ class PlayerController(CoreController):
         # forward command to the player provider after all (base) sanity checks
         player_provider = self.get_player_provider(target_player)
         async with self._player_throttlers[target_player]:
-            await player_provider.cmd_sync_many(target_player, child_player_ids)
+            await player_provider.cmd_sync_many(target_player, final_player_ids)
 
     @api_command("players/cmd/unsync_many")
     async def cmd_unsync_many(self, player_ids: list[str]) -> None:

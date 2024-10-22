@@ -188,8 +188,6 @@ class SonosPlayerProvider(PlayerProvider):
     async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
         """Create temporary sync group by joining given players to target player."""
         sonos_player = self.sonos_players[target_player]
-        # ensure we only send valid (and unique) player ids
-        child_player_ids = list({x for x in child_player_ids if x in self.sonos_players})
         await sonos_player.client.player.group.modify_group_members(
             player_ids_to_add=child_player_ids, player_ids_to_remove=[]
         )
