@@ -515,8 +515,8 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
                         # unfold first url of playlist
                         return await resolve_radio_stream(mass, line.path)
                     raise InvalidDataError("No content found in playlist")
-            except IsHLSPlaylist as err:
-                stream_type = StreamType.ENCRYPTED_HLS if err.encrypted else StreamType.HLS
+            except IsHLSPlaylist:
+                stream_type = StreamType.HLS
 
     except Exception as err:
         LOGGER.warning("Error while parsing radio URL %s: %s", url, err)

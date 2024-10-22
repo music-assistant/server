@@ -851,7 +851,7 @@ class StreamsController(CoreController):
             )
         elif streamdetails.stream_type == StreamType.ICY:
             audio_source = get_icy_radio_stream(self.mass, streamdetails.path, streamdetails)
-        elif streamdetails.stream_type in (StreamType.HLS, StreamType.ENCRYPTED_HLS):
+        elif streamdetails.stream_type == StreamType.HLS:
             substream = await get_hls_substream(self.mass, streamdetails.path)
             audio_source = substream.path
             if streamdetails.media_type == MediaType.RADIO:
