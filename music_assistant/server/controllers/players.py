@@ -492,30 +492,13 @@ class PlayerController(CoreController):
                     player_id,
                     CONF_TTS_PRE_ANNOUNCE,
                 )
-            if not native_announce_support and player.active_group:
-                for group_member in self.iter_group_members(player, True, True):
-                    if PlayerFeature.PLAY_ANNOUNCEMENT in group_member.supported_features:
-                        native_announce_support = True
-                        break
-                # redirect to group player if playergroup is active
-                self.logger.warning(
-                    "Detected announcement request to a player which has a group active, "
-                    "this will be redirected to the group."
-                )
-                await self.play_announcement(
-                    player.active_group, url, use_pre_announce, volume_level
-                )
-                return
-
-            # if player type is group with all members supporting announcements
-            # or if the groupplayer is not powered, we forward the request to each individual player
+            # if player type is group with all members supporting announcements,
+            # we forward the request to each individual player
             if player.type == PlayerType.GROUP and (
                 all(
-                    x
+                    PlayerFeature.PLAY_ANNOUNCEMENT in x.supported_features
                     for x in self.iter_group_members(player)
-                    if PlayerFeature.PLAY_ANNOUNCEMENT in x.supported_features
                 )
-                or not player.powered
             ):
                 # forward the request to each individual player
                 async with TaskManager(self.mass) as tg:
@@ -529,7 +512,6 @@ class PlayerController(CoreController):
                             )
                         )
                 return
-
             self.logger.info(
                 "Playback announcement to player %s (with pre-announce: %s): %s",
                 player.display_name,
@@ -1095,14 +1077,14 @@ class PlayerController(CoreController):
         - restore the previous power and volume
         - restore playback (if needed and if possible)
 
-        This default implementation will only be used if the player's
-        provider has no native support for the PLAY_ANNOUNCEMENT feature.
+        This default implementation will only be used if the player
+        (provider) has no native support for the PLAY_ANNOUNCEMENT feature.
         """
         prev_power = player.powered
         prev_state = player.state
         prev_synced_to = player.synced_to
-        queue = self.mass.player_queues.get_active_queue(player.player_id)
-        prev_queue_active = queue.active
+        queue = self.mass.player_queues.get(player.active_source)
+        prev_queue_active = queue and queue.active
         prev_item_id = player.current_item_id
         # unsync player if its currently synced
         if prev_synced_to:
@@ -1128,13 +1110,23 @@ class PlayerController(CoreController):
             for volume_player_id in player.group_childs or (player.player_id,):
                 if not (volume_player := self.get(volume_player_id)):
                     continue
-                # filter out players that have a different source active
-                if volume_player.active_source not in (
-                    player.active_source,
-                    volume_player.player_id,
-                    None,
+                # catch any players that have a different source active
+                if (
+                    volume_player.active_source
+                    not in (
+                        player.active_source,
+                        volume_player.player_id,
+                        None,
+                    )
+                    and volume_player.state == PlayerState.PLAYING
                 ):
-                    continue
+                    self.logger.warning(
+                        "Detected announcement to playergroup %s while group member %s is playing "
+                        "other content, this may lead to unexpected behavior.",
+                        player.display_name,
+                        volume_player.display_name,
+                    )
+                    tg.create_task(self.cmd_stop(volume_player.player_id))
                 prev_volume = volume_player.volume_level
                 announcement_volume = self.get_announcement_volume(volume_player_id, volume_level)
                 temp_volume = announcement_volume or player.volume_level

@@ -25,15 +25,10 @@ from music_assistant.common.models.config_entries import (
     ConfigEntry,
     create_sample_rates_config_entry,
 )
-from music_assistant.common.models.enums import (
-    ConfigEntryType,
-    ContentType,
-    ProviderFeature,
-    RepeatMode,
-)
+from music_assistant.common.models.enums import ConfigEntryType, ContentType, ProviderFeature
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.player import DeviceInfo, PlayerMedia
-from music_assistant.constants import CONF_CROSSFADE, MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .const import CONF_AIRPLAY_MODE
@@ -262,6 +257,7 @@ class SonosPlayerProvider(PlayerProvider):
             return
 
         # play a single uri/url
+        # note that this most probably will only work for (long running) radio streams
         if self.mass.config.get_raw_player_config_value(
             player_id, CONF_ENTRY_ENFORCE_MP3.key, CONF_ENTRY_ENFORCE_MP3.default_value
         ):
@@ -282,28 +278,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
-        sonos_player = self.sonos_players[player_id]
-        if sonos_player.get_linked_airplay_player(True):
-            # linked airplay player is active, ignore this command
-            return
-        if session_id := sonos_player.client.player.group.active_session_id:
-            await sonos_player.client.api.playback_session.refresh_cloud_queue(session_id)
-        # sync play modes from player queue --> sonos
-        mass_queue = self.mass.player_queues.get(media.queue_id)
-        crossfade = await self.mass.config.get_player_config_value(
-            mass_queue.queue_id, CONF_CROSSFADE
-        )
-        repeat_single_enabled = mass_queue.repeat_mode == RepeatMode.ONE
-        repeat_all_enabled = mass_queue.repeat_mode == RepeatMode.ALL
-        play_modes = sonos_player.client.player.group.play_modes
-        if (
-            play_modes.crossfade != crossfade
-            or play_modes.repeat != repeat_all_enabled
-            or play_modes.repeat_one != repeat_single_enabled
-        ):
-            await sonos_player.client.player.group.set_play_modes(
-                crossfade=crossfade, repeat=repeat_all_enabled, repeat_one=repeat_single_enabled
-            )
+        # We do nothing here as we handle the queue in the cloud queue endpoint.
+        # For sonos s2, instead of enqueuing tracks one by one, the sonos player itself
+        # can interact with our queue directly through the cloud queue endpoint.
 
     async def play_announcement(
         self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
