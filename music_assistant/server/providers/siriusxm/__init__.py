@@ -110,7 +110,7 @@ class SiriusXMProvider(MusicProvider):
     _sxm_server: Webserver
     _base_url: str
 
-    _stream_details: StreamDetails | None = None
+    _current_stream_details: StreamDetails | None = None
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -205,7 +205,7 @@ class SiriusXMProvider(MusicProvider):
         """Get streamdetails for a track/radio."""
         hls_path = f"http://{self._base_url}/{item_id}.m3u8"
 
-        self._stream_details = StreamDetails(
+        self._current_stream_details = StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
@@ -217,7 +217,7 @@ class SiriusXMProvider(MusicProvider):
             can_seek=False,
         )
 
-        return self._stream_details
+        return self._current_stream_details
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping]:
         """Browse this provider's items.
@@ -231,7 +231,7 @@ class SiriusXMProvider(MusicProvider):
         live_data = XMLiveChannel.from_dict(live_channel_raw)
 
         self.logger.debug(f"Got update for SiriusXM channel {live_data.id}")
-        current_channel = self._stream_details.item_id
+        current_channel = self._current_stream_details.item_id
 
         if live_data.id != current_channel:
             # This can happen when changing channels
@@ -247,7 +247,7 @@ class SiriusXMProvider(MusicProvider):
             title = latest_cut.title
             artists = ", ".join([a.name for a in latest_cut.artists])
 
-            self._stream_details.stream_title = f"{title} - {artists}"
+            self._current_stream_details.stream_title = f"{title} - {artists}"
 
     async def _refresh_channels(self) -> bool:
         self._channels = await self._client.channels
