@@ -427,7 +427,6 @@ class StreamType(StrEnum):
     HTTP = "http"  # regular http stream
     ENCRYPTED_HTTP = "encrypted_http"  # encrypted http stream
     HLS = "hls"  # http HLS stream
-    ENCRYPTED_HLS = "encrypted_hls"  # encrypted HLS stream
     ICY = "icy"  # http stream with icy metadata
     LOCAL_FILE = "local_file"
     CUSTOM = "custom"

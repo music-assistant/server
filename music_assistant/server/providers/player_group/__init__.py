@@ -380,6 +380,9 @@ class PlayerGroupProvider(PlayerProvider):
                 member.active_source = group_player.active_source
         else:
             # handle TURN_OFF of the group player by turning off all members
+            # optimistically set the group state to prevent race conditions
+            # with the unsync command
+            group_player.powered = False
             for member in self.mass.players.iter_group_members(
                 group_player, only_powered=True, active_only=True
             ):
@@ -461,7 +464,7 @@ class PlayerGroupProvider(PlayerProvider):
 
         # start the stream task
         self.ugp_streams[player_id] = UGPStream(audio_source=audio_source, audio_format=UGP_FORMAT)
-        base_url = f"{self.mass.streams.base_url}/ugp/{player_id}.aac"
+        base_url = f"{self.mass.streams.base_url}/ugp/{player_id}.mp3"
 
         # set the state optimistically
         group_player.current_media = media
@@ -595,7 +598,7 @@ class PlayerGroupProvider(PlayerProvider):
             CONFIG_ENTRY_DYNAMIC_MEMBERS.key,
             CONFIG_ENTRY_DYNAMIC_MEMBERS.default_value,
         )
-        if not dynamic_members_enabled:
+        if group_player.powered and not dynamic_members_enabled:
             raise UnsupportedFeaturedException(
                 f"Adjusting group members is not allowed for group {group_player.display_name}"
             )
@@ -645,7 +648,7 @@ class PlayerGroupProvider(PlayerProvider):
             model_name = "Universal Group"
             manufacturer = self.name
             # register dynamic route for the ugp stream
-            route_path = f"/ugp/{group_player_id}.aac"
+            route_path = f"/ugp/{group_player_id}.mp3"
             self._on_unload.append(
                 self.mass.streams.register_dynamic_route(route_path, self._serve_ugp_stream)
             )
@@ -659,7 +662,7 @@ class PlayerGroupProvider(PlayerProvider):
                 PlayerFeature.PAUSE,
                 PlayerFeature.VOLUME_MUTE,
             ):
-                if all(x for x in player_provider.players if feature in x.supported_features):
+                if all(feature in x.supported_features for x in player_provider.players):
                     player_features.add(feature)
         else:
             raise PlayerUnavailableError(f"Provider for syncgroup {group_type} is not available!")
@@ -758,8 +761,6 @@ class PlayerGroupProvider(PlayerProvider):
         """Update attributes of a player."""
         for child_player in self.mass.players.iter_group_members(player, active_only=True):
             # just grab the first active player
-            if child_player.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
-                continue
             if child_player.synced_to:
                 continue
             player.state = child_player.state
@@ -789,7 +790,7 @@ class PlayerGroupProvider(PlayerProvider):
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            "Content-Type": "audio/aac",
+            "Content-Type": "audio/mp3",
             "Accept-Ranges": "none",
             "Cache-Control": "no-cache",
             "Connection": "close",

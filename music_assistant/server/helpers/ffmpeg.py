@@ -282,7 +282,8 @@ def get_ffmpeg_args(
             str(output_format.channels),
         ]
         if output_format.output_format_str == "flac":
-            output_args += ["-compression_level", "6"]
+            # use level 0 compression for fastest encoding
+            output_args += ["-compression_level", "0"]
         output_args += [output_path]
 
     # edge case: source file is not stereo - downmix to stereo

@@ -87,7 +87,7 @@ class AudioTags:
     channels: int
     bits_per_sample: int
     format: str
-    bit_rate: int
+    bit_rate: int | None
     duration: float | None
     tags: dict[str, str]
     has_cover_image: bool
@@ -382,7 +382,7 @@ class AudioTags:
                 audio_stream.get("bits_per_raw_sample", audio_stream.get("bits_per_sample")) or 16
             ),
             format=raw["format"]["format_name"],
-            bit_rate=int(raw["format"].get("bit_rate", 320)),
+            bit_rate=int(raw["format"].get("bit_rate", 0)) or None,
             duration=float(raw["format"].get("duration", 0)) or None,
             tags=tags,
             has_cover_image=has_cover_image,

@@ -215,7 +215,7 @@ class SiriusXMProvider(MusicProvider):
             audio_format=AudioFormat(
                 content_type=ContentType.AAC,
             ),
-            stream_type=StreamType.ENCRYPTED_HLS,
+            stream_type=StreamType.HLS,
             media_type=MediaType.RADIO,
             path=hls_path,
             can_seek=False,
