@@ -40,7 +40,11 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
+from music_assistant.server.helpers.audio import (
+    FFMpeg,
+    get_ffmpeg_stream,
+    get_player_filter_params,
+)
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -554,16 +558,21 @@ class SnapCastProvider(PlayerProvider):
                 # we need to wait a bit for the stream status to become idle
                 # to ensure that all snapclients have consumed the audio
                 while stream.status != "idle":
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(0.50)
                 player.state = PlayerState.IDLE
                 self.mass.players.update(player_id)
                 self._set_childs_state(player_id)
             finally:
-                with suppress(TypeError, KeyError, AttributeError):
-                    await self._snapserver.stream_remove_stream(stream.identifier)
+                await self._delete_current_snapstream(stream, media)
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
+
+    async def _delete_current_snapstream(self, stream, media):
+        with suppress(TypeError, KeyError, AttributeError):
+            if media.duration < 5:
+                await asyncio.sleep(5)
+            await self._snapserver.stream_remove_stream(stream.identifier)
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
         """Get snapcast group for given player_id."""
@@ -628,7 +637,9 @@ class SnapCastProvider(PlayerProvider):
         """Create new stream on snapcast server named default case not exist."""
         all_streams = {stream.name for stream in self._snapserver.streams}
         if "default" not in all_streams:
-            await self._snapserver.stream_add_stream("pipe:///tmp/snapfifo?name=default")
+            await self._snapserver.stream_add_stream(
+                "pipe:///tmp/snapfifo?name=default&sampleformat=48000:16:2"
+            )
 
     def _set_childs_state(self, player_id: str) -> None:
         """Set the state of the child`s of the player."""
