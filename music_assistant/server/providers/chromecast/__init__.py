@@ -388,6 +388,7 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.VOLUME_SET,
                         PlayerFeature.PAUSE,
                         PlayerFeature.NEXT_PREVIOUS,
+                        PlayerFeature.ENQUEUE,
                     ),
                     enabled_by_default=enabled_by_default,
                     needs_poll=True,

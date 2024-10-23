@@ -17,6 +17,7 @@ PLAYER_FEATURES_BASE = {
     PlayerFeature.SYNC,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PAUSE,
+    PlayerFeature.ENQUEUE,
 }
 
 SOURCE_LINE_IN = "line_in"

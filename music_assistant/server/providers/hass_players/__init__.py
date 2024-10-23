@@ -381,6 +381,8 @@ class HomeAssistantPlayers(PlayerProvider):
             supported_features.append(PlayerFeature.VOLUME_SET)
         if MediaPlayerEntityFeature.VOLUME_MUTE in hass_supported_features:
             supported_features.append(PlayerFeature.VOLUME_MUTE)
+        if MediaPlayerEntityFeature.MEDIA_ENQUEUE in hass_supported_features:
+            supported_features.append(PlayerFeature.ENQUEUE)
         if (
             MediaPlayerEntityFeature.TURN_ON in hass_supported_features
             and MediaPlayerEntityFeature.TURN_OFF in hass_supported_features

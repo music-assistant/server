@@ -402,7 +402,9 @@ async def get_media_stream(
                 task_id = f"analyze_loudness_{streamdetails.uri}"
                 mass.create_task(analyze_loudness, mass, streamdetails, task_id=task_id)
 
-        # report playback
+        # mark item as played in db if finished or streamed for 30 seconds
+        # NOTE that this is not the actual played time but the buffered time
+        # the queue controller will update the actual played time when the item is played
         if finished or seconds_streamed > 30:
             mass.create_task(
                 mass.music.mark_item_played(
@@ -411,10 +413,6 @@ async def get_media_stream(
                     streamdetails.provider,
                 )
             )
-            # TODO: move this to the queue controller so we report
-            # actual playback time instead of buffered seconds
-            if music_prov := mass.get_provider(streamdetails.provider):
-                mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
 
 
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=None):

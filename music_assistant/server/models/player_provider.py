@@ -111,7 +111,7 @@ class PlayerProvider(Provider):
         This will NOT be called if the end of the queue is reached (and repeat disabled).
         This will NOT be called if the player is using flow mode to playback the queue.
         """
-        # will only be called for players with ENQUEUE NEXT feature set.
+        # will only be called for players with ENQUEUE feature set.
         raise NotImplementedError
 
     async def play_announcement(
