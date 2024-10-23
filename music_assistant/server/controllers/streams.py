@@ -33,6 +33,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import QueueEmpty
 from music_assistant.common.models.media_items import AudioFormat
+from music_assistant.common.models.player_queue import PlayLogEntry
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
@@ -395,8 +396,6 @@ class StreamsController(CoreController):
                 queue_item.uri,
                 queue.display_name,
             )
-        if queue.stream_finished is not None:
-            queue.stream_finished = True
         return resp
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.Response:
@@ -620,10 +619,6 @@ class StreamsController(CoreController):
         queue_track = None
         last_fadeout_part = b""
         queue.flow_mode = True
-        queue.stream_finished = False
-        queue.flow_mode_start_index = self.mass.player_queues.index_by_id(
-            queue.queue_id, start_queue_item.queue_item_id
-        )
         use_crossfade = await self.mass.config.get_player_config_value(
             queue.queue_id, CONF_CROSSFADE
         )
@@ -648,9 +643,7 @@ class StreamsController(CoreController):
                 queue_track = start_queue_item
             else:
                 try:
-                    queue_track = await self.mass.player_queues.preload_next_item(
-                        queue.queue_id, allow_repeat=False
-                    )
+                    queue_track = await self.mass.player_queues.load_next_item(queue.queue_id)
                 except QueueEmpty:
                     break
 
@@ -668,6 +661,9 @@ class StreamsController(CoreController):
             self.mass.player_queues.track_loaded_in_buffer(
                 queue.queue_id, queue_track.queue_item_id
             )
+            # append to play log so the queue controller can work out which track is playing
+            play_log_entry = PlayLogEntry(queue_track.queue_item_id)
+            queue.flow_mode_stream_log.append(play_log_entry)
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
@@ -749,6 +745,8 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration = (
                 queue_track.streamdetails.seek_position + seconds_streamed
             )
+            play_log_entry.seconds_streamed = seconds_streamed
+            play_log_entry.duration = queue_track.streamdetails.duration
             total_bytes_sent += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
@@ -766,8 +764,6 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration += last_part_seconds
             del last_fadeout_part
         total_bytes_sent += bytes_written
-        if queue.stream_finished is not None:
-            queue.stream_finished = True
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(

@@ -60,10 +60,7 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
-BASE_PLAYER_FEATURES = (
-    PlayerFeature.VOLUME_MUTE,
-    PlayerFeature.VOLUME_SET,
-)
+BASE_PLAYER_FEATURES = (PlayerFeature.VOLUME_MUTE, PlayerFeature.VOLUME_SET)
 
 
 PLAYER_CONFIG_ENTRIES = (
@@ -622,4 +619,11 @@ class DLNAPlayerProvider(PlayerProvider):
 
     def _set_player_features(self, dlna_player: DLNAPlayer) -> None:
         """Set Player Features based on config values and capabilities."""
-        dlna_player.player.supported_features = BASE_PLAYER_FEATURES
+        if self.mass.config.get_raw_player_config_value(
+            dlna_player.udn,
+            CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED.key,
+            CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED.default_value,
+        ):
+            dlna_player.player.supported_features = BASE_PLAYER_FEATURES
+        else:
+            dlna_player.player.supported_features = (*BASE_PLAYER_FEATURES, PlayerFeature.ENQUEUE)

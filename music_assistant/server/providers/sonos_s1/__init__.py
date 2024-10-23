@@ -56,6 +56,7 @@ PLAYER_FEATURES = (
     PlayerFeature.SYNC,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PAUSE,
+    PlayerFeature.ENQUEUE,
 )
 
 CONF_NETWORK_SCAN = "network_scan"

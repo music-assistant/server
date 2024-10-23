@@ -646,6 +646,7 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.PAUSE,
                     PlayerFeature.VOLUME_MUTE,
+                    PlayerFeature.ENQUEUE,
                 ),
             )
             await self.mass.players.register_or_update(player)

@@ -658,10 +658,7 @@ class PlayerGroupProvider(PlayerProvider):
                 player_provider = cast(PlayerProvider, player_provider)
             model_name = "Sync Group"
             manufacturer = self.mass.get_provider(group_type).name
-            for feature in (
-                PlayerFeature.PAUSE,
-                PlayerFeature.VOLUME_MUTE,
-            ):
+            for feature in (PlayerFeature.PAUSE, PlayerFeature.VOLUME_MUTE, PlayerFeature.ENQUEUE):
                 if all(feature in x.supported_features for x in player_provider.players):
                     player_features.add(feature)
         else:
