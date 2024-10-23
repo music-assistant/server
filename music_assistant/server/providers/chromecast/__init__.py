@@ -21,6 +21,7 @@ from music_assistant.common.models.config_entries import (
     BASE_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+    CONF_ENTRY_ENFORCE_MP3,
     ConfigEntry,
     ConfigValueType,
     create_sample_rates_config_entry,
@@ -28,7 +29,12 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import CONF_PLAYERS, MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENFORCE_MP3,
+    CONF_PLAYERS,
+    MASS_LOGO_ONLINE,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -48,6 +54,7 @@ if TYPE_CHECKING:
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_ENFORCE_MP3,
 )
 
 # originally/officially cast supports 96k sample rate (even for groups)
@@ -241,6 +248,8 @@ class ChromecastProvider(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         castplayer = self.castplayers[player_id]
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+            media.uri = media.uri.replace(".flac", ".mp3")
         queuedata = {
             "type": "LOAD",
             "media": self._create_cc_media_item(media),
@@ -254,6 +263,8 @@ class ChromecastProvider(PlayerProvider):
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next item on the player."""
         castplayer = self.castplayers[player_id]
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+            media.uri = media.uri.replace(".flac", ".mp3")
         next_item_id = None
         status = castplayer.cc.media_controller.status
         # lookup position of current track in cast queue
