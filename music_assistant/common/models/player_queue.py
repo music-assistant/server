@@ -9,9 +9,19 @@ from typing import Any, Self
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.media_items import MediaItemType
+from music_assistant.constants import FALLBACK_DURATION
 
 from .enums import PlayerState, RepeatMode
 from .queue_item import QueueItem
+
+
+@dataclass
+class PlayLogEntry:
+    """Representation of a PlayLogEntry within Music Assistant."""
+
+    queue_item_id: str
+    duration: int = FALLBACK_DURATION
+    seconds_streamed: float | None = None
 
 
 @dataclass
@@ -41,10 +51,7 @@ class PlayerQueue(DataClassDictMixin):
     enqueued_media_items: list[str] = field(default_factory=list)
     flow_mode: bool = False
     resume_pos: int = 0
-    # flow_mode_start_index: index of the first item of the flow stream
-    flow_mode_start_index: int = 0
-    stream_finished: bool | None = None
-    end_of_track_reached: bool | None = None
+    flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
 
     @property
     def corrected_elapsed_time(self) -> float:
@@ -58,7 +65,7 @@ class PlayerQueue(DataClassDictMixin):
         d.pop("next_item", None)
         d.pop("index_in_buffer", None)
         d.pop("flow_mode", None)
-        d.pop("flow_mode_start_index", None)
+        d.pop("flow_mode_stream_log", None)
         return d
 
     @classmethod
@@ -68,5 +75,5 @@ class PlayerQueue(DataClassDictMixin):
         d.pop("next_item", None)
         d.pop("index_in_buffer", None)
         d.pop("flow_mode", None)
-        d.pop("flow_mode_start_index", None)
+        d.pop("flow_mode_stream_log", None)
         return cls.from_dict(d)
