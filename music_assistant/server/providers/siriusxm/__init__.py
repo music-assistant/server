@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 import sxm.http
 from sxm import SXMClientAsync
-from sxm.models import QualitySize, RegionChoice, XMChannel
+from sxm.models import QualitySize, RegionChoice, XMChannel, XMLiveChannel
 
 CONF_SXM_USERNAME = "sxm_email_address"
 CONF_SXM_PASSWORD = "sxm_password"
@@ -109,6 +109,8 @@ class SiriusXMProvider(MusicProvider):
 
     _sxm_server: Webserver
     _base_url: str
+
+    _current_stream_details: StreamDetails | None = None
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -203,7 +205,11 @@ class SiriusXMProvider(MusicProvider):
         """Get streamdetails for a track/radio."""
         hls_path = f"http://{self._base_url}/{item_id}.m3u8"
 
-        return StreamDetails(
+        # Keep a reference to the current `StreamDetails` object so that we can
+        # update the `stream_title` attribute as callbacks come in from the
+        # sxm-client with the channel's live data.
+        # See `_channel_updated` for where this is handled.
+        self._current_stream_details = StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
@@ -215,6 +221,8 @@ class SiriusXMProvider(MusicProvider):
             can_seek=False,
         )
 
+        return self._current_stream_details
+
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping]:
         """Browse this provider's items.
 
@@ -223,7 +231,27 @@ class SiriusXMProvider(MusicProvider):
         return [self._parse_radio(channel) for channel in self._channels]
 
     def _channel_updated(self, live_channel_raw: dict[str, Any]) -> None:
-        self.logger.debug(f"channel updated {live_channel_raw}")
+        """Handle a channel update event."""
+        live_data = XMLiveChannel.from_dict(live_channel_raw)
+
+        self.logger.debug(f"Got update for SiriusXM channel {live_data.id}")
+        current_channel = self._current_stream_details.item_id
+
+        if live_data.id != current_channel:
+            # This can happen when changing channels
+            self.logger.debug(
+                f"Received update for channel {live_data.id}, current channel is {current_channel}"
+            )
+            return
+
+        latest_cut_marker = live_data.get_latest_cut()
+
+        if latest_cut_marker:
+            latest_cut = latest_cut_marker.cut
+            title = latest_cut.title
+            artists = ", ".join([a.name for a in latest_cut.artists])
+
+            self._current_stream_details.stream_title = f"{title} - {artists}"
 
     async def _refresh_channels(self) -> bool:
         self._channels = await self._client.channels
