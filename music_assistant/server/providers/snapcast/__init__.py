@@ -40,11 +40,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.server.helpers.audio import (
-    FFMpeg,
-    get_ffmpeg_stream,
-    get_player_filter_params,
-)
+from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -568,7 +564,7 @@ class SnapCastProvider(PlayerProvider):
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
 
-    async def _delete_current_snapstream(self, stream, media):
+    async def _delete_current_snapstream(self, stream: Snapstream, media: PlayerMedia) -> None:
         with suppress(TypeError, KeyError, AttributeError):
             if media.duration < 5:
                 await asyncio.sleep(5)
