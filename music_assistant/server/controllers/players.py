@@ -555,7 +555,7 @@ class PlayerController(CoreController):
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
-        if (player := self.get(player_id) and PlayerFeature.ENQUEUE) in player.supported_features:
+        if (player := self.get(player_id)) and PlayerFeature.ENQUEUE in player.supported_features:
             player_prov = self.mass.get_provider(player.provider)
             async with self._player_throttlers[player_id]:
                 await player_prov.enqueue_next_media(player_id=player_id, media=media)
