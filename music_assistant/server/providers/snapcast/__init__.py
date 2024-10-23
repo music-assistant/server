@@ -558,7 +558,7 @@ class SnapCastProvider(PlayerProvider):
                 # we need to wait a bit for the stream status to become idle
                 # to ensure that all snapclients have consumed the audio
                 while stream.status != "idle":
-                    await asyncio.sleep(0.50)
+                    await asyncio.sleep(0.25)
                 player.state = PlayerState.IDLE
                 self.mass.players.update(player_id)
                 self._set_childs_state(player_id)
