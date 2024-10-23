@@ -1468,15 +1468,18 @@ class PlayerQueuesController(CoreController):
         )
         return queue_tracks
 
-    def _check_clear_queue(self, queue: PlayerQueue) -> None:
+    async def _check_clear_queue(self, queue: PlayerQueue) -> None:
         """Check if the queue should be cleared after the current item."""
-        if queue.state != PlayerState.IDLE:
-            return
-        if queue.next_item is not None:
-            return
-        if queue.current_index >= len(self._queue_items[queue.queue_id]) - 1:
-            self.logger.info("End of queue reached, clearing items")
-            self.clear(queue.queue_id)
+        for _ in range(5):
+            await asyncio.sleep(1)
+            if queue.state != PlayerState.IDLE:
+                return
+            if queue.next_item is not None:
+                return
+            if not (queue.current_index >= len(self._queue_items[queue.queue_id]) - 1):
+                return
+        self.logger.info("End of queue reached, clearing items")
+        self.clear(queue.queue_id)
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player

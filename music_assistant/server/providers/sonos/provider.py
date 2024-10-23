@@ -109,8 +109,10 @@ class SonosPlayerProvider(PlayerProvider):
                     sonos_player.reconnect()
                 self.mass.players.update(player_id)
             return
-        # handle new player
-        await self._setup_player(player_id, name, info)
+        # handle new player setup in a delayed task because mdns announcements
+        # can arrive in (duplicated) bursts
+        task_id = f"setup_sonos_{player_id}"
+        self.mass.call_later(5, self._setup_player(player_id, name, info), task_id=task_id)
 
     async def get_player_config_entries(
         self,

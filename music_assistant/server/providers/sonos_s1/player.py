@@ -560,7 +560,7 @@ class SonosPlayer:
             self.sync_coordinator = None
             self.group_members = group_members
             self.group_members_ids = group_members_ids
-            self.mass.players.update(self.player_id)
+            self.mass.loop.call_soon_threadsafe(self.mass.players.update, self.player_id)
 
             for joined_uid in group[1:]:
                 joined_speaker: SonosPlayer = self.sonos_prov.sonosplayers.get(joined_uid)
