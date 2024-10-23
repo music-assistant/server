@@ -412,7 +412,7 @@ class BuiltinProvider(MusicProvider):
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
         # remove items by index
         for i in sorted(positions_to_remove, reverse=True):
-            del playlist_items[i]
+            del playlist_items[i - 1]
         # store playlist file
         await self._write_playlist_file_items(prov_playlist_id, playlist_items)
         # mark last_updated on playlist object

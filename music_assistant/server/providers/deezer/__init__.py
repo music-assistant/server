@@ -409,7 +409,7 @@ class DeezerProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         playlist_track_ids = []
-        for track in await self.get_playlist_tracks(prov_playlist_id, 0, 10000):
+        for track in await self.get_playlist_tracks(prov_playlist_id, 0):
             if track.position in positions_to_remove:
                 playlist_track_ids.append(int(track.item_id))
             if len(playlist_track_ids) == len(positions_to_remove):
