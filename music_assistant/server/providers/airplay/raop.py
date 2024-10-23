@@ -282,6 +282,7 @@ class RaopStream:
 
         named_pipe = f"/tmp/raop-{self.active_remote_id}"  # noqa: S108
         self.airplay_player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
+        self.airplay_player.last_command_sent = time.time()
         await asyncio.to_thread(send_data)
 
     async def _log_watcher(self) -> None:

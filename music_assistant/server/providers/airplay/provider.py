@@ -6,6 +6,7 @@ import asyncio
 import os
 import platform
 import socket
+import time
 from random import randrange
 from typing import TYPE_CHECKING
 
@@ -537,7 +538,10 @@ class AirplayProvider(PlayerProvider):
             elif path == "/ctrl-int/1/previtem":
                 self.mass.create_task(self.mass.player_queues.previous(active_queue.queue_id))
             elif path == "/ctrl-int/1/play":
-                self.mass.create_task(self.mass.player_queues.play(active_queue.queue_id))
+                # sometimes this request is sent by a device as confirmation of a play command
+                # we ignore this if the player is already playing
+                if mass_player.state != PlayerState.PLAYING:
+                    self.mass.create_task(self.mass.player_queues.play(active_queue.queue_id))
             elif path == "/ctrl-int/1/playpause":
                 self.mass.create_task(self.mass.player_queues.play_pause(active_queue.queue_id))
             elif path == "/ctrl-int/1/stop":
@@ -554,18 +558,30 @@ class AirplayProvider(PlayerProvider):
                     )
                 )
             elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
-                self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
+                # sometimes this request is sent by a device as confirmation of a play command
+                # we ignore this if the player is already playing
+                if mass_player.state == PlayerState.PLAYING:
+                    self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
             elif "dmcp.device-volume=" in path:
                 if mass_player.device_info.manufacturer.lower() == "apple":
-                    # Apple devices only report their (new) volume level, they dont request it
+                    # Apple devices only report their previous volume level ?!
                     return
+                # This is a bit annoying as this can be either the device confirming a new volume
+                # we've sent or the device requesting a new volume itself.
+                # In case of a small rounding difference, we ignore this,
+                # to prevent an endless pingpong of volume changes
                 raop_volume = float(path.split("dmcp.device-volume=", 1)[-1])
                 volume = convert_airplay_volume(raop_volume)
-                if volume != mass_player.volume_level:
+                if (
+                    abs(mass_player.volume_level - volume) > 5
+                    or (time.time() - airplay_player.last_command_sent) < 2
+                ):
                     self.mass.create_task(self.cmd_volume_set(player_id, volume))
-                    # optimistically set the new volume to prevent bouncing around
+                else:
                     mass_player.volume_level = volume
+                    self.mass.players.update(player_id)
             elif "dmcp.volume=" in path:
+                # volume change request from device (e.g. volume buttons)
                 volume = int(path.split("dmcp.volume=", 1)[-1])
                 if volume != mass_player.volume_level:
                     self.mass.create_task(self.cmd_volume_set(player_id, volume))

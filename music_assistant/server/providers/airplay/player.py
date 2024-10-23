@@ -27,6 +27,7 @@ class AirPlayPlayer:
         self.address = address
         self.logger = prov.logger.getChild(player_id)
         self.raop_stream: RaopStream | None = None
+        self.last_command_sent = 0.0
 
     async def cmd_stop(self, update_state: bool = True) -> None:
         """Send STOP command to player."""
