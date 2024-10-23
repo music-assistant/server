@@ -47,8 +47,7 @@ class PlayerQueue(DataClassDictMixin):
     current_item: QueueItem | None = None
     next_item: QueueItem | None = None
     radio_source: list[MediaItemType] = field(default_factory=list)
-    # Use a list of media item uri's here to avoid having to store full MediaItem objects
-    enqueued_media_items: list[str] = field(default_factory=list)
+    enqueued_media_items: list[MediaItemType] = field(default_factory=list)
     flow_mode: bool = False
     resume_pos: int = 0
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
@@ -66,6 +65,7 @@ class PlayerQueue(DataClassDictMixin):
         d.pop("index_in_buffer", None)
         d.pop("flow_mode", None)
         d.pop("flow_mode_stream_log", None)
+        d.pop("enqueued_media_items", None)
         return d
 
     @classmethod
@@ -76,4 +76,5 @@ class PlayerQueue(DataClassDictMixin):
         d.pop("index_in_buffer", None)
         d.pop("flow_mode", None)
         d.pop("flow_mode_stream_log", None)
+        d.pop("enqueued_media_items", None)
         return cls.from_dict(d)

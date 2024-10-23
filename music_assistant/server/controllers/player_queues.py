@@ -334,9 +334,9 @@ class PlayerQueuesController(CoreController):
         # clear queue if needed
         if option == QueueOption.REPLACE:
             self.clear(queue_id)
-        # Clear the 'played media item' list when a new queue is requested
+        # Clear the 'enqueued media item' list when a new queue is requested
         if option not in (QueueOption.ADD, QueueOption.NEXT):
-            queue.enqueued_media_items = []
+            queue.enqueued_media_items.clear()
 
         tracks: list[MediaItemType] = []
         radio_source: list[MediaItemType] = []
@@ -353,9 +353,15 @@ class PlayerQueuesController(CoreController):
 
                 # Save requested media item to play on the queue so we can use it as a source
                 # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
-                queue.enqueued_media_items.append(media_item.uri)
-                if len(queue.enqueued_media_items) > 10:
-                    queue.enqueued_media_items.pop(0)
+                if media_item.media_type in (
+                    MediaType.TRACK,
+                    MediaType.ALBUM,
+                    MediaType.PLAYLIST,
+                    MediaType.ARTIST,
+                ):
+                    queue.enqueued_media_items.append(media_item)
+                    if len(queue.enqueued_media_items) > 10:
+                        queue.enqueued_media_items.pop(0)
 
                 # handle default enqueue option if needed
                 if option is None:
@@ -1043,20 +1049,25 @@ class PlayerQueuesController(CoreController):
             self.clear(queue_id)
 
         # watch dynamic radio items refill if needed
-        if "current_index" in changed_keys:
+        elif "current_index" in changed_keys:
+            if (
+                queue.dont_stop_the_music_enabled
+                and queue.enqueued_media_items
+                and queue.current_index is not None
+                and (queue.items - queue.current_index) <= 1
+            ):
+                # We have received the last item in the queue and Don't stop the music is enabled
+                # set the played media item(s) as radio items (which will refill the queue)
+                # note that this will fail if there are no media items for which we have
+                # a dynamic radio source.
+                queue.radio_source = queue.enqueued_media_items
             if (
                 queue.radio_source
                 and queue.current_index is not None
                 and (queue.items - queue.current_index) < 5
             ):
-                self.mass.create_task(self._fill_radio_tracks(queue_id))
-            elif (
-                # We have received the last item in the queue and Don't stop the music is enabled
-                queue.dont_stop_the_music_enabled
-                and queue.current_index is not None
-                and (queue.items - queue.current_index) <= 1
-            ):
-                self.mass.create_task(self._schedule_dont_stop_the_music(queue))
+                task_id = f"fill_radio_tracks_{queue_id}"
+                self.mass.call_later(5, self._fill_radio_tracks(queue_id), task_id=task_id)
 
     def on_player_remove(self, player_id: str) -> None:
         """Call when a player is removed from the registry."""
@@ -1309,11 +1320,6 @@ class PlayerQueuesController(CoreController):
 
     async def _fill_radio_tracks(self, queue_id: str) -> None:
         """Fill a Queue with (additional) Radio tracks."""
-        # we need to debounce, if we're called twice within a short timeframe
-        debounce_key = f"fill_radio_{queue_id}"
-        if getattr(self, debounce_key, None):
-            return
-        setattr(self, debounce_key, True)
         tracks = await self._get_radio_tracks(queue_id=queue_id, is_initial_radio_mode=False)
         # fill queue - filter out unavailable items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
@@ -1322,8 +1328,6 @@ class PlayerQueuesController(CoreController):
             queue_items,
             insert_at_index=len(self._queue_items[queue_id]) + 1,
         )
-        await asyncio.sleep(5)
-        setattr(self, debounce_key, None)
 
     async def _enqueue_next(self, queue: PlayerQueue, current_index: int | str) -> None:
         """Enqueue the next item in the queue."""
@@ -1447,11 +1451,13 @@ class PlayerQueuesController(CoreController):
             in_library_only=album_items_conf == "library_tracks",
         )
 
-    def _get_flow_queue_stream_index(self, queue: PlayerQueue, player: Player) -> tuple[int, int]:
+    def _get_flow_queue_stream_index(
+        self, queue: PlayerQueue, player: Player
+    ) -> tuple[int | None, int]:
         """Calculate current queue index and current track elapsed time when flow mode is active."""
         elapsed_time_queue_total = player.corrected_elapsed_time or 0
         if queue.current_index is None:
-            return 0, elapsed_time_queue_total
+            return None, elapsed_time_queue_total
 
         # For each track that has been streamed/buffered to the player,
         # a playlog entry will be created with the queue item id
@@ -1503,10 +1509,3 @@ class PlayerQueuesController(CoreController):
             if self.get_item(queue_id, current_item_id):
                 return current_item_id
         return None
-
-    async def _schedule_dont_stop_the_music(self, queue: PlayerQueue):
-        """Auto turn on Radio Mode based on enqueued Media Items."""
-        queue.radio_source = [
-            await self.mass.music.get_item_by_uri(uri) for uri in queue.enqueued_media_items
-        ]
-        await self._fill_radio_tracks(queue.queue_id)
