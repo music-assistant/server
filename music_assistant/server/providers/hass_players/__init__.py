@@ -339,6 +339,7 @@ class HomeAssistantPlayers(PlayerProvider):
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the syncgroup master or group player.
         """
+        # NOTE: not in use yet, as we do not support syncgroups in MA for HA players
         await self.hass_prov.hass.call_service(
             domain="media_player",
             service="join",
@@ -353,6 +354,7 @@ class HomeAssistantPlayers(PlayerProvider):
 
             - player_id: player_id of the player to handle the command.
         """
+        # NOTE: not in use yet, as we do not support syncgroups in MA for HA players
         await self.hass_prov.hass.call_service(
             domain="media_player",
             service="unjoin",
@@ -373,8 +375,6 @@ class HomeAssistantPlayers(PlayerProvider):
             state["attributes"]["supported_features"]
         )
         supported_features: list[PlayerFeature] = []
-        if MediaPlayerEntityFeature.GROUPING in hass_supported_features:
-            supported_features.append(PlayerFeature.SYNC)
         if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
             supported_features.append(PlayerFeature.PAUSE)
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
