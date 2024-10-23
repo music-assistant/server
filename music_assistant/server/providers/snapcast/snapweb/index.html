@@ -1,23 +1,24 @@
-<!DOCTYPE html>
-<html lang="en">
+<html>
 
 <head>
-  <meta charset="utf-8" />
-  <link rel="icon" href="./favicon.ico" sizes="48x48">
-  <link rel="icon" href="./logo.svg" sizes="any" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="./apple-touch-icon-180x180.png">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#000000" />
-  <meta name="author" content="Johannes M. Pohl" />
-  <meta name="description" content="Snapcast web client" />
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#455A64">
+  <meta name="author" content="Johannes M. Pohl">
+  <meta name="version" content="0.5.0">
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="shortcut icon" href="favicon.ico" type="image/x-icon">
   <title>Snapweb</title>
-  <script type="module" crossorigin src="./assets/index-BYMjFABP.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-BDBx6C_I.css">
-<link rel="manifest" href="./manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="./registerSW.js"></script></head>
+  <script src="3rd-party/libflac.js"></script>
+  <script src="config.js"></script>
+  <script src="snapstream.js"></script>
+  <script src="snapcontrol.js"></script>
+</head>
 
 <body>
-  <noscript>You need to enable JavaScript to run this app.</noscript>
-  <div id="root"></div>
+  <div id="show"></div>
 </body>
 
 </html>
