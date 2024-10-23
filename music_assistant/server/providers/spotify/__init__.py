@@ -245,6 +245,7 @@ class SpotifyProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self.config_dir = os.path.join(self.mass.storage_path, self.instance_id)
         self.throttler = ThrottlerManager(rate_limit=1, period=2)
         if self.config.get_value(CONF_CLIENT_ID):
             # loosen the throttler a bit when a custom client id is used
@@ -558,42 +559,42 @@ class SpotifyProvider(MusicProvider):
         librespot = await self.get_librespot_binary()
         spotify_uri = f"spotify://track:{streamdetails.item_id}"
         self.logger.log(VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot")
-        for attempt in range(1, 4):
-            auth_info = await self.login(force_refresh=attempt == 2)
-            args = [
-                librespot,
-                "-c",
-                CACHE_DIR,
-                "-M",
-                "256M",
-                "--passthrough",
-                "-b",
-                "320",
-                "--backend",
-                "pipe",
-                "--single-track",
-                spotify_uri,
-                "--access-token",
-                auth_info["access_token"],
-            ]
-            if seek_position:
-                args += ["--start-position", str(int(seek_position))]
-            chunk_size = get_chunksize(streamdetails.audio_format)
-            stderr = None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False
-            async with AsyncProcess(
-                args,
-                stdout=True,
-                stderr=stderr,
-                name="librespot",
-            ) as librespot_proc:
-                async for chunk in librespot_proc.iter_any(chunk_size):
-                    yield chunk
-            if librespot_proc.returncode == 0:
-                return
-            self.logger.debug(
-                "librespot failed to stream track, retrying... (attempt %s/3)", attempt
-            )
-        raise AudioError(f"Failed to stream track {spotify_uri} after 3 attempts")
+        args = [
+            librespot,
+            "--cache",
+            CACHE_DIR,
+            "--system-cache",
+            self.config_dir,
+            "--cache-size-limit",
+            "1G",
+            "--passthrough",
+            "--bitrate",
+            "320",
+            "--backend",
+            "pipe",
+            "--single-track",
+            spotify_uri,
+            "--disable-discovery",
+            "--dither",
+            "none",
+        ]
+        if seek_position:
+            args += ["--start-position", str(int(seek_position))]
+        chunk_size = get_chunksize(streamdetails.audio_format)
+        stderr = None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False
+        bytes_received = 0
+        async with AsyncProcess(
+            args,
+            stdout=True,
+            stderr=stderr,
+            name="librespot",
+        ) as librespot_proc:
+            async for chunk in librespot_proc.iter_any(chunk_size):
+                yield chunk
+                bytes_received += len(chunk)
+
+        if librespot_proc.returncode != 0 or bytes_received == 0:
+            raise AudioError(f"Failed to stream track {spotify_uri}")
 
     def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
@@ -823,6 +824,33 @@ class SpotifyProvider(MusicProvider):
         self.mass.config.set_raw_provider_config_value(
             self.instance_id, CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True
         )
+        # check if librespot still has valid auth
+        librespot = await self.get_librespot_binary()
+        args = [
+            librespot,
+            "--system-cache",
+            self.config_dir,
+            "--check-auth",
+        ]
+        ret_code, stdout = await check_output(*args)
+        if ret_code != 0:
+            # cached librespot creds are invalid, re-authenticate
+            # we can use the check-token option to send a new token to librespot
+            # librespot will then get its own token from spotify (somehow) and cache that.
+            args = [
+                librespot,
+                "--system-cache",
+                self.config_dir,
+                "--check-auth",
+                "--access-token",
+                auth_info["access_token"],
+            ]
+            ret_code, stdout = await check_output(*args)
+            if ret_code != 0:
+                # this should not happen, but guard it just in case
+                err = stdout.decode("utf-8").strip()
+                raise LoginFailed(f"Failed to verify credentials on Librespot: {err}")
+
         # get logged-in user info
         if not self._sp_user:
             self._sp_user = userinfo = await self._get_data("me", auth_info=auth_info)
