@@ -559,11 +559,16 @@ class SnapCastProvider(PlayerProvider):
                 self.mass.players.update(player_id)
                 self._set_childs_state(player_id)
             finally:
-                with suppress(TypeError, KeyError, AttributeError):
-                    await self._snapserver.stream_remove_stream(stream.identifier)
+                await self._delete_current_snapstream(stream, media)
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
+
+    async def _delete_current_snapstream(self, stream: Snapstream, media: PlayerMedia) -> None:
+        with suppress(TypeError, KeyError, AttributeError):
+            if media.duration < 5:
+                await asyncio.sleep(5)
+            await self._snapserver.stream_remove_stream(stream.identifier)
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
         """Get snapcast group for given player_id."""
@@ -628,7 +633,9 @@ class SnapCastProvider(PlayerProvider):
         """Create new stream on snapcast server named default case not exist."""
         all_streams = {stream.name for stream in self._snapserver.streams}
         if "default" not in all_streams:
-            await self._snapserver.stream_add_stream("pipe:///tmp/snapfifo?name=default")
+            await self._snapserver.stream_add_stream(
+                "pipe:///tmp/snapfifo?name=default&sampleformat=48000:16:2"
+            )
 
     def _set_childs_state(self, player_id: str) -> None:
         """Set the state of the child`s of the player."""
