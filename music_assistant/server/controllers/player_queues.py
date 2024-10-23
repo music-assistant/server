@@ -43,7 +43,12 @@ from music_assistant.common.models.errors import (
     QueueEmpty,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import AudioFormat, MediaItemType, media_from_dict
+from music_assistant.common.models.media_items import (
+    AudioFormat,
+    MediaItemType,
+    Playlist,
+    media_from_dict,
+)
 from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
@@ -379,31 +384,7 @@ class PlayerQueuesController(CoreController):
                 if radio_mode:
                     radio_source.append(media_item)
                 elif media_item.media_type == MediaType.PLAYLIST:
-                    async for playlist_track in self.mass.music.playlists.tracks(
-                        media_item.item_id, media_item.provider
-                    ):
-                        if not playlist_track.available:
-                            continue
-                        # allow first track to start playing immediately while we still
-                        # work out the rest of the queue
-                        if (
-                            not queue.shuffle_enabled
-                            and not first_track_seen
-                            and option == QueueOption.REPLACE
-                            and not start_item
-                        ):
-                            first_track_seen = True
-                            self.load(
-                                queue_id,
-                                queue_items=[QueueItem.from_media_item(queue_id, playlist_track)],
-                                keep_remaining=False,
-                                keep_played=False,
-                            )
-                            await self.play_index(queue_id, 0)
-                            # add the remaining items
-                            option = QueueOption.ADD
-                        else:
-                            tracks.append(playlist_track)
+                    tracks += await self.get_playlist_tracks(media_item, start_item)
                     self.mass.create_task(
                         self.mass.music.mark_item_played(
                             media_item.media_type, media_item.item_id, media_item.provider
@@ -417,7 +398,7 @@ class PlayerQueuesController(CoreController):
                         )
                     )
                 elif media_item.media_type == MediaType.ALBUM:
-                    tracks += await self.get_album_tracks(media_item)
+                    tracks += await self.get_album_tracks(media_item, start_item)
                     self.mass.create_task(
                         self.mass.music.mark_item_played(
                             media_item.media_type, media_item.item_id, media_item.provider
@@ -426,17 +407,6 @@ class PlayerQueuesController(CoreController):
                 else:
                     # single track or radio item
                     tracks += [media_item]
-
-                # handle optional start item (play playlist/album from here feature)
-                if start_item is not None:
-                    prev_items = []
-                    next_items = []
-                    for track in tracks:
-                        if next_items or track.item_id == start_item:
-                            next_items.append(track)
-                        else:
-                            prev_items.append(track)
-                    tracks = next_items + prev_items
 
             except MusicAssistantError as err:
                 # invalid MA uri or item not found error
@@ -1328,22 +1298,53 @@ class PlayerQueuesController(CoreController):
 
         return []
 
-    async def get_album_tracks(self, album: Album) -> list[Track]:
+    async def get_album_tracks(self, album: Album, start_item: str | None) -> list[Track]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
             CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
             ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
         )
+        result: list[Track] = []
+        start_item_found = False
         self.logger.debug(
             "Fetching tracks to play for album %s",
             album.name,
         )
-        return await self.mass.music.albums.tracks(
+        for album_track in await self.mass.music.albums.tracks(
             item_id=album.item_id,
             provider_instance_id_or_domain=album.provider,
             in_library_only=album_items_conf == "library_tracks",
+        ):
+            if not album_track.available:
+                continue
+            if start_item in (album_track.item_id, album_track.uri):
+                start_item_found = True
+            if start_item is not None and not start_item_found:
+                continue
+            result.append(album_track)
+        return result
+
+    async def get_playlist_tracks(self, playlist: Playlist, start_item: str | None) -> list[Track]:
+        """Return tracks for given playlist, based on user preference."""
+        result: list[Track] = []
+        start_item_found = False
+        self.logger.debug(
+            "Fetching tracks to play for playlist %s",
+            playlist.name,
         )
+        # TODO: Handle other sort options etc.
+        async for playlist_track in self.mass.music.playlists.tracks(
+            playlist.item_id, playlist.provider
+        ):
+            if not playlist_track.available:
+                continue
+            if start_item in (playlist_track.item_id, playlist_track.uri):
+                start_item_found = True
+            if start_item is not None and not start_item_found:
+                continue
+            result.append(playlist_track)
+        return result
 
     def _get_next_index(
         self, queue_id: str, cur_index: int | None, is_skip: bool = False, allow_repeat: bool = True
