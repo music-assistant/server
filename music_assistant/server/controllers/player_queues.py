@@ -1041,7 +1041,7 @@ class PlayerQueuesController(CoreController):
                 and (queue.items - queue.current_index) < 5
             ):
                 task_id = f"fill_radio_tracks_{queue_id}"
-                self.mass.call_later(5, self._fill_radio_tracks(queue_id), task_id=task_id)
+                self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
 
     def on_player_remove(self, player_id: str) -> None:
         """Call when a player is removed from the registry."""

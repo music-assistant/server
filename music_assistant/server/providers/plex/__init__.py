@@ -358,8 +358,7 @@ class PlexProvider(MusicProvider):
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
                     # token invalid, invalidate the config
-                    self.mass.call_later(
-                        0,
+                    self.mass.create_task(
                         self.mass.config.remove_provider_config_value(
                             self.instance_id, CONF_AUTH_TOKEN
                         ),

@@ -838,6 +838,16 @@ class PlayerController(CoreController):
         )
         self._prev_states[player_id] = new_state
 
+        if "available" in changed_values and not player.available:
+            # ensure a player that became available is no longer synced
+            if player.synced_to:
+                self.mass.create_task(self.cmd_unsync(player_id))
+            if player.group_childs:
+                for group_child_id in player.group_childs:
+                    self.mass.create_task(self.cmd_power(group_child_id))
+            if player.active_group:
+                self.mass.create_task(self.cmd_power(player.active_group, False))
+
         if not player.enabled and not force_update:
             # ignore updates for disabled players
             return
@@ -1049,7 +1059,7 @@ class PlayerController(CoreController):
             player.available = False
         # if the player was playing, restart playback
         elif not player_disabled and player.state == PlayerState.PLAYING:
-            self.mass.call_later(1, self.mass.player_queues.resume(player.active_source))
+            self.mass.call_later(1, self.mass.player_queues.resume, player.active_source)
         # check for group memberships that need to be updated
         if player_disabled and player.active_group and player_provider:
             # try to remove from the group

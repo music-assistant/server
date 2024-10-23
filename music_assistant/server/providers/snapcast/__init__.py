@@ -727,4 +727,4 @@ class SnapCastProvider(PlayerProvider):
             str(exc),
         )
         # schedule a reload of the provider
-        self.mass.call_later(5, self.mass.load_provider(self.instance_id, allow_retry=True))
+        self.mass.call_later(5, self.mass.load_provider, self.instance_id, allow_retry=True)

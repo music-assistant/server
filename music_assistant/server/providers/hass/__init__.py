@@ -203,4 +203,4 @@ class HomeAssistant(PluginProvider):
             self.logger.warning("Connection to HA lost due to error: %s", err)
         self.logger.info("Connection to HA lost. Connection will be automatically retried later.")
         # schedule a reload of the provider
-        self.mass.call_later(5, self.mass.load_provider(self.instance_id, allow_retry=True))
+        self.mass.call_later(5, self.mass.load_provider, self.instance_id, allow_retry=True)

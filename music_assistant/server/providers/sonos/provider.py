@@ -112,7 +112,7 @@ class SonosPlayerProvider(PlayerProvider):
         # handle new player setup in a delayed task because mdns announcements
         # can arrive in (duplicated) bursts
         task_id = f"setup_sonos_{player_id}"
-        self.mass.call_later(5, self._setup_player(player_id, name, info), task_id=task_id)
+        self.mass.call_later(5, self._setup_player, player_id, name, info, task_id=task_id)
 
     async def get_player_config_entries(
         self,
@@ -237,7 +237,7 @@ class SonosPlayerProvider(PlayerProvider):
                 await self.mass.players.cmd_unsync_many(group_childs)
             await self.mass.players.play_media(airplay.player_id, media)
             if group_childs:
-                self.mass.call_later(5, self.cmd_sync_many(player_id, group_childs))
+                self.mass.call_later(5, self.cmd_sync_many, player_id, group_childs)
             return
 
         if media.queue_id and media.queue_id.startswith("ugp_"):
