@@ -931,7 +931,7 @@ class SlimprotoProvider(PlayerProvider):
         fmt = request.query.get("fmt")
         child_player_id = request.query.get("child_player_id")
 
-        if not (player := self.mass.players.get(player_id)):
+        if not self.mass.players.get(player_id):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
 
         if not (child_player := self.mass.players.get(child_player_id)):
@@ -955,8 +955,7 @@ class SlimprotoProvider(PlayerProvider):
 
         # all checks passed, start streaming!
         self.logger.debug(
-            "Start serving multi-client flow audio stream for player %s to %s",
-            player.display_name,
+            "Start serving multi-client flow audio stream to %s",
             child_player.display_name,
         )
 

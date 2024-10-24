@@ -836,7 +836,6 @@ class PlayerController(CoreController):
             prev_state,
             new_state,
             ignore_keys=[
-                "elapsed_time",
                 "elapsed_time_last_updated",
                 "seq_no",
                 "last_poll",
@@ -848,13 +847,15 @@ class PlayerController(CoreController):
             # ignore updates for disabled players
             return
 
-        # always signal update to the playerqueue
-        self.mass.player_queues.on_player_update(player, changed_values)
-
         if len(changed_values) == 0 and not force_update:
             return
 
-        self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
+        # signal update to the playerqueue
+        self.mass.player_queues.on_player_update(player, changed_values)
+
+        if changed_values != {"elapsed_time"} or force_update:
+            # ignore elapsed_time only changes
+            self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
         if skip_forward and not force_update:
             return
@@ -1226,9 +1227,7 @@ class PlayerController(CoreController):
                 player_id = player.player_id
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
-                player_playing = (
-                    player.active_source == player.player_id and player.state == PlayerState.PLAYING
-                )
+                player_playing = player.state == PlayerState.PLAYING
                 if player_playing:
                     self.mass.loop.call_soon(self.update, player_id)
                 # Poll player;
