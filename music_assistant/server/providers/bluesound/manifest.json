@@ -5,6 +5,6 @@
     "description": "BluOS Player provider for Music Assistant.",
     "codeowners": ["@cyanogenbot"],
     "requirements": ["pyblu==1.0.4"],
-    "documentation": "Link to the documentation on the music-assistant.io helppage (may be added later).",
+    "documentation": "https://music-assistant.io/player-support/bluesound/",
     "mdns_discovery": ["_musc._tcp.local."]
 }
