@@ -77,8 +77,6 @@ CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
 CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
 CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_option_radio"
 CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
-CONF_DEFAULT_DONT_STOP_THE_MUSIC = "default_dont_stop_the_music"
-DONT_STOP_THE_MUSIC_DEFAULT_VALUE = True
 RADIO_TRACK_MAX_DURATION_SECS = 20 * 60  # 20 minutes
 
 
@@ -208,13 +206,6 @@ class PlayerQueuesController(CoreController):
                 label="Default enqueue option for Playlist item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
-            ),
-            ConfigEntry(
-                key=CONF_DEFAULT_DONT_STOP_THE_MUSIC,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=DONT_STOP_THE_MUSIC_DEFAULT_VALUE,
-                label="Don't stop the music",
-                description="Whether to automatically play similar music at the end of a queue.",
             ),
         )
 
@@ -860,22 +851,17 @@ class PlayerQueuesController(CoreController):
                     str(err),
                 )
         if queue is None:
+            # enable dont stop the music by default if we have providers that support similar tracks
             providers_available_with_similar_tracks = any(
                 ProviderFeature.SIMILAR_TRACKS in provider.supported_features
                 for provider in self.mass.music.providers
-            )
-            dont_stop_the_music_enabled = self.mass.config.get_raw_core_config_value(
-                self.domain,
-                CONF_DEFAULT_DONT_STOP_THE_MUSIC,
-                # Ensure there is a provider that supports dynamic tracks
-                DONT_STOP_THE_MUSIC_DEFAULT_VALUE and providers_available_with_similar_tracks,
             )
             queue = PlayerQueue(
                 queue_id=queue_id,
                 active=False,
                 display_name=player.display_name,
                 available=player.available,
-                dont_stop_the_music_enabled=dont_stop_the_music_enabled,
+                dont_stop_the_music_enabled=providers_available_with_similar_tracks,
                 items=0,
             )
             queue_items = []
