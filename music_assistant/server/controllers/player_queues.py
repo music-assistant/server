@@ -275,6 +275,14 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/dont_stop_the_music")
     def set_dont_stop_the_music(self, queue_id: str, dont_stop_the_music_enabled: bool) -> None:
         """Configure Don't stop the music setting on the queue."""
+        providers_available_with_similar_tracks = any(
+            ProviderFeature.SIMILAR_TRACKS in provider.supported_features
+            for provider in self.mass.music.providers
+        )
+        if dont_stop_the_music_enabled and not providers_available_with_similar_tracks:
+            raise UnsupportedFeaturedException(
+                "Don't stop the music is not supported by any of the available music providers"
+            )
         queue = self._queues[queue_id]
         queue.dont_stop_the_music_enabled = dont_stop_the_music_enabled
         self.signal_update(queue_id=queue_id)
@@ -848,17 +856,12 @@ class PlayerQueuesController(CoreController):
                     str(err),
                 )
         if queue is None:
-            # enable dont stop the music by default if we have providers that support similar tracks
-            providers_available_with_similar_tracks = any(
-                ProviderFeature.SIMILAR_TRACKS in provider.supported_features
-                for provider in self.mass.music.providers
-            )
             queue = PlayerQueue(
                 queue_id=queue_id,
                 active=False,
                 display_name=player.display_name,
                 available=player.available,
-                dont_stop_the_music_enabled=providers_available_with_similar_tracks,
+                dont_stop_the_music_enabled=False,
                 items=0,
             )
             queue_items = []
@@ -1024,7 +1027,7 @@ class PlayerQueuesController(CoreController):
             queue.next_track_enqueued = None
 
         # watch dynamic radio items refill if needed
-        elif "current_index" in changed_keys:
+        if "current_index" in changed_keys:
             if (
                 queue.dont_stop_the_music_enabled
                 and queue.enqueued_media_items
