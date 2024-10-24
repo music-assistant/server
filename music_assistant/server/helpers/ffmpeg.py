@@ -17,6 +17,7 @@ from .process import AsyncProcess
 from .util import TimedAsyncGenerator, close_async_generator
 
 LOGGER = logging.getLogger("ffmpeg")
+MINIMAL_FFMPEG_VERSION = 6
 
 
 class FFMpeg(AsyncProcess):
@@ -175,7 +176,7 @@ async def get_ffmpeg_stream(
             yield chunk
 
 
-def get_ffmpeg_args(
+def get_ffmpeg_args(  # noqa: PLR0915
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str],
@@ -199,6 +200,12 @@ def get_ffmpeg_args(
         )
 
     major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
+    if major_version < MINIMAL_FFMPEG_VERSION:
+        msg = (
+            f"FFmpeg version {version} is not supported. "
+            f"Minimal version required is {MINIMAL_FFMPEG_VERSION}."
+        )
+        raise AudioError(msg)
 
     # generic args
     generic_args = [
@@ -227,18 +234,14 @@ def get_ffmpeg_args(
             # If set then even streamed/non seekable streams will be reconnected on errors.
             "-reconnect_streamed",
             "1",
+            # Reconnect automatically in case of TCP/TLS errors during connect.
+            "-reconnect_on_network_error",
+            "1",
+            # A comma separated list of HTTP status codes to reconnect on.
+            # The list can include specific status codes (e.g. 503) or the strings 4xx / 5xx.
+            "-reconnect_on_http_error",
+            "5xx,4xx",
         ]
-        if major_version > 4:
-            # these options are only supported in ffmpeg > 5
-            input_args += [
-                # Reconnect automatically in case of TCP/TLS errors during connect.
-                "-reconnect_on_network_error",
-                "1",
-                # A comma separated list of HTTP status codes to reconnect on.
-                # The list can include specific status codes (e.g. 503) or the strings 4xx / 5xx.
-                "-reconnect_on_http_error",
-                "5xx,4xx",
-            ]
     if input_format.content_type.is_pcm():
         input_args += [
             "-ac",

@@ -1129,6 +1129,8 @@ class PlayerQueuesController(CoreController):
         if not queue:
             msg = f"PlayerQueue {queue_id} is not available"
             raise PlayerUnavailableError(msg)
+        # store the index of the item that is currently (being) loaded in the buffer
+        # which helps us a bit to determine how far the player has buffered ahead
         queue.index_in_buffer = self.index_by_id(queue_id, item_id)
         if queue.flow_mode:
             return  # nothing to do when flow mode is active

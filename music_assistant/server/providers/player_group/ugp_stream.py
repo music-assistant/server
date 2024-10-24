@@ -83,9 +83,8 @@ class UGPStream:
             audio_input=self.audio_source,
             input_format=self.input_format,
             output_format=self.output_format,
-            # enable realtime to prevent too much buffering ahead
-            # TODO: enable initial burst once we have a newer ffmpeg version
-            extra_input_args=["-re"],
+            # we don't allow the player to buffer too much ahead so we use readrate limiting
+            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "10"],
         ):
             await asyncio.gather(
                 *[sub(chunk) for sub in self.subscribers],
