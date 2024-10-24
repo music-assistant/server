@@ -51,11 +51,19 @@ class PlayerQueue(DataClassDictMixin):
     flow_mode: bool = False
     resume_pos: int = 0
     flow_mode_stream_log: list[PlayLogEntry] = field(default_factory=list)
+    next_track_enqueued: str | None = None
 
     @property
     def corrected_elapsed_time(self) -> float:
         """Return the corrected/realtime elapsed time."""
         return self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
+
+    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
+        """Execute action(s) on serialization."""
+        d.pop("flow_mode_stream_log", None)
+        d.pop("enqueued_media_items", None)
+        d.pop("next_track_enqueued", None)
+        return d
 
     def to_cache(self) -> dict[str, Any]:
         """Return the dict that is suitable for storing into the cache db."""
@@ -64,8 +72,6 @@ class PlayerQueue(DataClassDictMixin):
         d.pop("next_item", None)
         d.pop("index_in_buffer", None)
         d.pop("flow_mode", None)
-        d.pop("flow_mode_stream_log", None)
-        d.pop("enqueued_media_items", None)
         return d
 
     @classmethod
@@ -75,6 +81,7 @@ class PlayerQueue(DataClassDictMixin):
         d.pop("next_item", None)
         d.pop("index_in_buffer", None)
         d.pop("flow_mode", None)
-        d.pop("flow_mode_stream_log", None)
         d.pop("enqueued_media_items", None)
+        d.pop("next_track_enqueued", None)
+        d.pop("flow_mode_stream_log", None)
         return cls.from_dict(d)
