@@ -538,13 +538,8 @@ class SpotifyProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        # fetch full track details
-        # this will also check if the track is available for streaming
-        # and use spotify's track linking feature to serve a substitute track
-        # if the original track is not available
-        track = await self.get_track(item_id)
         return StreamDetails(
-            item_id=track.item_id,
+            item_id=item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=ContentType.OGG,
@@ -906,7 +901,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.1)
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.05)
 
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
@@ -933,7 +928,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.1)
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.05)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
@@ -958,7 +953,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.1)
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.05)
 
             # handle temporary server error
             if response.status in (502, 503):
@@ -984,7 +979,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.1)
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=0.05)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)

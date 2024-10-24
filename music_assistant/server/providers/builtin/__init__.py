@@ -40,7 +40,7 @@ from music_assistant.common.models.media_items import (
     UniqueList,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
+from music_assistant.constants import MASS_LOGO, RESOURCES_DIR, VARIOUS_ARTISTS_FANART
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -142,6 +142,19 @@ class BuiltinProvider(MusicProvider):
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
         await super().loaded_in_mass()
+        # migrate old image path
+        # TODO: remove this after 2.3+ release
+        old_path = (
+            "/usr/local/lib/python3.12/site-packages/music_assistant/server/helpers/resources"
+        )
+        new_path = str(RESOURCES_DIR)
+        query = (
+            "UPDATE playlists SET metadata = "
+            f"REPLACE (metadata, '{old_path}', '{new_path}') "
+            f"WHERE playlists.metadata LIKE '%{old_path}%'"
+        )
+        await self.mass.music.database.execute(query)
+        await self.mass.music.database.commit()
 
     @property
     def is_streaming_provider(self) -> bool:
