@@ -153,8 +153,9 @@ class BuiltinProvider(MusicProvider):
             f"REPLACE (metadata, '{old_path}', '{new_path}') "
             f"WHERE playlists.metadata LIKE '%{old_path}%'"
         )
-        await self.mass.music.database.execute(query)
-        await self.mass.music.database.commit()
+        if self.mass.music.database:
+            await self.mass.music.database.execute(query)
+            await self.mass.music.database.commit()
 
     @property
     def is_streaming_provider(self) -> bool:
