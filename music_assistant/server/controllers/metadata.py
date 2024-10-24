@@ -263,7 +263,6 @@ class MetaDataController(CoreController):
 
         Usually this is triggered by the music controller after finishing a library sync.
         """
-        return
         if self._scanner_task and not self._scanner_task.done():
             # already running
             return
