@@ -511,6 +511,13 @@ class PlayerGroupProvider(PlayerProvider):
         if 'needs_poll' is set to True in the player object.
         """
         if group_player := self.mass.players.get(player_id):
+            # dynamically change the poll interval
+            if group_player.state == PlayerState.PLAYING:
+                group_player.poll_interval = 5
+            elif group_player.powered:
+                group_player.poll_interval = 20
+            else:
+                group_player.poll_interval = 60
             self._update_attributes(group_player)
 
     async def create_group(self, group_type: str, name: str, members: list[str]) -> Player:
@@ -682,6 +689,8 @@ class PlayerGroupProvider(PlayerProvider):
             supported_features=tuple(player_features),
             group_childs=set(members),
             active_source=group_player_id,
+            needs_poll=True,
+            poll_interval=5,
         )
 
         await self.mass.players.register_or_update(player)

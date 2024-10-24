@@ -859,6 +859,10 @@ class PlayerController(CoreController):
         if skip_forward and not force_update:
             return
 
+        # handle player becoming unavailable
+        if "available" in changed_values and not player.available:
+            self._handle_player_unavailable(player)
+
         # update/signal group player(s) child's when group updates
         for child_player in self.iter_group_members(player, exclude_self=True):
             self.update(child_player.player_id, skip_forward=True)
@@ -1071,6 +1075,27 @@ class PlayerController(CoreController):
         if active_players:
             group_volume = group_volume / active_players
         return int(group_volume)
+
+    def _handle_player_unavailable(self, player: Player) -> None:
+        """Handle a player becoming unavailable."""
+        if player.synced_to:
+            self.mass.create_task(self.cmd_unsync(player.player_id))
+            # also set this optimistically because the above command will most likely fail
+            player.synced_to = None
+            return
+        for group_child_id in player.group_childs:
+            if group_child_id == player.player_id:
+                continue
+            if child_player := self.get(group_child_id):
+                self.mass.create_task(self.cmd_power(group_child_id, False, True))
+                # also set this optimistically because the above command will most likely fail
+                child_player.synced_to = None
+            player.group_childs = set()
+        if player.active_group and (group_player := self.get(player.active_group)):
+            # remove player from group if its part of a group
+            group_player = self.get(player.active_group)
+            if player.player_id in group_player.group_childs:
+                group_player.group_childs.remove(player.player_id)
 
     async def _play_announcement(
         self,
