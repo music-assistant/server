@@ -36,7 +36,7 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     SearchResults,
 )
-from music_assistant.common.models.provider import SyncTask
+from music_assistant.common.models.provider import ProviderInstance, SyncTask
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
@@ -192,7 +192,7 @@ class MusicController(CoreController):
         for provider in self.providers:
             if provider.instance_id not in providers:
                 continue
-            self._start_provider_sync(provider.instance_id, media_types)
+            self._start_provider_sync(provider, media_types)
 
     @api_command("music/synctasks")
     def get_running_sync_tasks(self) -> list[SyncTask]:
@@ -794,22 +794,20 @@ class MusicController(CoreController):
         return instances
 
     def _start_provider_sync(
-        self, provider_instance: str, media_types: tuple[MediaType, ...]
+        self, provider: ProviderInstance, media_types: tuple[MediaType, ...]
     ) -> None:
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
         for sync_task in self.in_progress_syncs:
-            if sync_task.provider_instance != provider_instance:
+            if sync_task.provider_instance != provider.instance_id:
                 continue
             for media_type in media_types:
                 if media_type in sync_task.media_types:
                     self.logger.debug(
                         "Skip sync task for %s because another task is already in progress",
-                        provider_instance,
+                        provider.name,
                     )
                     return
-
-        provider = self.mass.get_provider(provider_instance)
 
         async def run_sync() -> None:
             # Wrap the provider sync into a lock to prevent
@@ -818,7 +816,7 @@ class MusicController(CoreController):
                 await provider.sync_library(media_types)
             # precache playlist tracks
             if MediaType.PLAYLIST in media_types:
-                for playlist in await self.playlists.library_items(provider=provider_instance):
+                for playlist in await self.playlists.library_items(provider=provider.instance_id):
                     async for _ in self.playlists.tracks(playlist.item_id, playlist.provider):
                         pass
 

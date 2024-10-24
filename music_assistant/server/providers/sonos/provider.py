@@ -29,6 +29,7 @@ from music_assistant.common.models.enums import ConfigEntryType, ContentType, Pr
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.player import DeviceInfo, PlayerMedia
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
+from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .const import CONF_AIRPLAY_MODE
@@ -296,7 +297,12 @@ class SonosPlayerProvider(PlayerProvider):
         await sonos_player.client.player.play_audio_clip(
             announcement.uri, volume_level, name="Announcement"
         )
-        # TODO: Wait until the announcement is finished playing
+        # Wait until the announcement is finished playing
+        # This is helpful for people who want to play announcements in a sequence
+        # yeah we can also setup a subscription on the sonos player for this, but this is easier
+        media_info = await parse_tags(announcement.uri)
+        duration = media_info.duration or 10
+        await asyncio.sleep(duration)
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""

@@ -838,16 +838,6 @@ class PlayerController(CoreController):
         )
         self._prev_states[player_id] = new_state
 
-        if "available" in changed_values and not player.available:
-            # ensure a player that became available is no longer synced
-            if player.synced_to:
-                self.mass.create_task(self.cmd_unsync(player_id))
-            if player.group_childs:
-                for group_child_id in player.group_childs:
-                    self.mass.create_task(self.cmd_power(group_child_id))
-            if player.active_group:
-                self.mass.create_task(self.cmd_power(player.active_group, False))
-
         if not player.enabled and not force_update:
             # ignore updates for disabled players
             return
@@ -915,6 +905,101 @@ class PlayerController(CoreController):
         # ensure the result is an integer
         return None if volume_level is None else int(volume_level)
 
+    def iter_group_members(
+        self,
+        group_player: Player,
+        only_powered: bool = False,
+        only_playing: bool = False,
+        active_only: bool = False,
+        exclude_self: bool = True,
+    ) -> Iterator[Player]:
+        """Get (child) players attached to a group player or syncgroup."""
+        for child_id in list(group_player.group_childs):
+            if child_player := self.get(child_id, False):
+                if not child_player.available or not child_player.enabled:
+                    continue
+                if not (not only_powered or child_player.powered):
+                    continue
+                if not (not active_only or child_player.active_group == group_player.player_id):
+                    continue
+                if exclude_self and child_player.player_id == group_player.player_id:
+                    continue
+                if not (
+                    not only_playing
+                    or child_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+                ):
+                    continue
+                yield child_player
+
+    async def wait_for_state(
+        self,
+        player: Player,
+        wanted_state: PlayerState,
+        timeout: float = 60.0,
+        minimal_time: float = 0,
+    ) -> None:
+        """Wait for the given player to reach the given state."""
+        start_timestamp = time.time()
+        self.logger.debug(
+            "Waiting for player %s to reach state %s", player.display_name, wanted_state
+        )
+        try:
+            async with asyncio.timeout(timeout):
+                while player.state != wanted_state:
+                    await asyncio.sleep(0.1)
+
+        except TimeoutError:
+            self.logger.debug(
+                "Player %s did not reach state %s within the timeout of %s seconds",
+                player.display_name,
+                wanted_state,
+                timeout,
+            )
+        elapsed_time = round(time.time() - start_timestamp, 2)
+        if elapsed_time < minimal_time:
+            self.logger.debug(
+                "Player %s reached state %s too soon (%s vs %s seconds) - add fallback sleep...",
+                player.display_name,
+                wanted_state,
+                elapsed_time,
+                minimal_time,
+            )
+            await asyncio.sleep(minimal_time - elapsed_time)
+        else:
+            self.logger.debug(
+                "Player %s reached state %s within %s seconds",
+                player.display_name,
+                wanted_state,
+                elapsed_time,
+            )
+
+    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
+        """Call (by config manager) when the configuration of a player changes."""
+        player_disabled = "enabled" in changed_keys and not config.enabled
+        # signal player provider that the config changed
+        if player_provider := self.mass.get_provider(config.provider):
+            with suppress(PlayerUnavailableError):
+                await player_provider.on_player_config_change(config, changed_keys)
+        if not (player := self.get(config.player_id)):
+            return
+        if player_disabled:
+            # edge case: ensure that the player is powered off if the player gets disabled
+            await self.cmd_power(config.player_id, False)
+            player.available = False
+        # if the player was playing, restart playback
+        elif not player_disabled and player.state == PlayerState.PLAYING:
+            self.mass.call_later(1, self.mass.player_queues.resume, player.active_source)
+        # check for group memberships that need to be updated
+        if player_disabled and player.active_group and player_provider:
+            # try to remove from the group
+            group_player = self.get(player.active_group)
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+                await player_provider.set_members(
+                    player.active_group,
+                    [x for x in group_player.group_childs if x != player.player_id],
+                )
+        player.enabled = config.enabled
+
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
         player = self.get(player_id, True)
@@ -980,96 +1065,6 @@ class PlayerController(CoreController):
         if active_players:
             group_volume = group_volume / active_players
         return int(group_volume)
-
-    def iter_group_members(
-        self,
-        group_player: Player,
-        only_powered: bool = False,
-        only_playing: bool = False,
-        active_only: bool = False,
-        exclude_self: bool = True,
-    ) -> Iterator[Player]:
-        """Get (child) players attached to a group player or syncgroup."""
-        for child_id in list(group_player.group_childs):
-            if child_player := self.get(child_id, False):
-                if not child_player.available or not child_player.enabled:
-                    continue
-                if not (not only_powered or child_player.powered):
-                    continue
-                if not (not active_only or child_player.active_group == group_player.player_id):
-                    continue
-                if exclude_self and child_player.player_id == group_player.player_id:
-                    continue
-                if not (
-                    not only_playing
-                    or child_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
-                ):
-                    continue
-                yield child_player
-
-    async def _poll_players(self) -> None:
-        """Background task that polls players for updates."""
-        while True:
-            for player in list(self._players.values()):
-                player_id = player.player_id
-                # if the player is playing, update elapsed time every tick
-                # to ensure the queue has accurate details
-                player_playing = (
-                    player.active_source == player.player_id and player.state == PlayerState.PLAYING
-                )
-                if player_playing:
-                    self.mass.loop.call_soon(self.update, player_id)
-                # Poll player;
-                if not player.needs_poll:
-                    continue
-                if (self.mass.loop.time() - player.last_poll) < player.poll_interval:
-                    continue
-                player.last_poll = self.mass.loop.time()
-                if player_prov := self.get_player_provider(player_id):
-                    try:
-                        await player_prov.poll_player(player_id)
-                    except PlayerUnavailableError:
-                        player.available = False
-                        player.state = PlayerState.IDLE
-                        player.powered = False
-                    except Exception as err:
-                        self.logger.warning(
-                            "Error while requesting latest state from player %s: %s",
-                            player.display_name,
-                            str(err),
-                            exc_info=err if self.logger.isEnabledFor(10) else None,
-                        )
-                    finally:
-                        # always update player state
-                        self.mass.loop.call_soon(self.update, player_id)
-            await asyncio.sleep(1)
-
-    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-        player_disabled = "enabled" in changed_keys and not config.enabled
-        # signal player provider that the config changed
-        if player_provider := self.mass.get_provider(config.provider):
-            with suppress(PlayerUnavailableError):
-                await player_provider.on_player_config_change(config, changed_keys)
-        if not (player := self.get(config.player_id)):
-            return
-        if player_disabled:
-            # edge case: ensure that the player is powered off if the player gets disabled
-            await self.cmd_power(config.player_id, False)
-            player.available = False
-        # if the player was playing, restart playback
-        elif not player_disabled and player.state == PlayerState.PLAYING:
-            self.mass.call_later(1, self.mass.player_queues.resume, player.active_source)
-        # check for group memberships that need to be updated
-        if player_disabled and player.active_group and player_provider:
-            # try to remove from the group
-            group_player = self.get(player.active_group)
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await player_provider.set_members(
-                    player.active_group,
-                    [x for x in group_player.group_childs if x != player.player_id],
-                )
-        player.enabled = config.enabled
 
     async def _play_announcement(
         self,
@@ -1193,44 +1188,39 @@ class PlayerController(CoreController):
             self.logger.warning("Can not resume %s on %s", prev_item_id, player.display_name)
             # TODO !!
 
-    async def wait_for_state(
-        self,
-        player: Player,
-        wanted_state: PlayerState,
-        timeout: float = 60.0,
-        minimal_time: float = 0,
-    ) -> None:
-        """Wait for the given player to reach the given state."""
-        start_timestamp = time.time()
-        self.logger.debug(
-            "Waiting for player %s to reach state %s", player.display_name, wanted_state
-        )
-        try:
-            async with asyncio.timeout(timeout):
-                while player.state != wanted_state:
-                    await asyncio.sleep(0.1)
-
-        except TimeoutError:
-            self.logger.debug(
-                "Player %s did not reach state %s within the timeout of %s seconds",
-                player.display_name,
-                wanted_state,
-                timeout,
-            )
-        elapsed_time = round(time.time() - start_timestamp, 2)
-        if elapsed_time < minimal_time:
-            self.logger.debug(
-                "Player %s reached state %s too soon (%s vs %s seconds) - add fallback sleep...",
-                player.display_name,
-                wanted_state,
-                elapsed_time,
-                minimal_time,
-            )
-            await asyncio.sleep(minimal_time - elapsed_time)
-        else:
-            self.logger.debug(
-                "Player %s reached state %s within %s seconds",
-                player.display_name,
-                wanted_state,
-                elapsed_time,
-            )
+    async def _poll_players(self) -> None:
+        """Background task that polls players for updates."""
+        while True:
+            for player in list(self._players.values()):
+                player_id = player.player_id
+                # if the player is playing, update elapsed time every tick
+                # to ensure the queue has accurate details
+                player_playing = (
+                    player.active_source == player.player_id and player.state == PlayerState.PLAYING
+                )
+                if player_playing:
+                    self.mass.loop.call_soon(self.update, player_id)
+                # Poll player;
+                if not player.needs_poll:
+                    continue
+                if (self.mass.loop.time() - player.last_poll) < player.poll_interval:
+                    continue
+                player.last_poll = self.mass.loop.time()
+                if player_prov := self.get_player_provider(player_id):
+                    try:
+                        await player_prov.poll_player(player_id)
+                    except PlayerUnavailableError:
+                        player.available = False
+                        player.state = PlayerState.IDLE
+                        player.powered = False
+                    except Exception as err:
+                        self.logger.warning(
+                            "Error while requesting latest state from player %s: %s",
+                            player.display_name,
+                            str(err),
+                            exc_info=err if self.logger.isEnabledFor(10) else None,
+                        )
+                    finally:
+                        # always update player state
+                        self.mass.loop.call_soon(self.update, player_id)
+            await asyncio.sleep(1)
