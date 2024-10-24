@@ -636,6 +636,7 @@ class PlayerController(CoreController):
     async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
         """Create temporary sync group by joining given players to target player."""
         parent_player: Player = self.get(target_player, True)
+        prev_group_childs = parent_player.group_childs.copy()
         if PlayerFeature.SYNC not in parent_player.supported_features:
             msg = f"Player {parent_player.name} does not support sync commands"
             raise UnsupportedFeaturedException(msg)
@@ -686,7 +687,11 @@ class PlayerController(CoreController):
         # forward command to the player provider after all (base) sanity checks
         player_provider = self.get_player_provider(target_player)
         async with self._player_throttlers[target_player]:
-            await player_provider.cmd_sync_many(target_player, final_player_ids)
+            try:
+                await player_provider.cmd_sync_many(target_player, final_player_ids)
+            finally:
+                # restore sync state if the command failed
+                parent_player.group_childs = prev_group_childs
 
     @api_command("players/cmd/unsync_many")
     async def cmd_unsync_many(self, player_ids: list[str]) -> None:
