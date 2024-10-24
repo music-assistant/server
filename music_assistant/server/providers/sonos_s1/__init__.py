@@ -32,6 +32,7 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     PlayerFeature,
+    PlayerState,
     PlayerType,
     ProviderFeature,
 )
@@ -215,6 +216,7 @@ class SonosPlayerProvider(PlayerProvider):
             )
             return
         await asyncio.to_thread(sonos_player.soco.play)
+        sonos_player.mass_player.poll_interval = 5
         self.mass.call_later(2, sonos_player.poll_speaker)
 
     async def cmd_pause(self, player_id: str) -> None:
@@ -296,6 +298,7 @@ class SonosPlayerProvider(PlayerProvider):
         didl_metadata = create_didl_metadata(media)
         await asyncio.to_thread(sonos_player.soco.play_uri, media.uri, meta=didl_metadata)
         self.mass.call_later(2, sonos_player.poll_speaker)
+        sonos_player.mass_player.poll_interval = 5
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
@@ -340,6 +343,13 @@ class SonosPlayerProvider(PlayerProvider):
         if player_id not in self.sonosplayers:
             return
         sonos_player = self.sonosplayers[player_id]
+        # dynamically change the poll interval
+        if sonos_player.mass_player.state == PlayerState.PLAYING:
+            sonos_player.mass_player.poll_interval = 5
+        elif sonos_player.mass_player.powered:
+            sonos_player.mass_player.poll_interval = 20
+        else:
+            sonos_player.mass_player.poll_interval = 60
         try:
             # the check_poll logic will work out what endpoints need polling now
             # based on when we last received info from the device
