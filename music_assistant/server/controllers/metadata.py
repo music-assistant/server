@@ -751,7 +751,7 @@ class MetaDataController(CoreController):
             await asyncio.sleep(10)
 
         # Force refresh playlist metadata every refresh interval
-        # this wil e.g. update the playlist image if the tracks have changed
+        # this will e.g. update the playlist image and genres if the tracks have changed
         timestamp = int(time() - REFRESH_INTERVAL_PLAYLISTS)
         query = (
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
