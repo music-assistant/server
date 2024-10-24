@@ -398,7 +398,15 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
-        new_volume = min(100, self._players[player_id].volume_level + 5)
+        if not (player := self.get(player_id)):
+            return
+        if player.volume_level < 5 or player.volume_level > 95:
+            step_size = 1
+        elif player.volume_level < 20 or player.volume_level > 80:
+            step_size = 2
+        else:
+            step_size = 5
+        new_volume = min(100, self._players[player_id].volume_level + step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/volume_down")
@@ -408,7 +416,15 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
-        new_volume = max(0, self._players[player_id].volume_level - 5)
+        if not (player := self.get(player_id)):
+            return
+        if player.volume_level < 5 or player.volume_level > 95:
+            step_size = 1
+        elif player.volume_level < 20 or player.volume_level > 80:
+            step_size = 2
+        else:
+            step_size = 5
+        new_volume = max(0, self._players[player_id].volume_level - step_size)
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume")
