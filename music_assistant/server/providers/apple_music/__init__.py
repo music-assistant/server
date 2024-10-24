@@ -356,6 +356,8 @@ class AppleMusicProvider(MusicProvider):
         stream_metadata = await self._fetch_song_stream_metadata(item_id)
         license_url = stream_metadata["hls-key-server-url"]
         stream_url, uri = await self._parse_stream_url_and_uri(stream_metadata["assets"])
+        if not stream_url or not uri:
+            raise MediaNotFoundError("No stream URL found for song.")
         key_id = base64.b64decode(uri.split(",")[1])
         return StreamDetails(
             item_id=item_id,

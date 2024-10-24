@@ -88,6 +88,8 @@ class Provider:
     @property
     def name(self) -> str:
         """Return (custom) friendly name for this provider instance."""
+        if self.config.name:
+            return self.config.name
         inst_count = len([x for x in self.mass.music.providers if x.domain == self.domain])
         if inst_count > 1:
             postfix = self.instance_id[:-8]

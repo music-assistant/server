@@ -853,7 +853,7 @@ class PlayerController(CoreController):
         # signal update to the playerqueue
         self.mass.player_queues.on_player_update(player, changed_values)
 
-        if changed_values != {"elapsed_time"} or force_update:
+        if changed_values.keys() != {"elapsed_time"} or force_update:
             # ignore elapsed_time only changes
             self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
