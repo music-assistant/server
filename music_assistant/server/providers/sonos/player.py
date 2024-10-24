@@ -384,7 +384,7 @@ class SonosPlayer:
             self.mass.players.update(self.player_id)
             if not retry_on_fail:
                 raise
-            self.reconnect(min(retry_on_fail + 30), 3600)
+            self.reconnect(min(retry_on_fail + 30, 3600))
             return
         self.connected = True
         self.logger.debug("Connected to player API")
