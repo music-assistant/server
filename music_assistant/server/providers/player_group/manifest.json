@@ -5,7 +5,7 @@
   "description": "Create (permanent) groups of your favorite players. \nSupports both syncgroups (to group speakers of the same ecocystem to play in sync) and universal groups to group speakers of different ecosystems to play the same audio (but not in sync).",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "https://music-assistant.io/player-support/player_group/",
+  "documentation": "https://music-assistant.io/faq/groups/",
   "multi_instance": false,
   "builtin": true,
   "allow_disable": false,
