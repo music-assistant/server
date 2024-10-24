@@ -689,9 +689,10 @@ class PlayerController(CoreController):
         async with self._player_throttlers[target_player]:
             try:
                 await player_provider.cmd_sync_many(target_player, final_player_ids)
-            finally:
+            except Exception:
                 # restore sync state if the command failed
                 parent_player.group_childs = prev_group_childs
+                raise
 
     @api_command("players/cmd/unsync_many")
     async def cmd_unsync_many(self, player_ids: list[str]) -> None:

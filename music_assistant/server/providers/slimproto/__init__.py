@@ -579,7 +579,8 @@ class SlimprotoProvider(PlayerProvider):
         player = self.mass.players.get(player_id, raise_unavailable=True)
         if player.synced_to:
             group_leader = self.mass.players.get(player.synced_to, raise_unavailable=True)
-            group_leader.group_childs.remove(player_id)
+            if player_id in group_leader.group_childs:
+                group_leader.group_childs.remove(player_id)
             player.synced_to = None
             if slimclient := self.slimproto.get_player(player_id):
                 await slimclient.stop()
