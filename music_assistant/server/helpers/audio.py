@@ -24,6 +24,7 @@ from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
 )
 from music_assistant.common.models.media_items import AudioFormat, ContentType
 from music_assistant.common.models.streamdetails import StreamDetails
@@ -739,7 +740,8 @@ async def get_preview_stream(
     track_id: str,
 ) -> AsyncGenerator[bytes, None]:
     """Create a 30 seconds preview audioclip for the given streamdetails."""
-    music_prov = mass.get_provider(provider_instance_id_or_domain)
+    if not (music_prov := mass.get_provider(provider_instance_id_or_domain)):
+        raise ProviderUnavailableError
     streamdetails = await music_prov.get_stream_details(track_id)
     async for chunk in get_ffmpeg_stream(
         audio_input=music_prov.get_audio_stream(streamdetails, 30)
