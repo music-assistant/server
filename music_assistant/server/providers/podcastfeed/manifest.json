@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "podcastfeed",
+  "name": "Podcast RSS Feed",
+  "description": "A parser for podcast rss feeds",
+  "codeowners": ["@saeugetier"],
+  "requirements": ["podcastparser==0.6.10"],
+  "documentation": "Link to the documentation on the music-assistant.io helppage (may be added later).",
+  "multi_instance": true
+}
