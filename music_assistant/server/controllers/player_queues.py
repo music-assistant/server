@@ -286,6 +286,16 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         queue.dont_stop_the_music_enabled = dont_stop_the_music_enabled
         self.signal_update(queue_id=queue_id)
+        # if this happens to be the last track in the queue, fill the radio source
+        if (
+            queue.dont_stop_the_music_enabled
+            and queue.enqueued_media_items
+            and queue.current_index is not None
+            and (queue.items - queue.current_index) <= 1
+        ):
+            queue.radio_source = queue.enqueued_media_items
+            task_id = f"fill_radio_tracks_{queue_id}"
+            self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
 
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
