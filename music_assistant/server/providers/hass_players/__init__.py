@@ -11,6 +11,8 @@ import time
 from enum import IntFlag
 from typing import TYPE_CHECKING, Any
 
+from hass_client.exceptions import FailedCommand
+
 from music_assistant.common.helpers.datetime import from_iso_string
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -223,9 +225,17 @@ class HomeAssistantPlayers(PlayerProvider):
 
         - player_id: player_id of the player to handle the command.
         """
-        await self.hass_prov.hass.call_service(
-            domain="media_player", service="media_stop", target={"entity_id": player_id}
-        )
+        try:
+            await self.hass_prov.hass.call_service(
+                domain="media_player", service="media_stop", target={"entity_id": player_id}
+            )
+        except FailedCommand as exc:
+            # some HA players do not support STOP
+            if "does not support this service" not in str(exc):
+                raise
+            if player := self.mass.players.get(player_id):
+                if PlayerFeature.PAUSE in player.supported_features:
+                    await self.cmd_pause(player_id)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
