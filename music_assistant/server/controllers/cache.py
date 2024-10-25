@@ -129,7 +129,7 @@ class CacheController(CoreController):
         return default
 
     async def set(
-        self, key, data, checksum="", expiration=(86400 * 30), category: int = 0, base_key: str = ""
+        self, key, data, checksum="", expiration=(86400 * 7), category: int = 0, base_key: str = ""
     ) -> None:
         """Set data in cache."""
         if not key:
@@ -139,7 +139,7 @@ class CacheController(CoreController):
         expires = int(time.time() + expiration)
         memory_key = f"{category}/{base_key}/{key}"
         self._mem_cache[memory_key] = (data, checksum, expires)
-        if (expires - time.time()) < 3600 * 4:
+        if (expires - time.time()) < 3600 * 12:
             # do not cache items in db with short expiration
             return
         data = await asyncio.to_thread(json_dumps, data)
