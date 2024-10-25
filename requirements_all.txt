@@ -20,7 +20,7 @@ eyeD3==0.9.7
 faust-cchardet>=2.1.18
 hass-client==1.2.0
 ifaddr==0.2.0
-mashumaro==3.13.1
+mashumaro==3.14
 memory-tempfile==2.2.3
 music-assistant-frontend==v2.9.11
 orjson==3.10.7
