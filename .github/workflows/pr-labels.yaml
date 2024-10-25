@@ -9,7 +9,7 @@ on:
       - labeled
       - unlabeled
     branches:
-      - main
+      - stable
 
 jobs:
   pr_labels:
