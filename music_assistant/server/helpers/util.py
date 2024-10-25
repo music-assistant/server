@@ -144,6 +144,7 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
 
 def create_tempfile():
     """Return a (named) temporary file."""
+    # ruff: noqa: SIM115
     if platform.system() == "Linux":
         return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
     return tempfile.NamedTemporaryFile(buffering=0)
