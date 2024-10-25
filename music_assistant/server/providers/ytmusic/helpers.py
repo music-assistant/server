@@ -232,7 +232,9 @@ async def get_song_radio_tracks(
             videoId=prov_item_id, playlistId=playlist_id, limit=limit, radio=True
         )
         # Replace inconsistensies for easier parsing
-        for track in result["tracks"]:
+        music_video_types = ["MUSIC_VIDEO_TYPE_ATV", "OFFICIAL_SOURCE_MUSIC"]
+        tracks = [ t for t in result["tracks"] if t["videoType"] in music_video_types ]
+        for track in tracks:
             if track.get("thumbnail"):
                 track["thumbnails"] = track["thumbnail"]
                 del track["thumbnail"]
@@ -252,6 +254,7 @@ async def search(
         ytm = ytmusicapi.YTMusic(language=language)
         results = ytm.search(query=query, filter=ytm_filter, limit=limit)
         # Sync result properties with uniformal objects
+        results = [ result for result in results if result["resultType"] != "video" ]
         for result in results:
             if result["resultType"] == "artist":
                 if "artists" in result and len(result["artists"]) > 0:
