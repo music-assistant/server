@@ -46,6 +46,10 @@ class Players:
         """Return Player by ID (or None if not found)."""
         return self._players.get(player_id)
 
+    def __getitem__(self, player_id: str) -> Player:
+        """Return Player by ID."""
+        return self._players[player_id]
+
     #  Player related endpoints/commands
 
     async def player_command_stop(self, player_id: str) -> None:
