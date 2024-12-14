@@ -1,0 +1,11 @@
+{
+  "type": "plugin",
+  "domain": "lastfm",
+  "name": "LastFM Scrobbler",
+  "description": "Scrobble your music to Last.fm and others with a compatible API like Libre.fm",
+  "codeowners": ["@music-assistant"],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": false,
+  "requirements": ["pylast==5.3.0"]
+}
