@@ -321,6 +321,9 @@ def get_ffmpeg_args(
             "-f",
             output_format.content_type.value,
         ]
+    elif input_format == output_format:
+        # passthrough
+        output_args = ["-c", "copy"]
     else:
         raise RuntimeError("Invalid/unsupported output format specified")
 

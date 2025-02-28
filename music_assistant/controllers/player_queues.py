@@ -788,21 +788,18 @@ class PlayerQueuesController(CoreController):
         ):
             seek_position = max(0, int((resume_position_ms - 500) / 1000))
 
-        # load item (which also fetches the streamdetails)
-        # do this here to catch unavailable items early
-        next_index = self._get_next_index(queue_id, index, allow_repeat=False)
-        await self._load_item(
-            queue_item,
-            next_index,
-            is_start=True,
-            seek_position=seek_position,
-            fade_in=fade_in,
-        )
-
         # send play_media request to player
         # NOTE that we debounce this a bit to account for someone hitting the next button
         # like a madman. This will prevent the player from being overloaded with requests.
-        async def play_media():
+        async def play_media() -> None:
+            next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+            await self._load_item(
+                queue_item,
+                next_index,
+                is_start=True,
+                seek_position=seek_position,
+                fade_in=fade_in,
+            )
             await self.mass.players.play_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(queue_item, queue.flow_mode),
@@ -813,7 +810,7 @@ class PlayerQueuesController(CoreController):
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._transitioning_players.add(queue_id)
         self.mass.call_later(
-            1.5 if debounce else 0.1,
+            1 if debounce else 0,
             play_media,
             task_id=f"play_media_{queue_id}",
         )

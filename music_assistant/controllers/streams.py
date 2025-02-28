@@ -343,7 +343,6 @@ class StreamsController(CoreController):
         # inform the queue that the track is now loaded in the buffer
         # so for example the next track can be enqueued
         self.mass.player_queues.track_loaded_in_buffer(queue_id, queue_item_id)
-
         async for chunk in get_ffmpeg_stream(
             audio_input=self.get_queue_item_stream(
                 queue_item=queue_item,
@@ -903,8 +902,10 @@ class StreamsController(CoreController):
         # collect all arguments for ffmpeg
         streamdetails = queue_item.streamdetails
         assert streamdetails
+        stream_type = streamdetails.stream_type
         filter_params = []
         extra_input_args = streamdetails.extra_input_args or []
+
         # handle volume normalization
         gain_correct: float | None = None
         if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
@@ -933,14 +934,14 @@ class StreamsController(CoreController):
         streamdetails.volume_normalization_gain_correct = gain_correct
 
         # work out audio source for these streamdetails
-        if streamdetails.stream_type == StreamType.CUSTOM:
+        if stream_type == StreamType.CUSTOM:
             audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
                 streamdetails,
                 seek_position=streamdetails.seek_position,
             )
-        elif streamdetails.stream_type == StreamType.ICY:
+        elif stream_type == StreamType.ICY:
             audio_source = get_icy_radio_stream(self.mass, streamdetails.path, streamdetails)
-        elif streamdetails.stream_type == StreamType.HLS:
+        elif stream_type == StreamType.HLS:
             substream = await get_hls_substream(self.mass, streamdetails.path)
             audio_source = substream.path
             if streamdetails.media_type == MediaType.RADIO:
@@ -951,10 +952,6 @@ class StreamsController(CoreController):
         else:
             audio_source = streamdetails.path
 
-        # add support for decryption key provided in streamdetails
-        if streamdetails.decryption_key:
-            extra_input_args += ["-decryption_key", streamdetails.decryption_key]
-
         # handle seek support
         if (
             streamdetails.seek_position
@@ -962,7 +959,7 @@ class StreamsController(CoreController):
             and streamdetails.allow_seek
             # allow seeking for custom streams,
             # but only for custom streams that can't seek theirselves
-            and (streamdetails.stream_type != StreamType.CUSTOM or not streamdetails.can_seek)
+            and (stream_type != StreamType.CUSTOM or not streamdetails.can_seek)
         ):
             extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
 

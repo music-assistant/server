@@ -7,10 +7,8 @@ import functools
 import importlib
 import logging
 import os
-import platform
 import re
 import socket
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,9 +21,9 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar
 from urllib.parse import urlparse
 
+import aiofiles
 import cchardet as chardet
 import ifaddr
-import memory_tempfile
 from zeroconf import IPVersion
 
 from music_assistant.helpers.process import check_output
@@ -454,12 +452,16 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
     return await asyncio.to_thread(_get_provider_module, domain)
 
 
-def create_tempfile():
-    """Return a (named) temporary file."""
-    # ruff: noqa: SIM115
-    if platform.system() == "Linux":
-        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
-    return tempfile.NamedTemporaryFile(buffering=0)
+async def has_tmpfs_mount() -> bool:
+    """Check if we have a tmpfs mount."""
+    try:
+        async with aiofiles.open("/proc/mounts") as file:
+            async for line in file:
+                if "tmpfs /tmp tmpfs rw" in line:
+                    return True
+    except (FileNotFoundError, OSError, PermissionError):
+        pass
+    return False
 
 
 def divide_chunks(data: bytes, chunk_size: int) -> Iterator[bytes]:
