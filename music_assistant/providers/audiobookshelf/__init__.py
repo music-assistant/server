@@ -290,13 +290,14 @@ class Audiobookshelf(MusicProvider):
             base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
         )
 
-    async def get_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all podcast episodes of podcast.
 
         Adds progress information.
         """
         abs_podcast = await self._get_abs_expanded_podcast(prov_podcast_id=prov_podcast_id)
-        episode_list = []
         episode_cnt = 1
         # the user has the progress of all media items
         # so we use a single api call here to obtain possibly many
@@ -320,9 +321,8 @@ class Audiobookshelf(MusicProvider):
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
             )
-            episode_list.append(mass_episode)
+            yield mass_episode
             episode_cnt += 1
-        return episode_list
 
     async def get_podcast_episode(
         self, prov_episode_id: str, add_progress: bool = True

@@ -1338,7 +1338,10 @@ class PlayerQueuesController(CoreController):
             "Fetching episode(s) and resume point to play for Podcast %s",
             podcast.name,
         )
-        all_episodes = await self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        all_episodes = [
+            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        ]
+        all_episodes.sort(key=lambda x: x.position)
         # if a episode was provided, a user explicitly selected a episode to play
         # so we need to find the index of the episode in the list
         if isinstance(episode, PodcastEpisode):

@@ -607,7 +607,7 @@ class OpenSonicProvider(MusicProvider):
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
         podcast_id, _ = prov_episode_id.split(EP_CHAN_SEP)
-        for episode in await self.get_podcast_episodes(podcast_id):
+        async for episode in self.get_podcast_episodes(podcast_id):
             if episode.item_id == prov_episode_id:
                 return episode
         msg = f"Episode {prov_episode_id} not found"
@@ -616,20 +616,16 @@ class OpenSonicProvider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> list[PodcastEpisode]:
+    ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all Episodes for given podcast id."""
         if not self._enable_podcasts:
-            return []
-
+            return
         channels = await self._run_async(
             self._conn.getPodcasts, incEpisodes=True, pid=prov_podcast_id
         )
-
         channel = channels[0]
-        episodes = []
         for episode in channel.episodes:
-            episodes.append(self._parse_epsiode(episode, channel))
-        return episodes
+            yield self._parse_epsiode(episode, channel)
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full Podcast details by id."""

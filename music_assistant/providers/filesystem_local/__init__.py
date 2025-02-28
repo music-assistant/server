@@ -637,7 +637,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
-        for episode in await self.get_podcast_episodes(prov_podcast_id):
+        async for episode in self.get_podcast_episodes(prov_podcast_id):
             assert isinstance(episode.podcast, Podcast)
             return episode.podcast
         msg = f"Podcast not found: {prov_podcast_id}"
@@ -701,7 +701,9 @@ class LocalFileSystemProvider(MusicProvider):
             )
         return result
 
-    async def get_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get podcast episodes for given podcast id."""
         episodes: list[PodcastEpisode] = []
 
@@ -726,7 +728,8 @@ class LocalFileSystemProvider(MusicProvider):
                     continue
                 tm.create_task(_process_podcast_episode(item))
 
-        return episodes
+        for episode in episodes:
+            yield episode
 
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
         """Try to parse a track from a playlist line."""
