@@ -1122,7 +1122,6 @@ class PlayerQueuesController(CoreController):
         if (
             insert_at_index == (index_in_buffer + 1)
             and queue.state != PlayerState.IDLE
-            and not queue.flow_mode
             and (current_item_in_buffer := self.get_item(queue_id, index_in_buffer))
         ):
             task_id = f"enqueue_next_item_{queue_id}"
@@ -1439,10 +1438,11 @@ class PlayerQueuesController(CoreController):
             next_item = await self.load_next_item(queue_id, current_item_id)
         except QueueEmpty:
             return
-        await self.mass.players.enqueue_next_media(
-            player_id=queue_id,
-            media=await self.player_media_from_queue_item(next_item, False),
-        )
+        if not self._queues[queue_id].flow_mode:
+            await self.mass.players.enqueue_next_media(
+                player_id=queue_id,
+                media=await self.player_media_from_queue_item(next_item, False),
+            )
         self.logger.debug(
             "Enqueued next track %s on queue %s",
             next_item.name,
