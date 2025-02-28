@@ -265,6 +265,21 @@ class StreamsController(CoreController):
         base_path = "flow" if flow_mode else "single"
         return f"{self._server.base_url}/{base_path}/{queue_item.queue_id}/{queue_item.queue_item_id}.{fmt}"  # noqa: E501
 
+    async def get_plugin_source_url(
+        self,
+        plugin_source: str,
+        player_id: str,
+    ) -> str:
+        """Get the url for the Plugin Source stream/proxy."""
+        output_codec = ContentType.try_parse(
+            await self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
+        )
+        fmt = output_codec.value
+        # handle raw pcm without exact format specifiers
+        if output_codec.is_pcm() and ";" not in fmt:
+            fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
+        return f"{self._server.base_url}/pluginsource/{plugin_source}/{player_id}.{fmt}"
+
     async def serve_queue_item_stream(self, request: web.Request) -> web.Response:
         """Stream single queueitem audio to a player."""
         self._log_request(request)
@@ -647,19 +662,6 @@ class StreamsController(CoreController):
         # this ensures playback on all players, including ones that do not
         # like https hosts and it also offers the pre-announce 'bell'
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}?pre_announce={use_pre_announce}"  # noqa: E501
-
-    def get_plugin_source_url(
-        self,
-        plugin_source: str,
-        player_id: str,
-        output_codec: ContentType = ContentType.FLAC,
-    ) -> str:
-        """Get the url for the Plugin Source stream/proxy."""
-        fmt = output_codec.value
-        # handle raw pcm without exact format specifiers
-        if output_codec.is_pcm() and ";" not in fmt:
-            fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
-        return f"{self._server.base_url}/pluginsource/{plugin_source}/{player_id}.{fmt}"
 
     async def get_queue_flow_stream(
         self,

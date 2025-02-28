@@ -405,13 +405,15 @@ class ConfigController:
         # actually store changes (if the above did not raise)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         self.set(conf_key, config.to_raw())
+        # always update player attributes to calculate e.g. player controls etc.
+        self.mass.players.update(config.player_id, force_update=True)
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
             object_id=config.player_id,
             data=config,
         )
-        self.mass.players.update(config.player_id, force_update=True)
+
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 

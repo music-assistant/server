@@ -29,9 +29,8 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
-    CONF_ENTRY_OUTPUT_CODEC_ENFORCE_FLAC,
-    CONF_ENTRY_OUTPUT_CODEC_ENFORCE_MP3,
     HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
+    create_output_codec_config_entry,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.datetime import from_iso_string
@@ -110,7 +109,7 @@ async def _get_hass_media_players(
 class ESPHomeSupportedAudioFormat(TypedDict):
     """ESPHome Supported Audio Format."""
 
-    format: str  # flac or mp3
+    format: str  # flac, wav or mp3
     sample_rate: int  # e.g. 48000
     num_channels: int  # 1 for announcements, 2 for media
     purpose: int  # 0 for media, 1 for announcements
@@ -203,25 +202,27 @@ class HomeAssistantPlayers(PlayerProvider):
             # optimized config for new ESPHome mediaplayer
             supported_sample_rates: list[int] = []
             supported_bit_depths: list[int] = []
-            supports_flac: bool = False
-            for supported_format in player.extra_data["esphome_supported_audio_formats"]:
-                if supported_format["purpose"] != 0:
-                    continue
-                if supported_format["format"] == "flac":
-                    supports_flac = True
+            codec: str | None = None
+            supported_formats: list[ESPHomeSupportedAudioFormat] = player.extra_data[
+                "esphome_supported_audio_formats"
+            ]
+            # sort on purpose field, so we prefer the media pipeline
+            # but allows fallback to announcements pipeline if no media pipeline is available
+            supported_formats.sort(key=lambda x: x["purpose"])
+            for supported_format in supported_formats:
+                codec = supported_format["format"]
                 if supported_format["sample_rate"] not in supported_sample_rates:
                     supported_sample_rates.append(supported_format["sample_rate"])
                 bit_depth = supported_format["sample_bytes"] * 8
                 if bit_depth not in supported_bit_depths:
                     supported_bit_depths.append(bit_depth)
-            if not supports_flac:
-                base_entries = (*base_entries, CONF_ENTRY_OUTPUT_CODEC_ENFORCE_MP3)
+
             return (
                 *base_entries,
                 # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
                 CONF_ENTRY_FLOW_MODE_ENFORCED,
                 CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-                CONF_ENTRY_OUTPUT_CODEC_ENFORCE_FLAC,
+                create_output_codec_config_entry(True, codec),
                 CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
                 create_sample_rates_config_entry(
                     supported_sample_rates=supported_sample_rates,

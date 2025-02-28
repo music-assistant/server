@@ -329,6 +329,16 @@ CONF_ENTRY_OUTPUT_CODEC_ENFORCE_FLAC = ConfigEntry.from_dict(
 )
 
 
+def create_output_codec_config_entry(
+    hidden: bool = False, default_value: str = "flac"
+) -> ConfigEntry:
+    """Create output codec config entry based on player specific helpers."""
+    conf_entry = ConfigEntry.from_dict(CONF_ENTRY_OUTPUT_CODEC.to_dict())
+    conf_entry.hidden = hidden
+    conf_entry.default_value = default_value
+    return conf_entry
+
+
 CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
     key=CONF_SYNC_ADJUST,
     type=ConfigEntryType.INTEGER,
@@ -531,6 +541,11 @@ def create_sample_rates_config_entry(
     conf_entry.hidden = hidden
     options: list[ConfigValueOption] = []
     default_value: list[str] = []
+
+    if not supported_sample_rates and max_sample_rate is None:
+        supported_sample_rates = [44100]
+    if not supported_bit_depths and max_bit_depth is None:
+        supported_bit_depths = [16]
 
     for option in CONF_ENTRY_SAMPLE_RATES.options:
         option_value = cast(str, option.value)

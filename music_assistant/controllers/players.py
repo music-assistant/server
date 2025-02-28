@@ -1649,7 +1649,9 @@ class PlayerController(CoreController):
         """Handle playback/select of given plugin source on player."""
         plugin_source = plugin_prov.get_source()
         player.active_source = plugin_source.id
-        stream_url = self.mass.streams.get_plugin_source_url(plugin_source.id, player.player_id)
+        stream_url = await self.mass.streams.get_plugin_source_url(
+            plugin_source.id, player.player_id
+        )
         await self.play_media(
             player_id=player.player_id,
             media=PlayerMedia(
