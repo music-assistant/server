@@ -144,8 +144,16 @@ class StreamCache:
             await self._fetch_task
             return
         # wait until the file is created
-        while not await asyncio.to_thread(os.path.exists, self._temp_path):
+        req_filesize = get_chunksize(self.streamdetails.audio_format, 30)
+        while True:
             await asyncio.sleep(0.2)
+            if not await asyncio.to_thread(os.path.exists, self._temp_path):
+                continue
+            if self._fetch_task is not None and not self._fetch_task.done():
+                break
+            file_stats = await asyncio.to_thread(os.stat, self._temp_path)
+            if file_stats.st_size > req_filesize:
+                break
 
     async def _create_cache_file(self) -> None:
         time_start = time.time()
