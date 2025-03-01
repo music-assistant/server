@@ -133,27 +133,13 @@ class StreamCache:
             3600, remove_file, self._temp_path, task_id=f"remove_file_{self._temp_path}"
         )
 
-    async def wait(self, require_complete_file: bool) -> None:
+    async def wait(self) -> None:
         """
         Wait until the cache is ready.
 
         Optionally wait until the full file is available (e.g. when seeking).
         """
-        # if 'require_complete_file' is specified, we wait until the fetch task is ready
-        if require_complete_file:
-            await self._fetch_task
-            return
-        # wait until the file is created
-        req_filesize = get_chunksize(self.streamdetails.audio_format, 30)
-        while True:
-            await asyncio.sleep(0.2)
-            if not await asyncio.to_thread(os.path.exists, self._temp_path):
-                continue
-            if self._fetch_task is not None and not self._fetch_task.done():
-                break
-            file_stats = await asyncio.to_thread(os.stat, self._temp_path)
-            if file_stats.st_size > req_filesize:
-                break
+        await self._fetch_task
 
     async def _create_cache_file(self) -> None:
         time_start = time.time()
@@ -163,7 +149,7 @@ class StreamCache:
             audio_source = self.mass.get_provider(self.streamdetails.provider).get_audio_stream(
                 self.streamdetails,
             )
-        elif self.org_stream_type in (StreamType.HTTP, StreamType.ENCRYPTED_HTTP):
+        elif self.org_stream_type in (StreamType.HTTP, StreamType.ENCRYPTED_HTTP, StreamType.HLS):
             audio_source = self.org_path
         else:
             raise NotImplementedError("Caching of this streamtype is not supported")
@@ -404,6 +390,7 @@ async def get_stream_details(
     seek_position: int = 0,
     fade_in: bool = False,
     prefer_album_loudness: bool = False,
+    is_start: bool = True,
 ) -> StreamDetails:
     """
     Get streamdetails for the given QueueItem.
@@ -511,7 +498,8 @@ async def get_stream_details(
             tmpfs_present = await has_tmpfs_mount()
             await set_global_cache_values({"tmpfs_present": tmpfs_present})
         streamdetails.enable_cache = (
-            tmpfs_present
+            not is_start
+            and tmpfs_present
             and streamdetails.duration is not None
             and streamdetails.duration < 1800
             and streamdetails.stream_type
@@ -525,15 +513,8 @@ async def get_stream_details(
         else:
             streamdetails.cache = cast(StreamCache, streamdetails.cache)
         await streamdetails.cache.create()
-        require_complete_file = (
-            # require complete file if we're seeking to prevent we're seeking beyond the cached data
-            streamdetails.seek_position > 0
-            or streamdetails.audio_format.content_type
-            # m4a/mp4 files often have their moov/atom at the end of the file
-            # so we need the whole file to be available
-            in (ContentType.M4A, ContentType.M4B, ContentType.MP4)
-        )
-        await streamdetails.cache.wait(require_complete_file=require_complete_file)
+        # wait until the cache file is available
+        await streamdetails.cache.wait()
 
     return streamdetails
 
