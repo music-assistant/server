@@ -291,7 +291,7 @@ class Audibleprovider(MusicProvider):
             return await self.helper.get_stream(asin=item_id)
         except ValueError as exc:
             self.logger.error(f"Failed to get stream details for {item_id}: {exc}")
-            raise MediaNotFoundError(f"Failed to get stream details for {item_id}) from exc
+            raise MediaNotFoundError(f"Failed to get stream details for {item_id}") from exc
 
     async def on_played(
         self,
