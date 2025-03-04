@@ -81,17 +81,24 @@ class StreamCache:
     StreamCache.
 
     Basic class to handle temporary caching of audio streams.
-    For now, based on a (in-memory) tempfile and ffmpeg.
+    Based on a (in-memory) tempfile and ffmpeg.
     """
 
-    def acquire(self) -> str:
+    @property
+    def data_complete(self) -> bool:
+        """Return if the cache file is complete."""
+        return self._fetch_task is not None and self._fetch_task.done()
+
+    async def acquire(self) -> str | AsyncGenerator[bytes, None]:
         """Acquire the cache and return the cache file path."""
-        # for the edge case where the cache file is not released,
-        # set a fallback timer to remove the file after 20 minutes
-        self.mass.call_later(
-            20 * 60, remove_file, self._temp_path, task_id=f"remove_file_{self._temp_path}"
-        )
-        return self._temp_path
+        # always call create to handle the situation where the cache
+        # file is not created yet or already removed
+        await self.create()
+        self._subscribers += 1
+        if self.data_complete:
+            # cache is ready, return the path
+            return self._temp_path
+        return self._stream_from_cache()
 
     def release(self) -> None:
         """Release the cache file."""
@@ -99,11 +106,14 @@ class StreamCache:
         if self.mass.closing:
             os.remove(self._temp_path)
             return
-        # set a timer to remove the file after 1 minute
-        # if the file is accessed again within this 1 minute, the timer will be cancelled
-        self.mass.call_later(
-            60, remove_file, self._temp_path, task_id=f"remove_file_{self._temp_path}"
-        )
+        self._subscribers -= 1
+        if self._subscribers == 0:
+            # set a timer to remove the tempfile after 1 minute
+            # if the file is accessed again within this period,
+            # the timer will be cancelled
+            self.mass.call_later(
+                60, remove_file, self._temp_path, task_id=f"remove_file_{self._temp_path}"
+            )
 
     def __init__(self, mass: MusicAssistant, streamdetails: StreamDetails) -> None:
         """Initialize the StreamCache."""
@@ -112,6 +122,9 @@ class StreamCache:
         ext = streamdetails.audio_format.output_format_str
         self._temp_path = f"/tmp/{shortuuid.random(20)}.{ext}"  # noqa: S108
         self._fetch_task: asyncio.Task | None = None
+        self._subscribers: int = 0
+        self._first_part_received = asyncio.Event()
+        self._bytes_written: int = 0
         self.org_path: str | None = streamdetails.path
         self.org_stream_type: StreamType | None = streamdetails.stream_type
         self.org_extra_input_args: list[str] | None = streamdetails.extra_input_args
@@ -121,6 +134,7 @@ class StreamCache:
 
     async def create(self) -> None:
         """Create the cache file (if needed)."""
+        self.mass.cancel_timer(f"remove_file_{self._temp_path}")
         if await asyncio.to_thread(os.path.exists, self._temp_path):
             return
         if self._fetch_task is not None and not self._fetch_task.done():
@@ -133,13 +147,17 @@ class StreamCache:
             3600, remove_file, self._temp_path, task_id=f"remove_file_{self._temp_path}"
         )
 
-    async def wait(self) -> None:
+    async def wait(self, require_all_data_available: bool = False) -> None:
         """
         Wait until the cache is ready.
 
         Optionally wait until the full file is available (e.g. when seeking).
         """
-        await self._fetch_task
+        if require_all_data_available and not self.data_complete:
+            await self._fetch_task
+        else:
+            # wait until the first part of the file is received
+            await self._first_part_received.wait()
 
     async def _create_cache_file(self) -> None:
         time_start = time.time()
@@ -156,27 +174,56 @@ class StreamCache:
 
         extra_input_args = self.org_extra_input_args or []
         if self.streamdetails.decryption_key:
-            extra_input_args += ["-decryption_key", self.streamdetails.decryption_key]
+            extra_input_args += [
+                "-decryption_key",
+                self.streamdetails.decryption_key,
+            ]
 
-        ffmpeg = FFMpeg(
-            audio_input=audio_source,
-            input_format=self.streamdetails.audio_format,
-            output_format=self.streamdetails.audio_format,
-            extra_input_args=["-y", *extra_input_args],
-            audio_output=self._temp_path,
-        )
-        await ffmpeg.start()
-        await ffmpeg.wait()
-        process_time = int((time.time() - time_start) * 1000)
-        LOGGER.log(
-            VERBOSE_LOG_LEVEL,
-            "Writing cache file %s done in %s milliseconds",
+        chunk_size = get_chunksize(self.streamdetails.audio_format)
+        async with aiofiles.open(self._temp_path, "wb") as outfile:
+            async for chunk in get_ffmpeg_stream(
+                audio_input=audio_source,
+                input_format=self.streamdetails.audio_format,
+                output_format=self.streamdetails.audio_format,
+                chunk_size=chunk_size,
+                extra_input_args=extra_input_args,
+            ):
+                if not self._first_part_received.is_set():
+                    self._first_part_received.set()
+                    LOGGER.debug(
+                        "First chunk received for cache file %s after %.2fs",
+                        self._temp_path,
+                        time.time() - time_start,
+                    )
+                await outfile.write(chunk)
+                self._bytes_written += len(chunk)
+
+        LOGGER.debug(
+            "Writing cache file %s done in %.2fs",
             self._temp_path,
-            process_time,
+            time.time() - time_start,
         )
+
+    async def _stream_from_cache(self) -> AsyncGenerator[bytes, None]:
+        """Stream audio from cachefile (while its still being written)."""
+        chunk_size = get_chunksize(self.streamdetails.audio_format)
+        bytes_read: int = 0
+        async with aiofiles.open(self._temp_path, "rb") as outfile:
+            while True:
+                chunk = await outfile.read(chunk_size)
+                if not chunk:
+                    continue
+                bytes_read += len(chunk)
+                yield chunk
+                if bytes_read >= self._bytes_written:
+                    break
 
     def __del__(self) -> None:
         """Ensure the temp file gets cleaned up."""
+        if self.mass.closing:
+            if os.path.isfile(self._temp_path):
+                os.remove(self._temp_path)
+            return
         self.mass.loop.call_soon_threadsafe(self.mass.create_task, remove_file(self._temp_path))
 
 
@@ -390,7 +437,6 @@ async def get_stream_details(
     seek_position: int = 0,
     fade_in: bool = False,
     prefer_album_loudness: bool = False,
-    is_start: bool = True,
 ) -> StreamDetails:
     """
     Get streamdetails for the given QueueItem.
@@ -480,11 +526,10 @@ async def get_stream_details(
     # attach the DSP details of all group members
     streamdetails.dsp = get_stream_dsp_details(mass, streamdetails.queue_id)
 
-    process_time = int((time.time() - time_start) * 1000)
     LOGGER.debug(
         "retrieved streamdetails for %s in %s milliseconds",
         queue_item.uri,
-        process_time,
+        int((time.time() - time_start) * 1000),
     )
 
     if streamdetails.decryption_key:
@@ -498,12 +543,14 @@ async def get_stream_details(
             tmpfs_present = await has_tmpfs_mount()
             await set_global_cache_values({"tmpfs_present": tmpfs_present})
         streamdetails.enable_cache = (
-            not is_start
-            and tmpfs_present
+            tmpfs_present
             and streamdetails.duration is not None
-            and streamdetails.duration < 1800
+            and streamdetails.media_type
+            in (MediaType.TRACK, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
             and streamdetails.stream_type
             in (StreamType.HTTP, StreamType.ENCRYPTED_HTTP, StreamType.CUSTOM, StreamType.HLS)
+            and streamdetails.audio_format.content_type != ContentType.UNKNOWN
+            and get_chunksize(streamdetails.audio_format, streamdetails.duration) < 80000000
         )
 
     # handle temporary cache support of audio stream
@@ -514,7 +561,12 @@ async def get_stream_details(
             streamdetails.cache = cast(StreamCache, streamdetails.cache)
         await streamdetails.cache.create()
         # wait until the cache file is available
-        await streamdetails.cache.wait()
+        await streamdetails.cache.wait(require_all_data_available=streamdetails.seek_position > 0)
+        LOGGER.debug(
+            "streamdetails cache ready for %s in %s milliseconds",
+            queue_item.uri,
+            int((time.time() - time_start) * 1000),
+        )
 
     return streamdetails
 
@@ -538,7 +590,7 @@ async def get_media_stream(
 
     if streamdetails.stream_type == StreamType.CACHE_FILE:
         cache = cast(StreamCache, streamdetails.cache)
-        audio_source = cache.acquire()
+        audio_source = await cache.acquire()
 
     bytes_sent = 0
     chunk_number = 0
@@ -589,14 +641,14 @@ async def get_media_stream(
                 req_buffer_size = int(pcm_format.pcm_sample_size * 5)
             elif chunk_number > 240 and strip_silence_end:
                 req_buffer_size = int(pcm_format.pcm_sample_size * 10)
-            elif chunk_number > 60 and strip_silence_end:
+            elif chunk_number > 120 and strip_silence_end:
                 req_buffer_size = int(pcm_format.pcm_sample_size * 8)
-            elif chunk_number > 30:
+            elif chunk_number > 60:
+                req_buffer_size = int(pcm_format.pcm_sample_size * 6)
+            elif chunk_number > 20 and strip_silence_end:
                 req_buffer_size = int(pcm_format.pcm_sample_size * 4)
-            elif chunk_number > 10 and strip_silence_end:
-                req_buffer_size = int(pcm_format.pcm_sample_size * 2)
             else:
-                req_buffer_size = pcm_format.pcm_sample_size
+                req_buffer_size = pcm_format.pcm_sample_size * 2
 
             # always append to buffer
             buffer += chunk

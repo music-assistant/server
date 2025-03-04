@@ -79,6 +79,8 @@ class FFMpeg(AsyncProcess):
                 clean_args.append("<URL>")
             elif "/" in arg and "." in arg:
                 clean_args.append("<FILE>")
+            elif arg.startswith("data:application/"):
+                clean_args.append("<DATA>")
             else:
                 clean_args.append(arg)
         args_str = " ".join(clean_args)
@@ -104,9 +106,9 @@ class FFMpeg(AsyncProcess):
             if self.collect_log_history:
                 self.log_history.append(line)
             if "error" in line or "warning" in line:
-                self.logger.debug(line)
-            elif "critical" in line:
                 self.logger.warning(line)
+            elif "critical" in line:
+                self.logger.error(line)
             else:
                 self.logger.log(VERBOSE_LOG_LEVEL, line)
 
@@ -142,15 +144,6 @@ class FFMpeg(AsyncProcess):
         try:
             start = time.time()
             self.logger.debug("Start reading audio data from source...")
-            # use TimedAsyncGenerator to catch we're stuck waiting on data forever
-            # don't set this timeout too low because in some cases it can indeed take a while
-            # for data to arrive (e.g. when there is X amount of seconds in the buffer)
-            # so this timeout is just to catch if the source is stuck and rpeort it and not
-            # to recover from it.
-            # async for chunk in TimedAsyncGenerator(self.audio_input, timeout=300):
-            #     if self.closed:
-            #         return
-            #     await self.write(chunk)
             async for chunk in self.audio_input:
                 if self.closed:
                     return
@@ -182,6 +175,8 @@ async def get_ffmpeg_stream(
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
+    collect_log_history: bool = False,
+    loglevel: str = "info",
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the ffmpeg audio stream as async generator.
@@ -196,6 +191,8 @@ async def get_ffmpeg_stream(
         filter_params=filter_params,
         extra_args=extra_args,
         extra_input_args=extra_input_args,
+        collect_log_history=collect_log_history,
+        loglevel=loglevel,
     ) as ffmpeg_proc:
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
@@ -203,7 +200,7 @@ async def get_ffmpeg_stream(
             yield chunk
 
 
-def get_ffmpeg_args(
+def get_ffmpeg_args(  # noqa: PLR0915
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str],
@@ -226,8 +223,6 @@ def get_ffmpeg_args(
         "-ignore_unknown",
         "-protocol_whitelist",
         "file,hls,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp,concat",
-        "-probesize",
-        "8192",
     ]
     # collect input args
     input_args = []
@@ -269,6 +264,8 @@ def get_ffmpeg_args(
             "-i",
             input_path,
         ]
+    elif input_format.codec_type != ContentType.UNKNOWN:
+        input_args += ["-acodec", input_format.codec_type.name.lower(), "-i", input_path]
     else:
         # let ffmpeg auto detect the content type from the metadata/headers
         input_args += ["-i", input_path]
@@ -284,6 +281,38 @@ def get_ffmpeg_args(
         # devnull stream
         output_path = "-"
         output_args = ["-f", "null"]
+    elif output_format.content_type.is_pcm():
+        # use explicit format identifier for pcm formats
+        output_args += [
+            "-ar",
+            str(output_format.sample_rate),
+            "-acodec",
+            output_format.content_type.name.lower(),
+            "-f",
+            output_format.content_type.value,
+        ]
+    elif input_format == output_format:
+        # passthrough
+        if output_format.content_type in (
+            ContentType.MP4,
+            ContentType.MP4A,
+            ContentType.M4A,
+            ContentType.M4B,
+        ):
+            fmt = "adts"
+        elif output_format.codec_type != ContentType.UNKNOWN:
+            fmt = output_format.codec_type.name.lower()
+        else:
+            fmt = output_format.content_type.name.lower()
+        output_args = [
+            "-vn",
+            "-dn",
+            "-sn",
+            "-acodec",
+            "copy",
+            "-f",
+            fmt,
+        ]
     elif output_format.content_type == ContentType.AAC:
         output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "256k"]
     elif output_format.content_type == ContentType.MP3:
@@ -311,19 +340,7 @@ def get_ffmpeg_args(
             "-compression_level",
             "0",
         ]
-    elif output_format.content_type.is_pcm():
-        # use explicit format identifier for pcm formats
-        output_args += [
-            "-ar",
-            str(output_format.sample_rate),
-            "-acodec",
-            output_format.content_type.name.lower(),
-            "-f",
-            output_format.content_type.value,
-        ]
-    elif input_format == output_format:
-        # passthrough
-        output_args = ["-c", "copy"]
+
     else:
         raise RuntimeError("Invalid/unsupported output format specified")
 

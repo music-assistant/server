@@ -7,6 +7,7 @@ import functools
 import importlib
 import logging
 import os
+import platform
 import re
 import socket
 import urllib.error
@@ -454,6 +455,8 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
 
 async def has_tmpfs_mount() -> bool:
     """Check if we have a tmpfs mount."""
+    if platform.system() == "Darwin":
+        return True
     try:
         async with aiofiles.open("/proc/mounts") as file:
             async for line in file:
