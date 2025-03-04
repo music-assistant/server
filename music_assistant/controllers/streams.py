@@ -54,8 +54,6 @@ from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
     crossfade_pcm_parts,
     get_chunksize,
-    get_hls_substream,
-    get_icy_radio_stream,
     get_media_stream,
     get_player_filter_params,
     get_silence,
@@ -904,9 +902,7 @@ class StreamsController(CoreController):
         # collect all arguments for ffmpeg
         streamdetails = queue_item.streamdetails
         assert streamdetails
-        stream_type = streamdetails.stream_type
         filter_params = []
-        extra_input_args = streamdetails.extra_input_args or []
 
         # handle volume normalization
         gain_correct: float | None = None
@@ -935,36 +931,6 @@ class StreamsController(CoreController):
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
 
-        # work out audio source for these streamdetails
-        if stream_type == StreamType.CUSTOM:
-            audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
-                streamdetails,
-                seek_position=streamdetails.seek_position,
-            )
-        elif stream_type == StreamType.ICY:
-            audio_source = get_icy_radio_stream(self.mass, streamdetails.path, streamdetails)
-        elif stream_type == StreamType.HLS:
-            substream = await get_hls_substream(self.mass, streamdetails.path)
-            audio_source = substream.path
-            if streamdetails.media_type == MediaType.RADIO:
-                # Especially the BBC streams struggle when they're played directly
-                # with ffmpeg, where they just stop after some minutes,
-                # so we tell ffmpeg to loop around in this case.
-                extra_input_args += ["-stream_loop", "-1", "-re"]
-        else:
-            audio_source = streamdetails.path
-
-        # handle seek support
-        if (
-            streamdetails.seek_position
-            and streamdetails.duration
-            and streamdetails.allow_seek
-            # allow seeking for custom streams,
-            # but only for custom streams that can't seek theirselves
-            and (stream_type != StreamType.CUSTOM or not streamdetails.can_seek)
-        ):
-            extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
-
         if streamdetails.media_type == MediaType.RADIO:
             # pad some silence before the radio stream starts to create some headroom
             # for radio stations that do not provide any look ahead buffer
@@ -981,9 +947,7 @@ class StreamsController(CoreController):
             self.mass,
             streamdetails=streamdetails,
             pcm_format=pcm_format,
-            audio_source=audio_source,
             filter_params=filter_params,
-            extra_input_args=extra_input_args,
         ):
             yield chunk
 

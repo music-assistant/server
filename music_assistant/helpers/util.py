@@ -9,6 +9,7 @@ import logging
 import os
 import platform
 import re
+import shutil
 import socket
 import urllib.error
 import urllib.parse
@@ -465,6 +466,15 @@ async def has_tmpfs_mount() -> bool:
     except (FileNotFoundError, OSError, PermissionError):
         pass
     return False
+
+
+async def get_tmp_free_space() -> int:
+    """Return free space on tmp."""
+    try:
+        if res := await asyncio.to_thread(shutil.disk_usage, "/tmp"):  # noqa: S108
+            return res.free
+    except (FileNotFoundError, OSError, PermissionError):
+        return 0
 
 
 def divide_chunks(data: bytes, chunk_size: int) -> Iterator[bytes]:

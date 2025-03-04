@@ -1741,6 +1741,14 @@ class PlayerQueuesController(CoreController):
             ):
                 task_id = f"fill_radio_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
+            # auto clean up streamdetails from previously played items
+            prev_item_id = prev_state["current_item_id"]
+            if (
+                prev_item_id
+                and (prev_index := self.index_by_id(queue_id, prev_item_id))
+                and (prev_prev_item := self.get_item(queue_id, prev_index - 1))
+            ):
+                prev_prev_item.streamdetails = None
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
