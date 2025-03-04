@@ -141,7 +141,7 @@ def parse_podcast_episode(
             [MediaItemImage(type=ImageType.THUMB, path=url_cover, provider=lookup_key)]
         )
 
-    if media_progress is not None:
+    if media_progress is not None and media_progress.current_time is not None:
         mass_episode.resume_position_ms = int(media_progress.current_time * 1000)
         mass_episode.fully_played = media_progress.is_finished
 
@@ -217,7 +217,7 @@ def parse_audiobook(
         mass_audiobook.authors.set([abs_audiobook.media.metadata.author_name])
         mass_audiobook.narrators.set([abs_audiobook.media.metadata.narrator_name])
 
-    if media_progress is not None:
+    if media_progress is not None and media_progress.current_time is not None:
         mass_audiobook.resume_position_ms = int(media_progress.current_time * 1000)
         mass_audiobook.fully_played = media_progress.is_finished
 

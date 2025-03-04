@@ -549,7 +549,7 @@ class Audiobookshelf(MusicProvider):
         if media_type == MediaType.AUDIOBOOK:
             progress = await self._client.get_my_media_progress(item_id=item_id)
 
-        if progress is not None:
+        if progress is not None and progress.current_time is not None:
             self.logger.debug("Resume position: obtained.")
             return progress.is_finished, int(progress.current_time * 1000)
 
@@ -1072,7 +1072,7 @@ class Audiobookshelf(MusicProvider):
             # timestamp, we do not update again.
             if not self.progress_guard.guard_ok_abs(progress):
                 continue
-            if not progress.current_time >= 30:
+            if progress.current_time is not None and not progress.current_time >= 30:
                 # same as mass default, only > 30s
                 continue
             if progress.library_item_id not in known_ids:
@@ -1088,6 +1088,8 @@ class Audiobookshelf(MusicProvider):
         # helper progress also ensures no useless progress updates,
         # see comment above
         self.progress_guard.add_progress(progress.library_item_id)
+        if progress.current_time is None:
+            return
         mass_audiobook = await self.mass.music.get_library_item_by_prov_id(
             media_type=MediaType.AUDIOBOOK,
             item_id=progress.library_item_id,
@@ -1105,6 +1107,8 @@ class Audiobookshelf(MusicProvider):
         # helper progress also ensures no useless progress updates,
         # see comment above
         self.progress_guard.add_progress(progress.library_item_id, progress.episode_id)
+        if progress.current_time is None:
+            return
         _episode_id = f"{progress.library_item_id} {progress.episode_id}"
         try:
             # need to obtain full podcast, and then search for episode
