@@ -38,6 +38,7 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
     CONF_ONBOARD_DONE,
+    CONF_OUTPUT_LIMITER,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PROVIDERS,
@@ -822,6 +823,25 @@ class ConfigController:
                 for x in sample_rates
             ]
             changed = True
+        # migrate DSPConfig.output_limiter
+        for player_id, dsp_config in list(self._data.get(CONF_PLAYER_DSP, {}).items()):
+            output_limiter = dsp_config.get("output_limiter")
+            enabled = dsp_config.get("enabled")
+            if output_limiter is None or enabled is None or output_limiter:
+                continue
+
+            if enabled:
+                # The DSP is enabled, and the user disabled the output limiter in a prior version
+                # Migrate the output limiter option to the player config
+                if (players := self._data.get(f"{CONF_PLAYERS}")) and (
+                    player := players.get(player_id)
+                ):
+                    player["values"][CONF_OUTPUT_LIMITER] = False
+            # Delete the old option, so this migration logic will never be called
+            # anymore for this player.
+            del dsp_config["output_limiter"]
+            changed = True
+
         # set 'onboard_done' flag if we have any (non default) provider configs
         if not self._data.get(CONF_ONBOARD_DONE):
             default_providers = {x.domain for x in self.mass.get_provider_manifests() if x.builtin}

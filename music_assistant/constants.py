@@ -47,6 +47,7 @@ CONF_USERNAME: Final[str] = "username"
 CONF_PASSWORD: Final[str] = "password"
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
+CONF_OUTPUT_LIMITER: Final[str] = "output_limiter"
 CONF_DEPRECATED_EQ_BASS: Final[str] = "eq_bass"
 CONF_DEPRECATED_EQ_MID: Final[str] = "eq_mid"
 CONF_DEPRECATED_EQ_TREBLE: Final[str] = "eq_treble"
@@ -219,6 +220,15 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     description="Adjust average (perceived) loudness to this target level",
     depends_on=CONF_VOLUME_NORMALIZATION,
     category="advanced",
+)
+
+CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
+    key=CONF_OUTPUT_LIMITER,
+    type=ConfigEntryType.BOOLEAN,
+    label="Enable limiting to prevent clipping",
+    default_value=True,
+    description="Activates a limiter that prevents audio distortion by making loud peaks quieter.",
+    category="audio",
 )
 
 # These EQ Options are deprecated and will be removed in the future
@@ -575,6 +585,7 @@ BASE_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
+    CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_AUTO_PLAY,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_ENTRY_HIDE_PLAYER,

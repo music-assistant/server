@@ -35,6 +35,7 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 from music_assistant_models.streamdetails import AudioFormat
 
 from music_assistant.constants import (
+    CONF_ENTRY_OUTPUT_LIMITER,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_RADIO,
@@ -322,12 +323,13 @@ def get_player_dsp_details(
     # remove disabled filters
     dsp_config.filters = [x for x in dsp_config.filters if x.enabled]
 
+    output_limiter = is_output_limiter_enabled(mass, player)
     return DSPDetails(
         state=dsp_state,
         input_gain=dsp_config.input_gain,
         filters=dsp_config.filters,
         output_gain=dsp_config.output_gain,
-        output_limiter=dsp_config.output_limiter,
+        output_limiter=output_limiter,
         output_format=player.output_format,
     )
 
@@ -1145,6 +1147,27 @@ def is_grouping_preventing_dsp(player: Player) -> bool:
     return is_multiple_devices and not multi_device_dsp_supported
 
 
+def is_output_limiter_enabled(mass: MusicAssistant, player: Player) -> bool:
+    """Check if the player has the output limiter enabled.
+
+    Unlike DSP, the limiter is still configurable when synchronized without MULTI_DEVICE_DSP.
+    So in grouped scenarios without MULTI_DEVICE_DSP, the permanent sync group or the leader gets
+    decides if the limiter should be turned on or not.
+    """
+    deciding_player_id = player.player_id
+    if player.active_group:
+        # Syncgroup, get from the group player
+        deciding_player_id = player.active_group
+    elif player.synced_to:
+        # Not in sync group, but synced, get from the leader
+        deciding_player_id = player.synced_to
+    return mass.config.get_raw_player_config_value(
+        deciding_player_id,
+        CONF_ENTRY_OUTPUT_LIMITER.key,
+        CONF_ENTRY_OUTPUT_LIMITER.default_value,
+    )
+
+
 def get_player_filter_params(
     mass: MusicAssistant,
     player_id: str,
@@ -1155,6 +1178,7 @@ def get_player_filter_params(
     filter_params = []
 
     dsp = mass.config.get_player_dsp_config(player_id)
+    limiter_enabled = True
 
     if player := mass.players.get(player_id):
         if is_grouping_preventing_dsp(player):
@@ -1179,6 +1203,8 @@ def get_player_filter_params(
         # in the audio processing steps. We save this information to
         # later be able to show this to the user in the UI.
         player.output_format = output_format
+
+        limiter_enabled = is_output_limiter_enabled(mass, player)
 
     if dsp.enabled:
         # Apply input gain
@@ -1207,8 +1233,8 @@ def get_player_filter_params(
     elif conf_channels == "right":
         filter_params.append("pan=mono|c0=FR")
 
-    # Add safety limiter at the end, if not explicitly disabled
-    if not dsp.enabled or dsp.output_limiter:
+    # Add safety limiter at the end
+    if limiter_enabled:
         filter_params.append("alimiter=limit=-2dB:level=false:asc=true")
 
     LOGGER.debug("Generated ffmpeg params for player %s: %s", player_id, filter_params)
