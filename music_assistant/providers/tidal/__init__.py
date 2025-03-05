@@ -85,8 +85,6 @@ CONF_COUNTRY_CODE = "country_code"
 CONF_SESSION_ID = "session_id"
 CONF_QUALITY = "quality"
 
-CONF_AUTH_DATA = "auth_data"
-
 # Labels
 LABEL_START_PKCE_LOGIN = "start_pkce_login_label"
 LABEL_OOPS_URL = "oops_url_label"
@@ -147,14 +145,10 @@ async def get_config_entries(
         auth_data = await TidalAuthManager.process_pkce_login(
             mass.http_session, base64_session, pkce_url
         )
-        # Set individual auth fields like in the old code
         values[CONF_AUTH_TOKEN] = auth_data["access_token"]
         values[CONF_REFRESH_TOKEN] = auth_data["refresh_token"]
         values[CONF_EXPIRY_TIME] = auth_data["expires_at"]
         values[CONF_USER_ID] = auth_data["userId"]
-        # Also store country/session for backward compatibility
-        values[CONF_COUNTRY_CODE] = auth_data.get("countryCode", "US")
-        values[CONF_SESSION_ID] = auth_data.get("sessionId", "")
         values[CONF_TEMP_SESSION] = ""
 
     if action == CONF_ACTION_CLEAR_AUTH:
@@ -163,10 +157,7 @@ async def get_config_entries(
         values[CONF_EXPIRY_TIME] = None
         values[CONF_USER_ID] = None
 
-    if action == CONF_ACTION_CLEAR_AUTH:
-        values[CONF_AUTH_DATA] = None
-
-    if values.get(CONF_AUTH_DATA):
+    if values.get(CONF_AUTH_TOKEN):
         auth_entries: tuple[ConfigEntry, ...] = (
             ConfigEntry(
                 key="label_ok",
@@ -276,12 +267,35 @@ async def get_config_entries(
     return (
         *auth_entries,
         ConfigEntry(
-            key=CONF_AUTH_DATA,
+            key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Authentication data for Tidal",
+            label="Authentication token for Tidal",
             description="You need to link Music Assistant to your Tidal account.",
             hidden=True,
-            value=values.get(CONF_AUTH_DATA) if values else None,
+            value=cast(str, values.get(CONF_AUTH_TOKEN)) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_REFRESH_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Refresh token for Tidal",
+            description="You need to link Music Assistant to your Tidal account.",
+            hidden=True,
+            value=cast(str, values.get(CONF_REFRESH_TOKEN)) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_EXPIRY_TIME,
+            type=ConfigEntryType.STRING,
+            label="Expiry time of auth token for Tidal",
+            hidden=True,
+            value=cast(str, values.get(CONF_EXPIRY_TIME)) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_USER_ID,
+            type=ConfigEntryType.STRING,
+            label="Your Tidal User ID",
+            description="This is your unique Tidal user ID.",
+            hidden=True,
+            value=cast(str, values.get(CONF_USER_ID)) if values else None,
         ),
     )
 
@@ -314,10 +328,10 @@ class TidalProvider(MusicProvider):
         self.update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
         self.update_config_value(CONF_USER_ID, auth_info["userId"])
         # Also update country/session for backward compatibility
-        if "countryCode" in auth_info:
-            self.update_config_value(CONF_COUNTRY_CODE, auth_info["countryCode"])
-        if "sessionId" in auth_info:
-            self.update_config_value(CONF_SESSION_ID, auth_info["sessionId"])
+        # if "countryCode" in auth_info:
+        #    self.update_config_value(CONF_COUNTRY_CODE, auth_info["countryCode"])
+        # if "sessionId" in auth_info:
+        #    self.update_config_value(CONF_SESSION_ID, auth_info["sessionId"])
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -330,14 +344,29 @@ class TidalProvider(MusicProvider):
         if not access_token or not refresh_token:
             raise LoginFailed("Missing authentication data")
 
+        # Handle conversion from ISO format to timestamp if needed
+        if isinstance(expires_at, str) and "T" in expires_at:
+            # This looks like an ISO format date
+            import datetime
+
+            try:
+                dt = datetime.datetime.fromisoformat(expires_at)
+                # Convert to timestamp
+                expires_at = dt.timestamp()
+                # Update the config with the numeric value
+                self.update_config_value(CONF_EXPIRY_TIME, expires_at)
+            except ValueError:
+                self.logger.warning(
+                    "Could not parse expiry time %s, setting to expired", expires_at
+                )
+                expires_at = 0
+
         # Create auth data dictionary from individual config values
         auth_data = {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "expires_at": expires_at,
             "userId": user_id,
-            "countryCode": self.config.get_value(CONF_COUNTRY_CODE) or "US",
-            "sessionId": self.config.get_value(CONF_SESSION_ID) or "",
         }
 
         # Initialize auth manager
