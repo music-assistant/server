@@ -81,6 +81,8 @@ CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_USER_ID = "user_id"
 CONF_EXPIRY_TIME = "expiry_time"
+CONF_COUNTRY_CODE = "country_code"
+CONF_SESSION_ID = "session_id"
 CONF_QUALITY = "quality"
 
 CONF_AUTH_DATA = "auth_data"
@@ -145,9 +147,21 @@ async def get_config_entries(
         auth_data = await TidalAuthManager.process_pkce_login(
             mass.http_session, base64_session, pkce_url
         )
-        # set the retrieved token on the values object to pass along
-        values[CONF_AUTH_DATA] = json.dumps(auth_data)
+        # Set individual auth fields like in the old code
+        values[CONF_AUTH_TOKEN] = auth_data["access_token"]
+        values[CONF_REFRESH_TOKEN] = auth_data["refresh_token"]
+        values[CONF_EXPIRY_TIME] = auth_data["expires_at"]
+        values[CONF_USER_ID] = auth_data["userId"]
+        # Also store country/session for backward compatibility
+        values[CONF_COUNTRY_CODE] = auth_data.get("countryCode", "US")
+        values[CONF_SESSION_ID] = auth_data.get("sessionId", "")
         values[CONF_TEMP_SESSION] = ""
+
+    if action == CONF_ACTION_CLEAR_AUTH:
+        values[CONF_AUTH_TOKEN] = None
+        values[CONF_REFRESH_TOKEN] = None
+        values[CONF_EXPIRY_TIME] = None
+        values[CONF_USER_ID] = None
 
     if action == CONF_ACTION_CLEAR_AUTH:
         values[CONF_AUTH_DATA] = None
@@ -295,17 +309,39 @@ class TidalProvider(MusicProvider):
 
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
         """Update auth config with new auth info."""
-        self.update_config_value(CONF_AUTH_DATA, json.dumps(auth_info), encrypted=True)
+        self.update_config_value(CONF_AUTH_TOKEN, auth_info["access_token"], encrypted=True)
+        self.update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
+        self.update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
+        self.update_config_value(CONF_USER_ID, auth_info["userId"])
+        # Also update country/session for backward compatibility
+        if "countryCode" in auth_info:
+            self.update_config_value(CONF_COUNTRY_CODE, auth_info["countryCode"])
+        if "sessionId" in auth_info:
+            self.update_config_value(CONF_SESSION_ID, auth_info["sessionId"])
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # Load auth info from config
-        auth_data = cast(str, self.config.get_value(CONF_AUTH_DATA))
-        if not auth_data:
+        # Load auth info from individual config values
+        access_token = self.config.get_value(CONF_AUTH_TOKEN)
+        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
+        expires_at = self.config.get_value(CONF_EXPIRY_TIME)
+        user_id = self.config.get_value(CONF_USER_ID)
+
+        if not access_token or not refresh_token:
             raise LoginFailed("Missing authentication data")
 
+        # Create auth data dictionary from individual config values
+        auth_data = {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_at": expires_at,
+            "userId": user_id,
+            "countryCode": self.config.get_value(CONF_COUNTRY_CODE) or "US",
+            "sessionId": self.config.get_value(CONF_SESSION_ID) or "",
+        }
+
         # Initialize auth manager
-        if not await self.auth.initialize(auth_data):
+        if not await self.auth.initialize(json.dumps(auth_data)):
             raise LoginFailed("Failed to authenticate with Tidal")
 
         # Get user information from sessions API
