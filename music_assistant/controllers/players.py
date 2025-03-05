@@ -1485,7 +1485,7 @@ class PlayerController(CoreController):
         player.volume_control = config.get_value(CONF_VOLUME_CONTROL)
         player.mute_control = config.get_value(CONF_MUTE_CONTROL)
 
-    async def _play_announcement(  # noqa: PLR0915
+    async def _play_announcement(
         self,
         player: Player,
         announcement: PlayerMedia,
@@ -1577,9 +1577,10 @@ class PlayerController(CoreController):
         await self.wait_for_state(player, PlayerState.PLAYING, 10, minimal_time=0.1)
         # wait for the player to stop playing
         if not announcement.duration:
-            media_info = await async_parse_tags(announcement.custom_data["url"])
-            announcement.duration = media_info.duration or 60
-        media_info.duration += 2
+            media_info = await async_parse_tags(
+                announcement.custom_data["url"], require_duration=True
+            )
+            announcement.duration = media_info.duration
         await self.wait_for_state(
             player,
             PlayerState.IDLE,

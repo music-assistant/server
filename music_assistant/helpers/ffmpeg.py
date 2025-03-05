@@ -175,8 +175,6 @@ async def get_ffmpeg_stream(
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
-    collect_log_history: bool = False,
-    loglevel: str = "info",
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the ffmpeg audio stream as async generator.
@@ -191,8 +189,6 @@ async def get_ffmpeg_stream(
         filter_params=filter_params,
         extra_args=extra_args,
         extra_input_args=extra_input_args,
-        collect_log_history=collect_log_history,
-        loglevel=loglevel,
     ) as ffmpeg_proc:
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
@@ -291,7 +287,7 @@ def get_ffmpeg_args(  # noqa: PLR0915
             "-f",
             output_format.content_type.value,
         ]
-    elif input_format == output_format:
+    elif input_format == output_format and not extra_args:
         # passthrough
         if output_format.content_type in (
             ContentType.MP4,

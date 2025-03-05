@@ -357,7 +357,7 @@ class HomeAssistantPlayers(PlayerProvider):
         )
         # Wait until the announcement is finished playing
         # This is helpful for people who want to play announcements in a sequence
-        media_info = await async_parse_tags(announcement.uri)
+        media_info = await async_parse_tags(announcement.uri, require_duration=True)
         duration = media_info.duration or 5
         await asyncio.sleep(duration)
         self.logger.debug(

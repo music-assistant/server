@@ -383,7 +383,7 @@ class SonosPlayerProvider(PlayerProvider):
         # Wait until the announcement is finished playing
         # This is helpful for people who want to play announcements in a sequence
         # yeah we can also setup a subscription on the sonos player for this, but this is easier
-        media_info = await async_parse_tags(announcement.uri)
+        media_info = await async_parse_tags(announcement.uri, require_duration=True)
         duration = media_info.duration or 10
         await asyncio.sleep(duration)
 
