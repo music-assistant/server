@@ -117,10 +117,10 @@ class LastFMScrobbleProvider(PluginProvider):
 
         # update now playing if needed
         if self._currently_playing is None or self._currently_playing != report.uri:
-            self.mass.loop.run_in_executor(None, update_now_playing)
+            await asyncio.to_thread(update_now_playing)
 
         if self.should_scrobble(report):
-            self.mass.loop.run_in_executor(None, scrobble)
+            await asyncio.to_thread(scrobble)
 
         if report.fully_played:
             # reset currently playing to avoid it expiring when looping songs
