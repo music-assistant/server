@@ -35,6 +35,7 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     CONF_ENTRY_HTTP_PROFILE_FORCED_1,
+    CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_ENTRY_OUTPUT_CODEC,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -61,7 +62,6 @@ PLAYER_FEATURES = {
 
 CONF_NETWORK_SCAN = "network_scan"
 CONF_HOUSEHOLD_ID = "household_id"
-CONF_IPS = "ips"
 SUBSCRIPTION_TIMEOUT = 1200
 ZGS_SUBSCRIPTION_TIMEOUT = 2
 
@@ -120,21 +120,7 @@ async def get_config_entries(
             category="advanced",
             required=False,
         ),
-        ConfigEntry(
-            key=CONF_IPS,
-            type=ConfigEntryType.STRING,
-            label="IP addresses (ADVANCED, NOT SUPPORTED)",
-            description="Additional fixed IP addresses for speakers. "
-            "Should be formatted as a comma separated list of IP addresses "
-            "(e.g. '10.0.0.42, 10.0.0.45').\n"
-            "Invalid addresses may result in the Sonos provider "
-            "becoming unresponsive and server crashes.\n"
-            "Bidirectional unicast communication to and between all IPs is required.\n"
-            "NOT SUPPORTED, USE ON YOU'RE OWN RISK",
-            category="advanced",
-            default_value=None,
-            required=False,
-        ),
+        CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     )
 
 
@@ -377,27 +363,27 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Discover Sonos players on the network."""
-        manual_ip_config: str | None
-        if (manual_ip_config := self.config.get_value(CONF_IPS)) is not None:  # type: ignore[assignment]
-            ips = set(map(str.strip, manual_ip_config.split(",")))
-            for ip in ips:
-                try:
-                    player = SoCo(ip)
-                    self._add_player(player)
-                except RequestException as err:
-                    # player is offline
-                    self.logger.debug("Failed to add SonosPlayer %s: %s", player, err)
-                except Exception as err:
-                    self.logger.warning(
-                        "Failed to add SonosPlayer %s: %s",
-                        player,
-                        err,
-                        exc_info=err if self.logger.isEnabledFor(10) else None,
-                    )
-            return
-
         if self._discovery_running:
             return
+
+        # Handle config option for manual IP's
+        manual_ip_config = cast(
+            list[str], self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
+        )
+        for ip_address in manual_ip_config:
+            try:
+                player = SoCo(ip_address)
+                self._add_player(player)
+            except RequestException as err:
+                # player is offline
+                self.logger.debug("Failed to add SonosPlayer %s: %s", player, err)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to add SonosPlayer %s: %s",
+                    player,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
 
         allow_network_scan = self.config.get_value(CONF_NETWORK_SCAN)
         if not (household_id := self.config.get_value(CONF_HOUSEHOLD_ID)):
