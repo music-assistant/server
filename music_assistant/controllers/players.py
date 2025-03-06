@@ -1224,6 +1224,8 @@ class PlayerController(CoreController):
             CONF_ENTRY_ANNOUNCE_VOLUME.key,
             CONF_ENTRY_ANNOUNCE_VOLUME.default_value,
         )
+        if volume_strategy == "none":
+            return None
         volume_level = volume_override
         if volume_level is None and volume_strategy == "absolute":
             volume_level = volume_strategy_volume
@@ -1485,7 +1487,7 @@ class PlayerController(CoreController):
         player.volume_control = config.get_value(CONF_VOLUME_CONTROL)
         player.mute_control = config.get_value(CONF_MUTE_CONTROL)
 
-    async def _play_announcement(
+    async def _play_announcement(  # noqa: PLR0915
         self,
         player: Player,
         announcement: PlayerMedia,
@@ -1554,8 +1556,11 @@ class PlayerController(CoreController):
                     tg.create_task(self.cmd_stop(volume_player.player_id))
                 if volume_player.volume_control == PLAYER_CONTROL_NONE:
                     continue
-                prev_volume = volume_player.volume_level or 0
+                if (prev_volume := volume_player.volume_level) is None:
+                    continue
                 announcement_volume = self.get_announcement_volume(volume_player_id, volume_level)
+                if announcement_volume is None:
+                    continue
                 temp_volume = announcement_volume or player.volume_level
                 if temp_volume != prev_volume:
                     prev_volumes[volume_player_id] = prev_volume
