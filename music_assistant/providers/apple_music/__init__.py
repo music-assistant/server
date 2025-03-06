@@ -8,6 +8,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
@@ -363,14 +364,14 @@ class AppleMusicProvider(MusicProvider):
         return StreamDetails(
             item_id=item_id,
             provider=self.lookup_key,
-            audio_format=AudioFormat(
-                content_type=ContentType.UNKNOWN,
-            ),
+            audio_format=AudioFormat(content_type=ContentType.MP4, codec_type=ContentType.AAC),
             stream_type=StreamType.ENCRYPTED_HTTP,
-            path=stream_url,
             decryption_key=await self._get_decryption_key(license_url, key_id, uri, item_id),
+            path=stream_url,
             can_seek=True,
             allow_seek=True,
+            # enforce caching because the apple streams are mp4 files with moov atom at the end
+            enable_cache=True,
         )
 
     def _parse_artist(self, artist_obj):
@@ -714,12 +715,23 @@ class AppleMusicProvider(MusicProvider):
         data = {
             "salableAdamId": song_id,
         }
-        async with self.mass.http_session.post(
-            playback_url, headers=self._get_decryption_headers(), json=data, ssl=True
-        ) as response:
-            response.raise_for_status()
-            content = await response.json(loads=json_loads)
-            return content["songList"][0]
+        for retry in (True, False):
+            try:
+                async with self.mass.http_session.post(
+                    playback_url, headers=self._get_decryption_headers(), json=data, ssl=True
+                ) as response:
+                    response.raise_for_status()
+                    content = await response.json(loads=json_loads)
+                    if content.get("failureType"):
+                        message = content.get("failureMessage")
+                        raise MediaNotFoundError(f"Failed to get song stream metadata: {message}")
+                    return content["songList"][0]
+            except (MediaNotFoundError, ClientError) as exc:
+                if retry:
+                    self.logger.warning("Failed to get song stream metadata: %s", exc)
+                    continue
+                raise
+        raise MediaNotFoundError(f"Failed to get song stream metadata for {song_id}")
 
     async def _parse_stream_url_and_uri(self, stream_assets: list[dict]) -> str:
         """Parse the Stream URL and Key URI from the song."""
@@ -755,7 +767,7 @@ class AppleMusicProvider(MusicProvider):
         }
 
     async def _get_decryption_key(
-        self, license_url: str, key_id: str, uri: str, item_id: str
+        self, license_url: str, key_id: bytes, uri: str, item_id: str
     ) -> str:
         """Get the decryption key for a song."""
         cache_key = f"decryption_key.{item_id}"

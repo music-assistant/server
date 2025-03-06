@@ -38,6 +38,7 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
     CONF_ONBOARD_DONE,
+    CONF_OUTPUT_LIMITER,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PROVIDERS,
@@ -405,13 +406,15 @@ class ConfigController:
         # actually store changes (if the above did not raise)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         self.set(conf_key, config.to_raw())
+        # always update player attributes to calculate e.g. player controls etc.
+        self.mass.players.update(config.player_id, force_update=True)
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
             object_id=config.player_id,
             data=config,
         )
-        self.mass.players.update(config.player_id, force_update=True)
+
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
@@ -805,6 +808,15 @@ class ConfigController:
                 self._data[CONF_PROVIDERS].pop(instance_id, None)
                 LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
                 changed = True
+        # migrate manual_ips to new format
+        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+            if not (values := provider_config.get("values")):
+                continue
+            if not (ips := values.get("ips")):
+                continue
+            values["manual_discovery_ip_addresses"] = ips.split(",")
+            del values["ips"]
+            changed = True
         # migrate sample_rates config entry
         for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
             if not (values := player_config.get("values")):
@@ -820,6 +832,25 @@ class ConfigController:
                 for x in sample_rates
             ]
             changed = True
+        # migrate DSPConfig.output_limiter
+        for player_id, dsp_config in list(self._data.get(CONF_PLAYER_DSP, {}).items()):
+            output_limiter = dsp_config.get("output_limiter")
+            enabled = dsp_config.get("enabled")
+            if output_limiter is None or enabled is None or output_limiter:
+                continue
+
+            if enabled:
+                # The DSP is enabled, and the user disabled the output limiter in a prior version
+                # Migrate the output limiter option to the player config
+                if (players := self._data.get(f"{CONF_PLAYERS}")) and (
+                    player := players.get(player_id)
+                ):
+                    player["values"][CONF_OUTPUT_LIMITER] = False
+            # Delete the old option, so this migration logic will never be called
+            # anymore for this player.
+            del dsp_config["output_limiter"]
+            changed = True
+
         # set 'onboard_done' flag if we have any (non default) provider configs
         if not self._data.get(CONF_ONBOARD_DONE):
             default_providers = {x.domain for x in self.mass.get_provider_manifests() if x.builtin}

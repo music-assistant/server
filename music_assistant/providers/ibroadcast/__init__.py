@@ -372,14 +372,22 @@ class IBroadcastProvider(MusicProvider):
                 )
             },
         )
+        if track_obj["album_id"]:
+            album = await self._client.get_album(track_obj["album_id"])
+
         if "rating" in track_obj and track_obj["rating"] == 5:
             track.favorite = True
         if "length" in track_obj and str(track_obj["length"]).isdigit():
             track.duration = track_obj["length"]
-        # track number looks like 201, meaning, disc 2, track 1
-        if track_obj["track"] > 99:
+        # use the disc number if available
+        if album and album["disc"] > 0:
+            track.disc_number = album["disc"]
+            track.track_number = int(track_obj["track"])
+        # otherwise, track number might look like 201, meaning, disc 2, track 1
+        elif track_obj["track"] > 99:
             track.disc_number = int(str(track_obj["track"])[:1])
             track.track_number = int(str(track_obj["track"])[1:])
+        # or just the track number and no disc number
         else:
             track.track_number = int(track_obj["track"])
         # Track artists
@@ -419,12 +427,11 @@ class IBroadcastProvider(MusicProvider):
         if track_obj["genres_additional"]:
             genres.add(track_obj["genres_additional"])
         track.metadata.genres = genres
-        if track_obj["album_id"]:
-            album = await self._client.get_album(track_obj["album_id"])
-            if album:
-                track.album = self._get_item_mapping(
-                    MediaType.ALBUM, track_obj["album_id"], album["name"]
-                )
+        # album info
+        if album:
+            track.album = self._get_item_mapping(
+                MediaType.ALBUM, track_obj["album_id"], album["name"]
+            )
         return track
 
     async def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:

@@ -610,7 +610,7 @@ class SpotifyProvider(MusicProvider):
                 # get first chunk with timeout, to catch the issue where librespot is not starting
                 # which seems to happen from time to time (but rarely)
                 try:
-                    chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=3)
+                    chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=5)
                     yield chunk
                 except TimeoutError:
                     raise AudioError("No audio received from librespot within timeout")

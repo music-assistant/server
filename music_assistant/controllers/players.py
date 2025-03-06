@@ -1224,6 +1224,8 @@ class PlayerController(CoreController):
             CONF_ENTRY_ANNOUNCE_VOLUME.key,
             CONF_ENTRY_ANNOUNCE_VOLUME.default_value,
         )
+        if volume_strategy == "none":
+            return None
         volume_level = volume_override
         if volume_level is None and volume_strategy == "absolute":
             volume_level = volume_strategy_volume
@@ -1554,8 +1556,11 @@ class PlayerController(CoreController):
                     tg.create_task(self.cmd_stop(volume_player.player_id))
                 if volume_player.volume_control == PLAYER_CONTROL_NONE:
                     continue
-                prev_volume = volume_player.volume_level or 0
+                if (prev_volume := volume_player.volume_level) is None:
+                    continue
                 announcement_volume = self.get_announcement_volume(volume_player_id, volume_level)
+                if announcement_volume is None:
+                    continue
                 temp_volume = announcement_volume or player.volume_level
                 if temp_volume != prev_volume:
                     prev_volumes[volume_player_id] = prev_volume
@@ -1577,9 +1582,10 @@ class PlayerController(CoreController):
         await self.wait_for_state(player, PlayerState.PLAYING, 10, minimal_time=0.1)
         # wait for the player to stop playing
         if not announcement.duration:
-            media_info = await async_parse_tags(announcement.custom_data["url"])
-            announcement.duration = media_info.duration or 60
-        media_info.duration += 2
+            media_info = await async_parse_tags(
+                announcement.custom_data["url"], require_duration=True
+            )
+            announcement.duration = media_info.duration
         await self.wait_for_state(
             player,
             PlayerState.IDLE,
@@ -1649,7 +1655,9 @@ class PlayerController(CoreController):
         """Handle playback/select of given plugin source on player."""
         plugin_source = plugin_prov.get_source()
         player.active_source = plugin_source.id
-        stream_url = self.mass.streams.get_plugin_source_url(plugin_source.id, player.player_id)
+        stream_url = await self.mass.streams.get_plugin_source_url(
+            plugin_source.id, player.player_id
+        )
         await self.play_media(
             player_id=player.player_id,
             media=PlayerMedia(

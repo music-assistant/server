@@ -10,9 +10,10 @@ import struct
 import time
 from collections.abc import AsyncGenerator
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import aiofiles
+import shortuuid
 from aiohttp import ClientTimeout
 from music_assistant_models.dsp import DSPConfig, DSPDetails, DSPState
 from music_assistant_models.enums import (
@@ -33,22 +34,26 @@ from music_assistant_models.errors import (
 from music_assistant_models.streamdetails import AudioFormat
 
 from music_assistant.constants import (
+    CONF_ALLOW_MEMORY_CACHE,
+    CONF_ENTRY_OUTPUT_LIMITER,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DEFAULT_ALLOW_MEMORY_CACHE,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.util import clean_stream_title
 
+from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_stream
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, communicate
-from .util import create_tempfile, detect_charset
+from .util import detect_charset
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig, PlayerConfig
@@ -66,6 +71,151 @@ HTTP_HEADERS = {"User-Agent": "Lavf/60.16.100.MusicAssistant"}
 HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 
 
+async def remove_file(file_path: str) -> None:
+    """Remove file path (if it exists)."""
+    if not await asyncio.to_thread(os.path.exists, file_path):
+        return
+    await asyncio.to_thread(os.remove, file_path)
+    LOGGER.log(VERBOSE_LOG_LEVEL, "Removed cache file: %s", file_path)
+
+
+class StreamCache:
+    """
+    StreamCache.
+
+    Basic class to handle (temporary) in-memory caching of audio streams.
+    Useful in case of slow or unreliable network connections, faster seeking,
+    or when the audio stream is slow itself.
+    """
+
+    async def create(self) -> None:
+        """Create the cache file (if needed)."""
+        self.mass.cancel_timer(f"clear_cache_{self.cache_id}")
+        if self._fetch_task is None:
+            self._fetch_task = self.mass.create_task(self._fill_cache())
+        # wait until the first part of the file is received
+        await self._first_part_received.wait()
+
+    async def get_audio_stream(self) -> AsyncGenerator[bytes, None]:
+        """Stream audio from cachedata (while it might even still being written)."""
+        try:
+            self._subscribers += 1
+            bytes_read = 0
+            chunksize = 64000
+            await self.create()
+            while True:
+                async with self._lock:
+                    chunk = self._data[bytes_read : bytes_read + chunksize]
+                    bytes_read += len(chunk)
+                if len(chunk) < chunksize and self._all_data_written.is_set():
+                    # reached EOF
+                    break
+                elif not chunk:
+                    # data is not yet available, wait a bit
+                    await asyncio.sleep(0.05)
+                else:
+                    yield chunk
+                del chunk
+        finally:
+            self._subscribers -= 1
+            if self._subscribers == 0:
+                # set a timer to remove the tempfile after 1 minute
+                # if the file is accessed again within this period,
+                # the timer will be cancelled
+                self.mass.call_later(60, self._clear, task_id=f"clear_cache_{self.cache_id}")
+
+    async def _fill_cache(self) -> None:
+        time_start = time.time()
+        self.logger.debug("Fetching audio stream for %s", self.streamdetails.uri)
+        if self.org_stream_type == StreamType.CUSTOM:
+            audio_source = self.mass.get_provider(self.streamdetails.provider).get_audio_stream(
+                self.streamdetails,
+            )
+        elif self.org_stream_type in (StreamType.HTTP, StreamType.ENCRYPTED_HTTP, StreamType.HLS):
+            audio_source = self.org_path
+        else:
+            raise NotImplementedError("Caching of this streamtype is not supported")
+
+        extra_input_args = self.org_extra_input_args or []
+        if self.streamdetails.decryption_key:
+            extra_input_args += [
+                "-decryption_key",
+                self.streamdetails.decryption_key,
+            ]
+
+        # we always use an intermediate ffmpeg process to fetch the original audio source
+        # this may feel a bit redundant, but it's the most reliable way to fetch the audio
+        # because ffmpeg has all logic to handle different audio formats, codecs, etc.
+        # and it also accounts for complicated cases such as encrypted streams or
+        # m4a/mp4 streams with the moov atom at the end of the file.
+        # ffmpeg will produce a lossless copy of the original codec to stdout.
+        self._first_part_received.clear()
+        self._all_data_written.clear()
+        self._data = b""
+        async for chunk in get_ffmpeg_stream(
+            audio_input=audio_source,
+            input_format=self.streamdetails.audio_format,
+            output_format=self.streamdetails.audio_format,
+            extra_input_args=extra_input_args,
+        ):
+            async with self._lock:
+                self._data += chunk
+                del chunk
+            if not self._first_part_received.is_set():
+                self._first_part_received.set()
+                self.logger.debug(
+                    "First part received for %s after %.2fs",
+                    self.streamdetails.uri,
+                    time.time() - time_start,
+                )
+        self._all_data_written.set()
+        self.logger.debug(
+            "Writing all data for %s done in %.2fs",
+            self.streamdetails.uri,
+            time.time() - time_start,
+        )
+
+    def __init__(self, mass: MusicAssistant, streamdetails: StreamDetails) -> None:
+        """Initialize the StreamCache."""
+        self.mass = mass
+        self.streamdetails = streamdetails
+        self.cache_id = shortuuid.random(20)
+        self.logger = LOGGER.getChild("cache")
+        self._fetch_task: asyncio.Task | None = None
+        self._subscribers: int = 0
+        self._first_part_received = asyncio.Event()
+        self._all_data_written = asyncio.Event()
+        self._data: bytes = b""
+        self._lock: asyncio.Lock = asyncio.Lock()
+        self.org_path: str | None = streamdetails.path
+        self.org_stream_type: StreamType | None = streamdetails.stream_type
+        self.org_extra_input_args: list[str] | None = streamdetails.extra_input_args
+        streamdetails.path = "-"
+        streamdetails.stream_type = StreamType.CACHE
+        streamdetails.can_seek = True
+        streamdetails.allow_seek = True
+        streamdetails.extra_input_args = []
+
+    async def _clear(self) -> None:
+        """Clear the cache."""
+        self.logger.debug("Cleaning up cache %s", self.streamdetails.uri)
+        if self._fetch_task and not self._fetch_task.done():
+            self._fetch_task.cancel()
+        self._fetch_task = None
+        self._first_part_received.clear()
+        self._all_data_written.clear()
+        del self._data
+        self._data = b""
+
+    def __del__(self) -> None:
+        """Ensure the cache data gets cleaned up."""
+        if self.mass.closing:
+            # edge case: MA is closing
+            return
+        self.mass.cancel_timer(f"remove_file_{self.cache_id}")
+        del self._data
+
+
 async def crossfade_pcm_parts(
     fade_in_part: bytes,
     fade_out_part: bytes,
@@ -75,8 +225,8 @@ async def crossfade_pcm_parts(
     sample_size = pcm_format.pcm_sample_size
     # calculate the fade_length from the smallest chunk
     fade_length = min(len(fade_in_part), len(fade_out_part)) / sample_size
-    fadeoutfile = create_tempfile()
-    async with aiofiles.open(fadeoutfile.name, "wb") as outfile:
+    fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
+    async with aiofiles.open(fadeout_filename, "wb") as outfile:
         await outfile.write(fade_out_part)
     args = [
         # generic args
@@ -94,7 +244,7 @@ async def crossfade_pcm_parts(
         "-ar",
         str(pcm_format.sample_rate),
         "-i",
-        fadeoutfile.name,
+        fadeout_filename,
         # fade_in part (stdin)
         "-acodec",
         pcm_format.content_type.name.lower(),
@@ -114,7 +264,8 @@ async def crossfade_pcm_parts(
         pcm_format.content_type.value,
         "-",
     ]
-    _returncode, crossfaded_audio, _stderr = await communicate(args, fade_in_part)
+    _, crossfaded_audio, _ = await communicate(args, fade_in_part)
+    await remove_file(fadeout_filename)
     if crossfaded_audio:
         LOGGER.log(
             VERBOSE_LOG_LEVEL,
@@ -207,12 +358,13 @@ def get_player_dsp_details(
     # remove disabled filters
     dsp_config.filters = [x for x in dsp_config.filters if x.enabled]
 
+    output_limiter = is_output_limiter_enabled(mass, player)
     return DSPDetails(
         state=dsp_state,
         input_gain=dsp_config.input_gain,
         filters=dsp_config.filters,
         output_gain=dsp_config.output_gain,
-        output_limiter=dsp_config.output_limiter,
+        output_limiter=output_limiter,
         output_format=player.output_format,
     )
 
@@ -294,10 +446,12 @@ async def get_stream_details(
         raise MediaNotFoundError(
             f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
         )
-    if queue_item.streamdetails and not queue_item.streamdetails.seconds_streamed:
-        # already got a fresh/unused streamdetails
+    if queue_item.streamdetails and (utc() - queue_item.streamdetails.created_at).seconds < 1800:
+        # already got a fresh/unused (or cached) streamdetails
+        # we assume that the streamdetails are valid for max 30 minutes
         streamdetails = queue_item.streamdetails
     else:
+        # retrieve streamdetails from provider
         media_item = queue_item.media_item
         # sort by quality and check item's availability
         for prov_media in sorted(
@@ -321,18 +475,18 @@ async def get_stream_details(
             else:
                 break
         else:
-            raise MediaNotFoundError(
-                f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
-            )
+            msg = f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
+            raise MediaNotFoundError(msg)
 
-    # work out how to handle radio stream
-    if (
-        streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
-        and streamdetails.media_type == MediaType.RADIO
-    ):
-        resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
-        streamdetails.path = resolved_url
-        streamdetails.stream_type = stream_type
+        # work out how to handle radio stream
+        if (
+            streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
+            and streamdetails.media_type == MediaType.RADIO
+        ):
+            resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
+            streamdetails.path = resolved_url
+            streamdetails.stream_type = stream_type
+
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
     # handle skip/fade_in details
@@ -361,12 +515,45 @@ async def get_stream_details(
     # attach the DSP details of all group members
     streamdetails.dsp = get_stream_dsp_details(mass, streamdetails.queue_id)
 
-    process_time = int((time.time() - time_start) * 1000)
     LOGGER.debug(
         "retrieved streamdetails for %s in %s milliseconds",
         queue_item.uri,
-        process_time,
+        int((time.time() - time_start) * 1000),
     )
+
+    if streamdetails.decryption_key:
+        # using intermediate cache is mandatory for encrypted streams
+        streamdetails.enable_cache = True
+
+    # determine if we may use caching for the audio stream
+    if streamdetails.enable_cache is None:
+        allow_cache = mass.config.get_raw_core_config_value(
+            "streams", CONF_ALLOW_MEMORY_CACHE, DEFAULT_ALLOW_MEMORY_CACHE
+        )
+        streamdetails.enable_cache = (
+            allow_cache
+            and streamdetails.duration is not None
+            and streamdetails.media_type
+            in (MediaType.TRACK, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+            and streamdetails.stream_type
+            in (StreamType.HTTP, StreamType.ENCRYPTED_HTTP, StreamType.CUSTOM, StreamType.HLS)
+            and get_chunksize(streamdetails.audio_format, streamdetails.duration) < 100000000
+        )
+
+    # handle temporary cache support of audio stream
+    if streamdetails.enable_cache:
+        if streamdetails.cache is None:
+            streamdetails.cache = StreamCache(mass, streamdetails)
+        else:
+            streamdetails.cache = cast(StreamCache, streamdetails.cache)
+        # create cache (if needed) and wait until the cache is available
+        await streamdetails.cache.create()
+        LOGGER.debug(
+            "streamdetails cache ready for %s in %s milliseconds",
+            queue_item.uri,
+            int((time.time() - time_start) * 1000),
+        )
+
     return streamdetails
 
 
@@ -374,18 +561,52 @@ async def get_media_stream(
     mass: MusicAssistant,
     streamdetails: StreamDetails,
     pcm_format: AudioFormat,
-    audio_source: AsyncGenerator[bytes, None] | str,
     filter_params: list[str] | None = None,
-    extra_input_args: list[str] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Get PCM audio stream for given media details."""
     logger = LOGGER.getChild("media_stream")
     logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
+    extra_input_args = streamdetails.extra_input_args or []
     strip_silence_begin = streamdetails.strip_silence_begin
     strip_silence_end = streamdetails.strip_silence_end
     if streamdetails.fade_in:
         filter_params.append("afade=type=in:start_time=0:duration=3")
         strip_silence_begin = False
+
+    # work out audio source for these streamdetails
+    stream_type = streamdetails.stream_type
+    if stream_type == StreamType.CACHE:
+        cache = cast(StreamCache, streamdetails.cache)
+        audio_source = cache.get_audio_stream()
+    elif stream_type == StreamType.CUSTOM:
+        audio_source = mass.get_provider(streamdetails.provider).get_audio_stream(
+            streamdetails,
+            seek_position=streamdetails.seek_position if streamdetails.can_seek else 0,
+        )
+    elif stream_type == StreamType.ICY:
+        audio_source = get_icy_radio_stream(mass, streamdetails.path, streamdetails)
+    elif stream_type == StreamType.HLS:
+        substream = await get_hls_substream(mass, streamdetails.path)
+        audio_source = substream.path
+        if streamdetails.media_type == MediaType.RADIO:
+            # Especially the BBC streams struggle when they're played directly
+            # with ffmpeg, where they just stop after some minutes,
+            # so we tell ffmpeg to loop around in this case.
+            extra_input_args += ["-stream_loop", "-1", "-re"]
+    else:
+        audio_source = streamdetails.path
+
+    # handle seek support
+    if (
+        streamdetails.seek_position
+        and streamdetails.duration
+        and streamdetails.allow_seek
+        # allow seeking for custom streams,
+        # but only for custom streams that can't seek theirselves
+        and not (stream_type == StreamType.CUSTOM and streamdetails.can_seek)
+    ):
+        extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
+
     bytes_sent = 0
     chunk_number = 0
     buffer: bytes = b""
@@ -415,8 +636,10 @@ async def get_media_stream(
             pcm_format.content_type.value,
             ffmpeg_proc.proc.pid,
         )
-        async for chunk in ffmpeg_proc.iter_chunked(pcm_format.pcm_sample_size):
-            if chunk_number == 0:
+        # use 1 second chunks
+        chunk_size = pcm_format.pcm_sample_size
+        async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
+            if chunk_number == 1:
                 # At this point ffmpeg has started and should now know the codec used
                 # for encoding the audio.
                 streamdetails.audio_format.codec_type = ffmpeg_proc.input_format.codec_type
@@ -430,11 +653,17 @@ async def get_media_stream(
             chunk_number += 1
             # determine buffer size dynamically
             if chunk_number < 5 and strip_silence_begin:
-                req_buffer_size = int(pcm_format.pcm_sample_size * 4)
-            elif chunk_number > 30 and strip_silence_end:
+                req_buffer_size = int(pcm_format.pcm_sample_size * 5)
+            elif chunk_number > 240 and strip_silence_end:
+                req_buffer_size = int(pcm_format.pcm_sample_size * 10)
+            elif chunk_number > 120 and strip_silence_end:
                 req_buffer_size = int(pcm_format.pcm_sample_size * 8)
+            elif chunk_number > 60:
+                req_buffer_size = int(pcm_format.pcm_sample_size * 6)
+            elif chunk_number > 20 and strip_silence_end:
+                req_buffer_size = int(pcm_format.pcm_sample_size * 4)
             else:
-                req_buffer_size = int(pcm_format.pcm_sample_size * 2)
+                req_buffer_size = pcm_format.pcm_sample_size * 2
 
             # always append to buffer
             buffer += chunk
@@ -444,8 +673,9 @@ async def get_media_stream(
                 # buffer is not full enough, move on
                 continue
 
-            if chunk_number == 5 and strip_silence_begin:
+            if strip_silence_begin:
                 # strip silence from begin of audio
+                strip_silence_begin = False
                 chunk = await strip_silence(  # noqa: PLW2901
                     mass, buffer, pcm_format=pcm_format
                 )
@@ -461,10 +691,6 @@ async def get_media_stream(
                 buffer = buffer[pcm_format.pcm_sample_size :]
 
         # end of audio/track reached
-        if bytes_sent == 0:
-            # edge case: no audio data was sent
-            raise AudioError("No audio was received")
-
         logger.log(VERBOSE_LOG_LEVEL, "End of stream reached.")
         if strip_silence_end and buffer:
             # strip silence from end of audio
@@ -480,6 +706,9 @@ async def get_media_stream(
         del buffer
         # wait until stderr also completed reading
         await ffmpeg_proc.wait_with_timeout(5)
+        if bytes_sent == 0:
+            # edge case: no audio data was sent
+            raise AudioError("No audio was received")
         finished = True
     except (Exception, GeneratorExit) as err:
         if isinstance(err, asyncio.CancelledError | GeneratorExit):
@@ -494,7 +723,7 @@ async def get_media_stream(
 
         # try to determine how many seconds we've streamed
         seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-        if not cancelled and ffmpeg_proc.returncode != 0:
+        if not cancelled and ffmpeg_proc.returncode not in (0, 255):
             # dump the last 5 lines of the log in case of an unclean exit
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
         else:
@@ -978,6 +1207,27 @@ def is_grouping_preventing_dsp(player: Player) -> bool:
     return is_multiple_devices and not multi_device_dsp_supported
 
 
+def is_output_limiter_enabled(mass: MusicAssistant, player: Player) -> bool:
+    """Check if the player has the output limiter enabled.
+
+    Unlike DSP, the limiter is still configurable when synchronized without MULTI_DEVICE_DSP.
+    So in grouped scenarios without MULTI_DEVICE_DSP, the permanent sync group or the leader gets
+    decides if the limiter should be turned on or not.
+    """
+    deciding_player_id = player.player_id
+    if player.active_group:
+        # Syncgroup, get from the group player
+        deciding_player_id = player.active_group
+    elif player.synced_to:
+        # Not in sync group, but synced, get from the leader
+        deciding_player_id = player.synced_to
+    return mass.config.get_raw_player_config_value(
+        deciding_player_id,
+        CONF_ENTRY_OUTPUT_LIMITER.key,
+        CONF_ENTRY_OUTPUT_LIMITER.default_value,
+    )
+
+
 def get_player_filter_params(
     mass: MusicAssistant,
     player_id: str,
@@ -988,6 +1238,7 @@ def get_player_filter_params(
     filter_params = []
 
     dsp = mass.config.get_player_dsp_config(player_id)
+    limiter_enabled = True
 
     if player := mass.players.get(player_id):
         if is_grouping_preventing_dsp(player):
@@ -1012,6 +1263,8 @@ def get_player_filter_params(
         # in the audio processing steps. We save this information to
         # later be able to show this to the user in the UI.
         player.output_format = output_format
+
+        limiter_enabled = is_output_limiter_enabled(mass, player)
 
     if dsp.enabled:
         # Apply input gain
@@ -1040,8 +1293,8 @@ def get_player_filter_params(
     elif conf_channels == "right":
         filter_params.append("pan=mono|c0=FR")
 
-    # Add safety limiter at the end, if not explicitly disabled
-    if not dsp.enabled or dsp.output_limiter:
+    # Add safety limiter at the end
+    if limiter_enabled:
         filter_params.append("alimiter=limit=-2dB:level=false:asc=true")
 
     LOGGER.debug("Generated ffmpeg params for player %s: %s", player_id, filter_params)
@@ -1085,7 +1338,10 @@ async def analyze_loudness(
         "-t",
         "600",
     ]
-    if streamdetails.stream_type == StreamType.CUSTOM:
+    if streamdetails.stream_type == StreamType.CACHE:
+        cache = cast(StreamCache, streamdetails.cache)
+        audio_source = cache.get_audio_stream()
+    elif streamdetails.stream_type == StreamType.CUSTOM:
         audio_source = mass.get_provider(streamdetails.provider).get_audio_stream(
             streamdetails,
         )

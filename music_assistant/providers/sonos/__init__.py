@@ -10,14 +10,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigEntryType
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
-
-from .provider import CONF_IPS, SonosPlayerProvider
+from .provider import SonosPlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -51,20 +49,4 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_IPS,
-            type=ConfigEntryType.STRING,
-            label="IP addresses (ADVANCED, NOT SUPPORTED)",
-            description="Additional fixed IP addresses for speakers. "
-            "Should be formatted as a comma separated list of IP addresses "
-            "(e.g. '10.0.0.42, 10.0.0.45').\n"
-            "Invalid addresses may result in the Sonos provider "
-            "becoming unresponsive and server crashes.\n"
-            "Bidirectional unicast communication to and between all IPs is required.\n"
-            "NOT SUPPORTED, USE AT YOUR OWN RISK",
-            category="advanced",
-            default_value=None,
-            required=False,
-        ),
-    )
+    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)

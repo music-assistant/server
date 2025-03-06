@@ -192,8 +192,9 @@ class MusicProvider(Provider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> list[PodcastEpisode]:
+    ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all PodcastEpisodes for given podcast id."""
+        yield
         if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
             raise NotImplementedError
 

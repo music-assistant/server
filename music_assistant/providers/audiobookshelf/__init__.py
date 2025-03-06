@@ -55,6 +55,7 @@ from .constants import (
     CACHE_KEY_LIBRARIES,
     CONF_HIDE_EMPTY_PODCASTS,
     CONF_PASSWORD,
+    CONF_TOKEN,
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
@@ -98,6 +99,14 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
+            key="label",
+            type=ConfigEntryType.LABEL,
+            label="Please provide the address of your Audiobookshelf instance. To authenticate "
+            "you have two options: "
+            "a) Provide username AND password. Leave token empty."
+            "b) Provide ONLY the token.",
+        ),
+        ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
             label="Server",
@@ -108,7 +117,7 @@ async def get_config_entries(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
             label="Username",
-            required=True,
+            required=False,
             description="The username to authenticate to the remote server.",
         ),
         ConfigEntry(
@@ -117,6 +126,14 @@ async def get_config_entries(
             label="Password",
             required=False,
             description="The password to authenticate to the remote server.",
+        ),
+        ConfigEntry(
+            key=CONF_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Token _instead_ of user/ password.",
+            required=False,
+            description="Instead of using username and password, you may provide the user's token."
+            "\nThe token can be seen in Audiobookshelf as an admin user in Settings -> Users.",
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
@@ -156,6 +173,7 @@ class Audiobookshelf(MusicProvider):
         base_url = str(self.config.get_value(CONF_URL))
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD))
+        token = self.config.get_value(CONF_TOKEN)
         verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
         session_config = aioabs.SessionConfiguration(
             session=self.mass.http_session,
@@ -165,9 +183,16 @@ class Audiobookshelf(MusicProvider):
             pagination_items_per_page=30,  # audible provider goes with 50 for pagination
         )
         try:
-            self._client, self._client_socket = await aioabs.get_user_and_socket_client(
-                session_config=session_config, username=username, password=password
-            )
+            if token is not None:
+                session_config.token = str(token)
+                (
+                    self._client,
+                    self._client_socket,
+                ) = await aioabs.get_user_and_socket_client_by_token(session_config=session_config)
+            else:
+                self._client, self._client_socket = await aioabs.get_user_and_socket_client(
+                    session_config=session_config, username=username, password=password
+                )
             await self._client_socket.init_client()
         except AbsLoginError as exc:
             raise LoginFailed(f"Login to abs instance at {base_url} failed.") from exc
@@ -290,13 +315,14 @@ class Audiobookshelf(MusicProvider):
             base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
         )
 
-    async def get_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all podcast episodes of podcast.
 
         Adds progress information.
         """
         abs_podcast = await self._get_abs_expanded_podcast(prov_podcast_id=prov_podcast_id)
-        episode_list = []
         episode_cnt = 1
         # the user has the progress of all media items
         # so we use a single api call here to obtain possibly many
@@ -320,9 +346,8 @@ class Audiobookshelf(MusicProvider):
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
             )
-            episode_list.append(mass_episode)
+            yield mass_episode
             episode_cnt += 1
-        return episode_list
 
     async def get_podcast_episode(
         self, prov_episode_id: str, add_progress: bool = True
@@ -549,7 +574,7 @@ class Audiobookshelf(MusicProvider):
         if media_type == MediaType.AUDIOBOOK:
             progress = await self._client.get_my_media_progress(item_id=item_id)
 
-        if progress is not None:
+        if progress is not None and progress.current_time is not None:
             self.logger.debug("Resume position: obtained.")
             return progress.is_finished, int(progress.current_time * 1000)
 
@@ -1072,7 +1097,7 @@ class Audiobookshelf(MusicProvider):
             # timestamp, we do not update again.
             if not self.progress_guard.guard_ok_abs(progress):
                 continue
-            if not progress.current_time >= 30:
+            if progress.current_time is not None and not progress.current_time >= 30:
                 # same as mass default, only > 30s
                 continue
             if progress.library_item_id not in known_ids:
@@ -1088,6 +1113,8 @@ class Audiobookshelf(MusicProvider):
         # helper progress also ensures no useless progress updates,
         # see comment above
         self.progress_guard.add_progress(progress.library_item_id)
+        if progress.current_time is None:
+            return
         mass_audiobook = await self.mass.music.get_library_item_by_prov_id(
             media_type=MediaType.AUDIOBOOK,
             item_id=progress.library_item_id,
@@ -1105,6 +1132,8 @@ class Audiobookshelf(MusicProvider):
         # helper progress also ensures no useless progress updates,
         # see comment above
         self.progress_guard.add_progress(progress.library_item_id, progress.episode_id)
+        if progress.current_time is None:
+            return
         _episode_id = f"{progress.library_item_id} {progress.episode_id}"
         try:
             # need to obtain full podcast, and then search for episode

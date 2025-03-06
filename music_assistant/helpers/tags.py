@@ -426,12 +426,16 @@ class AudioTags:
         return self.tags.get(key, default)
 
 
-async def async_parse_tags(input_file: str, file_size: int | None = None) -> AudioTags:
+async def async_parse_tags(
+    input_file: str, file_size: int | None = None, require_duration: bool = False
+) -> AudioTags:
     """Parse tags from a media file (or URL). Async friendly."""
-    return await asyncio.to_thread(parse_tags, input_file, file_size)
+    return await asyncio.to_thread(parse_tags, input_file, file_size, require_duration)
 
 
-def parse_tags(input_file: str, file_size: int | None = None) -> AudioTags:
+def parse_tags(
+    input_file: str, file_size: int | None = None, require_duration: bool = False
+) -> AudioTags:
     """
     Parse tags from a media file (or URL). NOT Async friendly.
 
@@ -470,6 +474,9 @@ def parse_tags(input_file: str, file_size: int | None = None) -> AudioTags:
         if not tags.duration and tags.raw.get("format", {}).get("duration"):
             tags.duration = float(tags.raw["format"]["duration"])
 
+        if not tags.duration and require_duration:
+            tags.duration = get_file_duration(input_file)
+
         # we parse all (basic) tags for all file formats using ffmpeg
         # but we also try to extract some extra tags for local files using mutagen
         if not input_file.startswith("http") and os.path.isfile(input_file):
@@ -487,6 +494,37 @@ def parse_tags(input_file: str, file_size: int | None = None) -> AudioTags:
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
         msg = f"Unable to retrieve info for {input_file}: {err!s}"
         raise InvalidDataError(msg) from err
+
+
+def get_file_duration(input_file: str) -> float:
+    """
+    Parse file/stream duration from an audio file using ffmpeg.
+
+    NOT Async friendly.
+    """
+    args = (
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "info",
+        "-i",
+        input_file,
+        "-f",
+        "null",
+        "-",
+    )
+    try:
+        res = subprocess.check_output(args, stderr=subprocess.STDOUT).decode()  # noqa: S603
+        # extract duration from ffmpeg output
+        duration_str = res.split("time=")[-1].split(" ")[0].strip()
+        duration_parts = duration_str.split(":")
+        duration = 0
+        for part in duration_parts:
+            duration = duration * 60 + float(part)
+        return duration
+    except Exception as err:
+        error_msg = f"Unable to retrieve duration for {input_file}"
+        raise InvalidDataError(error_msg) from err
 
 
 def parse_tags_mutagen(input_file: str) -> dict[str, Any]:

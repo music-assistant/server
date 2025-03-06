@@ -6,6 +6,7 @@ from enum import StrEnum
 CONF_URL = "url"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
+CONF_TOKEN = "token"
 CONF_VERIFY_SSL = "verify_ssl"
 # optionally hide podcasts with no episodes
 CONF_HIDE_EMPTY_PODCASTS = "hide_empty_podcasts"

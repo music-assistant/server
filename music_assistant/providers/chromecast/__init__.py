@@ -32,6 +32,7 @@ from music_assistant.constants import (
     BASE_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+    CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
@@ -116,7 +117,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return ()  # we do not have any config entries (yet)
+    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
 
 
 @dataclass
@@ -150,6 +151,8 @@ class ChromecastProvider(PlayerProvider):
         self._discover_lock = threading.Lock()
         self.castplayers = {}
         self.mz_mgr = MultizoneManager()
+        # Handle config option for manual IP's
+        manual_ip_config: list[str] = config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
         self.browser = CastBrowser(
             SimpleCastListener(
                 add_callback=self._on_chromecast_discovered,
@@ -157,6 +160,7 @@ class ChromecastProvider(PlayerProvider):
                 update_callback=self._on_chromecast_discovered,
             ),
             self.mass.aiozc.zeroconf,
+            known_hosts=manual_ip_config,
         )
         # set-up pychromecast logging
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -166,7 +170,6 @@ class ChromecastProvider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Discover Cast players on the network."""
-        # start discovery in executor
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
     async def unload(self, is_removed: bool = False) -> None:

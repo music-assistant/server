@@ -157,14 +157,12 @@ class PodcastMusicprovider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> list[PodcastEpisode]:
+    ) -> AsyncGenerator[PodcastEpisode, None]:
         """List all episodes for the podcast."""
-        episodes = []
         if prov_podcast_id != self.podcast_id:
             raise Exception(f"Podcast id not in provider: {prov_podcast_id}")
         for idx, episode in enumerate(self.parsed["episodes"]):
-            episodes.append(await self._parse_episode(episode, idx))
-        return episodes
+            yield await self._parse_episode(episode, idx)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""

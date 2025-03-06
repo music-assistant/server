@@ -184,6 +184,7 @@ class LocalFileSystemProvider(MusicProvider):
         }
         if self.write_access:
             music_features.add(ProviderFeature.PLAYLIST_TRACKS_EDIT)
+            music_features.add(ProviderFeature.PLAYLIST_CREATE)
         return music_features
 
     @property
@@ -637,7 +638,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
-        for episode in await self.get_podcast_episodes(prov_podcast_id):
+        async for episode in self.get_podcast_episodes(prov_podcast_id):
             assert isinstance(episode.podcast, Podcast)
             return episode.podcast
         msg = f"Podcast not found: {prov_podcast_id}"
@@ -701,7 +702,9 @@ class LocalFileSystemProvider(MusicProvider):
             )
         return result
 
-    async def get_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get podcast episodes for given podcast id."""
         episodes: list[PodcastEpisode] = []
 
@@ -726,7 +729,8 @@ class LocalFileSystemProvider(MusicProvider):
                     continue
                 tm.create_task(_process_podcast_episode(item))
 
-        return episodes
+        for episode in episodes:
+            yield episode
 
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
         """Try to parse a track from a playlist line."""
@@ -878,7 +882,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
-                        content_type=ContentType.try_parse(tags.format),
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1100,7 +1104,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
-                        content_type=ContentType.try_parse(tags.format),
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1198,7 +1202,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
-                        content_type=ContentType.try_parse(tags.format),
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1589,7 +1593,7 @@ class LocalFileSystemProvider(MusicProvider):
             provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
-                content_type=ContentType.try_parse(tags.format),
+                content_type=ContentType.try_parse(file_item.ext or tags.format),
                 sample_rate=tags.sample_rate,
                 bit_depth=tags.bits_per_sample,
                 channels=tags.channels,

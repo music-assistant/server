@@ -30,6 +30,7 @@ from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    CONF_ALLOW_MEMORY_CACHE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE,
@@ -44,6 +45,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DEFAULT_ALLOW_MEMORY_CACHE,
     DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
     ICY_HEADERS,
@@ -54,8 +56,6 @@ from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
     crossfade_pcm_parts,
     get_chunksize,
-    get_hls_substream,
-    get_icy_radio_stream,
     get_media_stream,
     get_player_filter_params,
     get_silence,
@@ -197,6 +197,18 @@ class StreamsController(CoreController):
                 category="advanced",
                 required=False,
             ),
+            ConfigEntry(
+                key=CONF_ALLOW_MEMORY_CACHE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_ALLOW_MEMORY_CACHE,
+                label="Allow (in-memory) caching of audio streams",
+                description="To ensure smooth playback as well as fast seeking, "
+                "Music Assistant by default caches audio streams (in memory). "
+                "On systems with limited memory, this can be disabled, "
+                "but may result in less smooth playback.",
+                category="advanced",
+                required=False,
+            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -265,6 +277,21 @@ class StreamsController(CoreController):
         base_path = "flow" if flow_mode else "single"
         return f"{self._server.base_url}/{base_path}/{queue_item.queue_id}/{queue_item.queue_item_id}.{fmt}"  # noqa: E501
 
+    async def get_plugin_source_url(
+        self,
+        plugin_source: str,
+        player_id: str,
+    ) -> str:
+        """Get the url for the Plugin Source stream/proxy."""
+        output_codec = ContentType.try_parse(
+            await self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
+        )
+        fmt = output_codec.value
+        # handle raw pcm without exact format specifiers
+        if output_codec.is_pcm() and ";" not in fmt:
+            fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
+        return f"{self._server.base_url}/pluginsource/{plugin_source}/{player_id}.{fmt}"
+
     async def serve_queue_item_stream(self, request: web.Request) -> web.Response:
         """Stream single queueitem audio to a player."""
         self._log_request(request)
@@ -286,6 +313,7 @@ class StreamsController(CoreController):
                 self.logger.error(
                     "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                 )
+                queue_item.available = False
                 raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
         # work out output format/details
         output_format = await self.get_output_format(
@@ -343,7 +371,6 @@ class StreamsController(CoreController):
         # inform the queue that the track is now loaded in the buffer
         # so for example the next track can be enqueued
         self.mass.player_queues.track_loaded_in_buffer(queue_id, queue_item_id)
-
         async for chunk in get_ffmpeg_stream(
             audio_input=self.get_queue_item_stream(
                 queue_item=queue_item,
@@ -371,7 +398,10 @@ class StreamsController(CoreController):
             # some players do not like it when we dont return anything after an error
             # so we send some silence so they move on to the next track on their own (hopefully)
             async for chunk in get_silence(10, output_format):
-                await resp.write(chunk)
+                try:
+                    await resp.write(chunk)
+                except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                    break
         return resp
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.Response:
@@ -649,19 +679,6 @@ class StreamsController(CoreController):
         # like https hosts and it also offers the pre-announce 'bell'
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}?pre_announce={use_pre_announce}"  # noqa: E501
 
-    def get_plugin_source_url(
-        self,
-        plugin_source: str,
-        player_id: str,
-        output_codec: ContentType = ContentType.FLAC,
-    ) -> str:
-        """Get the url for the Plugin Source stream/proxy."""
-        fmt = output_codec.value
-        # handle raw pcm without exact format specifiers
-        if output_codec.is_pcm() and ";" not in fmt:
-            fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
-        return f"{self._server.base_url}/pluginsource/{plugin_source}/{player_id}.{fmt}"
-
     async def get_queue_flow_stream(
         self,
         queue: PlayerQueue,
@@ -904,7 +921,7 @@ class StreamsController(CoreController):
         streamdetails = queue_item.streamdetails
         assert streamdetails
         filter_params = []
-        extra_input_args = streamdetails.extra_input_args or []
+
         # handle volume normalization
         gain_correct: float | None = None
         if streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
@@ -932,40 +949,6 @@ class StreamsController(CoreController):
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
 
-        # work out audio source for these streamdetails
-        if streamdetails.stream_type == StreamType.CUSTOM:
-            audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
-                streamdetails,
-                seek_position=streamdetails.seek_position,
-            )
-        elif streamdetails.stream_type == StreamType.ICY:
-            audio_source = get_icy_radio_stream(self.mass, streamdetails.path, streamdetails)
-        elif streamdetails.stream_type == StreamType.HLS:
-            substream = await get_hls_substream(self.mass, streamdetails.path)
-            audio_source = substream.path
-            if streamdetails.media_type == MediaType.RADIO:
-                # Especially the BBC streams struggle when they're played directly
-                # with ffmpeg, where they just stop after some minutes,
-                # so we tell ffmpeg to loop around in this case.
-                extra_input_args += ["-stream_loop", "-1", "-re"]
-        else:
-            audio_source = streamdetails.path
-
-        # add support for decryption key provided in streamdetails
-        if streamdetails.decryption_key:
-            extra_input_args += ["-decryption_key", streamdetails.decryption_key]
-
-        # handle seek support
-        if (
-            streamdetails.seek_position
-            and streamdetails.duration
-            and streamdetails.allow_seek
-            # allow seeking for custom streams,
-            # but only for custom streams that can't seek theirselves
-            and (streamdetails.stream_type != StreamType.CUSTOM or not streamdetails.can_seek)
-        ):
-            extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
-
         if streamdetails.media_type == MediaType.RADIO:
             # pad some silence before the radio stream starts to create some headroom
             # for radio stations that do not provide any look ahead buffer
@@ -982,9 +965,7 @@ class StreamsController(CoreController):
             self.mass,
             streamdetails=streamdetails,
             pcm_format=pcm_format,
-            audio_source=audio_source,
             filter_params=filter_params,
-            extra_input_args=extra_input_args,
         ):
             yield chunk
 

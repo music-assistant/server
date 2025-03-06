@@ -47,6 +47,7 @@ CONF_USERNAME: Final[str] = "username"
 CONF_PASSWORD: Final[str] = "password"
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
+CONF_OUTPUT_LIMITER: Final[str] = "output_limiter"
 CONF_DEPRECATED_EQ_BASS: Final[str] = "eq_bass"
 CONF_DEPRECATED_EQ_MID: Final[str] = "eq_mid"
 CONF_DEPRECATED_EQ_TREBLE: Final[str] = "eq_treble"
@@ -83,10 +84,13 @@ CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
+CONF_ALLOW_MEMORY_CACHE: Final[str] = "allow_memory_cache"
+
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
+DEFAULT_ALLOW_MEMORY_CACHE: Final[bool] = True
 
 # common db tables
 DB_TABLE_PLAYLOG: Final[str] = "playlog"
@@ -221,6 +225,15 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     category="advanced",
 )
 
+CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
+    key=CONF_OUTPUT_LIMITER,
+    type=ConfigEntryType.BOOLEAN,
+    label="Enable limiting to prevent clipping",
+    default_value=True,
+    description="Activates a limiter that prevents audio distortion by making loud peaks quieter.",
+    category="audio",
+)
+
 # These EQ Options are deprecated and will be removed in the future
 # To allow for automatic migration to the new DSP system, they are still included in the config
 CONF_ENTRY_DEPRECATED_EQ_BASS = ConfigEntry(
@@ -327,6 +340,16 @@ CONF_ENTRY_OUTPUT_CODEC_HIDDEN = ConfigEntry.from_dict(
 CONF_ENTRY_OUTPUT_CODEC_ENFORCE_FLAC = ConfigEntry.from_dict(
     {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "flac", "hidden": True}
 )
+
+
+def create_output_codec_config_entry(
+    hidden: bool = False, default_value: str = "flac"
+) -> ConfigEntry:
+    """Create output codec config entry based on player specific helpers."""
+    conf_entry = ConfigEntry.from_dict(CONF_ENTRY_OUTPUT_CODEC.to_dict())
+    conf_entry.hidden = hidden
+    conf_entry.default_value = default_value
+    return conf_entry
 
 
 CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
@@ -513,6 +536,27 @@ CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
     required=False,
 )
 
+CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
+    key="manual_discovery_ip_addresses",
+    type=ConfigEntryType.STRING,
+    label="Manual IP addresses for discovery",
+    description="In normal circumstances, "
+    "Music Assistant will automatically discover all players on the network. "
+    "using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\n"
+    "In case of special network setups or when you run into issues where "
+    "one or more players are not discovered, you can manually add the IP "
+    "addresses of the players here. \n\n"
+    "Note that this setting is not recommended for normal use and should only be used "
+    "if you know what you are doing. Also, if players are not on the same subnet as"
+    "the Music Assistant server, you may run into issues with streaming. "
+    "In that case always ensure that the players can reach the server on the network "
+    "and double check the base URL configuration of the Stream server in the settings.",
+    category="advanced",
+    default_value=[],
+    required=False,
+    multi_value=True,
+)
+
 
 def create_sample_rates_config_entry(
     supported_sample_rates: list[int] | None = None,
@@ -531,6 +575,11 @@ def create_sample_rates_config_entry(
     conf_entry.hidden = hidden
     options: list[ConfigValueOption] = []
     default_value: list[str] = []
+
+    if not supported_sample_rates and max_sample_rate is None:
+        supported_sample_rates = [44100]
+    if not supported_bit_depths and max_bit_depth is None:
+        supported_bit_depths = [16]
 
     for option in CONF_ENTRY_SAMPLE_RATES.options:
         option_value = cast(str, option.value)
@@ -560,6 +609,7 @@ BASE_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
+    CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_AUTO_PLAY,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_ENTRY_HIDE_PLAYER,

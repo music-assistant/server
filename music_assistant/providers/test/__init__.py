@@ -301,13 +301,11 @@ class TestProvider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> list[PodcastEpisode]:
+    ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all PodcastEpisodes for given podcast id."""
         num_episodes = 25
-        return [
-            await self.get_podcast_episode(f"{prov_podcast_id}_{episode_idx}")
-            for episode_idx in range(num_episodes)
-        ]
+        for episode_idx in range(num_episodes):
+            yield await self.get_podcast_episode(f"{prov_podcast_id}_{episode_idx}")
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""

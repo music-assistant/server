@@ -446,6 +446,16 @@ class MusicAssistant:
         msg = "Task does not exist"
         raise KeyError(msg)
 
+    def cancel_task(self, task_id: str) -> None:
+        """Cancel existing scheduled task."""
+        if existing := self._tracked_tasks.pop(task_id, None):
+            existing.cancel()
+
+    def cancel_timer(self, task_id: str) -> None:
+        """Cancel existing scheduled timer."""
+        if existing := self._tracked_timers.pop(task_id, None):
+            existing.cancel()
+
     def register_api_command(
         self,
         command: str,

@@ -408,18 +408,18 @@ class YoutubeMusicProvider(MusicProvider):
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         return self._parse_podcast(podcast_obj)
 
-    async def get_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all episodes from a podcast."""
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         podcast_obj["podcastId"] = prov_podcast_id
         podcast = self._parse_podcast(podcast_obj)
-        episodes = []
         for index, episode_obj in enumerate(podcast_obj.get("episodes", []), start=1):
             episode = self._parse_podcast_episode(episode_obj, podcast)
             ep_index = episode_obj.get("index") or index
             episode.position = ep_index
-            episodes.append(episode)
-        return episodes
+            yield episode
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get a single Podcast Episode."""
