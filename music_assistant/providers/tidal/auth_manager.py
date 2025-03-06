@@ -125,7 +125,7 @@ class TidalAuthManager:
         if not refresh_token:
             return False
 
-        client_id = self._auth_info.get("client_id", "")
+        client_id = self._auth_info.get("client_id", app_var(9))
 
         data = {
             "refresh_token": refresh_token,
