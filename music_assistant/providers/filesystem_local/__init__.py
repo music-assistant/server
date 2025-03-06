@@ -882,7 +882,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
-                        content_type=ContentType.try_parse(tags.format),
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1104,7 +1104,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
-                        content_type=ContentType.try_parse(tags.format),
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1202,7 +1202,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
-                        content_type=ContentType.try_parse(tags.format),
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
                         channels=tags.channels,
@@ -1593,7 +1593,7 @@ class LocalFileSystemProvider(MusicProvider):
             provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
-                content_type=ContentType.try_parse(tags.format),
+                content_type=ContentType.try_parse(file_item.ext or tags.format),
                 sample_rate=tags.sample_rate,
                 bit_depth=tags.bits_per_sample,
                 channels=tags.channels,
