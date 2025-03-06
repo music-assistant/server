@@ -551,10 +551,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _parse_sonos_queue_item(self, queue_item: QueueItem) -> dict[str, Any]:
         """Parse a Sonos queue item to a PlayerMedia object."""
-        available = queue_item.media_item.available if queue_item.media_item else True
         return {
             "id": queue_item.queue_item_id,
-            "deleted": not available,
+            "deleted": not queue_item.available,
             "policies": {},
             "track": {
                 "type": "track",

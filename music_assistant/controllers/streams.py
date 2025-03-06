@@ -313,6 +313,7 @@ class StreamsController(CoreController):
                 self.logger.error(
                     "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                 )
+                queue_item.available = False
                 raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
         # work out output format/details
         output_format = await self.get_output_format(
