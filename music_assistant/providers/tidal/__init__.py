@@ -11,7 +11,11 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from aiohttp import ClientResponse
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+)
 from music_assistant_models.enums import (
     AlbumType,
     ConfigEntryType,
@@ -43,7 +47,10 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CACHE_CATEGORY_DEFAULT
-from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    throttle_with_retries,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 from .auth_manager import ManualAuthenticationHelper, TidalAuthManager
@@ -641,42 +648,73 @@ class TidalProvider(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         parsed_results = SearchResults()
-        media_types = [
-            x
-            for x in media_types
-            if x in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST)
-        ]
-        if not media_types:
+
+        # Filter supported media types and convert to strings for the API
+        media_type_strings = []
+        for media_type in media_types:
+            if media_type == MediaType.ARTIST:
+                media_type_strings.append("artists")
+            elif media_type == MediaType.ALBUM:
+                media_type_strings.append("albums")
+            elif media_type == MediaType.TRACK:
+                media_type_strings.append("tracks")
+            elif media_type == MediaType.PLAYLIST:
+                media_type_strings.append("playlists")
+
+        if not media_type_strings:
             return parsed_results
+
+        # Add debug logging
+        self.logger.debug(
+            "Searching Tidal for %s, types: %s, limit: %d",
+            search_query,
+            media_type_strings,
+            limit,
+        )
 
         api_result = await self._get_data(
             "search",
             params={
                 "query": search_query.replace("'", ""),
                 "limit": limit,
-                "types": ",".join(media_types),
+                "types": ",".join(media_type_strings),  # Use strings, not enum values
             },
         )
 
         # Handle potential tuple return (data, etag)
         results = self._extract_data(api_result)
 
-        if results["artists"]:
+        self.logger.debug("Tidal search response keys: %s", list(results.keys()))
+
+        # Check if keys exist and are not None before processing
+        if "artists" in results and results["artists"] and "items" in results["artists"]:
             parsed_results.artists = [
                 self._parse_artist(artist) for artist in results["artists"]["items"]
             ]
-        if results["albums"]:
+
+        if "albums" in results and results["albums"] and "items" in results["albums"]:
             parsed_results.albums = [
                 self._parse_album(album) for album in results["albums"]["items"]
             ]
-        if results["playlists"]:
+
+        if "playlists" in results and results["playlists"] and "items" in results["playlists"]:
             parsed_results.playlists = [
                 self._parse_playlist(playlist) for playlist in results["playlists"]["items"]
             ]
-        if results["tracks"]:
+
+        if "tracks" in results and results["tracks"] and "items" in results["tracks"]:
             parsed_results.tracks = [
                 self._parse_track(track) for track in results["tracks"]["items"]
             ]
+
+        self.logger.debug(
+            "Search results - artists: %d, albums: %d, tracks: %d, playlists: %d",
+            len(parsed_results.artists),
+            len(parsed_results.albums),
+            len(parsed_results.tracks),
+            len(parsed_results.playlists),
+        )
+
         return parsed_results
 
     @handle_item_errors("Track")
