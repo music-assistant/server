@@ -1,6 +1,6 @@
 {
   "type": "plugin",
-  "domain": "lastfm",
+  "domain": "lastfm_scrobble",
   "name": "LastFM Scrobbler",
   "description": "Scrobble your music to Last.fm and others with a compatible API like Libre.fm",
   "codeowners": ["@music-assistant"],

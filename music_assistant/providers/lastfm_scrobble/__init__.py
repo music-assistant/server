@@ -1,5 +1,6 @@
 """Allows scrobbling of tracks with the help of PyLast."""
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
