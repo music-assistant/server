@@ -537,7 +537,6 @@ async def get_stream_details(
             in (MediaType.TRACK, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
             and streamdetails.stream_type
             in (StreamType.HTTP, StreamType.ENCRYPTED_HTTP, StreamType.CUSTOM, StreamType.HLS)
-            and streamdetails.audio_format.content_type != ContentType.UNKNOWN
             and get_chunksize(streamdetails.audio_format, streamdetails.duration) < 100000000
         )
 

@@ -79,14 +79,12 @@ class FFMpeg(AsyncProcess):
                 clean_args.append("<URL>")
             elif "/" in arg and "." in arg:
                 clean_args.append("<FILE>")
-            elif arg.startswith("/tmp/"):  # noqa: S108
-                clean_args.append("<CACHE>")
             elif arg.startswith("data:application/"):
                 clean_args.append("<DATA>")
             else:
                 clean_args.append(arg)
         args_str = " ".join(clean_args)
-        self.logger.debug("started with args: %s", args_str)
+        self.logger.log(VERBOSE_LOG_LEVEL, "started with args: %s", args_str)
         self._logger_task = asyncio.create_task(self._log_reader_task())
         if isinstance(self.audio_input, AsyncGenerator):
             self._stdin_task = asyncio.create_task(self._feed_stdin())
