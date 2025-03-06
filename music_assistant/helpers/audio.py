@@ -81,9 +81,15 @@ class StreamCache:
     """
     StreamCache.
 
-    Basic class to handle (temporary) in-memory caching of audio streams.
+    Basic class to handle (temporary) caching of audio streams.
     Useful in case of slow or unreliable network connections, faster seeking,
     or when the audio stream is slow itself.
+
+    The cache is stored in a file on disk so ffmpeg can access it directly.
+    After 1 minute of inactivity, the cache file will be removed.
+
+    Because we use /tmp as the cache location, and on our systems /tmp is mounted as tmpfs,
+    the cache will be stored in memory and not on the disk.
     """
 
     @property

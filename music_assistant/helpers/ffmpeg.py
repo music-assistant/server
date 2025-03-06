@@ -79,6 +79,8 @@ class FFMpeg(AsyncProcess):
                 clean_args.append("<URL>")
             elif "/" in arg and "." in arg:
                 clean_args.append("<FILE>")
+            elif arg.startswith("/tmp/"):  # noqa: S108
+                clean_args.append("<CACHE>")
             elif arg.startswith("data:application/"):
                 clean_args.append("<DATA>")
             else:
