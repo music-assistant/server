@@ -691,10 +691,6 @@ async def get_media_stream(
                 buffer = buffer[pcm_format.pcm_sample_size :]
 
         # end of audio/track reached
-        if bytes_sent == 0:
-            # edge case: no audio data was sent
-            raise AudioError("No audio was received")
-
         logger.log(VERBOSE_LOG_LEVEL, "End of stream reached.")
         if strip_silence_end and buffer:
             # strip silence from end of audio
@@ -710,6 +706,9 @@ async def get_media_stream(
         del buffer
         # wait until stderr also completed reading
         await ffmpeg_proc.wait_with_timeout(5)
+        if bytes_sent == 0:
+            # edge case: no audio data was sent
+            raise AudioError("No audio was received")
         finished = True
     except (Exception, GeneratorExit) as err:
         if isinstance(err, asyncio.CancelledError | GeneratorExit):

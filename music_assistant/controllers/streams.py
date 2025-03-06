@@ -398,7 +398,10 @@ class StreamsController(CoreController):
             # some players do not like it when we dont return anything after an error
             # so we send some silence so they move on to the next track on their own (hopefully)
             async for chunk in get_silence(10, output_format):
-                await resp.write(chunk)
+                try:
+                    await resp.write(chunk)
+                except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                    break
         return resp
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.Response:

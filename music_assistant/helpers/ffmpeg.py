@@ -287,7 +287,7 @@ def get_ffmpeg_args(  # noqa: PLR0915
             "-f",
             output_format.content_type.value,
         ]
-    elif input_format == output_format and not extra_args:
+    elif input_format == output_format and not filter_params and not extra_args:
         # passthrough-mode (e.g. for creating the cache)
         if output_format.content_type in (
             ContentType.MP4,
