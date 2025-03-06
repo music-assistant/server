@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Coroutine
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Union
 
 from aiohttp import web
 
@@ -107,7 +107,9 @@ class Webserver:
     def register_dynamic_route(
         self,
         path: str,
-        handler: Callable[[web.Request], Coroutine[Any, Any, web.Response]],
+        handler: Callable[
+            [web.Request], Coroutine[Any, Any, Union[web.Response, web.StreamResponse]]
+        ],
         method: str = "*",
     ) -> Callable:
         """Register a dynamic route on the webserver, returns handler to unregister."""
