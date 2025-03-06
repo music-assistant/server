@@ -1607,9 +1607,9 @@ class PlayerQueuesController(CoreController):
                 elapsed_time = int(player.corrected_elapsed_time or 0)
                 current_index = self.index_by_id(queue_id, item_id)
             else:
-                # this should not happen but we will handle it gracefully
-                elapsed_time = 0
-                current_index = None
+                # this may happen if the player is still transitioning between tracks
+                # we ignore this for now and keep the current index as is
+                return
 
             # get current/next item based on current index
             queue.current_index = current_index
