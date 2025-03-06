@@ -86,6 +86,7 @@ CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_MEMORY_CACHE: Final[str] = "allow_memory_cache"
 
+
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
@@ -533,6 +534,27 @@ CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
     label="Please note that this feature/provider is still in early stages. \n\n"
     "Functionality may still be limited and/or bugs may occur!",
     required=False,
+)
+
+CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
+    key="manual_discovery_ip_addresses",
+    type=ConfigEntryType.STRING,
+    label="Manual IP addresses for discovery",
+    description="In normal circumstances, "
+    "Music Assistant will automatically discover all players on the network. "
+    "using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\n"
+    "In case of special network setups or when you run into issues where "
+    "one or more players are not discovered, you can manually add the IP "
+    "addresses of the players here. \n\n"
+    "Note that this setting is not recommended for normal use and should only be used "
+    "if you know what you are doing. Also, if players are not on the same subnet as"
+    "the Music Assistant server, you may run into issues with streaming. "
+    "In that case always ensure that the players can reach the server on the network "
+    "and double check the base URL configuration of the Stream server in the settings.",
+    category="advanced",
+    default_value=[],
+    required=False,
+    multi_value=True,
 )
 
 

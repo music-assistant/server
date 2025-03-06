@@ -808,6 +808,15 @@ class ConfigController:
                 self._data[CONF_PROVIDERS].pop(instance_id, None)
                 LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
                 changed = True
+        # migrate manual_ips to new format
+        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+            if not (values := provider_config.get("values")):
+                continue
+            if not (ips := values.get("ips")):
+                continue
+            values["manual_discovery_ip_addresses"] = ips.split(",")
+            del values["ips"]
+            changed = True
         # migrate sample_rates config entry
         for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
             if not (values := player_config.get("values")):

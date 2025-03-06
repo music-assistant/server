@@ -25,6 +25,7 @@ from zeroconf import ServiceStateChange
 from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+    CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_ENTRY_OUTPUT_CODEC,
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
@@ -40,8 +41,6 @@ from .player import SonosPlayer
 if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
     from zeroconf.asyncio import AsyncServiceInfo
-
-CONF_IPS = "ips"
 
 
 class SonosPlayerProvider(PlayerProvider):
@@ -73,30 +72,22 @@ class SonosPlayerProvider(PlayerProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
-
-        manual_ip_config: str | None
-        # Handle config option for manual IP's (comma separated list)
-        if (manual_ip_config := self.config.get_value(CONF_IPS)) is not None:
-            ips = manual_ip_config.split(",")
-            for raw_ip in ips:
-                # strip to ignore whitespace
-                # (e.g. '10.0.0.42, 10.0.0.43' -> ('10.0.0.42', ' 10.0.0.43'))
-                ip = raw_ip.strip()
-                if ip == "":
-                    continue
-                try:
-                    # get discovery info from SONOS speaker so we can provide an ID & other info
-                    discovery_info = await get_discovery_info(self.mass.http_session, ip)
-                except ClientError as err:
-                    self.logger.debug(
-                        "Ignoring %s (manual IP) as it is not reachable: %s", ip, str(err)
-                    )
-                    continue
-                player_id = discovery_info["device"]["id"]
-                self.sonos_players[player_id] = sonos_player = SonosPlayer(
-                    self, player_id, discovery_info=discovery_info, ip_address=ip
+        # Handle config option for manual IP's
+        manual_ip_config: list[str] = self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
+        for ip_address in manual_ip_config:
+            try:
+                # get discovery info from SONOS speaker so we can provide an ID & other info
+                discovery_info = await get_discovery_info(self.mass.http_session, ip_address)
+            except ClientError as err:
+                self.logger.debug(
+                    "Ignoring %s (manual IP) as it is not reachable: %s", ip_address, str(err)
                 )
-                await sonos_player.setup()
+                continue
+            player_id = discovery_info["device"]["id"]
+            self.sonos_players[player_id] = sonos_player = SonosPlayer(
+                self, player_id, discovery_info=discovery_info, ip_address=ip_address
+            )
+            await sonos_player.setup()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
