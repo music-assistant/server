@@ -11,6 +11,12 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from aiohttp import ClientResponse
+from aiohttp.client_exceptions import (
+    ClientConnectorError,
+    ClientError,
+    ClientPayloadError,
+    ClientResponseError,
+)
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -327,11 +333,6 @@ class TidalProvider(MusicProvider):
         self.update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
         self.update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
         self.update_config_value(CONF_USER_ID, auth_info["userId"])
-        # Also update country/session for backward compatibility
-        # if "countryCode" in auth_info:
-        #    self.update_config_value(CONF_COUNTRY_CODE, auth_info["countryCode"])
-        # if "sessionId" in auth_info:
-        #    self.update_config_value(CONF_SESSION_ID, auth_info["sessionId"])
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -705,7 +706,7 @@ class TidalProvider(MusicProvider):
             return [self._parse_track(track_obj) for track_obj in similar_tracks.get("items", [])]
         except ResourceTemporarilyUnavailable:
             raise
-        except Exception as err:
+        except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
 
     #
@@ -720,7 +721,7 @@ class TidalProvider(MusicProvider):
             return self._parse_artist(artist_obj)
         except ResourceTemporarilyUnavailable:
             raise
-        except Exception as err:
+        except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
 
     async def get_album(self, prov_album_id: str) -> Album:
@@ -731,7 +732,7 @@ class TidalProvider(MusicProvider):
             return self._parse_album(album_obj)
         except ResourceTemporarilyUnavailable:
             raise
-        except Exception as err:
+        except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
 
     async def get_track(self, prov_track_id: str) -> Track:
@@ -751,7 +752,7 @@ class TidalProvider(MusicProvider):
             return track
         except ResourceTemporarilyUnavailable:
             raise
-        except Exception as err:
+        except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -762,7 +763,7 @@ class TidalProvider(MusicProvider):
             return self._parse_playlist(playlist_obj)
         except ResourceTemporarilyUnavailable:
             raise
-        except Exception as err:
+        except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
@@ -773,7 +774,7 @@ class TidalProvider(MusicProvider):
             return [self._parse_track(track_obj) for track_obj in album_tracks.get("items", [])]
         except ResourceTemporarilyUnavailable:
             raise
-        except Exception as err:
+        except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -784,7 +785,7 @@ class TidalProvider(MusicProvider):
             return [self._parse_album(album_obj) for album_obj in artist_albums.get("items", [])]
         except ResourceTemporarilyUnavailable:
             raise
-        except Exception as err:
+        except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -799,7 +800,7 @@ class TidalProvider(MusicProvider):
             ]
         except ResourceTemporarilyUnavailable:
             raise
-        except Exception as err:
+        except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -820,7 +821,7 @@ class TidalProvider(MusicProvider):
             return result
         except ResourceTemporarilyUnavailable:
             raise
-        except Exception as err:
+        except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
 
     async def get_stream_details(
@@ -1053,9 +1054,10 @@ class TidalProvider(MusicProvider):
         try:
             await self._delete_data(endpoint)
             return True
-        except Exception:
-            # Log but don't raise - just return False to indicate failure
-            self.logger.warning("Failed to remove %s:%s library", media_type, prov_item_id)
+        except (ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable) as err:
+            self.logger.warning(
+                "Failed to remove %s:%s from library: %s", media_type, prov_item_id, err
+            )
             return False
 
     #
@@ -1073,8 +1075,16 @@ class TidalProvider(MusicProvider):
             )
 
             return self._parse_playlist(playlist_obj)
-        except Exception as err:
-            self.logger.error("Failed to create playlist: %s", err)
+        except (ClientResponseError, MediaNotFoundError, LoginFailed) as err:
+            self.logger.error("API error creating playlist: %s", err)
+            raise
+        except (ClientConnectorError, ClientPayloadError) as err:
+            # Network or payload errors
+            self.logger.error("Network error creating playlist: %s", err)
+            raise ResourceTemporarilyUnavailable("Failed to create playlist") from err
+        except (KeyError, ValueError, TypeError) as err:
+            # Data parsing errors
+            self.logger.error("Data error creating playlist: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to create playlist") from err
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -1101,8 +1111,16 @@ class TidalProvider(MusicProvider):
                 headers=headers,
             )
 
-        except MediaNotFoundError as err:
+        except (MediaNotFoundError, ClientResponseError) as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
+        except (ClientConnectorError, ClientPayloadError) as err:
+            # Network errors
+            self.logger.error("Network error adding tracks to playlist: %s", err)
+            raise ResourceTemporarilyUnavailable("Failed to add tracks to playlist") from err
+        except (KeyError, ValueError) as err:
+            # Data errors
+            self.logger.error("Data error adding tracks to playlist: %s", err)
+            raise ResourceTemporarilyUnavailable("Failed to add tracks to playlist") from err
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
