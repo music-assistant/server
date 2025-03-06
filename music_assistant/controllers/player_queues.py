@@ -792,14 +792,25 @@ class PlayerQueuesController(CoreController):
         # NOTE that we debounce this a bit to account for someone hitting the next button
         # like a madman. This will prevent the player from being overloaded with requests.
         async def play_media() -> None:
-            next_index = self._get_next_index(queue_id, index, allow_repeat=False)
-            await self._load_item(
-                queue_item,
-                next_index,
-                is_start=True,
-                seek_position=seek_position,
-                fade_in=fade_in,
-            )
+            try:
+                next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+                await self._load_item(
+                    queue_item,
+                    next_index,
+                    is_start=True,
+                    seek_position=seek_position,
+                    fade_in=fade_in,
+                )
+            except MediaNotFoundError:
+                # edge case: the requested index can not be played.
+                # we allow one single retry to skip to the next track (if any)
+                self.logger.warning(
+                    "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
+                )
+                queue_item.available = False
+                await self.play_index(queue_id, index + 1, seek_position=0, debounce=False)
+                return
+
             await self.mass.players.play_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(queue_item, queue.flow_mode),
@@ -977,6 +988,7 @@ class PlayerQueuesController(CoreController):
                 self.logger.info(
                     "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
                 )
+                queue_item.available = False
                 idx += 1
         if next_item is None:
             raise QueueEmpty("No more (playable) tracks left in the queue.")
@@ -1741,14 +1753,6 @@ class PlayerQueuesController(CoreController):
             ):
                 task_id = f"fill_radio_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
-            # auto clean up streamdetails from previously played items
-            prev_item_id = prev_state["current_item_id"]
-            if (
-                prev_item_id
-                and (prev_index := self.index_by_id(queue_id, prev_item_id))
-                and (prev_prev_item := self.get_item(queue_id, prev_index - 1))
-            ):
-                prev_prev_item.streamdetails = None
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
