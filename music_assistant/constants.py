@@ -84,10 +84,12 @@ CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
+CONF_ALLOW_MEMORY_CACHE: Final[str] = "allow_memory_cache"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
+DEFAULT_ALLOW_MEMORY_CACHE: Final[bool] = True
 
 # common db tables
 DB_TABLE_PLAYLOG: Final[str] = "playlog"

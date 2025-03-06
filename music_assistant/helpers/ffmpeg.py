@@ -290,7 +290,7 @@ def get_ffmpeg_args(  # noqa: PLR0915
             output_format.content_type.value,
         ]
     elif input_format == output_format and not extra_args:
-        # passthrough
+        # passthrough-mode (e.g. for creating the cache)
         if output_format.content_type in (
             ContentType.MP4,
             ContentType.MP4A,
@@ -298,8 +298,8 @@ def get_ffmpeg_args(  # noqa: PLR0915
             ContentType.M4B,
         ):
             fmt = "adts"
-        elif output_format.codec_type != ContentType.UNKNOWN:
-            fmt = output_format.codec_type.name.lower()
+        elif output_format.codec_type in (ContentType.UNKNOWN, ContentType.OGG):
+            fmt = "nut"  # use special nut container
         else:
             fmt = output_format.content_type.name.lower()
         output_args = [

@@ -30,6 +30,7 @@ from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    CONF_ALLOW_MEMORY_CACHE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE,
@@ -44,6 +45,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DEFAULT_ALLOW_MEMORY_CACHE,
     DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
     ICY_HEADERS,
@@ -192,6 +194,18 @@ class StreamsController(CoreController):
                 "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
+                category="advanced",
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_ALLOW_MEMORY_CACHE,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_ALLOW_MEMORY_CACHE,
+                label="Allow (in-memory) caching of audio streams",
+                description="To ensure smooth playback as well as fast seeking, "
+                "Music Assistant by default caches audio streams (in memory). "
+                "On systems with limited memory, this can be disabled, "
+                "but may result in less smooth playback.",
                 category="advanced",
                 required=False,
             ),
