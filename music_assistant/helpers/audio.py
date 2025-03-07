@@ -116,6 +116,7 @@ class StreamCache:
                 else:
                     yield chunk
                 del chunk
+                await asyncio.sleep(0)  # yield to eventloop
         finally:
             self._subscribers -= 1
             if self._subscribers == 0:
@@ -157,10 +158,12 @@ class StreamCache:
             input_format=self.streamdetails.audio_format,
             output_format=self.streamdetails.audio_format,
             extra_input_args=extra_input_args,
+            chunk_size=64000,
         ):
             async with self._lock:
                 self._data += chunk
                 del chunk
+                await asyncio.sleep(0)  # yield to eventloop
             if not self._first_part_received.is_set():
                 self._first_part_received.set()
                 self.logger.debug(
