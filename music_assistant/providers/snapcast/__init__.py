@@ -758,7 +758,7 @@ class SnapCastProvider(PlayerProvider):
 
     def _handle_disconnect(self, exc: Exception) -> None:
         """Handle disconnect callback from snapserver."""
-        if self._stop_called:
+        if self._stop_called or self.mass.closing:
             # we're instructed to stop/exit, so no need to restart the connection
             return
         self.logger.info(
