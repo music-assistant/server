@@ -106,10 +106,14 @@ class FFMpeg(AsyncProcess):
             if self.collect_log_history:
                 self.log_history.append(line)
             if "error" in line or "warning" in line:
-                self.logger.warning(line)
+                # ffmpeg logs can be a bit verbose and noisy so we tone them down a bit
+                # otherwise users get scared by all the red lines,
+                # even if its just a simple one-off encoding error
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.info(line)
             elif "critical" in line:
                 self.logger.error(line)
-            else:
+            elif self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
                 self.logger.log(VERBOSE_LOG_LEVEL, line)
 
             if "Invalid data found when processing input" in line:
