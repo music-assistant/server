@@ -1,0 +1,11 @@
+{
+  "type": "plugin",
+  "domain": "listenbrainz_scrobble",
+  "name": "ListenBrainz Scrobbler",
+  "description": "Scrobble your music to ListenBrainz",
+  "codeowners": ["@music-assistant"],
+  "documentation": "https://music-assistant.io/plugins/listenbrainz_scrobble/",
+  "multi_instance": false,
+  "builtin": false,
+  "requirements": ["liblistenbrainz==0.5.6"]
+}
