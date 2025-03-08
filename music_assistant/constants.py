@@ -569,17 +569,17 @@ def create_sample_rates_config_entry(
 ) -> ConfigEntry:
     """Create sample rates config entry based on player specific helpers."""
     assert CONF_ENTRY_SAMPLE_RATES.options
+    # if no supported sample rates are defined, we apply the default 44100 as only option
+    if not supported_sample_rates and max_sample_rate is None:
+        supported_sample_rates = [44100]
+    if not supported_bit_depths and max_bit_depth is None:
+        supported_bit_depths = [16]
     final_supported_sample_rates = supported_sample_rates or []
     final_supported_bit_depths = supported_bit_depths or []
     conf_entry = ConfigEntry.from_dict(CONF_ENTRY_SAMPLE_RATES.to_dict())
     conf_entry.hidden = hidden
     options: list[ConfigValueOption] = []
     default_value: list[str] = []
-
-    if not supported_sample_rates and max_sample_rate is None:
-        supported_sample_rates = [44100]
-    if not supported_bit_depths and max_bit_depth is None:
-        supported_bit_depths = [16]
 
     for option in CONF_ENTRY_SAMPLE_RATES.options:
         option_value = cast(str, option.value)

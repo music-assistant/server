@@ -216,7 +216,11 @@ class HomeAssistantPlayers(PlayerProvider):
                 bit_depth = supported_format["sample_bytes"] * 8
                 if bit_depth not in supported_bit_depths:
                     supported_bit_depths.append(bit_depth)
-
+            if not supported_sample_rates:
+                # esphome device with no media pipeline configured
+                # simply use the default config of the media pipeline
+                supported_sample_rates = [48000]
+                supported_bit_depths = [16]
             return (
                 *base_entries,
                 # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
