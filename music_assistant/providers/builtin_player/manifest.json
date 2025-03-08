@@ -1,0 +1,13 @@
+{
+  "type": "player",
+  "domain": "builtin_player",
+  "name": "Music Assistant",
+  "description": "Support for playing to the Music Assistant Web Interface",
+  "codeowners": [
+    "@music-assistant"
+  ],
+  "documentation": "https://music-assistant.io/player-support/builtin/",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": false
+}
