@@ -229,7 +229,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         """
         if instance := self.instances.get(player_id, None):
             last_updated = time() - instance.last_update
-            if last_updated > 20:
+            if last_updated > 70:
                 self.mass.signal_event(
                     EventType.BUILTIN_PLAYER,
                     player_id,
