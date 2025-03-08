@@ -746,15 +746,21 @@ class OpenSonicProvider(MusicProvider):
                 msg = f"Item {item_id} not found"
                 raise MediaNotFoundError(msg) from e
 
+            if item.transcoded_content_type:
+                mime_type = item.transcoded_content_type
+            else:
+                mime_type = item.content_type
+
             self.logger.debug(
                 "Fetching stream details for id %s '%s' with format '%s'",
                 item.id,
                 item.title,
-                item.content_type,
+                mime_type,
             )
 
         elif media_type == MediaType.PODCAST_EPISODE:
             item = await self._get_podcast_episode(item_id)
+            mime_type = item.content_type
 
             self.logger.debug(
                 "Fetching stream details for podcast episode '%s' with format '%s'",
@@ -765,7 +771,6 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Unsupported media type encountered '{media_type}'"
             raise UnsupportedFeaturedException(msg)
 
-        mime_type = item.content_type
         # For mp4 or m4a files, better to let ffmpeg detect the codec in use so mark them unknown
         if mime_type.endswith("mp4"):
             self.logger.warning(

@@ -33,7 +33,7 @@ pillow==11.1.0
 pkce==1.0.3
 plexapi==4.16.1
 podcastparser==0.6.10
-py-opensonic==5.2.1
+py-opensonic==5.3.0
 pyblu==2.0.0
 PyChromecast==14.0.5
 pycryptodome==3.21.0
