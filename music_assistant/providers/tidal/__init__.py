@@ -377,7 +377,8 @@ class TidalProvider(MusicProvider):
         # Get user information from sessions API
         api_result = await self._get_data("sessions")
         user_info = self._extract_data(api_result)
-        await self.auth.update_user_info(user_info)
+        logged_in_user = await self.get_user(str(user_info.get("userId")))
+        await self.auth.update_user_info(logged_in_user, str(user_info.get("sessionId")))
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -613,6 +614,11 @@ class TidalProvider(MusicProvider):
     #
     # SEARCH & DISCOVERY
     #
+
+    async def get_user(self, prov_user_id: str) -> dict[str, Any]:
+        """Get user information."""
+        api_result = await self._get_data(f"users/{prov_user_id}")
+        return self._extract_data(api_result)
 
     async def search(
         self,
@@ -1313,11 +1319,20 @@ class TidalProvider(MusicProvider):
         if playlist_obj["creator"]:
             creator_id = playlist_obj["creator"]["id"]
         is_editable = bool(creator_id and str(creator_id) == str(self.auth.user_id))
+
+        owner_name = "Tidal"
+        if is_editable:
+            if self.auth.user.profile_name:
+                owner_name = self.auth.user.profile_name
+            elif self.auth.user.user_name:
+                owner_name = self.auth.user.user_name
+            else:
+                owner_name = str(self.auth.user_id or "Unknown")
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.instance_id if is_editable else self.lookup_key,
             name=playlist_obj["title"],
-            owner=creator_id or "Tidal",
+            owner=owner_name,
             provider_mappings={
                 ProviderMapping(
                     item_id=playlist_id,

@@ -5,6 +5,7 @@ import random
 import time
 import urllib
 from collections.abc import Callable
+from dataclasses import dataclass
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,18 @@ if TYPE_CHECKING:
 TOKEN_TYPE = "Bearer"
 AUTH_URL = "https://auth.tidal.com/v1/oauth2"
 REDIRECT_URI = "https://tidal.com/android/login/auth"
+
+
+@dataclass
+class TidalUser:
+    """Represent a Tidal user with their associated account information."""
+
+    user_id: str | None = None
+    country_code: str | None = None
+    session_id: str | None = None
+    profile_name: str | None = None
+    user_name: str | None = None
+    email: str | None = None
 
 
 class ManualAuthenticationHelper:
@@ -68,9 +81,7 @@ class TidalAuthManager:
         self.update_config = config_updater
         self.logger = logger
         self._auth_info = None
-        self._user_id = None
-        self._country_code = None
-        self._session_id = None
+        self.user = TidalUser()
 
     async def initialize(self, auth_data: str) -> bool:
         """Initialize the auth manager with stored auth data."""
@@ -86,17 +97,17 @@ class TidalAuthManager:
     @property
     def user_id(self) -> str | None:
         """Return the current user ID."""
-        return self._user_id
+        return self.user.user_id
 
     @property
     def country_code(self) -> str | None:
         """Return the current country code."""
-        return self._country_code
+        return self.user.country_code
 
     @property
     def session_id(self) -> str | None:
         """Return the current session ID."""
-        return self._session_id
+        return self.user.session_id
 
     @property
     def access_token(self) -> str | None:
@@ -159,11 +170,16 @@ class TidalAuthManager:
 
             return True
 
-    async def update_user_info(self, user_info: dict[str, Any]) -> None:
+    async def update_user_info(self, user_info: dict[str, Any], session_id: str) -> None:
         """Update user info from API response."""
-        self._user_id = user_info.get("userId")
-        self._country_code = user_info.get("countryCode")
-        self._session_id = user_info.get("sessionId")
+        # Update the TidalUser dataclass with values from API response
+        self.user = TidalUser(
+            user_id=user_info.get("id"),
+            country_code=user_info.get("countryCode"),
+            session_id=session_id,
+            profile_name=user_info.get("profileName"),
+            user_name=user_info.get("username"),
+        )
 
     @staticmethod
     async def generate_auth_url(auth_helper: ManualAuthenticationHelper, quality: str) -> str:
