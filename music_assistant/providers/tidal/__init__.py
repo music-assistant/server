@@ -310,7 +310,8 @@ class TidalProvider(MusicProvider):
     """Implementation of a Tidal MusicProvider."""
 
     BASE_URL: str = "https://api.tidal.com/v1"
-    OPEN_API_URL: str = "https://openapi.tidal.com/v2/"
+    BASE_URL_V2: str = "https://api.tidal.com/v2"
+    OPEN_API_URL: str = "https://openapi.tidal.com/v2"
 
     throttler = ThrottlerManager(rate_limit=1, period=2)
 
@@ -810,25 +811,81 @@ class TidalProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Get playlist tracks."""
-        result: list[Track] = []
+        """Get playlist tracks for either regular playlists or Tidal mixes."""
         page_size = 200
         offset = page * page_size
+
+        # First try regular playlist endpoint
         try:
-            api_result = await self._get_data(
-                f"playlists/{prov_playlist_id}/tracks",
-                params={"limit": page_size, "offset": offset},
+            return await self._get_regular_playlist_tracks(prov_playlist_id, page_size, offset)
+        except MediaNotFoundError:
+            # If not found, try as a Tidal mix
+            self.logger.debug("Playlist not found, trying as Tidal Mix")
+            return await self._get_mix_playlist_tracks(prov_playlist_id, page_size, offset)
+
+    async def _get_regular_playlist_tracks(
+        self, prov_playlist_id: str, page_size: int, offset: int
+    ) -> list[Track]:
+        """Get tracks from a regular Tidal playlist."""
+        api_result = await self._get_data(
+            f"playlists/{prov_playlist_id}/tracks",
+            params={"limit": page_size, "offset": offset},
+        )
+        tidal_tracks = self._extract_data(api_result)
+
+        return self._process_track_results(tidal_tracks.get("items", []), offset)
+
+    async def _get_mix_playlist_tracks(
+        self, prov_playlist_id: str, page_size: int, offset: int
+    ) -> list[Track]:
+        """Get tracks from a Tidal Mix playlist."""
+        try:
+            params = {"mixId": prov_playlist_id, "deviceType": "BROWSER"}
+            api_result = await self._get_data("pages/mix", params=params)
+            tidal_mix = self._extract_data(api_result)
+
+            # Verify we have the expected structure
+            if "rows" not in tidal_mix or len(tidal_mix["rows"]) < 2:
+                raise MediaNotFoundError(f"Invalid mix structure for {prov_playlist_id}")
+
+            module = tidal_mix["rows"][1]["modules"][0] if len(tidal_mix["rows"]) > 1 else None
+            if not module or "pagedList" not in module:
+                raise MediaNotFoundError(f"Invalid mix module for {prov_playlist_id}")
+
+            all_tracks = module["pagedList"].get("items", [])
+
+            # Manually paginate the results
+            start_idx = min(offset, len(all_tracks))
+            end_idx = min(offset + page_size, len(all_tracks))
+            paginated_tracks = all_tracks[start_idx:end_idx]
+
+            self.logger.debug(
+                "Mix tracks - total: %d, page: %d, returning: %d tracks",
+                len(all_tracks),
+                offset // page_size,
+                len(paginated_tracks),
             )
-            tidal_tracks = self._extract_data(api_result)
-            for index, track_obj in enumerate(tidal_tracks.get("items", []), 1):
-                track = self._parse_track(track_obj=track_obj)
-                track.position = offset + index
-                result.append(track)
-            return result
+
+            return self._process_track_results(paginated_tracks, offset)
         except ResourceTemporarilyUnavailable:
             raise
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
+
+    def _process_track_results(
+        self, track_objects: list[dict[str, Any]], offset: int
+    ) -> list[Track]:
+        """Process track objects into Track objects with positions."""
+        result: list[Track] = []
+        for index, track_obj in enumerate(track_objects, 1):
+            try:
+                track = self._parse_track(track_obj)
+                track.position = offset + index
+                result.append(track)
+            except (KeyError, TypeError) as err:
+                self.logger.warning("Error parsing track: %s", err)
+                continue
+        return result
 
     async def get_stream_details(
         self, item_id: str, media_type: MediaType = MediaType.TRACK
@@ -865,19 +922,20 @@ class TidalProvider(MusicProvider):
         manifest_type = stream_data.get("manifestMimeType", "")
         is_mpd = "dash+xml" in manifest_type
 
-        if is_mpd:
+        if is_mpd and "manifest" in stream_data:
             url = f"data:application/dash+xml;base64,{stream_data['manifest']}"
         else:
             # For non-MPD streams, use the direct URL
-            url = stream_data.get("urls", [None])[0]
-            if not url:
+            urls = stream_data.get("urls", [])
+            if not urls:
                 raise MediaNotFoundError(f"No stream URL for track {item_id}")
+            url = urls[0]
 
         # Determine audio format info
         bit_depth = stream_data.get("bitDepth", 16)
         sample_rate = stream_data.get("sampleRate", 44100)
         audio_quality: str | None = stream_data.get("audioQuality")
-        if audio_quality in ("HI_RES_LOSSLESS", "LOSSLESS"):
+        if audio_quality in ("HIRES_LOSSLESS", "HI_RES_LOSSLESS", "LOSSLESS"):
             content_type = ContentType.FLAC
         elif codec := stream_data.get("codec"):
             content_type = ContentType.try_parse(codec)
@@ -942,7 +1000,7 @@ class TidalProvider(MusicProvider):
 
         # Get tracks by ISRC using direct API
         api_result = await self._get_data(
-            "tracks",
+            "/tracks",
             params={
                 "filter[isrc]": isrc,
             },
@@ -1009,9 +1067,17 @@ class TidalProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         user_id = self.auth.user_id
-        path = f"users/{user_id}/playlistsAndFavoritePlaylists"
+        mix_path = "favorites/mixes"
 
-        async for playlist_item in self._paginate_api(path, nested_key="playlist"):
+        async for mix_item in self._paginate_api(
+            mix_path, item_key="items", base_url=self.BASE_URL_V2
+        ):
+            if mix_item and mix_item.get("id"):
+                yield self._parse_playlist(mix_item, is_mix=True)
+
+        playlist_path = f"users/{user_id}/playlistsAndFavoritePlaylists"
+
+        async for playlist_item in self._paginate_api(playlist_path, nested_key="playlist"):
             if playlist_item and playlist_item.get("uuid"):
                 yield self._parse_playlist(playlist_item)
 
@@ -1254,15 +1320,17 @@ class TidalProvider(MusicProvider):
         track_obj: dict[str, Any],
     ) -> Track:
         """Parse tidal track object to generic layout."""
-        version = track_obj["version"] or ""
-        track_id = str(track_obj["id"])
-        hi_res_lossless = "HI_RES_LOSSLESS" in track_obj["mediaMetadata"]["tags"]
+        version = track_obj.get("version", "") or ""
+        track_id = str(track_obj.get("id", 0))
+        media_metadata = track_obj.get("mediaMetadata", {})
+        tags = media_metadata.get("tags", [])
+        hi_res_lossless = any(tag in tags for tag in ["HIRES_LOSSLESS", "HI_RES_LOSSLESS"])
         track = Track(
             item_id=track_id,
             provider=self.lookup_key,
-            name=track_obj["title"],
+            name=track_obj.get("title", "Unknown"),
             version=version,
-            duration=track_obj["duration"],
+            duration=track_obj.get("duration", 0),
             provider_mappings={
                 ProviderMapping(
                     item_id=str(track_id),
@@ -1276,10 +1344,10 @@ class TidalProvider(MusicProvider):
                     available=track_obj["streamReady"],
                 )
             },
-            disc_number=track_obj["volumeNumber"] or 0,
-            track_number=track_obj["trackNumber"] or 0,
+            disc_number=track_obj.get("volumeNumber", 0) or 0,
+            track_number=track_obj.get("trackNumber", 0) or 0,
         )
-        if track_obj["isrc"]:
+        if "isrc" in track_obj:
             track.external_ids.add((ExternalID.ISRC, track_obj["isrc"]))
         track.artists = UniqueList()
         for track_artist in track_obj["artists"]:
@@ -1288,7 +1356,8 @@ class TidalProvider(MusicProvider):
         # metadata
         track.metadata.explicit = track_obj["explicit"]
         track.metadata.popularity = track_obj["popularity"]
-        track.metadata.copyright = track_obj["copyright"]
+        if "copyright" in track_obj:
+            track.metadata.copyright = track_obj["copyright"]
         if track_obj["album"]:
             # Here we use an ItemMapping as Tidal returns
             # minimal data when getting an Album from a Track
@@ -1312,41 +1381,74 @@ class TidalProvider(MusicProvider):
                 )
         return track
 
-    def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
+    def _parse_playlist(self, playlist_obj: dict[str, Any], is_mix: bool = False) -> Playlist:
         """Parse tidal playlist object to generic layout."""
-        playlist_id = str(playlist_obj["uuid"])
-        creator_id = None
-        if playlist_obj["creator"]:
-            creator_id = playlist_obj["creator"]["id"]
-        is_editable = bool(creator_id and str(creator_id) == str(self.auth.user_id))
+        # Get ID based on playlist type
+        playlist_id = str(playlist_obj.get("id" if is_mix else "uuid", ""))
 
-        owner_name = "Tidal"
-        if is_editable:
-            if self.auth.user.profile_name:
-                owner_name = self.auth.user.profile_name
-            elif self.auth.user.user_name:
-                owner_name = self.auth.user.user_name
-            else:
-                owner_name = str(self.auth.user_id or "Unknown")
+        # Owner logic differs between types
+        if is_mix:
+            owner_name = "Tidal Mix"
+            is_editable = False
+        else:
+            creator_id = None
+            creator = playlist_obj.get("creator", {})
+            if creator:
+                creator_id = creator.get("id")
+            is_editable = bool(creator_id and str(creator_id) == str(self.auth.user_id))
+
+            owner_name = "Tidal"
+            if is_editable:
+                if self.auth.user.profile_name:
+                    owner_name = self.auth.user.profile_name
+                elif self.auth.user.user_name:
+                    owner_name = self.auth.user.user_name
+                elif self.auth.user_id:
+                    owner_name = str(self.auth.user_id)
+
+        # URL path differs by type
+        url_path = "mix" if is_mix else "playlist"
+
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.instance_id if is_editable else self.lookup_key,
-            name=playlist_obj["title"],
+            name=playlist_obj.get("title", "Unknown"),
             owner=owner_name,
             provider_mappings={
                 ProviderMapping(
                     item_id=playlist_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{BROWSE_URL}/playlist/{playlist_id}",
+                    url=f"{BROWSE_URL}/{url_path}/{playlist_id}",
                 )
             },
             is_editable=is_editable,
         )
-        # metadata
-        playlist.cache_checksum = str(playlist_obj["lastUpdated"])
-        playlist.metadata.popularity = playlist_obj["popularity"]
-        if picture := (playlist_obj["squareImage"] or playlist_obj["image"]):
+
+        # Metadata - different fields based on type
+        if is_mix:
+            playlist.cache_checksum = str(playlist_obj.get("updated", ""))
+        else:
+            playlist.cache_checksum = str(playlist_obj.get("lastUpdated", ""))
+            if "popularity" in playlist_obj:
+                playlist.metadata.popularity = playlist_obj.get("popularity", 0)
+
+        # Handle images differently based on type
+        if is_mix:
+            if pictures := playlist_obj.get("images", {}).get("MEDIUM"):
+                image_url = pictures.get("url", "")
+                if image_url:
+                    playlist.metadata.images = UniqueList(
+                        [
+                            MediaItemImage(
+                                type=ImageType.THUMB,
+                                path=image_url,
+                                provider=self.lookup_key,
+                                remotely_accessible=True,
+                            )
+                        ]
+                    )
+        elif picture := (playlist_obj.get("squareImage") or playlist_obj.get("image")):
             picture_id = picture.replace("-", "/")
             image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
             playlist.metadata.images = UniqueList(
