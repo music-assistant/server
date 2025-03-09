@@ -318,8 +318,8 @@ class BuiltinPlayerProvider(PlayerProvider):
     async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> None:
         """Update current state of a player.
 
-        A player must periodically update the state of through this `builtin_player/update_state` API
-        command.
+        A player must periodically update the state of through this `builtin_player/update_state`
+        API command.
         """
         player = cast(Player, self.mass.players.get(player_id, raise_unavailable=True))
 
