@@ -145,28 +145,7 @@ class BuiltinPlayerProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return (
-            *BASE_PLAYER_CONFIG_ENTRIES,
-            ConfigEntry(
-                key=CONF_POWER_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_POWER_CONTROL,
-                default_value=PLAYER_CONTROL_NONE,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_VOLUME_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_VOLUME_CONTROL,
-                default_value=PLAYER_CONTROL_NATIVE,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_MUTE_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_MUTE_CONTROL,
-                default_value=PLAYER_CONTROL_NATIVE,
-                hidden=True,
-            ),
+            *await super().get_player_config_entries(player_id),
             # For now only flow mode is supported
             # TODO: also allow regular streams
             CONF_ENTRY_FLOW_MODE_ENFORCED,
