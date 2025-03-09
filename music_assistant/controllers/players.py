@@ -1510,9 +1510,11 @@ class PlayerController(CoreController):
         prev_power = player.powered
         prev_state = player.state
         prev_synced_to = player.synced_to
+        prev_active_source = player.active_source
         queue = self.mass.player_queues.get(player.active_source)
         prev_queue_active = queue and queue.active
-        prev_item_id = player.current_item_id
+        prev_media = player.current_media
+        prev_media_name = prev_media.title or prev_media.uri if prev_media else None
         # ungroup player if its currently synced
         if prev_synced_to:
             self.logger.debug(
@@ -1525,7 +1527,7 @@ class PlayerController(CoreController):
             self.logger.debug(
                 "Announcement to player %s - stop existing content (%s)...",
                 player.display_name,
-                prev_item_id,
+                prev_media_name,
             )
             await self.cmd_stop(player.player_id)
             # wait for the player to stop
@@ -1601,7 +1603,8 @@ class PlayerController(CoreController):
                 tg.create_task(self.cmd_volume_set(volume_player_id, prev_volume))
 
         await asyncio.sleep(0.2)
-        player.current_item_id = prev_item_id
+        player.current_media = prev_media
+        player.active_source = prev_active_source
         # either power off the player or resume playing
         if not prev_power and player.power_control != PLAYER_CONTROL_NONE:
             await self.cmd_power(player.player_id, False)
@@ -1612,7 +1615,7 @@ class PlayerController(CoreController):
             await self.mass.player_queues.resume(queue.queue_id, True)
         elif prev_state == PlayerState.PLAYING:
             # player was playing something else - try to resume that here
-            self.logger.warning("Can not resume %s on %s", prev_item_id, player.display_name)
+            self.logger.warning("Can not resume %s on %s", prev_media_name, player.display_name)
             # TODO !!
 
     async def _poll_players(self) -> None:
