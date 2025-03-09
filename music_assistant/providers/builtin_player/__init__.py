@@ -291,7 +291,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             type=PlayerType.PLAYER,
             name=player_name,
             available=True,
-            powered=True,
+            power_control=PLAYER_CONTROL_NONE,
             device_info=DeviceInfo(),
             supported_features=player_features,
             needs_poll=True,
