@@ -23,6 +23,10 @@ from typing import TYPE_CHECKING, cast
 
 import shortuuid
 from aiohttp import web
+from music_assistant_models.builtin_player import (
+    BuiltinPlayerEvent,
+    BuiltinPlayerState,
+)
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -43,8 +47,6 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import (
-    BuiltinPlayerEvent,
-    BuiltinPlayerState,
     DeviceInfo,
     Player,
     PlayerMedia,
