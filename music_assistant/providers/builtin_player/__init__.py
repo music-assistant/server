@@ -144,11 +144,6 @@ class BuiltinPlayerProvider(PlayerProvider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        # OPTIONAL
-        # this method is optional and should be implemented if you need player specific
-        # configuration entries. If you do not need player specific configuration entries,
-        # you can leave this method out completely to accept the default implementation.
-        # Please note that you need to call the super() method to get the default entries.
         return (
             *BASE_PLAYER_CONFIG_ENTRIES,
             ConfigEntry(
