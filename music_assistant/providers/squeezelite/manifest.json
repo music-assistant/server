@@ -1,0 +1,11 @@
+{
+  "type": "player",
+  "domain": "squeezelite",
+  "name": "Squeezelite (slimproto players)",
+  "description": "Support for Squeezelite, a software-based player implementing the slimproto protocol, which was originally designed for the Squeezebox hardware players. Other players and/or original Squeezebox hardware might also work with this provider, but without any guarantees/support.",
+  "codeowners": ["@music-assistant"],
+  "requirements": ["aioslimproto==3.1.0"],
+  "documentation": "https://music-assistant.io/player-support/squeezelite/",
+  "multi_instance": false,
+  "builtin": false
+}
