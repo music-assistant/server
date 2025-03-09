@@ -263,7 +263,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         Since players queues can time out, this command either will create a new player queue,
         or restore it from the last session.
 
-        - player_name: Human readable name of the player, will we only used in case this call
+        - player_name: Human readable name of the player, will only be used in case this call
                        creates a new queue.
         - player_id: the id of the builtin player, set to None on new sessions. The returned player
                      will have a new random player_id
