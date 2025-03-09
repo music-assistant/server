@@ -174,9 +174,6 @@ class BuiltinPlayerProvider(PlayerProvider):
             CONF_ENTRY_CROSSFADE_DURATION,
         )
 
-    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         self.mass.signal_event(
