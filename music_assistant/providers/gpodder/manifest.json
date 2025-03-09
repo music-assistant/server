@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "gpodder",
+  "name": "gPodder",
+  "description": "gPodder podcast provider",
+  "codeowners": [
+    "@fmunkes"
+  ],
+  "documentation": "https://music-assistant.io/music-providers/gpodder",
+  "multi_instance": true
+}
