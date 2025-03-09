@@ -70,6 +70,10 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
 
+# If the player does not send an update within this time, it will be considered offline
+DURATION_UNTIL_TIMEOUT = 70
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -243,7 +247,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         """
         if instance := self.instances.get(player_id, None):
             last_updated = time() - instance.last_update
-            if last_updated > 70:
+            if last_updated > DURATION_UNTIL_TIMEOUT:
                 self.mass.signal_event(
                     EventType.BUILTIN_PLAYER,
                     player_id,
