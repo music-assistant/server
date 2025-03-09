@@ -59,6 +59,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
     DEFAULT_PCM_FORMAT,
+    DEFAULT_STREAM_HEADERS,
 )
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -355,10 +356,9 @@ class BuiltinPlayerProvider(PlayerProvider):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
 
         headers = {
+            **DEFAULT_STREAM_HEADERS,
             "Content-Type": f"audio/{format_str}",
             "Accept-Ranges": "none",
-            "Cache-Control": "no-cache",
-            "Connection": "close",
         }
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
