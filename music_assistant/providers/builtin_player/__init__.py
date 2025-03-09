@@ -27,16 +27,9 @@ from music_assistant_models.builtin_player import (
     BuiltinPlayerEvent,
     BuiltinPlayerState,
 )
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-    PlayerConfig,
-    ProviderConfig,
-)
-from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
+from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     BuiltinPlayerEventType,
-    ConfigEntryType,
     ContentType,
     EventType,
     PlayerFeature,
@@ -53,13 +46,9 @@ from music_assistant_models.player import (
 )
 
 from music_assistant.constants import (
-    BASE_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_MUTE_CONTROL,
-    CONF_POWER_CONTROL,
-    CONF_VOLUME_CONTROL,
     DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
 )
@@ -70,6 +59,11 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant_models.provider import ProviderManifest
 
 
