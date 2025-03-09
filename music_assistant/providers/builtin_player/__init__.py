@@ -100,9 +100,9 @@ class BuiltinPlayerProvider(PlayerProvider):
         """Initialize the provider."""
         super().__init__(mass, manifest, config)
         self._unregister_cbs = [
-            self.mass.register_api_command("bplayer/register", self.register_player),
-            self.mass.register_api_command("bplayer/unregister", self.unregister_player),
-            self.mass.register_api_command("bplayer/update_state", self.update_player_state),
+            self.mass.register_api_command("builtin_player/register", self.register_player),
+            self.mass.register_api_command("builtin_player/unregister", self.unregister_player),
+            self.mass.register_api_command("builtin_player/update_state", self.update_player_state),
         ]
 
     @property
@@ -211,7 +211,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
-        url = f"bplayer/flow/{player_id}.mp3"
+        url = f"builtin_player/flow/{player_id}.mp3"
         player = cast(Player, self.mass.players.get(player_id, raise_unavailable=True))
         player.current_media = media
 
@@ -244,7 +244,7 @@ class BuiltinPlayerProvider(PlayerProvider):
     async def register_player(self, player_name: str, player_id: str | None) -> Player:
         """Register a player.
 
-        Every player must first be registered through this `bplayer/register` API command
+        Every player must first be registered through this `builtin_player/register` API command
         before any playback can occur.
         Since players queues can time out, this command either will create a new player queue,
         or restore it from the last session.
@@ -268,7 +268,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         self.instances[player_id] = PlayerInstance(
             unregister_cbs=[
                 self.mass.webserver.register_dynamic_route(
-                    f"/bplayer/flow/{player_id}.mp3", self._serve_audio_stream
+                    f"/builtin_player/flow/{player_id}.mp3", self._serve_audio_stream
                 ),
             ],
             last_update=time(),
@@ -291,7 +291,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         return player
 
     async def unregister_player(self, player_id: str) -> None:
-        """Manually unregister a player with `bplayer/unregister`."""
+        """Manually unregister a player with `builtin_player/unregister`."""
         instance = self.instances.pop(player_id, None)
         if instance is None:
             return
@@ -304,7 +304,7 @@ class BuiltinPlayerProvider(PlayerProvider):
     async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> None:
         """Update current state of a player.
 
-        A player must periodically update the state of through this `bplayer/update_state` API
+        A player must periodically update the state of through this `builtin_player/update_state` API
         command.
         """
         player = cast(Player, self.mass.players.get(player_id, raise_unavailable=True))
