@@ -34,8 +34,10 @@ async def setup(
     pylast.logger.setLevel(provider.logger.level)
 
     # httpcore is very spammy on debug without providing useful information 99% of the time
-    if logging.getLogger("httpcore").level <= logging.DEBUG:
+    if provider.logger.level == logging.DEBUG:
         logging.getLogger("httpcore").setLevel(logging.INFO)
+    else:
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     return provider
 
