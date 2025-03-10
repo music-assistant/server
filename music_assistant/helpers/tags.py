@@ -537,7 +537,7 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
     try:
         # TODO: extend with more tags and file types!
         tags = mutagen.File(input_file)
-        if tags is None:
+        if tags is None or not tags.tags:
             return result
         tags = dict(tags.tags)
         # ID3 tags

@@ -341,6 +341,10 @@ class SnapCastProvider(PlayerProvider):
         self._stop_called = True
         for snap_client_id in self._snapserver.clients:
             player_id = self._get_ma_id(snap_client_id)
+            if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
+                continue
+            if player.state != PlayerState.PLAYING:
+                continue
             await self.cmd_stop(player_id)
         self._snapserver.stop()
         await self._stop_builtin_server()

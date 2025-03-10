@@ -107,7 +107,7 @@ class Webserver:
     def register_dynamic_route(
         self,
         path: str,
-        handler: Callable[[web.Request], Coroutine[Any, Any, web.Response]],
+        handler: Callable[[web.Request], Coroutine[Any, Any, web.Response | web.StreamResponse]],
         method: str = "*",
     ) -> Callable:
         """Register a dynamic route on the webserver, returns handler to unregister."""

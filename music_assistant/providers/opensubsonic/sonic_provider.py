@@ -384,8 +384,12 @@ class OpenSonicProvider(MusicProvider):
         """Return the image."""
 
         def _get_cover_art() -> bytes | Any:
-            with self._conn.getCoverArt(path) as art:
-                return art.content
+            try:
+                with self._conn.getCoverArt(path) as art:
+                    return art.content
+            except DataNotFoundError:
+                self.logger.warning("Unable to locate a cover image for %s", path)
+                return None
 
         return await asyncio.to_thread(_get_cover_art)
 

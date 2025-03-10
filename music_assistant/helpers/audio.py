@@ -504,7 +504,10 @@ async def get_stream_details(
         streamdetails.provider,
         media_type=queue_item.media_type,
     ):
-        streamdetails.loudness, streamdetails.loudness_album = result
+        streamdetails.loudness = float(result[0]) if isinstance(result[0], int | float) else None
+        streamdetails.loudness_album = (
+            float(result[1]) if isinstance(result[1], int | float) else None
+        )
     streamdetails.prefer_album_loudness = prefer_album_loudness
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
@@ -1428,7 +1431,7 @@ def _get_normalization_mode(
         return VolumeNormalizationMode.FIXED_GAIN
 
     # handle measurement available - chosen mode is measurement
-    if streamdetails.loudness and preference not in (
+    if streamdetails.loudness is not None and preference not in (
         VolumeNormalizationMode.DISABLED,
         VolumeNormalizationMode.FIXED_GAIN,
         VolumeNormalizationMode.DYNAMIC,

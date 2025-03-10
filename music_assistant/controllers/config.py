@@ -852,13 +852,22 @@ class ConfigController:
             changed = True
 
         # set 'onboard_done' flag if we have any (non default) provider configs
-        if not self._data.get(CONF_ONBOARD_DONE):
+        if self._data.get(CONF_ONBOARD_DONE) is None:
             default_providers = {x.domain for x in self.mass.get_provider_manifests() if x.builtin}
             for provider_config in self._data.get(CONF_PROVIDERS, {}).values():
                 if provider_config["domain"] not in default_providers:
                     self._data[CONF_ONBOARD_DONE] = True
                     changed = True
                     break
+        # migrate slimproto --> squeezelite
+        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+            if provider_config.get("domain") == "slimproto":
+                del self._data[CONF_PROVIDERS][instance_id]
+                new_instance_id = instance_id.replace("slimproto", "squeezelite")
+                provider_config["instance_id"] = new_instance_id
+                provider_config["domain"] = "squeezelite"
+                self._data[CONF_PROVIDERS][new_instance_id] = provider_config
+                changed = True
 
         if changed:
             await self._async_save()

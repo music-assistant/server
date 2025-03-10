@@ -123,7 +123,7 @@ class PlayerController(CoreController):
         self.manifest.icon = "speaker-multiple"
         self._poll_task: asyncio.Task | None = None
         self._player_throttlers: dict[str, Throttler] = {}
-        self._player_locks: dict[str, asyncio.Lock] = {}
+        self._announce_locks: dict[str, asyncio.Lock] = {}
         # TEMP 2024-11-20: register some aliases for renamed commands
         # remove after a few releases
         self.mass.register_api_command("players/cmd/sync", self.cmd_group)
@@ -634,10 +634,10 @@ class PlayerController(CoreController):
         if not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
         # prevent multiple announcements at the same time to the same player with a lock
-        if player_id not in self._player_locks:
-            self._player_locks[player_id] = lock = asyncio.Lock()
+        if player_id not in self._announce_locks:
+            self._announce_locks[player_id] = lock = asyncio.Lock()
         else:
-            lock = self._player_locks[player_id]
+            lock = self._announce_locks[player_id]
         async with lock:
             try:
                 # mark announcement_in_progress on player
@@ -1613,6 +1613,8 @@ class PlayerController(CoreController):
             await self.cmd_group(player.player_id, prev_synced_to)
         elif prev_queue_active and prev_state == PlayerState.PLAYING:
             await self.mass.player_queues.resume(queue.queue_id, True)
+            await self.wait_for_state(player, PlayerState.PLAYING, 5)
+
         elif prev_state == PlayerState.PLAYING:
             # player was playing something else - try to resume that here
             self.logger.warning("Can not resume %s on %s", prev_media_name, player.display_name)
