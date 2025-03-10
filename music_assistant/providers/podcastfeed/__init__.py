@@ -46,6 +46,8 @@ if TYPE_CHECKING:
 
 CONF_FEED_URL = "feed_url"
 
+CACHE_CATEGORY_PODCASTS = 0
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -94,23 +96,16 @@ class PodcastMusicprovider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.parsed_podcast: dict[str, Any]  # parsed podcast from podcastparser
-
         self.feed_url = podcastparser.normalize_feed_url(str(self.config.get_value(CONF_FEED_URL)))
         if self.feed_url is None:
             raise MediaNotFoundError("The specified feed url cannot be used.")
 
         self.podcast_id = create_safe_string(self.feed_url.replace("http", ""))
-        # without user agent, some feeds can not be retrieved
-        # https://github.com/music-assistant/support/issues/3596
-        headers = {"User-Agent": "Mozilla/5.0"}
-        async with self.mass.http_session.get(self.feed_url, headers=headers) as response:
-            if response.status == 200:
-                feed_data = await response.read()
-                feed_stream = BytesIO(feed_data)
-                self.parsed_podcast = podcastparser.parse(self.feed_url, feed_stream)
-            else:
-                raise RuntimeError(f"Failed to fetch RSS podcast feed: {response.status}")
+
+        try:
+            self.parsed_podcast: dict[str, Any] = await self._cache_get_podcast()
+        except RuntimeError as exc:
+            raise RuntimeError("Invalid URL") from exc
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -138,6 +133,9 @@ class PodcastMusicprovider(MusicProvider):
         Only one podcast per rss feed is supported. The data format of the rss feed supports
         only one podcast.
         """
+        # on sync we renew
+        self.parsed_podcast = await self._get_podcast()
+        await self._cache_set_podcast()
         yield await self._parse_podcast()
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -206,4 +204,38 @@ class PodcastMusicprovider(MusicProvider):
             domain=self.domain,
             instance_id=self.instance_id,
             mass_item_id=episode_obj["guid"],
+        )
+
+    async def _get_podcast(self) -> dict[str, Any]:
+        # see music-assistant/server@6aae82e
+        assert self.feed_url is not None
+        response = await self.mass.http_session.get(
+            self.feed_url, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if response.status != 200:
+            raise RuntimeError
+        feed_data = await response.read()
+        feed_stream = BytesIO(feed_data)
+        return podcastparser.parse(self.feed_url, feed_stream)  # type:ignore [no-any-return]
+
+    async def _cache_get_podcast(self) -> dict[str, Any]:
+        parsed_podcast = await self.mass.cache.get(
+            key=self.podcast_id,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_PODCASTS,
+            default=None,
+        )
+        if parsed_podcast is None:
+            parsed_podcast = await self._get_podcast()
+
+        # this is a dictionary from podcastparser
+        return parsed_podcast  # type: ignore[no-any-return]
+
+    async def _cache_set_podcast(self) -> None:
+        await self.mass.cache.set(
+            key=self.podcast_id,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_PODCASTS,
+            data=self.parsed_podcast,
+            expiration=60 * 60 * 24,  # 1 day
         )
