@@ -65,6 +65,18 @@ def parse_podcast(
     return mass_podcast
 
 
+def get_stream_url_and_guid_from_episode(
+    *, episode: dict[str, Any]
+) -> tuple[str | None, str | None]:
+    """Give episode's stream url and guid, if it exists."""
+    episode_enclosures = episode.get("enclosures", [])
+    if len(episode_enclosures) < 1:
+        raise RuntimeError
+    stream_url = episode_enclosures[0].get("url", None)
+    guid = episode.get("guid")
+    return stream_url, guid
+
+
 def parse_podcast_episode(
     *,
     episode: dict[str, Any],
@@ -80,13 +92,13 @@ def parse_podcast_episode(
     episode_title = episode.get("title", "NO_EPISODE_TITLE")
     episode_cover = episode.get("episode_art_url", podcast_cover)
     episode_published = episode.get("published")
-    episode_enclosures = episode.get("enclosures", [])
-    if len(episode_enclosures) < 1:
-        raise RuntimeError
-    stream_url = episode_enclosures[0].get("url", None)
-    # not all feeds have a guid, but a guid is preferred as identification
-    guid_or_stream_url = episode.get("guid", stream_url)
 
+    stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
+    guid_or_stream_url = guid if guid is not None else stream_url
+    if stream_url is None:
+        raise RuntimeError("Episode has no stream information!")
+
+    # Default episode id. A guid is preferred as identification.
     episode_id = f"{prov_podcast_id} {guid_or_stream_url}"
     mass_episode = PodcastEpisode(
         item_id=episode_id,

@@ -31,9 +31,9 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.itunes_podcasts.parsers import parse_podcast, parse_podcast_episode
 from music_assistant.providers.itunes_podcasts.schema import ITunesSearchResults
 
 if TYPE_CHECKING:
