@@ -75,6 +75,7 @@ from .constants import (
     AUDIOBOOK_EXTENSIONS,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PATH,
     IMAGE_EXTENSIONS,
@@ -136,8 +137,14 @@ async def get_config_entries(
             CONF_ENTRY_CONTENT_TYPE,
             CONF_ENTRY_PATH,
             CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
         )
-    return (CONF_ENTRY_PATH, CONF_ENTRY_CONTENT_TYPE_READ_ONLY, CONF_ENTRY_MISSING_ALBUM_ARTIST)
+    return (
+        CONF_ENTRY_PATH,
+        CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
+        CONF_ENTRY_MISSING_ALBUM_ARTIST,
+        CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    )
 
 
 class LocalFileSystemProvider(MusicProvider):
@@ -354,12 +361,9 @@ class LocalFileSystemProvider(MusicProvider):
             self.sync_running = True
             try:
                 for item in listdir(self.base_path):
-                    cur_filenames.add(item.relative_path)
-                    # continue if the item did not change (checksum still the same)
                     prev_checksum = file_checksums.get(item.relative_path)
-                    if item.checksum == prev_checksum:
-                        continue
-                    self._process_item(item, prev_checksum)
+                    if self._process_item(item, prev_checksum):
+                        cur_filenames.add(item.relative_path)
             finally:
                 self.sync_running = False
 
@@ -378,10 +382,27 @@ class LocalFileSystemProvider(MusicProvider):
         # process orphaned albums and artists
         await self._process_orphaned_albums_and_artists()
 
-    def _process_item(self, item: FileSystemItem, prev_checksum: str | None) -> None:
+    def _process_item(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
         """Process a single item. NOT async friendly."""
         try:
             self.logger.debug("Processing: %s", item.relative_path)
+
+            # ignore playlists that are in album directories
+            # we need to run this check early because the setting may have changed
+            if (
+                item.ext in PLAYLIST_EXTENSIONS
+                and self.media_content_type == "music"
+                and self.config.get_value(CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key)
+            ):
+                # we assume this in a bit of a dumb way by just checking if the playlist
+                # is more than 1 level deep in the directory structure
+                if len(item.relative_path.split("/")) > 2:
+                    return False
+
+            # return early if the item did not change (checksum still the same)
+            if item.checksum == prev_checksum:
+                return True
+
             if item.ext in TRACK_EXTENSIONS and self.media_content_type == "music":
                 # handle track item
                 tags = parse_tags(item.absolute_path, item.file_size)
@@ -396,7 +417,7 @@ class LocalFileSystemProvider(MusicProvider):
                     )
 
                 asyncio.run_coroutine_threadsafe(process_track(), self.mass.loop).result()
-                return
+                return True
 
             if item.ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
                 # handle audiobook item
@@ -415,7 +436,7 @@ class LocalFileSystemProvider(MusicProvider):
                     )
 
                 asyncio.run_coroutine_threadsafe(process_audiobook(), self.mass.loop).result()
-                return
+                return True
 
             if item.ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
                 # handle podcast(episode) item
@@ -432,9 +453,10 @@ class LocalFileSystemProvider(MusicProvider):
                     )
 
                 asyncio.run_coroutine_threadsafe(process_episode(), self.mass.loop).result()
-                return
+                return True
 
             if item.ext in PLAYLIST_EXTENSIONS and self.media_content_type == "music":
+                # handle playlist item
 
                 async def process_playlist() -> None:
                     playlist = await self.get_playlist(item.relative_path)
@@ -446,7 +468,7 @@ class LocalFileSystemProvider(MusicProvider):
                     )
 
                 asyncio.run_coroutine_threadsafe(process_playlist(), self.mass.loop).result()
-                return
+                return True
 
         except Exception as err:
             # we don't want the whole sync to crash on one file so we catch all exceptions here
@@ -456,6 +478,7 @@ class LocalFileSystemProvider(MusicProvider):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
+        return False
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Process deletion of orphaned albums and artists."""

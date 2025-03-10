@@ -17,6 +17,7 @@ from music_assistant.providers.filesystem_local import LocalFileSystemProvider, 
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
 )
 
@@ -121,6 +122,7 @@ async def get_config_entries(
             "want to pass to the mount command if needed for your particular setup.",
         ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
+        CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     )
 
     if instance_id is None or values is None:
