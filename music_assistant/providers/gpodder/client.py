@@ -229,15 +229,17 @@ class GPodderClient:
         response = await self._get(endpoint, params=params)
         if not response:
             return []
-        actions = EpisodeActionGet.from_json(response).actions
+        actions_response = EpisodeActionGet.from_json(response).actions
 
         # play has progress information
 
         if podcast_id is None:
-            actions = [x for x in actions if isinstance(x, EpisodeActionPlay)]
+            actions = [x for x in actions_response if isinstance(x, EpisodeActionPlay)]
         else:
             actions = [
-                x for x in actions if isinstance(x, EpisodeActionPlay) and x.podcast == podcast_id
+                x
+                for x in actions_response
+                if isinstance(x, EpisodeActionPlay) and x.podcast == podcast_id
             ]
 
         with suppress(ValueError):
@@ -274,6 +276,7 @@ class GPodderClient:
     ) -> None:
         """Update progress."""
         timestamp = datetime.datetime.now().astimezone().replace(microsecond=0).isoformat()
+        episode_action: EpisodeActionNew | EpisodeActionPlay
         if position_s == 0:
             # mark unplayed
             episode_action = EpisodeActionNew(

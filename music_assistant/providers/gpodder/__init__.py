@@ -3,34 +3,50 @@
 Tested against opodsync, https://github.com/kd2org/opodsync
 and nextcloud-gpodder, https://github.com/thrillfall/nextcloud-gpodder
 gpodder.net is not supported due to responsiveness of domain.
+
+Note:
+    - it can happen, that we have the guid and use that for identification, but the sync state
+      provider, eg. opodsync might use only the stream url. So always make sure, to compare both
+      when relying on an external service
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from io import BytesIO
+from typing import TYPE_CHECKING, Any
 
+import podcastparser
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ContentType,
     EventType,
     MediaType,
     ProviderFeature,
+    StreamType,
 )
 from music_assistant_models.errors import (
     LoginFailed,
+    MediaNotFoundError,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
+    AudioFormat,
     MediaItemType,
     Podcast,
     PodcastEpisode,
 )
+from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.podcast_parsers import (
+    get_stream_url_and_guid_from_episode,
+    parse_podcast,
+    parse_podcast_episode,
+)
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.gpodder.client import GPodderClient
-from music_assistant.providers.itunes_podcasts import ITunesPodcastsProvider
-from music_assistant.providers.itunes_podcasts.parsers import parse_podcast
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -224,13 +240,8 @@ async def get_config_entries(
     )
 
 
-class GPodder(ITunesPodcastsProvider):
-    """gPodder MusicProvider.
-
-    We can inherit from the ITunesPodcastsProvider here, as gpodder only stores stream URLs and
-    user progresses. So we need to add progress information and reporting, and implement library
-    sync.
-    """
+class GPodder(MusicProvider):
+    """gPodder MusicProvider."""
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -273,14 +284,6 @@ class GPodder(ITunesPodcastsProvider):
             except RuntimeError as exc:
                 raise LoginFailed("Login failed.") from exc
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        is_removed will be set to True when the provider is removed from the configuration.
-        """
-
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
@@ -297,7 +300,7 @@ class GPodder(ITunesPodcastsProvider):
         if subscriptions is None:
             return
         for feed_url in subscriptions.add:
-            parsed_podcast = await self._cache_get_podcast(feed_url, use_cache=False)
+            parsed_podcast = await self._get_podcast(feed_url)
             await self._cache_set_podcast(feed_url, parsed_podcast)
             yield parse_podcast(
                 feed_url=feed_url,
@@ -307,39 +310,65 @@ class GPodder(ITunesPodcastsProvider):
                 instance_id=self.instance_id,
             )
 
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get Podcast."""
+        parsed_podcast = await self._cache_get_podcast(prov_podcast_id)
+
+        return parse_podcast(
+            feed_url=prov_podcast_id,
+            parsed_feed=parsed_podcast,
+            lookup_key=self.lookup_key,
+            domain=self.domain,
+            instance_id=self.instance_id,
+        )
+
     async def get_podcast_episodes(
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get Podcast episodes. Add progress information."""
         progresses = await self._client.get_progresses(podcast_id=prov_podcast_id)
-        async for episode in super().get_podcast_episodes(prov_podcast_id=prov_podcast_id):
-            podcast_id, guid_or_stream_url, stream_url = episode.item_id.split(" ")
+
+        podcast = await self._cache_get_podcast(prov_podcast_id)
+        podcast_cover = podcast.get("cover_url")
+        parsed_episodes = podcast.get("episodes", [])
+
+        for cnt, parsed_episode in enumerate(parsed_episodes):
+            mass_episode = parse_podcast_episode(
+                episode=parsed_episode,
+                prov_podcast_id=prov_podcast_id,
+                episode_cnt=cnt,
+                podcast_cover=podcast_cover,
+                domain=self.domain,
+                lookup_key=self.lookup_key,
+                instance_id=self.instance_id,
+            )
+            stream_url, guid = get_stream_url_and_guid_from_episode(episode=parsed_episode)
+
             for progress in progresses:
+                # we have to test both, as we are comparing to external input.
                 _test = [progress.guid, progress.episode]
-                if guid_or_stream_url in _test or stream_url in _test:
-                    episode.resume_position_ms = progress.position * 1000
-                    episode.fully_played = progress.position >= progress.total
+                if guid in _test or stream_url in _test:
+                    mass_episode.resume_position_ms = progress.position * 1000
+                    mass_episode.fully_played = progress.position >= progress.total
                     break
 
-            yield episode
+            yield mass_episode
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get Podcast Episode. Add progress information."""
-        episode = await super().get_podcast_episode(prov_episode_id=prov_episode_id)
-        podcast_id, guid_or_stream_url, stream_url = episode.item_id.split(" ")
-        progresses = await self._client.get_progresses(podcast_id=podcast_id)
-        for progress in progresses:
-            _test = [progress.guid, progress.episode]
-            if guid_or_stream_url in _test or stream_url in _test:
-                episode.resume_position_ms = progress.position * 1000
-                episode.fully_played = progress.position >= progress.total
-                break
-        return episode
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        async for mass_episode in self.get_podcast_episodes(podcast_id):
+            _, _guid_or_stream_url = mass_episode.item_id.split(" ")
+            # this is enough, as internal
+            if guid_or_stream_url == _guid_or_stream_url:
+                return mass_episode
+        raise MediaNotFoundError("Did not find episode.")
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Return: finished, position_ms."""
         assert media_type == MediaType.PODCAST_EPISODE
-        podcast_id, guid_or_stream_url, stream_url = item_id.split(" ")
+        podcast_id, guid_or_stream_url = item_id.split(" ")
+        stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         try:
             progresses = await self._client.get_progresses(podcast_id=podcast_id)
         except RuntimeError:
@@ -347,6 +376,7 @@ class GPodder(ITunesPodcastsProvider):
             return False, 0
         for action in progresses:
             _test = [action.guid, action.episode]
+            # progress is external, compare guid and stream_url
             if action.podcast == podcast_id and (
                 guid_or_stream_url in _test or stream_url in _test
             ):
@@ -367,7 +397,9 @@ class GPodder(ITunesPodcastsProvider):
             return
         if media_type != MediaType.PODCAST_EPISODE:
             return
-        podcast_id, guid_or_stream_url, stream_url = prov_item_id.split(" ")
+        podcast_id, guid_or_stream_url = prov_item_id.split(" ")
+        stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
+        assert stream_url is not None
         duration = media_item.duration
         try:
             await self._client.update_progress(
@@ -380,3 +412,66 @@ class GPodder(ITunesPodcastsProvider):
             self.logger.debug(f"Updated progress to {position / duration * 100:.2f}%")
         except RuntimeError:
             self.logger.debug("Failed to update progress.")
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Get streamdetails for item."""
+        podcast_id, guid_or_stream_url = item_id.split(" ")
+        stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
+        if stream_url is None:
+            raise MediaNotFoundError
+        return StreamDetails(
+            provider=self.lookup_key,
+            item_id=item_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(stream_url),
+            ),
+            media_type=MediaType.PODCAST_EPISODE,
+            stream_type=StreamType.HTTP,
+            path=stream_url,
+            can_seek=True,
+            allow_seek=True,
+        )
+
+    async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
+        podcast = await self._cache_get_podcast(podcast_id)
+        episodes = podcast.get("episodes", [])
+        for cnt, episode in enumerate(episodes):
+            episode_enclosures = episode.get("enclosures", [])
+            if len(episode_enclosures) < 1:
+                raise MediaNotFoundError
+            stream_url: str | None = episode_enclosures[0].get("url", None)
+            if guid_or_stream_url == episode.get("guid", stream_url):
+                return stream_url
+        return None
+
+    async def _get_podcast(self, feed_url: str) -> dict[str, Any]:
+        # see music-assistant/server@6aae82e
+        response = await self.mass.http_session.get(feed_url, headers={"User-Agent": "Mozilla/5.0"})
+        if response.status != 200:
+            raise RuntimeError
+        feed_data = await response.read()
+        feed_stream = BytesIO(feed_data)
+        return podcastparser.parse(feed_url, feed_stream, max_episodes=self.max_episodes)  # type: ignore[no-any-return]
+
+    async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
+        parsed_podcast = await self.mass.cache.get(
+            key=prov_podcast_id,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_PODCASTS,
+            default=None,
+        )
+        if parsed_podcast is None:
+            parsed_podcast = await self._get_podcast(feed_url=prov_podcast_id)
+            await self._cache_set_podcast(feed_url=prov_podcast_id, parsed_podcast=parsed_podcast)
+
+        # this is a dictionary from podcastparser
+        return parsed_podcast  # type: ignore[no-any-return]
+
+    async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
+        await self.mass.cache.set(
+            key=feed_url,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_PODCASTS,
+            data=parsed_podcast,
+            expiration=60 * 60 * 24,  # 1 day
+        )
