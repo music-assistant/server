@@ -32,8 +32,9 @@ async def setup(
     """Initialize provider(instance) with given configuration."""
     provider = LastFMScrobbleProvider(mass, manifest, config)
     pylast.logger.setLevel(provider.logger.level)
-    if provider.logger.level == logging.DEBUG:
-        # httpcore is quite spammy without providing useful information 99% of the time
+
+    # httpcore is very spammy on debug without providing useful information 99% of the time
+    if logging.getLogger("httpcore").level <= logging.DEBUG:
         logging.getLogger("httpcore").setLevel(logging.INFO)
 
     return provider
