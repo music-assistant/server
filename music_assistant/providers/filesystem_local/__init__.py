@@ -766,12 +766,11 @@ class LocalFileSystemProvider(MusicProvider):
             # - relative to the playlist path with a leading slash
             for _line in (line, urllib.parse.unquote(line)):
                 for filename in (
-                    # try to resolve the line as an absolute path
-                    _line,
-                    # try to resolve the line as a relative path to the playlist
-                    os.path.join(playlist_path, _line.removeprefix("/")),
-                    # try to resolve the line by resolving it against the absolute playlist path
+                    # try to resolve the line by resolving it against the (absolute) playlist path
+                    # use the path.resolve step in between to auto-resolve parent item references
                     (Path(self.get_absolute_path(playlist_path)) / _line).resolve().as_posix(),
+                    # try to resolve the line as a full absolute (or relative to music dir) path
+                    _line,
                 ):
                     with contextlib.suppress(FileNotFoundError):
                         file_item = await self.resolve(filename)
