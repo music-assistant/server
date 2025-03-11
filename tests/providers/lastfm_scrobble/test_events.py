@@ -58,6 +58,16 @@ async def test_it_resets_now_playing_when_songs_are_on_loop() -> None:
     assert handler.network._now_playing == 2
 
 
+async def test_it_does_not_update_now_playing_on_pause() -> None:
+    """Don't update now_playing when pausing the player early in the song."""
+    handler = LastFMEventHandler(DummyNetwork(), logging.getLogger())
+
+    await handler._on_mass_media_item_played(
+        create_report(duration=180, seconds_played=20, is_playing=False)
+    )
+    assert handler.network._now_playing == 0
+
+
 def create_report(
     duration: int, seconds_played: int, is_playing: bool = True, uri: str = "filesystem://track/1"
 ) -> MassEvent:

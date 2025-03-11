@@ -142,7 +142,9 @@ class LastFMEventHandler:
                 self.logger.exception(err)
 
         # update now playing if needed
-        if self.currently_playing is None or self.currently_playing != report.uri:
+        if report.is_playing and (
+            self.currently_playing is None or self.currently_playing != report.uri
+        ):
             await asyncio.to_thread(update_now_playing)
 
         if self.should_scrobble(report):
