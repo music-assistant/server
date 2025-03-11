@@ -33,7 +33,6 @@ from music_assistant_models.errors import (
 from music_assistant_models.helpers import get_global_cache_value
 
 from music_assistant.constants import (
-    CONF_ALLOW_MEMORY_CACHE,
     CONF_CORE,
     CONF_DEPRECATED_EQ_BASS,
     CONF_DEPRECATED_EQ_MID,
@@ -45,7 +44,6 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     CONF_SERVER_ID,
     CONFIGURABLE_CORE_CONTROLLERS,
-    DEFAULT_ALLOW_MEMORY_CACHE,
     DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
@@ -800,7 +798,7 @@ class ConfigController:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _migrate(self) -> None:  # noqa: PLR0915
+    async def _migrate(self) -> None:
         changed = False
 
         # Older versions of MA can create corrupt entries with no domain if retrying
@@ -869,14 +867,6 @@ class ConfigController:
                 provider_config["instance_id"] = new_instance_id
                 provider_config["domain"] = "squeezelite"
                 self._data[CONF_PROVIDERS][new_instance_id] = provider_config
-                changed = True
-        # migrate 'allow memory cache' setting in streamserver
-        if streamserver_conf := self._data.get(CONF_CORE, {}).get("streams", {}):
-            if streamserver_conf.get("values", {}).get(CONF_ALLOW_MEMORY_CACHE) is True:
-                streamserver_conf["values"][CONF_ALLOW_MEMORY_CACHE] = DEFAULT_ALLOW_MEMORY_CACHE
-                changed = True
-            elif streamserver_conf.get("values", {}).get(CONF_ALLOW_MEMORY_CACHE) is False:
-                streamserver_conf["values"][CONF_ALLOW_MEMORY_CACHE] = "auto"
                 changed = True
 
         if changed:

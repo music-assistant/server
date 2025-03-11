@@ -34,14 +34,14 @@ from music_assistant_models.errors import (
 from music_assistant_models.streamdetails import AudioFormat
 
 from music_assistant.constants import (
-    CONF_ALLOW_MEMORY_CACHE,
+    CONF_ALLOW_AUDIO_CACHE,
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
-    DEFAULT_ALLOW_MEMORY_CACHE,
+    DEFAULT_ALLOW_AUDIO_CACHE,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
@@ -600,7 +600,7 @@ async def _is_cache_allowed(mass: MusicAssistant, streamdetails: StreamDetails) 
     if streamdetails.stream_type in (StreamType.ICY, StreamType.LOCAL_FILE, StreamType.UNKNOWN):
         return False
     allow_cache = mass.config.get_raw_core_config_value(
-        "streams", CONF_ALLOW_MEMORY_CACHE, DEFAULT_ALLOW_MEMORY_CACHE
+        "streams", CONF_ALLOW_AUDIO_CACHE, DEFAULT_ALLOW_AUDIO_CACHE
     )
     if allow_cache == "disabled":
         return False

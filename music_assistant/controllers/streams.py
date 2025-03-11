@@ -30,7 +30,8 @@ from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
-    CONF_ALLOW_MEMORY_CACHE,
+    CONF_ALLOW_AUDIO_CACHE,
+    CONF_AUDIO_CACHE_MAX_SIZE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE,
@@ -45,7 +46,8 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
-    DEFAULT_ALLOW_MEMORY_CACHE,
+    DEFAULT_ALLOW_AUDIO_CACHE,
+    DEFAULT_AUDIO_CACHE_MAX_SIZE,
     DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
     ICY_HEADERS,
@@ -82,8 +84,6 @@ if TYPE_CHECKING:
 
 
 isfile = wrap(os.path.isfile)
-
-MAX_CACHE_DIR_SIZE = 50  # 50GB
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -215,9 +215,9 @@ class StreamsController(CoreController):
                 required=False,
             ),
             ConfigEntry(
-                key=CONF_ALLOW_MEMORY_CACHE,
+                key=CONF_ALLOW_AUDIO_CACHE,
                 type=ConfigEntryType.STRING,
-                default_value=DEFAULT_ALLOW_MEMORY_CACHE,
+                default_value=DEFAULT_ALLOW_AUDIO_CACHE,
                 options=[
                     ConfigValueOption("Always", "always"),
                     ConfigValueOption("Disabled", "disabled"),
@@ -235,6 +235,14 @@ class StreamsController(CoreController):
                 "should be used on a per-item base.",
                 category="advanced",
                 required=True,
+            ),
+            ConfigEntry(
+                key=CONF_AUDIO_CACHE_MAX_SIZE,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_AUDIO_CACHE_MAX_SIZE,
+                label="Maximum size of audio cache",
+                description="The maximum amount of diskspace (in GB) the audio cache may consume.",
+                range=(1, 50),
             ),
         )
 
@@ -1080,6 +1088,9 @@ class StreamsController(CoreController):
 
     async def _clean_audio_cache(self) -> None:
         """Clean up audio cache periodically."""
-        await clean_old_files(self.audio_cache_dir, MAX_CACHE_DIR_SIZE)
+        max_cache_size = await self.mass.config.get_core_config_value(
+            self.domain, CONF_AUDIO_CACHE_MAX_SIZE
+        )
+        await clean_old_files(self.audio_cache_dir, max_cache_size)
         # reschedule self
         self.mass.call_later(3600, self._clean_audio_cache)
