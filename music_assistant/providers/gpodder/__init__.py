@@ -289,18 +289,19 @@ class GPodder(MusicProvider):
             except RuntimeError as exc:
                 raise LoginFailed("Login failed.") from exc
 
-        timestamp = await self.mass.cache.get(
+        timestamps = await self.mass.cache.get(
             key=CACHE_KEY_TIMESTAMP,
             base_key=self.lookup_key,
             category=CACHE_CATEGORY_OTHER,
             default=None,
         )
-        if timestamp is None:
-            self.timestamp: int = 0  # start from scratch on provider start
+        if timestamps is None:
+            self.timestamp_subscriptions: int = 0
+            self.timestamp_actions: int = 0
         else:
-            self.timestamp = timestamp
+            self.timestamp_subscriptions, self.timestamp_actions = timestamps
 
-        self.logger.debug("Our timestamp is %s", self.timestamp)
+        self.logger.debug("Our timestamp is %s", self.timestamp_subscriptions)
 
         feeds = await self.mass.cache.get(
             key=CACHE_KEY_FEEDS,
@@ -350,8 +351,8 @@ class GPodder(MusicProvider):
                 instance_id=self.instance_id,
             )
 
-        self.timestamp = subscriptions.timestamp
-        await self._cache_set_timestamp()
+        self.timestamp_subscriptions = subscriptions.timestamp
+        await self._cache_set_timestamps()
         await self._cache_set_feeds()
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -377,8 +378,8 @@ class GPodder(MusicProvider):
         parsed_episodes = podcast.get("episodes", [])
 
         if timestamp is not None:
-            self.timestamp = timestamp
-            await self._cache_set_timestamp()
+            self.timestamp_actions = timestamp
+            await self._cache_set_timestamps()
 
         for cnt, parsed_episode in enumerate(parsed_episodes):
             mass_episode = parse_podcast_episode(
@@ -422,7 +423,7 @@ class GPodder(MusicProvider):
         podcast_id, guid_or_stream_url = item_id.split(" ")
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         try:
-            progresses, timestamp = await self._client.get_progresses(since=self.timestamp)
+            progresses, timestamp = await self._client.get_progresses(since=self.timestamp_actions)
         except RuntimeError:
             self.logger.warning("Was unable to obtain progresses.")
             raise NotImplementedError  # fallback to internal position.
@@ -433,8 +434,8 @@ class GPodder(MusicProvider):
                 guid_or_stream_url in _test or stream_url in _test
             ):
                 if timestamp is not None:
-                    self.timestamp = timestamp
-                    await self._cache_set_timestamp()
+                    self.timestamp_actions = timestamp
+                    await self._cache_set_timestamps()
                 if isinstance(action, EpisodeActionNew):
                     # no progress, it might have been actively reset
                     return False, 0
@@ -537,13 +538,13 @@ class GPodder(MusicProvider):
             expiration=60 * 60 * 24,  # 1 day
         )
 
-    async def _cache_set_timestamp(self) -> None:
+    async def _cache_set_timestamps(self) -> None:
         # seven days default
         await self.mass.cache.set(
             key=CACHE_KEY_TIMESTAMP,
             base_key=self.lookup_key,
             category=CACHE_CATEGORY_OTHER,
-            data=self.timestamp,
+            data=[self.timestamp_subscriptions, self.timestamp_actions],
         )
 
     async def _cache_set_feeds(self) -> None:
