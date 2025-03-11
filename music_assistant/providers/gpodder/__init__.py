@@ -301,7 +301,11 @@ class GPodder(MusicProvider):
         else:
             self.timestamp_subscriptions, self.timestamp_actions = timestamps
 
-        self.logger.debug("Our timestamp is %s", self.timestamp_subscriptions)
+        self.logger.debug(
+            "Our timestamps are (subscriptions, actions)  (%s, %s)",
+            self.timestamp_subscriptions,
+            self.timestamp_actions,
+        )
 
         feeds = await self.mass.cache.get(
             key=CACHE_KEY_FEEDS,
