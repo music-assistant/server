@@ -506,10 +506,8 @@ async def get_stream_details(
         streamdetails.provider,
         media_type=queue_item.media_type,
     ):
-        streamdetails.loudness = float(result[0]) if isinstance(result[0], int | float) else None
-        streamdetails.loudness_album = (
-            float(result[1]) if isinstance(result[1], int | float) else None
-        )
+        streamdetails.loudness = result[0]
+        streamdetails.loudness_album = result[1]
     streamdetails.prefer_album_loudness = prefer_album_loudness
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
@@ -1335,7 +1333,8 @@ async def analyze_loudness(
         media_type=streamdetails.media_type,
     ):
         # only when needed we do the analyze job
-        streamdetails.loudness = result
+        streamdetails.loudness = result[0]
+        streamdetails.loudness_album = result[1]
         return
 
     logger = LOGGER.getChild("analyze_loudness")
