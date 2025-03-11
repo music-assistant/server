@@ -241,8 +241,10 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.INTEGER,
                 default_value=DEFAULT_AUDIO_CACHE_MAX_SIZE,
                 label="Maximum size of audio cache",
-                description="The maximum amount of diskspace (in GB) the audio cache may consume.",
+                description="The maximum amount of diskspace (in GB) "
+                "the audio cache may consume (if enabled).",
                 range=(1, 50),
+                category="advanced",
             ),
         )
 
@@ -1091,6 +1093,11 @@ class StreamsController(CoreController):
         max_cache_size = await self.mass.config.get_core_config_value(
             self.domain, CONF_AUDIO_CACHE_MAX_SIZE
         )
+        cache_enabled = await self.mass.config.get_core_config_value(
+            self.domain, CONF_ALLOW_AUDIO_CACHE
+        )
+        if cache_enabled == "disabled":
+            max_cache_size = 0.001
         await clean_old_files(self.audio_cache_dir, max_cache_size)
         # reschedule self
         self.mass.call_later(3600, self._clean_audio_cache)
