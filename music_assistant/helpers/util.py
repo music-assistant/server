@@ -467,11 +467,21 @@ async def has_tmpfs_mount() -> bool:
 
 async def get_tmp_free_space() -> int:
     """Return free space on tmp."""
+    return await get_free_space("/tmp")  # noqa: S108
+
+
+async def get_free_space(folder: str) -> int:
+    """Return free space on given folderpath."""
     try:
-        if res := await asyncio.to_thread(shutil.disk_usage, "/tmp"):  # noqa: S108
+        if res := await asyncio.to_thread(shutil.disk_usage, folder):
             return res.free
     except (FileNotFoundError, OSError, PermissionError):
         return 0
+
+
+async def has_enough_space(folder: str, size: int) -> bool:
+    """Check if folder has enough free space."""
+    return await get_free_space(folder) > size
 
 
 def divide_chunks(data: bytes, chunk_size: int) -> Iterator[bytes]:
