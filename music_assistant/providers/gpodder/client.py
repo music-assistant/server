@@ -213,12 +213,14 @@ class GPodderClient:
         return SubscriptionsGet.from_json(response)
 
     async def get_progresses(
-        self, podcast_id: str | None = None, since: int = 0
-    ) -> list[EpisodeActionPlay]:
-        """Get progresses.
+        self, since: int = 0
+    ) -> tuple[list[EpisodeActionPlay | EpisodeActionNew], int | None]:
+        """Get progresses. Timestamp is second return value.
 
         gpodder net may filter by podcast
         https://gpoddernet.readthedocs.io/en/latest/api/reference/events.html
+        -> we do not use this for now, since nextcloud implementation is not
+        capable of it. Also, implementation in drop-in replacements varies.
         """
         params: dict[str, str | int] = {"since": since}
         if self.is_nextcloud:
@@ -228,26 +230,23 @@ class GPodderClient:
             params["device"] = self.device
         response = await self._get(endpoint, params=params)
         if not response:
-            return []
-        actions_response = EpisodeActionGet.from_json(response).actions
+            return [], None
+        actions_response = EpisodeActionGet.from_json(response)
 
         # play has progress information
-
-        if podcast_id is None:
-            actions = [x for x in actions_response if isinstance(x, EpisodeActionPlay)]
-        else:
-            actions = [
-                x
-                for x in actions_response
-                if isinstance(x, EpisodeActionPlay) and x.podcast == podcast_id
-            ]
+        # new means, there is no progress (i.e. mark unplayed)
+        actions = [
+            x
+            for x in actions_response.actions
+            if isinstance(x, EpisodeActionPlay | EpisodeActionNew)
+        ]
 
         with suppress(ValueError):
             actions = sorted(actions, key=lambda x: datetime.datetime.fromisoformat(x.timestamp))[
                 ::-1
             ]
 
-        return actions
+        return actions, actions_response.timestamp
 
     async def update_subscriptions(
         self, add: list[str] | None = None, remove: list[str] | None = None

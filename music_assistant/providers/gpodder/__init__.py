@@ -8,6 +8,7 @@ Note:
     - it can happen, that we have the guid and use that for identification, but the sync state
       provider, eg. opodsync might use only the stream url. So always make sure, to compare both
       when relying on an external service
+    - The service calls have a timestamp (int, unix epoch s), which give the changes since then.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ from music_assistant.helpers.podcast_parsers import (
     parse_podcast_episode,
 )
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.gpodder.client import GPodderClient
+from music_assistant.providers.gpodder.client import EpisodeActionNew, GPodderClient
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -69,7 +70,11 @@ CONF_URL_NC = "url_nc"
 # General config
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_MAX_NUM_EPISODES = "max_num_episodes"
-CACHE_CATEGORY_PODCASTS = 0
+
+CACHE_CATEGORY_PODCAST_ITEMS = 0  # the individual parsed podcast (dict from podcastparser)
+CACHE_CATEGORY_OTHER = 1
+CACHE_KEY_TIMESTAMP = "timestamp"
+CACHE_KEY_FEEDS = "feeds"  # list of feed urls
 
 
 async def setup(
@@ -284,6 +289,30 @@ class GPodder(MusicProvider):
             except RuntimeError as exc:
                 raise LoginFailed("Login failed.") from exc
 
+        timestamp = await self.mass.cache.get(
+            key=CACHE_KEY_TIMESTAMP,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_OTHER,
+            default=None,
+        )
+        if timestamp is None:
+            self.timestamp: int = 0  # start from scratch on provider start
+        else:
+            self.timestamp = timestamp
+
+        self.logger.debug("Our timestamp is %s", self.timestamp)
+
+        feeds = await self.mass.cache.get(
+            key=CACHE_KEY_FEEDS,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_OTHER,
+            default=None,
+        )
+        if feeds is None:
+            self.feeds: set[str] = set()
+        else:
+            self.feeds = set(feeds)  # feeds is a list here
+
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
@@ -299,7 +328,18 @@ class GPodder(MusicProvider):
             raise ResourceTemporarilyUnavailable(backoff_time=30)
         if subscriptions is None:
             return
+
         for feed_url in subscriptions.add:
+            self.feeds.add(feed_url)
+        for feed_url in subscriptions.remove:
+            try:
+                self.feeds.remove(feed_url)
+            except KeyError:
+                # a podcast might have been added and removed in our absence...
+                continue
+
+        for feed_url in self.feeds:
+            self.logger.debug("Adding podcast with feed %s to library", feed_url)
             parsed_podcast = await self._get_podcast(feed_url)
             await self._cache_set_podcast(feed_url, parsed_podcast)
             yield parse_podcast(
@@ -309,6 +349,10 @@ class GPodder(MusicProvider):
                 domain=self.domain,
                 instance_id=self.instance_id,
             )
+
+        self.timestamp = subscriptions.timestamp
+        await self._cache_set_timestamp()
+        await self._cache_set_feeds()
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get Podcast."""
@@ -326,11 +370,15 @@ class GPodder(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get Podcast episodes. Add progress information."""
-        progresses = await self._client.get_progresses(podcast_id=prov_podcast_id)
+        progresses, timestamp = await self._client.get_progresses()
 
         podcast = await self._cache_get_podcast(prov_podcast_id)
         podcast_cover = podcast.get("cover_url")
         parsed_episodes = podcast.get("episodes", [])
+
+        if timestamp is not None:
+            self.timestamp = timestamp
+            await self._cache_set_timestamp()
 
         for cnt, parsed_episode in enumerate(parsed_episodes):
             mass_episode = parse_podcast_episode(
@@ -348,8 +396,12 @@ class GPodder(MusicProvider):
                 # we have to test both, as we are comparing to external input.
                 _test = [progress.guid, progress.episode]
                 if guid in _test or stream_url in _test:
-                    mass_episode.resume_position_ms = progress.position * 1000
-                    mass_episode.fully_played = progress.position >= progress.total
+                    if isinstance(progress, EpisodeActionNew):
+                        mass_episode.resume_position_ms = 0
+                        mass_episode.fully_played = False
+                    else:
+                        mass_episode.resume_position_ms = progress.position * 1000
+                        mass_episode.fully_played = progress.position >= progress.total
                     break
 
             yield mass_episode
@@ -370,18 +422,27 @@ class GPodder(MusicProvider):
         podcast_id, guid_or_stream_url = item_id.split(" ")
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         try:
-            progresses = await self._client.get_progresses(podcast_id=podcast_id)
+            progresses, timestamp = await self._client.get_progresses(since=self.timestamp)
         except RuntimeError:
             self.logger.warning("Was unable to obtain progresses.")
-            return False, 0
+            raise NotImplementedError  # fallback to internal position.
         for action in progresses:
             _test = [action.guid, action.episode]
             # progress is external, compare guid and stream_url
             if action.podcast == podcast_id and (
                 guid_or_stream_url in _test or stream_url in _test
             ):
+                if timestamp is not None:
+                    self.timestamp = timestamp
+                    await self._cache_set_timestamp()
+                if isinstance(action, EpisodeActionNew):
+                    # no progress, it might have been actively reset
+                    return False, 0
                 return action.position >= action.total, max(action.position * 1000, 0)
-        return False, 0
+        # if we did not find a resume position, nothing changed since our last timestamp
+        # we raise NotImplementedError, such that MA falls back to the already stored
+        # resume_position
+        raise NotImplementedError
 
     async def on_played(
         self,
@@ -457,7 +518,7 @@ class GPodder(MusicProvider):
         parsed_podcast = await self.mass.cache.get(
             key=prov_podcast_id,
             base_key=self.lookup_key,
-            category=CACHE_CATEGORY_PODCASTS,
+            category=CACHE_CATEGORY_PODCAST_ITEMS,
             default=None,
         )
         if parsed_podcast is None:
@@ -471,7 +532,25 @@ class GPodder(MusicProvider):
         await self.mass.cache.set(
             key=feed_url,
             base_key=self.lookup_key,
-            category=CACHE_CATEGORY_PODCASTS,
+            category=CACHE_CATEGORY_PODCAST_ITEMS,
             data=parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day
+        )
+
+    async def _cache_set_timestamp(self) -> None:
+        # seven days default
+        await self.mass.cache.set(
+            key=CACHE_KEY_TIMESTAMP,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_OTHER,
+            data=self.timestamp,
+        )
+
+    async def _cache_set_feeds(self) -> None:
+        # seven days default
+        await self.mass.cache.set(
+            key=CACHE_KEY_FEEDS,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_OTHER,
+            data=self.feeds,
         )
