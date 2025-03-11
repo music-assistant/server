@@ -24,11 +24,10 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
         List of FFmpeg filter parameter strings
     """
     filter_params = []
-    preamp = 0
 
     if isinstance(dsp_filter, ParametricEQFilter):
-        if dsp_filter.preamp:
-            preamp = dsp_filter.preamp
+        if dsp_filter.preamp != 0:
+            filter_params.append(f"volume={dsp_filter.preamp}dB")
         for b in dsp_filter.bands:
             if not b.enabled:
                 continue
@@ -111,8 +110,5 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
             filter_params.append(
                 f"equalizer=frequency=9000:width=18000:width_type=h:gain={dsp_filter.treble_level}"
             )
-
-    if preamp != 0:
-        filter_params.insert(0, f"volume={preamp}dB")
 
     return filter_params
