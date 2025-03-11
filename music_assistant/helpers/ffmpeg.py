@@ -105,13 +105,9 @@ class FFMpeg(AsyncProcess):
         async for line in self.iter_stderr():
             if self.collect_log_history:
                 self.log_history.append(line)
-            if "error" in line or "warning" in line:
-                # ffmpeg logs can be a bit verbose and noisy so we tone them down a bit
-                # otherwise users get scared by all the red lines,
-                # even if its just a simple one-off encoding error
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.info(line)
-            elif "critical" in line:
+            # ffmpeg logging can be quite verbose, so we only log critical errors
+            # unless verbose logging is enabled
+            if "critical" in line:
                 self.logger.error(line)
             elif self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
                 self.logger.log(VERBOSE_LOG_LEVEL, line)
@@ -128,7 +124,8 @@ class FFMpeg(AsyncProcess):
                     content_type_raw = line.split(": Audio: ")[1].split(" ")[0]
                     content_type_raw = content_type_raw.split(",")[0]
                     content_type = ContentType.try_parse(content_type_raw)
-                    self.logger.debug(
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
                         "Detected (input) content type: %s (%s)",
                         content_type,
                         content_type_raw,

@@ -32,9 +32,12 @@ async def setup(
     """Initialize provider(instance) with given configuration."""
     provider = LastFMScrobbleProvider(mass, manifest, config)
     pylast.logger.setLevel(provider.logger.level)
+
+    # httpcore is very spammy on debug without providing useful information 99% of the time
     if provider.logger.level == logging.DEBUG:
-        # httpcore is quite spammy without providing useful information 99% of the time
         logging.getLogger("httpcore").setLevel(logging.INFO)
+    else:
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     return provider
 
@@ -45,6 +48,7 @@ class LastFMScrobbleProvider(PluginProvider):
     _network: pylast._Network = None
     _currently_playing: str | None = None
     _on_unload: list[Callable[[], None]] = []
+    _last_scrobbled: str | None = None
 
     def _get_network_config(self) -> dict[str, ConfigValueType]:
         return {
@@ -85,7 +89,16 @@ class LastFMScrobbleProvider(PluginProvider):
             self.logger.error("no network available during _on_mass_media_item_played")
             return
 
-        report = event.data
+        report: MediaItemPlaybackProgressReport = event.data
+
+        # poor mans attempt to detect a song on loop
+        if not report.fully_played and report.uri == self._last_scrobbled:
+            self.logger.debug(
+                "reset _last_scrobbled and _currently_playing because the song was restarted"
+            )
+            self._last_scrobbled = None
+            # reset currently playing to avoid it expiring when looping single songs
+            self._currently_playing = None
 
         def update_now_playing() -> None:
             try:
@@ -113,6 +126,7 @@ class LastFMScrobbleProvider(PluginProvider):
                     duration=report.duration,
                     mbid=report.mbid,
                 )
+                self._last_scrobbled = report.uri
             except Exception as err:
                 self.logger.exception(err)
 
@@ -123,12 +137,12 @@ class LastFMScrobbleProvider(PluginProvider):
         if self.should_scrobble(report):
             await asyncio.to_thread(scrobble)
 
-        if report.fully_played:
-            # reset currently playing to avoid it expiring when looping songs
-            self._currently_playing = None
-
     def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
         """Determine if a track should be scrobbled, to be extended later."""
+        if self._last_scrobbled == report.uri:
+            self.logger.debug("skipped scrobbling due to duplicate event")
+            return False
+
         # ideally we want more precise control
         # but because the event is triggered every 30s
         # and we don't have full queue details to determine
