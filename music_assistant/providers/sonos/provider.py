@@ -331,6 +331,7 @@ class SonosPlayerProvider(PlayerProvider):
                 item_id=media.queue_item_id,
                 queue_version=sonos_player.queue_version,
             )
+            self.mass.call_later(5, sonos_player.sync_play_modes, media.queue_id)
             return
 
         # play a single uri/url
@@ -497,20 +498,18 @@ class SonosPlayerProvider(PlayerProvider):
             "reports": {
                 "sendUpdateAfterMillis": 1000,
                 "periodicIntervalMillis": 30000,
-                "sendPlaybackActions": True,
+                "sendPlaybackActions": False,
             },
             "playbackPolicies": {
                 "canSkip": True,
                 "limitedSkips": False,
                 "canSkipToItem": True,
                 "canSkipBack": True,
-                "canSeek": False,  # somehow not working correctly, investigate later
+                "canSeek": True,
                 "canRepeat": True,
                 "canRepeatOne": True,
                 "canCrossfade": True,
-                "canShuffle": False,  # handled by our queue controller itself
-                "showNNextTracks": 5,
-                "showNPreviousTracks": 5,
+                "canShuffle": True,
             },
         }
         return web.json_response(result)
@@ -542,14 +541,23 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _parse_sonos_queue_item(self, queue_item: QueueItem) -> dict[str, Any]:
         """Parse a Sonos queue item to a PlayerMedia object."""
+        stream_url = await self.mass.streams.resolve_stream_url(queue_item)
         return {
             "id": queue_item.queue_item_id,
             "deleted": not queue_item.available,
-            "policies": {},
+            "policies": {
+                "canCrossfade": True,
+                "canSkip": True,
+                "canSkipBack": True,
+                "canSkipToItem": True,
+                "canSeek": True,
+                "canRepeat": True,
+                "canRepeatOne": True,
+            },
             "track": {
                 "type": "track",
                 "mediaUrl": await self.mass.streams.resolve_stream_url(queue_item),
-                "contentType": "audio/flac",
+                "contentType": f"audio/{stream_url.split('.')[-1]}",
                 "service": {
                     "name": "Music Assistant",
                     "id": "8",

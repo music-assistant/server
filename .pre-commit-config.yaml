@@ -73,13 +73,13 @@ repos:
         entry: scripts/run-in-env.sh end-of-file-fixer
         stages: [pre-commit, pre-push, manual]
       - id: no-commit-to-branch
-        name: 🛑 Don't commit to main branch
+        name: 🛑 Don't commit to stable branch
         language: system
         entry: scripts/run-in-env.sh no-commit-to-branch
         pass_filenames: false
         always_run: true
         args:
-          - --branch=main
+          - --branch=stable
       - id: trailing-whitespace
         name: ✄  Trim Trailing Whitespace
         language: system

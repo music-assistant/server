@@ -792,24 +792,27 @@ class PlayerQueuesController(CoreController):
         # NOTE that we debounce this a bit to account for someone hitting the next button
         # like a madman. This will prevent the player from being overloaded with requests.
         async def play_media() -> None:
-            try:
-                next_index = self._get_next_index(queue_id, index, allow_repeat=False)
-                await self._load_item(
-                    queue_item,
-                    next_index,
-                    is_start=True,
-                    seek_position=seek_position,
-                    fade_in=fade_in,
-                )
-            except MediaNotFoundError:
-                # edge case: the requested index can not be played.
-                # we allow one single retry to skip to the next track (if any)
-                self.logger.warning(
-                    "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
-                )
-                queue_item.available = False
-                await self.play_index(queue_id, index + 1, seek_position=0, debounce=False)
-                return
+            for attempt in (0, 1):
+                try:
+                    next_index = self._get_next_index(queue_id, index + attempt, allow_repeat=False)
+                    await self._load_item(
+                        queue_item,
+                        next_index,
+                        is_start=True,
+                        seek_position=seek_position,
+                        fade_in=fade_in,
+                    )
+                except MediaNotFoundError:
+                    if attempt != 0:
+                        raise
+                    # edge case: the requested index can not be played.
+                    # we allow one single retry to skip to the next track (if any)
+                    self.logger.warning(
+                        "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
+                    )
+                    queue_item.available = False
+                else:
+                    break
 
             await self.mass.players.play_media(
                 player_id=queue_id,
@@ -952,13 +955,13 @@ class PlayerQueuesController(CoreController):
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
-    async def load_next_item(
+    async def get_next_queue_item(
         self,
         queue_id: str,
         current_item_id: str,
     ) -> QueueItem:
         """
-        Call when a player wants to (pre)load the next item into the buffer.
+        Call when a player wants (to preload) the next queue item to play.
 
         Raises QueueEmpty if there are no more tracks left.
         """
@@ -1085,14 +1088,8 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = self.index_by_id(queue_id, item_id)
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
-        if queue.flow_mode:
-            return
-        # enqueue next track on the player if we're not in flow mode
-        task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.call_later(1, self._enqueue_next_item, queue_id, item_id, task_id=task_id)
-        # repeat this one time because some players
-        # don't accept the next track when still buffering one
-        self.mass.call_later(10, self._enqueue_next_item, queue_id, item_id, task_id=task_id)
+        # enqueue/precache next track on the player
+        self.enqueue_next_item(queue_id, item_id)
 
     # Main queue manipulation methods
 
@@ -1134,16 +1131,9 @@ class PlayerQueuesController(CoreController):
         if (
             insert_at_index == (index_in_buffer + 1)
             and queue.state != PlayerState.IDLE
-            and (current_item_in_buffer := self.get_item(queue_id, index_in_buffer))
+            and (cur_item := self.get_item(queue_id, index_in_buffer))
         ):
-            task_id = f"enqueue_next_item_{queue_id}"
-            self.mass.call_later(
-                1,
-                self._enqueue_next_item,
-                queue_id,
-                current_item_in_buffer.queue_item_id,
-                task_id=task_id,
-            )
+            self.enqueue_next_item(queue_id, cur_item.queue_item_id)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
@@ -1419,14 +1409,14 @@ class PlayerQueuesController(CoreController):
 
     def _get_next_item(self, queue_id: str, cur_index: int | None = None) -> QueueItem | None:
         """Return next QueueItem for given queue."""
-        while True:
+        for _retries in range(3):
             if (next_index := self._get_next_index(queue_id, cur_index)) is None:
                 break
-            if next_item := self.get_item(queue_id, next_index):
-                if next_item.media_item and not next_item.media_item.available:
-                    # ensure that we skip unavailable items (set by load_next track logic)
-                    continue
-                return next_item
+            next_item = self.get_item(queue_id, next_index)
+            if next_item.media_item and not next_item.media_item.available:
+                # ensure that we skip unavailable items (set by load_next track logic)
+                continue
+            return next_item
         return None
 
     async def _fill_radio_tracks(self, queue_id: str) -> None:
@@ -1444,22 +1434,39 @@ class PlayerQueuesController(CoreController):
             insert_at_index=len(self._queue_items[queue_id]) + 1,
         )
 
-    async def _enqueue_next_item(self, queue_id: str, current_item_id: str) -> None:
-        """Enqueue the next item on the player."""
-        try:
-            next_item = await self.load_next_item(queue_id, current_item_id)
-        except QueueEmpty:
-            return
-        if not self._queues[queue_id].flow_mode:
-            await self.mass.players.enqueue_next_media(
-                player_id=queue_id,
-                media=await self.player_media_from_queue_item(next_item, False),
+    def enqueue_next_item(self, queue_id: str, current_item_id: str) -> None:
+        """Enqueue/precache the next item on the player."""
+        queue = self._queues[queue_id]
+        task_id = f"enqueue_next_item_{queue_id}"
+
+        async def _enqueue_next_item(queue_id: str, current_item_id: str) -> None:
+            if not (current_item := self.get_item(queue_id, current_item_id)):
+                return
+            try:
+                next_item = await self.get_next_queue_item(queue_id, current_item_id)
+            except QueueEmpty:
+                return
+            if not self._queues[queue_id].flow_mode and current_item.media_type != MediaType.RADIO:
+                await self.mass.players.enqueue_next_media(
+                    player_id=queue_id,
+                    media=await self.player_media_from_queue_item(next_item, False),
+                )
+            self.logger.debug(
+                "Enqueued next track %s on queue %s",
+                next_item.name,
+                self._queues[queue_id].display_name,
             )
-        self.logger.debug(
-            "Enqueued next track %s on queue %s",
-            next_item.name,
-            self._queues[queue_id].display_name,
-        )
+
+        if not (current_item := self.get_item(queue_id, current_item_id)):
+            # this should not happen, but guard anyways
+            return
+
+        if not current_item.duration:
+            delay = 5
+        else:
+            delay = max(int((current_item.duration / 2) - queue.elapsed_time), 0)
+
+        self.mass.call_later(delay, _enqueue_next_item, queue_id, current_item_id, task_id=task_id)
 
     async def _resolve_media_items(
         self, media_item: MediaItemTypeOrItemMapping, start_item: str | None = None
