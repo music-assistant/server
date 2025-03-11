@@ -26,7 +26,7 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
     filter_params = []
 
     if isinstance(dsp_filter, ParametricEQFilter):
-        if dsp_filter.preamp != 0:
+        if dsp_filter.preamp and dsp_filter.preamp != 0:
             filter_params.append(f"volume={dsp_filter.preamp}dB")
         for b in dsp_filter.bands:
             if not b.enabled:
