@@ -3,6 +3,7 @@
 import math
 
 from music_assistant_models.dsp import (
+    AudioChannel,
     DSPFilter,
     ParametricEQBandType,
     ParametricEQFilter,
@@ -32,7 +33,7 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
             if not b.enabled:
                 continue
             channels = ""
-            if b.channel:
+            if b.channel != AudioChannel.ALL:
                 channels = f":c={b.channel}"
             # From https://webaudio.github.io/Audio-EQ-Cookbook/audio-eq-cookbook.html
 
