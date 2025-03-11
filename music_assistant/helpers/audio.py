@@ -157,8 +157,10 @@ class StreamCache:
             audio_input=audio_source,
             input_format=self.streamdetails.audio_format,
             output_format=self.streamdetails.audio_format,
-            extra_input_args=extra_input_args,
             chunk_size=64000,
+            # apply readrate limiting to avoid buffering too much data too fast
+            # so we only allow reading into the cache max 5 times the normal speed
+            extra_input_args=["-readrate", "5", *extra_input_args],
         ):
             async with self._lock:
                 self._data += chunk
@@ -504,10 +506,8 @@ async def get_stream_details(
         streamdetails.provider,
         media_type=queue_item.media_type,
     ):
-        streamdetails.loudness = float(result[0]) if isinstance(result[0], int | float) else None
-        streamdetails.loudness_album = (
-            float(result[1]) if isinstance(result[1], int | float) else None
-        )
+        streamdetails.loudness = result[0]
+        streamdetails.loudness_album = result[1]
     streamdetails.prefer_album_loudness = prefer_album_loudness
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
@@ -595,7 +595,7 @@ async def get_media_stream(
         substream = await get_hls_substream(mass, streamdetails.path)
         audio_source = substream.path
         if streamdetails.media_type == MediaType.RADIO:
-            # Especially the BBC streams struggle when they're played directly
+            # HLS streams (especially the BBC) struggle when they're played directly
             # with ffmpeg, where they just stop after some minutes,
             # so we tell ffmpeg to loop around in this case.
             extra_input_args += ["-stream_loop", "-1", "-re"]
@@ -1333,7 +1333,8 @@ async def analyze_loudness(
         media_type=streamdetails.media_type,
     ):
         # only when needed we do the analyze job
-        streamdetails.loudness = result
+        streamdetails.loudness = result[0]
+        streamdetails.loudness_album = result[1]
         return
 
     logger = LOGGER.getChild("analyze_loudness")

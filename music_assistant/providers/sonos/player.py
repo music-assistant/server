@@ -510,7 +510,11 @@ class SonosPlayer:
         if not self.client.player.is_coordinator:
             return
         # sync crossfade and repeat modes
-        queue = self.mass.player_queues.get(event.object_id)
+        await self.sync_play_modes(event.object_id)
+
+    async def sync_play_modes(self, queue_id: str) -> None:
+        """Sync the play modes between MA and Sonos."""
+        queue = self.mass.player_queues.get(queue_id)
         if not queue or queue.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
             return
         crossfade = await self.mass.config.get_player_config_value(queue.queue_id, CONF_CROSSFADE)
@@ -521,10 +525,14 @@ class SonosPlayer:
             play_modes.crossfade != crossfade
             or play_modes.repeat != repeat_all_enabled
             or play_modes.repeat_one != repeat_single_enabled
+            or play_modes.shuffle != queue.shuffle_enabled
         ):
             try:
                 await self.client.player.group.set_play_modes(
-                    crossfade=crossfade, repeat=repeat_all_enabled, repeat_one=repeat_single_enabled
+                    crossfade=crossfade,
+                    repeat=repeat_all_enabled,
+                    repeat_one=repeat_single_enabled,
+                    shuffle=queue.shuffle_enabled,
                 )
             except FailedCommand as err:
                 if "groupCoordinatorChanged" not in str(err):

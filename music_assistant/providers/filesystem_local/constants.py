@@ -53,6 +53,18 @@ CONF_ENTRY_CONTENT_TYPE_READ_ONLY = ConfigEntry.from_dict(
     }
 )
 
+CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS = ConfigEntry(
+    key="ignore_album_playlists",
+    type=ConfigEntryType.BOOLEAN,
+    label="Ignore playlists with album tracks within album folders",
+    description="A digital album often comes with a playlist file (.m3u) "
+    "that contains the tracks of the album. Adding all these playlists to the library, "
+    "is not very practical so it's better to just ignore them.\n\n"
+    "If this option is enabled, any playlists will be ignored which are more than "
+    "1 level deep in the folder structure. E.g. /music/artistname/albumname/playlist.m3u",
+    default_value=True,
+    required=False,
+)
 
 TRACK_EXTENSIONS = {
     "aac",
