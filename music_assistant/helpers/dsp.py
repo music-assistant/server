@@ -31,6 +31,9 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
         for b in dsp_filter.bands:
             if not b.enabled:
                 continue
+            channels = ""
+            if b.channel:
+                channels = f":c={b.channel}"
             # From https://webaudio.github.io/Audio-EQ-Cookbook/audio-eq-cookbook.html
 
             f_s = input_format.sample_rate
@@ -50,7 +53,9 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 a1 = -2 * math.cos(w_0)
                 a2 = 1 - alpha / a
 
-                filter_params.append(f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}")
+                filter_params.append(
+                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                )
             elif b.type == ParametricEQBandType.LOW_SHELF:
                 b0 = a * ((a + 1) - (a - 1) * math.cos(w_0) + 2 * math.sqrt(a) * alpha)
                 b1 = 2 * a * ((a - 1) - (a + 1) * math.cos(w_0))
@@ -59,7 +64,9 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 a1 = -2 * ((a - 1) + (a + 1) * math.cos(w_0))
                 a2 = (a + 1) + (a - 1) * math.cos(w_0) - 2 * math.sqrt(a) * alpha
 
-                filter_params.append(f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}")
+                filter_params.append(
+                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                )
             elif b.type == ParametricEQBandType.HIGH_SHELF:
                 b0 = a * ((a + 1) + (a - 1) * math.cos(w_0) + 2 * math.sqrt(a) * alpha)
                 b1 = -2 * a * ((a - 1) + (a + 1) * math.cos(w_0))
@@ -68,7 +75,9 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 a1 = 2 * ((a - 1) - (a + 1) * math.cos(w_0))
                 a2 = (a + 1) - (a - 1) * math.cos(w_0) - 2 * math.sqrt(a) * alpha
 
-                filter_params.append(f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}")
+                filter_params.append(
+                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                )
             elif b.type == ParametricEQBandType.HIGH_PASS:
                 b0 = (1 + math.cos(w_0)) / 2
                 b1 = -(1 + math.cos(w_0))
@@ -77,7 +86,9 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 a1 = -2 * math.cos(w_0)
                 a2 = 1 - alpha
 
-                filter_params.append(f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}")
+                filter_params.append(
+                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                )
             elif b.type == ParametricEQBandType.LOW_PASS:
                 b0 = (1 - math.cos(w_0)) / 2
                 b1 = 1 - math.cos(w_0)
@@ -86,7 +97,9 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 a1 = -2 * math.cos(w_0)
                 a2 = 1 - alpha
 
-                filter_params.append(f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}")
+                filter_params.append(
+                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                )
             elif b.type == ParametricEQBandType.NOTCH:
                 b0 = 1
                 b1 = -2 * math.cos(w_0)
@@ -95,7 +108,9 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 a1 = -2 * math.cos(w_0)
                 a2 = 1 - alpha
 
-                filter_params.append(f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}")
+                filter_params.append(
+                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                )
     if isinstance(dsp_filter, ToneControlFilter):
         # A basic 3-band equalizer
         if dsp_filter.bass_level != 0:
