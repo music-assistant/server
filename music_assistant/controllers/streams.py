@@ -63,7 +63,13 @@ from music_assistant.helpers.audio import (
 )
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
-from music_assistant.helpers.util import get_ip, get_ips, select_free_port, try_parse_bool
+from music_assistant.helpers.util import (
+    clean_old_files,
+    get_ip,
+    get_ips,
+    select_free_port,
+    try_parse_bool,
+)
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.plugin import PluginProvider
@@ -76,6 +82,8 @@ if TYPE_CHECKING:
 
 
 isfile = wrap(os.path.isfile)
+
+MAX_CACHE_DIR_SIZE = 50  # 50GB
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -107,11 +115,20 @@ class StreamsController(CoreController):
         )
         self.manifest.icon = "cast-audio"
         self.announcements: dict[str, str] = {}
+        # create cache dir if needed
+        self._audio_cache_dir = audio_cache_dir = os.path.join(self.mass.cache_path, ".audio")
+        if not os.path.isdir(audio_cache_dir):
+            os.makedirs(audio_cache_dir)
 
     @property
     def base_url(self) -> str:
         """Return the base_url for the streamserver."""
         return self._server.base_url
+
+    @property
+    def audio_cache_dir(self) -> str:
+        """Return the directory where audio cache files are stored."""
+        return self._audio_cache_dir
 
     async def get_config_entries(
         self,
@@ -199,15 +216,25 @@ class StreamsController(CoreController):
             ),
             ConfigEntry(
                 key=CONF_ALLOW_MEMORY_CACHE,
-                type=ConfigEntryType.BOOLEAN,
+                type=ConfigEntryType.STRING,
                 default_value=DEFAULT_ALLOW_MEMORY_CACHE,
-                label="Allow (in-memory) caching of audio streams",
-                description="To ensure smooth playback as well as fast seeking, "
-                "Music Assistant by default caches audio streams (in memory). "
-                "On systems with limited memory, this can be disabled, "
-                "but may result in less smooth playback.",
+                options=[
+                    ConfigValueOption("Always", "always"),
+                    ConfigValueOption("Disabled", "disabled"),
+                    ConfigValueOption("Auto", "auto"),
+                ],
+                label="Allow caching of remote/cloudbased audio streams",
+                description="To ensure smooth(er) playback as well as fast seeking, "
+                "Music Assistant can cache audio streams on disk. \n"
+                "On systems with limited diskspace, this can be disabled, "
+                "but may result in less smooth playback or slower seeking.\n\n"
+                "**Always:** Enforce caching of audio streams at all times "
+                "(as long as there is enough free space)."
+                "**Disabled:** Never cache audio streams.\n"
+                "**Auto:** Let Music Assistant decide if caching "
+                "should be used on a per-item base.",
                 category="advanced",
-                required=False,
+                required=True,
             ),
         )
 
@@ -218,6 +245,7 @@ class StreamsController(CoreController):
         FFMPEG_LOGGER.setLevel(self.logger.level)
         # perform check for ffmpeg version
         await check_ffmpeg_version()
+        await self._clean_audio_cache()
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
@@ -1049,3 +1077,9 @@ class StreamsController(CoreController):
             bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
             channels=2,
         )
+
+    async def _clean_audio_cache(self) -> None:
+        """Clean up audio cache periodically."""
+        await clean_old_files(self.audio_cache_dir, MAX_CACHE_DIR_SIZE)
+        # reschedule self
+        self.mass.call_later(3600, self._clean_audio_cache)

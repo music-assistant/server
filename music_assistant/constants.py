@@ -90,7 +90,7 @@ CONF_ALLOW_MEMORY_CACHE: Final[str] = "allow_memory_cache"
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
-DEFAULT_ALLOW_MEMORY_CACHE: Final[bool] = True
+DEFAULT_ALLOW_MEMORY_CACHE: Final[str] = "auto"
 
 # common db tables
 DB_TABLE_PLAYLOG: Final[str] = "playlog"
