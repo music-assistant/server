@@ -145,7 +145,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="URL",
+            label="GPodder Service URL",
             required=False,
             description="URL of gPodder instance.",
             value=values.get(CONF_URL),
@@ -187,10 +187,10 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_URL_NC,
             type=ConfigEntryType.STRING,
-            label="URL",
+            label="Nextcloud URL",
             required=False,
             description="URL of Nextcloud instance.",
-            value=values.get(CONF_URL),
+            value=values.get(CONF_URL_NC),
             hidden=using_gpodder,
         ),
         ConfigEntry(
@@ -472,7 +472,8 @@ class GPodder(MusicProvider):
                 duration_s=duration,
             )
             self.logger.debug(f"Updated progress to {position / duration * 100:.2f}%")
-        except RuntimeError:
+        except RuntimeError as exc:
+            self.logger.debug(exc)
             self.logger.debug("Failed to update progress.")
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:

@@ -9,7 +9,6 @@ import datetime
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
 import aiohttp
@@ -36,14 +35,14 @@ class SubscriptionsGet(SubscriptionsChangeRequest):
     timestamp: int
 
 
-class EpisodeActionType(StrEnum):
-    """EpisodeActionType."""
+def action_tagger(cls: "type[EpisodeAction]") -> list[str]:
+    """Use action field to distinguish classes.
 
-    DOWNLOAD = "download"
-    DELETE = "delete"
-    PLAY = "play"
-    NEW = "new"
-    FLATTR = "flattr"
+    NC Gpodder uses upper case values, opodsync lower case.
+    This however does not work with a StrEnum, so plain string as action.
+    """
+    action = cls.__name__.replace("EpisodeAction", "")
+    return [action.upper(), action.lower()]
 
 
 @dataclass(kw_only=True)
@@ -57,8 +56,7 @@ class EpisodeAction(DataClassJSONMixin):
         """Config."""
 
         discriminator = Discriminator(
-            field="action",
-            include_subtypes=True,
+            field="action", include_subtypes=True, variant_tagger_fn=action_tagger
         )
         omit_none = True  # only nextcloud supports guid
 
@@ -72,35 +70,35 @@ class EpisodeAction(DataClassJSONMixin):
 class EpisodeActionDownload(EpisodeAction):
     """EpisodeActionDownload."""
 
-    action: EpisodeActionType = EpisodeActionType.DOWNLOAD
+    action: str = "download"
 
 
 @dataclass(kw_only=True)
 class EpisodeActionDelete(EpisodeAction):
     """EpisodeActionDelete."""
 
-    action: EpisodeActionType = EpisodeActionType.DELETE
+    action: str = "delete"
 
 
 @dataclass(kw_only=True)
 class EpisodeActionNew(EpisodeAction):
     """EpisodeActionNew."""
 
-    action: EpisodeActionType = EpisodeActionType.NEW
+    action: str = "new"
 
 
 @dataclass(kw_only=True)
 class EpisodeActionFlattr(EpisodeAction):
     """EpisodeActionFlattr."""
 
-    action: EpisodeActionType = EpisodeActionType.FLATTR
+    action: str = "flattr"
 
 
 @dataclass(kw_only=True)
 class EpisodeActionPlay(EpisodeAction):
     """EpisodeActionPlay."""
 
-    action: EpisodeActionType = EpisodeActionType.PLAY
+    action: str = "play"
 
     # all in seconds
     started: int = 0
@@ -136,7 +134,7 @@ class GPodderClient:
 
         self.logger = logger
 
-        self._nextcloud_prefix = "index.php/apps/gpoddersync/"
+        self._nextcloud_prefix = "index.php/apps/gpoddersync"
 
     def init_nc(self, base_url: str, nc_token: str | None = None) -> None:
         """Init values for a nextcloud client."""
@@ -175,6 +173,7 @@ class GPodderClient:
                 auth=self.auth,
             )
         except ClientResponseError as exc:
+            self.logger.debug(exc)
             raise RuntimeError(f"API POST call to {endpoint} failed.") from exc
         if response.status != 200:
             raise RuntimeError(f"Api post call failed to {endpoint} failed!")
@@ -258,7 +257,7 @@ class GPodderClient:
             remove = []
         request = SubscriptionsChangeRequest(add=add, remove=remove)
         if self.is_nextcloud:
-            endpoint = "{self._nextcloud_prefix}/subscription_change/create"
+            endpoint = f"{self._nextcloud_prefix}/subscription_change/create"
         else:
             endpoint = f"api/2/subscriptions/{self.username}/{self.device}.json"
 
