@@ -27,8 +27,24 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
     filter_params = []
 
     if isinstance(dsp_filter, ParametricEQFilter):
-        if dsp_filter.preamp and dsp_filter.preamp != 0:
+        has_per_channel_preamp = any(value != 0 for value in dsp_filter.per_channel_preamp.values())
+        if dsp_filter.preamp and dsp_filter.preamp != 0 and not has_per_channel_preamp:
             filter_params.append(f"volume={dsp_filter.preamp}dB")
+        # "volume" is handled for the whole audio stream only, so we'll use the pan filter instead
+        elif has_per_channel_preamp:
+            channel_config = []
+            for channel_id, gain_db in dsp_filter.per_channel_preamp.items():
+                # Apply both the overall preamp and the per-channel preamp
+                total_gain_db = dsp_filter.preamp + gain_db
+                if total_gain_db != 0:
+                    # Convert dB to linear gain
+                    gain = 10 ** (total_gain_db / 20)
+                    channel_config.append(f"{channel_id}={gain}*{channel_id}")
+                else:
+                    channel_config.append(f"{channel_id}={channel_id}")
+
+            # Could potentially also be expanded for more than 2 channels
+            filter_params.append("pan=stereo|" + "|".join(channel_config))
         for b in dsp_filter.bands:
             if not b.enabled:
                 continue
