@@ -368,8 +368,6 @@ class AirplayProvider(PlayerProvider):
                 output_format=AIRPLAY_PCM_FORMAT,
             )
 
-            # always stop existing stream first
-
         # if an existing stream session is running, replace it with the new stream
         if airplay_player.raop_stream and airplay_player.raop_stream.running:
             await airplay_player.raop_stream.session.replace_stream(audio_source)
