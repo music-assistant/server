@@ -273,12 +273,15 @@ class GPodderClient:
         duration_s: float,
     ) -> None:
         """Update progress."""
-        timestamp = datetime.datetime.now().astimezone().replace(microsecond=0).isoformat()
+        utc_timestamp = (
+            datetime.datetime.now(datetime.UTC).replace(microsecond=0, tzinfo=None).isoformat()
+        )
+
         episode_action: EpisodeActionNew | EpisodeActionPlay
         if position_s == 0:
             # mark unplayed
             episode_action = EpisodeActionNew(
-                podcast=podcast_id, episode=episode_id, timestamp=timestamp
+                podcast=podcast_id, episode=episode_id, timestamp=utc_timestamp
             )
             if self.is_nextcloud:
                 episode_action.guid = guid
@@ -286,11 +289,14 @@ class GPodderClient:
             episode_action = EpisodeActionPlay(
                 podcast=podcast_id,
                 episode=episode_id,
-                timestamp=timestamp,
+                timestamp=utc_timestamp,
                 position=int(position_s),
                 started=0,
                 total=int(duration_s),
             )
+
+        # It is a bit unclear here, if other gpodder alternatives then nextcloud support the guid
+        # for episodes. I didn't see that in the source for opodsync at least...
         if self.is_nextcloud:
             episode_action.guid = guid
             endpoint = f"{self._nextcloud_prefix}/episode_action/create"

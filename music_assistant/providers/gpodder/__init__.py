@@ -2,7 +2,7 @@
 
 Tested against opodsync, https://github.com/kd2org/opodsync
 and nextcloud-gpodder, https://github.com/thrillfall/nextcloud-gpodder
-gpodder.net is not supported due to responsiveness of domain.
+gpodder.net is not supported due to responsiveness/ frequent downtimes of domain.
 
 Note:
     - it can happen, that we have the guid and use that for identification, but the sync state
@@ -73,8 +73,10 @@ CONF_MAX_NUM_EPISODES = "max_num_episodes"
 
 CACHE_CATEGORY_PODCAST_ITEMS = 0  # the individual parsed podcast (dict from podcastparser)
 CACHE_CATEGORY_OTHER = 1
-CACHE_KEY_TIMESTAMP = "timestamp"
-CACHE_KEY_FEEDS = "feeds"  # list of feed urls
+CACHE_KEY_TIMESTAMP = (
+    "timestamp"  # tuple of two ints, timestamp_subscriptions and timestamp_actions
+)
+CACHE_KEY_FEEDS = "feeds"  # list[str] : all available rss feed urls
 
 
 async def setup(
@@ -265,7 +267,6 @@ class GPodder(MusicProvider):
         nc_url = str(self.config.get_value(CONF_URL_NC))
         nc_token = self.config.get_value(CONF_TOKEN_NC)
 
-        # int float str - can this be easier?
         self.max_episodes = int(float(str(self.config.get_value(CONF_MAX_NUM_EPISODES))))
 
         self._client = GPodderClient(session=self.mass.http_session, logger=self.logger)
@@ -274,6 +275,7 @@ class GPodder(MusicProvider):
             assert nc_url is not None
             self._client.init_nc(base_url=nc_url, nc_token=str(nc_token))
         else:
+            self.update_config_value(CONF_USING_GPODDER, True)
             if _username is None or _password is None or _device_id is None:
                 raise LoginFailed("Must provide username, password and device_id.")
             username = str(_username)
