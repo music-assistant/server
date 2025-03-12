@@ -309,9 +309,6 @@ class AirplayProvider(PlayerProvider):
         # this accounts for syncgroups and linked players (e.g. sonos)
         player.active_source = media.queue_id
         player.current_media = media
-        # always stop existing stream first
-        if airplay_player.raop_stream and airplay_player.raop_stream.running:
-            await airplay_player.cmd_stop()
 
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -370,6 +367,16 @@ class AirplayProvider(PlayerProvider):
                 input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
                 output_format=AIRPLAY_PCM_FORMAT,
             )
+
+            # always stop existing stream first
+
+        # if airplay_player.raop_stream and airplay_player.raop_stream.running:
+        #     await airplay_player.cmd_stop()
+
+        if airplay_player.raop_stream and airplay_player.raop_stream.running:
+            await airplay_player.raop_stream.session.replace_stream(audio_source)
+            return
+
         # setup RaopStreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients(player_id)
         raop_stream_session = RaopStreamSession(self, sync_clients, input_format, audio_source)
