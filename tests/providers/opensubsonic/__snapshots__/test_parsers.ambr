@@ -14,6 +14,7 @@
         'name': 'pornophonique',
         'provider': 'xx-instance-id-xx',
         'sort_name': 'pornophonique',
+        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/91c3901ac465b9efc439e4be4270c2b6',
         'version': '',
       }),
@@ -74,6 +75,7 @@
       }),
     ]),
     'sort_name': '8-bit lagerfeuer',
+    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -94,6 +96,7 @@
         'name': 'pornophonique',
         'provider': 'xx-instance-id-xx',
         'sort_name': 'pornophonique',
+        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/91c3901ac465b9efc439e4be4270c2b6',
         'version': '',
       }),
@@ -160,6 +163,7 @@
       }),
     ]),
     'sort_name': '8-bit lagerfeuer',
+    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -223,6 +227,7 @@
       }),
     ]),
     'sort_name': '2 mello',
+    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
@@ -291,6 +296,7 @@
       }),
     ]),
     'sort_name': '2 mello',
+    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
@@ -353,6 +359,7 @@
       }),
     ]),
     'sort_name': 'synthetic',
+    'translation_key': None,
     'uri': 'opensubsonic://artist/100000002',
     'version': '',
   })
@@ -421,6 +428,7 @@
       }),
     ]),
     'sort_name': 'synthetic',
+    'translation_key': None,
     'uri': 'opensubsonic://artist/100000002',
     'version': '',
   })
