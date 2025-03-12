@@ -370,9 +370,7 @@ class AirplayProvider(PlayerProvider):
 
             # always stop existing stream first
 
-        # if airplay_player.raop_stream and airplay_player.raop_stream.running:
-        #     await airplay_player.cmd_stop()
-
+        # if an existing stream session is running, replace it with the new stream
         if airplay_player.raop_stream and airplay_player.raop_stream.running:
             await airplay_player.raop_stream.session.replace_stream(audio_source)
             return
@@ -430,14 +428,17 @@ class AirplayProvider(PlayerProvider):
         parent_player.group_childs.append(parent_player.player_id)
         parent_player.group_childs.append(child_player.player_id)
         child_player.synced_to = parent_player.player_id
+
         # check if we should (re)start or join a stream session
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
         if active_queue.state == PlayerState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
+            # TODO: allow late joining to existing stream
+            await self.mass.player_queues.stop(active_queue.queue_id)
             # this could potentially be called by multiple players at the exact same time
             # so we debounce the resync a bit here with a timer
             self.mass.call_later(
-                1,
+                0.5,
                 self.mass.player_queues.resume,
                 active_queue.queue_id,
                 fade_in=False,

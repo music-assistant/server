@@ -98,7 +98,8 @@ class RaopStreamSession:
             return
         assert airplay_player.raop_stream
         assert airplay_player.raop_stream.session == self
-        self._sync_clients.remove(airplay_player)
+        async with self._lock:
+            self._sync_clients.remove(airplay_player)
         await airplay_player.raop_stream.stop()
         airplay_player.raop_stream = None
 
@@ -308,12 +309,10 @@ class RaopStream:
             await self._cliraop_proc.wait_with_timeout(2)
         if self._stderr_reader_task and not self._stderr_reader_task.done():
             self._stderr_reader_task.cancel()
+        if self.ffmpeg_reader_task and not self.ffmpeg_reader_task.done():
+            self.ffmpeg_reader_task.cancel()
         if self._cliraop_proc.proc and not self._cliraop_proc.closed:
             await self._cliraop_proc.close(True)
-        if self._ffmpeg_proc and not self._ffmpeg_proc.closed:
-            await self._ffmpeg_proc.close(True)
-        self._cliraop_proc = None
-        self._ffmpeg_proc = None
 
     async def write_chunk(self, chunk: bytes) -> None:
         """Write a (pcm) audio chunk."""
