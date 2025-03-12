@@ -33,7 +33,10 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
         # "volume" is handled for the whole audio stream only, so we'll use the pan filter instead
         elif has_per_channel_preamp:
             channel_config = []
-            for channel_id, gain_db in dsp_filter.per_channel_preamp.items():
+            all_channels = [AudioChannel.FL, AudioChannel.FR]
+            for channel_id in all_channels:
+                # Get gain for this channel, default to 0 if not specified
+                gain_db = dsp_filter.per_channel_preamp.get(channel_id, 0)
                 # Apply both the overall preamp and the per-channel preamp
                 total_gain_db = dsp_filter.preamp + gain_db
                 if total_gain_db != 0:
