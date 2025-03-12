@@ -303,7 +303,7 @@ class SlimprotoProvider(PlayerProvider):
                 label=f"Preset {index}",
                 description="Assign a playable item to the player's preset. "
                 "Only supported on real squeezebox hardware or jive(lite) based emulators.",
-                category="presets",
+                category="Presets",
                 required=False,
             )
             for index in range(1, preset_count + 1)
