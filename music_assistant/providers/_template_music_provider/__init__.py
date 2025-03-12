@@ -50,6 +50,7 @@ from music_assistant_models.media_items import (
     Playlist,
     ProviderMapping,
     Radio,
+    RecommendationFolder,
     SearchResults,
     Track,
 )
@@ -503,12 +504,12 @@ class MyDemoMusicprovider(MusicProvider):
         # that will call the get_library_* methods if you did not override it.
         return []
 
-    async def recommendations(self) -> list[MediaItemType]:
-        """Get this provider's recommendations.
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's recommendations.
 
-        Returns a actual and personalised list of Media items with recommendations
-        form this provider for the user/account. It may return nested levels with
-        BrowseFolder items.
+        Returns an actual (and often personalised) list of recommendations
+        from this provider for the user/account.
         """
         # Get this provider's recommendations.
         # This is only called if you reported the RECOMMENDATIONS feature in the supported_features.

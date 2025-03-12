@@ -33,6 +33,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
 )
@@ -388,11 +389,18 @@ class DeezerProvider(MusicProvider):
             raise NotImplementedError
         return result
 
-    async def recommendations(self) -> list[Track]:
+    async def recommendations(self) -> list[RecommendationFolder]:
         """Get deezer's recommendations."""
         return [
-            self.parse_track(track=track, user_country=self.gw_client.user_country)
-            for track in await self.client.get_user_recommended_tracks()
+            RecommendationFolder(
+                item_id="recommended_tracks",
+                name="Recommended tracks",
+                translation_key="recommended_tracks",
+                items=[
+                    self.parse_track(track=track, user_country=self.gw_client.user_country)
+                    for track in await self.client.get_user_recommended_tracks()
+                ],
+            )
         ]
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
