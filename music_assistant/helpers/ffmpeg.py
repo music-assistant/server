@@ -41,7 +41,6 @@ class FFMpeg(AsyncProcess):
         audio_output: str | int = "-",
         collect_log_history: bool = False,
         loglevel: str = "info",
-        logger: logging.Logger | None = None,
     ) -> None:
         """Initialize AsyncProcess."""
         ffmpeg_args = get_ffmpeg_args(
@@ -70,9 +69,9 @@ class FFMpeg(AsyncProcess):
             ffmpeg_args,
             stdin=stdin,
             stdout=stdout,
-            stderr=collect_log_history or None,
+            stderr=True,
         )
-        self.logger = logger or LOGGER
+        self.logger = LOGGER
 
     async def start(self) -> None:
         """Perform Async init of process."""
