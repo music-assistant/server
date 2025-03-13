@@ -152,21 +152,21 @@ class RadioBrowserProvider(MusicProvider):
                     provider=self.domain,
                     path=path + "popular",
                     name="",
-                    label="radiobrowser_by_popularity",
+                    translation_key="radiobrowser_by_popularity",
                 ),
                 BrowseFolder(
                     item_id="country",
                     provider=self.domain,
                     path=path + "country",
                     name="",
-                    label="radiobrowser_by_country",
+                    translation_key="radiobrowser_by_country",
                 ),
                 BrowseFolder(
                     item_id="tag",
                     provider=self.domain,
                     path=path + "tag",
                     name="",
-                    label="radiobrowser_by_tag",
+                    translation_key="radiobrowser_by_tag",
                 ),
             ]
 
@@ -252,15 +252,11 @@ class RadioBrowserProvider(MusicProvider):
                 path=base_path + "/" + country.code.lower(),
                 name=country.name,
             )
-            folder.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=country.favicon,
-                        provider=self.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
+            folder.image = MediaItemImage(
+                type=ImageType.THUMB,
+                path=country.favicon,
+                provider=self.lookup_key,
+                remotely_accessible=True,
             )
             items.append(folder)
         return items

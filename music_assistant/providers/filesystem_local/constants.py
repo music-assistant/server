@@ -60,8 +60,8 @@ CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS = ConfigEntry(
     description="A digital album often comes with a playlist file (.m3u) "
     "that contains the tracks of the album. Adding all these playlists to the library, "
     "is not very practical so it's better to just ignore them.\n\n"
-    "If this option is enabled, any playlists will be ignored which are more than "
-    "1 level deep in the folder structure. E.g. /music/artistname/albumname/playlist.m3u",
+    "If this option is enabled, all playlists will be ignored which are more than "
+    "1 level deep anywhere in the folder structure. E.g. /music/artistname/albumname/playlist.m3u",
     default_value=True,
     required=False,
 )

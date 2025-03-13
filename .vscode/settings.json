@@ -10,5 +10,11 @@
   "[github-actions-workflow]": {
     "editor.defaultFormatter": "esbenp.prettier-vscode"
   },
-  "python.analysis.extraPaths": ["../aiosonos/"]
+  "python.analysis.extraPaths": ["../models/"],
+  "python.analysis.packageIndexDepths": [
+    {
+      "name": "music_assistant_models",
+      "depth": 2
+    }
+  ]
 }
