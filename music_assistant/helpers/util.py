@@ -286,14 +286,36 @@ async def get_ip_pton(ip_string: str | None = None) -> bytes:
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
 
 
-def get_folder_size(folderpath: str) -> float:
+async def get_folder_size(folderpath: str) -> float:
     """Return folder size in gb."""
-    total_size = 0
-    for dirpath, _dirnames, filenames in os.walk(folderpath):
-        for _file in filenames:
-            _fp = os.path.join(dirpath, _file)
-            total_size += os.path.getsize(_fp)
-    return total_size / float(1 << 30)
+
+    def _get_folder_size(folderpath: str) -> float:
+        total_size = 0
+        for dirpath, _dirnames, filenames in os.walk(folderpath):
+            for _file in filenames:
+                _fp = os.path.join(dirpath, _file)
+                total_size += os.path.getsize(_fp)
+        return total_size / float(1 << 30)
+
+    return await asyncio.to_thread(_get_folder_size, folderpath)
+
+
+async def clean_old_files(folderpath: str, max_size: float) -> None:
+    """Clean old files in folder to make room for new files."""
+    foldersize = await get_folder_size(folderpath)
+    if foldersize < max_size:
+        return
+
+    def _clean_old_files(foldersize: float):
+        files: list[os.DirEntry] = [x for x in os.scandir(folderpath) if x.is_file()]
+        files.sort(key=lambda x: x.stat().st_mtime)
+        for _file in files:
+            foldersize -= _file.stat().st_size / float(1 << 30)
+            os.remove(_file.path)
+            if foldersize < max_size:
+                return
+
+    await asyncio.to_thread(_clean_old_files, foldersize)
 
 
 def get_changed_keys(
@@ -465,13 +487,23 @@ async def has_tmpfs_mount() -> bool:
     return False
 
 
-async def get_tmp_free_space() -> int:
-    """Return free space on tmp."""
+async def get_tmp_free_space() -> float:
+    """Return free space on tmp in GB's."""
+    return await get_free_space("/tmp")  # noqa: S108
+
+
+async def get_free_space(folder: str) -> float:
+    """Return free space on given folderpath in GB."""
     try:
-        if res := await asyncio.to_thread(shutil.disk_usage, "/tmp"):  # noqa: S108
-            return res.free
+        if res := await asyncio.to_thread(shutil.disk_usage, folder):
+            return res.free / float(1 << 30)
     except (FileNotFoundError, OSError, PermissionError):
-        return 0
+        return 0.0
+
+
+async def has_enough_space(folder: str, size: int) -> bool:
+    """Check if folder has enough free space."""
+    return await get_free_space(folder) > size
 
 
 def divide_chunks(data: bytes, chunk_size: int) -> Iterator[bytes]:

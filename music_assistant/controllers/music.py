@@ -33,6 +33,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemType,
     MediaItemTypeOrItemMapping,
+    RecommendationFolder,
     SearchResults,
 )
 from music_assistant_models.provider import SyncTask
@@ -548,6 +549,76 @@ class MusicController(CoreController):
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
+
+    @api_command("music/recommendations")
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get all recommendations."""
+        recommendation_providers = [
+            x for x in self.providers if ProviderFeature.RECOMMENDATIONS in x.supported_features
+        ]
+        results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
+            self._get_default_recommendations(),
+            *[
+                provider_instance.recommendations()
+                for provider_instance in recommendation_providers
+            ],
+        )
+        # return result from all providers while keeping index
+        # so the result is sorted as each provider delivered
+        return [item for sublist in zip_longest(*results_per_provider) for item in sublist]
+
+    async def _get_default_recommendations(self) -> list[RecommendationFolder]:
+        """Return default recommendations."""
+        return [
+            RecommendationFolder(
+                item_id="in_progress",
+                provider="library",
+                name="In progress",
+                translation_key="in_progress_items",
+                icon="mdi-motion-play",
+                items=await self.in_progress_items(limit=10),
+            ),
+            RecommendationFolder(
+                item_id="recently_played",
+                provider="library",
+                name="Recently played",
+                translation_key="recently_played",
+                icon="mdi-motion-play",
+                items=await self.recently_played(limit=10),
+            ),
+            RecommendationFolder(
+                item_id="random_artists",
+                provider="library",
+                name="Random artists",
+                translation_key="random_artists",
+                icon="mdi-account-music",
+                items=await self.artists.library_items(limit=10, order_by="random"),
+            ),
+            RecommendationFolder(
+                item_id="random_albums",
+                provider="library",
+                name="Random albums",
+                translation_key="random_albums",
+                icon="mdi-album",
+                items=await self.albums.library_items(limit=10, order_by="random"),
+            ),
+            RecommendationFolder(
+                item_id="random_tracks",
+                provider="library",
+                name="Random tracks",
+                translation_key="random_tracks",
+                icon="mdi-file-music",
+                items=await self.tracks.library_items(limit=10, order_by="random"),
+            ),
+            RecommendationFolder(
+                item_id="random_playlists",
+                provider="library",
+                name="Random playlists",
+                translation_key="random_playlists",
+                icon="mdi-playlist-music",
+                items=await self.playlists.library_items(limit=10, order_by="random"),
+            ),
+        ]
 
     @api_command("music/item")
     async def get_item(
