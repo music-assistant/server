@@ -11,6 +11,7 @@ import json
 import logging
 import sys
 import threading
+import urllib.parse
 from collections.abc import Callable
 from time import sleep
 from typing import Any
@@ -38,10 +39,10 @@ def send(json_msg: dict[str, Any]):
 class MusicAssistantControl:
     """Music Assistant websocket remote control Snapcast plugin."""
 
-    def __init__(self, stream_id: str, api_port: int) -> None:
+    def __init__(self, queue_id: str, api_port: int) -> None:
         """Initialize."""
-        self.stream_id = stream_id
-        self.queue_id = "ma_26a3df063370"
+        self.queue_id = queue_id
+        self.api_port = api_port
         self._metadata = {}
         self._properties = {}
         self._request_callbacks: dict[str, MessageCallback] = {}
@@ -140,14 +141,7 @@ class MusicAssistantControl:
 
             self.send_request("player_queues/get", callback=handle_result, queue_id=queue_id)
             return
-            send(
-                {
-                    "jsonrpc": "2.0",
-                    "error": {"code": -32601, "message": "Method not found"},
-                    "id": id,
-                }
-            )
-            return
+
         # always acknowledge the request
         send({"jsonrpc": "2.0", "result": "ok", "id": id})
 
@@ -203,22 +197,35 @@ class MusicAssistantControl:
             "rate": 1.0,
             "position": mass_queue_details["elapsed_time"],
         }
-        if current_queue_item:
+        if current_queue_item and (media_item := current_queue_item.get("media_item")):
+            image_url: str | None = None
+            if image_path := current_queue_item.get("image", {}).get("path"):
+                image_path_encoded = urllib.parse.quote_plus(image_path)
+                image_url = (
+                    f"http://localhost:{self.api_port}/imageproxy?path={image_path_encoded}"
+                    f"&provider={current_queue_item['image']['provider']}"
+                    "&size=512"
+                )
             properties["metadata"] = {
-                "trackId": current_queue_item["queue_item_id"],
-                "duration": current_queue_item.get("duration"),
-                "title": current_queue_item["name"],
+                "trackId": media_item["uri"],
+                "duration": media_item["duration"],
+                "title": media_item["name"],
+                "artUrl": image_url,
             }
-            if "artists" in current_queue_item:
-                properties["metadata"]["artist"] = [
-                    x["name"] for x in current_queue_item["artists"]
-                ]
+            if "artists" in media_item:
+                properties["metadata"]["artist"] = [x["name"] for x in media_item["artists"]]
                 properties["metadata"]["artistSort"] = [
-                    x["sort_name"] for x in current_queue_item["artists"]
+                    x["sort_name"] for x in media_item["artists"]
                 ]
-            if "album" in current_queue_item:
-                properties["metadata"]["album"] = current_queue_item["album"]["name"]
-                properties["metadata"]["albumSort"] = current_queue_item["album"]["sort_name"]
+            if "album" in media_item:
+                properties["metadata"]["album"] = media_item["album"]["name"]
+                properties["metadata"]["albumSort"] = media_item["album"]["sort_name"]
+        elif current_queue_item:
+            properties["metadata"] = {
+                "title": current_queue_item["name"],
+                "trackId": current_queue_item["queue_item_id"],
+                "artUrl": image_url,
+            }
 
         return properties
 
@@ -230,7 +237,6 @@ class MusicAssistantControl:
         # Request response
         if "message_id" in data:
             message_id = data["message_id"]
-            logger.info("Request response received for %s", message_id)
             if callback := self._request_callbacks.pop(message_id, None):
                 if result := data.get("result"):
                     callback(result)
@@ -240,7 +246,6 @@ class MusicAssistantControl:
         # Event
         if "event" in data and data["object_id"] == self.queue_id:
             event = data["event"]
-            logger.info("Event received: %s", event)
             if event == "queue_updated":
                 properties = self._create_properties(data["data"])
                 self.send_snapcast_properties_notification(properties)
@@ -275,15 +280,17 @@ class MusicAssistantControl:
 
 if __name__ == "__main__":
     # Parse command line
-    stream_id = None
+    queue_id = None
     api_port = None
     for arg in sys.argv:
         if arg.startswith("--stream="):
             stream_id = arg.split("=")[1]
+        if arg.startswith("--queueid="):
+            queue_id = arg.split("=")[1]
         if arg.startswith("--api-port="):
             api_port = arg.split("=")[1]
 
-    if not stream_id or not api_port:
+    if not queue_id or not api_port:
         print("Usage: --stream=<stream_id> --api_port=<api_port>")  # noqa: T201
         sys.exit()
 
@@ -298,9 +305,11 @@ if __name__ == "__main__":
     log_handler.setFormatter(logging.Formatter(log_format_stderr))
     logger.addHandler(log_handler)
 
-    logger.debug("Initializing for stream_id %s and api_port %s", stream_id, api_port)
+    logger.debug(
+        "Initializing for stream_id %s, queue_id %s and api_port %s", stream_id, queue_id, api_port
+    )
 
-    ctrl = MusicAssistantControl(stream_id, int(api_port))
+    ctrl = MusicAssistantControl(queue_id, int(api_port))
 
     # keep listening for messages on stdin and forward them
     try:
