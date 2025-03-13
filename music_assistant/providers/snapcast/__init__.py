@@ -9,6 +9,7 @@ import random
 import re
 import socket
 import time
+import urllib.parse
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
@@ -37,7 +38,6 @@ from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
     DEFAULT_PCM_FORMAT,
-    VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
@@ -75,7 +75,7 @@ CONF_HELP_LINK = (
     "https://raw.githubusercontent.com/badaix/snapcast/refs/heads/master/server/etc/snapserver.conf"
 )
 
-# airplay has fixed sample rate/bit depth so make this config entry static and hidden
+# snapcast has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(
     supported_sample_rates=[48000], supported_bit_depths=[16], hidden=True
 )
@@ -84,13 +84,14 @@ DEFAULT_SNAPSERVER_IP = "127.0.0.1"
 DEFAULT_SNAPSERVER_PORT = 1705
 DEFAULT_SNAPSTREAM_IDLE_THRESHOLD = 60000
 
+MASS_STREAM_POSTFIX = "Music Assistant"
 SNAPWEB_DIR = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
 CONTROL_SCRIPT = pathlib.Path(__file__).parent.resolve().joinpath("control.py")
 
 DEFAULT_SNAPCAST_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
     sample_rate=48000,
-    # TODO: can we handle 24 bits bit depth ?
+    # TODO: we can also use 32 bits here
     bit_depth=16,
     channels=2,
 )
@@ -100,7 +101,7 @@ DEFAULT_SNAPCAST_PCM_FORMAT = AudioFormat(
     # we prefer F32 here to account for volume normalization
     content_type=ContentType.PCM_F32LE,
     sample_rate=48000,
-    bit_depth=32,
+    bit_depth=16,
     channels=2,
 )
 
@@ -299,7 +300,6 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_transport_codec = self.config.get_value(
                 CONF_SERVER_TRANSPORT_CODEC
             )
-
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
@@ -326,7 +326,7 @@ class SnapCastProvider(PlayerProvider):
             )
             # register callback for when the connection gets lost to the snapserver
             self._snapserver.set_on_disconnect_callback(self._handle_disconnect)
-            # await self._create_default_stream()
+
         except OSError as err:
             msg = "Unable to start the Snapserver connection ?"
             raise SetupFailedError(msg) from err
@@ -407,14 +407,14 @@ class SnapCastProvider(PlayerProvider):
         player.volume_muted = snap_client.muted
         player.available = snap_client.connected
         player.synced_to = self._synced_to(player_id)
-        if player.active_group is None:
-            if stream := self._get_snapstream(player_id):
-                if stream.name.startswith(("MusicAssistant", "default")):
-                    player.active_source = player_id
-                else:
-                    player.active_source = stream.name
-            else:
-                player.active_source = player_id
+        # if player.active_group is None:
+        if stream := self._get_snapstream(player_id):
+            if stream.identifier == "default":
+                player.active_source = None
+            elif not stream.identifier.startswith("Music Assistant"):
+                player.active_source = stream.identifier
+        else:
+            player.active_source = None
         self._group_childs(player_id)
         self.mass.players.update(player_id)
 
@@ -502,14 +502,21 @@ class SnapCastProvider(PlayerProvider):
         if player.synced_to:
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
-        # stop any existing streams first
+
+        # stop any existing streamtasks first
         if stream_task := self._stream_tasks.pop(player_id, None):
             if not stream_task.done():
                 stream_task.cancel()
-        # initialize a new stream and attach it to the group
-        stream = await self._create_stream(media.queue_id)
+                with suppress(asyncio.CancelledError):
+                    await stream_task
+
+        # get stream or create new one
+        stream = await self._get_or_create_stream(player_id, media.queue_id)
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
+
+        player.current_media = media
+        player.active_source = media.queue_id
 
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
@@ -562,16 +569,12 @@ class SnapCastProvider(PlayerProvider):
             )
 
         async def _streamer() -> None:
-            input_args = ["-re"]
             if stream.path:
-                input_args += ["-y"]
+                stream_path = stream.path
             if not stream.path:
                 stream_path = "tcp://" + stream._stream["uri"]["host"]
-            else:
-                stream_path = stream.path
+
             self.logger.debug("Start streaming to %s", stream_path)
-            logger = self.logger.getChild("streamer")
-            logger.setLevel(VERBOSE_LOG_LEVEL)
             async with FFMpeg(
                 audio_input=audio_source,
                 input_format=input_format,
@@ -581,7 +584,6 @@ class SnapCastProvider(PlayerProvider):
                 ),
                 audio_output=stream_path,
                 extra_input_args=["-y", "-re"],
-                logger=logger,
             ) as ffmpeg_proc:
                 player.state = PlayerState.PLAYING
                 player.current_media = media
@@ -603,10 +605,8 @@ class SnapCastProvider(PlayerProvider):
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = self.mass.create_task(_streamer())
 
-    async def _delete_current_snapstream(self, stream: Snapstream, media: PlayerMedia) -> None:
+    async def _delete_current_snapstream(self, stream: Snapstream) -> None:
         with suppress(TypeError, KeyError, AttributeError):
-            if media.duration < 5:
-                await asyncio.sleep(5)
             await self._snapserver.stream_remove_stream(stream.identifier)
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
@@ -646,24 +646,29 @@ class SnapCastProvider(PlayerProvider):
             and self._snapserver.client(snap_client_id).connected
         }
 
-    async def _create_stream(self, queue_id: str) -> Snapstream:
-        """Create new stream on snapcast server."""
-        if self._use_builtin_server:
-            return self._snapserver.stream("mass1")
+    async def _get_or_create_stream(self, player_id: str, queue_id: str) -> Snapstream:
+        """Create new stream on snapcast server (or return existing one)."""
+        mass_queue = self.mass.player_queues.get(queue_id)
+        stream_name = f"{MASS_STREAM_POSTFIX} - {mass_queue.display_name}"
+
+        # prefer to reuse existing stream if possible
+        for stream in self._snapserver.streams:
+            if stream.identifier == stream_name:
+                return stream
+
         attempts = 50
         while attempts:
             attempts -= 1
             # pick a random port
             port = random.randint(4953, 4953 + 200)
-            name = f"MusicAssistant--{port}"
             result = await self._snapserver.stream_add_stream(
                 # NOTE: setting the sampleformat to something else
                 # (like 24 bits bit depth) does not seem to work at all!
                 f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
                 f"&idle_threshold={self._snapcast_stream_idle_threshold}"
-                # f"&controlscript='{CONTROL_SCRIPT}'"
-                # f"&controlscriptparams={queue_id}%20{api_port}"
-                f"&name={name}"
+                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
+                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20--api-port={self.mass.webserver.publish_port}"
+                f"&name={stream_name}"
             )
             if "id" not in result:
                 # if the port is already taken, the result will be an error
@@ -672,14 +677,6 @@ class SnapCastProvider(PlayerProvider):
             return self._snapserver.stream(result["id"])
         msg = "Unable to create stream - No free port found?"
         raise RuntimeError(msg)
-
-    async def _create_default_stream(self) -> None:
-        """Create new stream on snapcast server named default case not exist."""
-        all_streams = {stream.name for stream in self._snapserver.streams}
-        if "default" not in all_streams:
-            await self._snapserver.stream_add_stream(
-                "pipe:///tmp/snapfifo?name=default&sampleformat=48000:16:2"
-            )
 
     def _set_childs_state(self, player_id: str) -> None:
         """Set the state of the child`s of the player."""
@@ -731,10 +728,6 @@ class SnapCastProvider(PlayerProvider):
                     "Could not register mdns record for %s: %s", zeroconf_type, str(err)
                 )
 
-        default_stream_params = (
-            f"&idle_threshold={self._snapcast_stream_idle_threshold}&controlscript={CONTROL_SCRIPT}"
-            f"&controlscriptparams=--api-port={self.mass.webserver.publish_port}"
-        )
         args = [
             "snapserver",
             # config settings taken from
@@ -745,13 +738,13 @@ class SnapCastProvider(PlayerProvider):
             f"--http.doc_root={SNAPWEB_DIR}",
             "--tcp.enabled=true",
             f"--tcp.port={self._snapcast_server_control_port}",
+            "--stream.sampleformat=48000:16:2",
             f"--stream.buffer={self._snapcast_server_buffer_size}",
             f"--stream.chunk_ms={self._snapcast_server_chunk_ms}",
             f"--stream.codec={self._snapcast_server_transport_codec}",
             f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
-            f"--stream.source=pipe:///tmp/snapfifo1?name=mass1{default_stream_params}",
-            f"--stream.source=pipe:///tmp/snapfifo2?name=mass2{default_stream_params}",
+            "--stream.source=pipe:///tmp/snapfifo?name=default&sampleformat=48000:16:2",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             # keep reading from stdout until exit
