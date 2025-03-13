@@ -14,6 +14,7 @@ Note:
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
@@ -147,7 +148,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="GPodder Service URL",
+            label="gPodder Service URL",
             required=False,
             description="URL of gPodder instance.",
             value=values.get(CONF_URL),
@@ -183,7 +184,7 @@ async def get_config_entries(
         ConfigEntry(
             key="label_nextcloud",
             type=ConfigEntryType.LABEL,
-            label="Authentication with Nextcloud with GPodder Sync (nextcloud-gpodder) installed:",
+            label="Authentication with Nextcloud with gPodder Sync (nextcloud-gpodder) installed:",
             hidden=authenticated_nc or using_gpodder,
         ),
         ConfigEntry(
@@ -320,6 +321,10 @@ class GPodder(MusicProvider):
         else:
             self.feeds = set(feeds)  # feeds is a list here
 
+        # we are syncing the playlog, but not event based. A simple check in on_played,
+        # should be sufficient
+        self.progress_guard_timestamp = 0.0
+
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
@@ -345,10 +350,40 @@ class GPodder(MusicProvider):
                 # a podcast might have been added and removed in our absence...
                 continue
 
+        progresses, timestamp_action = await self._client.get_progresses()
         for feed_url in self.feeds:
             self.logger.debug("Adding podcast with feed %s to library", feed_url)
-            parsed_podcast = await self._get_podcast(feed_url)
+            # parse podcast
+            try:
+                parsed_podcast = await self._get_podcast(feed_url)
+            except RuntimeError:
+                self.logger.warning(f"Was unable to obtain podcast with feed {feed_url}")
+                continue
             await self._cache_set_podcast(feed_url, parsed_podcast)
+
+            # playlog
+            # be safe, if there should be multiple episodeactions. client already sorts
+            # progresses in descending order.
+            _already_processed = set()
+            _podcast_progresses = [x for x in progresses if x.podcast == feed_url]
+            for _progress in _podcast_progresses:
+                if _progress.episode not in _already_processed:
+                    _already_processed.add(_progress.episode)
+                    # we do not have to add the progress, these would make calls twice,
+                    # and we only use the object to propagate to playlog
+                    self.progress_guard_timestamp = time.time()
+                    _episode_id = f"{feed_url} {_progress.episode}"
+                    mass_episode = await self.get_podcast_episode(_episode_id, add_progress=False)
+                    if isinstance(_progress, EpisodeActionNew):
+                        await self.mass.music.mark_item_unplayed(mass_episode)
+                    else:
+                        await self.mass.music.mark_item_played(
+                            mass_episode,
+                            fully_played=_progress.position >= _progress.total,
+                            seconds_played=_progress.position,
+                        )
+
+            # cache
             yield parse_podcast(
                 feed_url=feed_url,
                 parsed_feed=parsed_podcast,
@@ -358,6 +393,8 @@ class GPodder(MusicProvider):
             )
 
         self.timestamp_subscriptions = subscriptions.timestamp
+        if timestamp_action is not None:
+            self.timestamp_actions = timestamp_action
         await self._cache_set_timestamps()
         await self._cache_set_feeds()
 
@@ -374,10 +411,13 @@ class GPodder(MusicProvider):
         )
 
     async def get_podcast_episodes(
-        self, prov_podcast_id: str
+        self, prov_podcast_id: str, add_progress: bool = True
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get Podcast episodes. Add progress information."""
-        progresses, timestamp = await self._client.get_progresses()
+        if add_progress:
+            progresses, timestamp = await self._client.get_progresses()
+        else:
+            progresses, timestamp = [], None
 
         podcast = await self._cache_get_podcast(prov_podcast_id)
         podcast_cover = podcast.get("cover_url")
@@ -403,20 +443,37 @@ class GPodder(MusicProvider):
                 # we have to test both, as we are comparing to external input.
                 _test = [progress.guid, progress.episode]
                 if prov_podcast_id == progress.podcast and (guid in _test or stream_url in _test):
+                    self.progress_guard_timestamp = time.time()
                     if isinstance(progress, EpisodeActionNew):
                         mass_episode.resume_position_ms = 0
                         mass_episode.fully_played = False
+
+                        # propagate to playlog
+                        await self.mass.music.mark_item_unplayed(
+                            mass_episode,
+                        )
                     else:
-                        mass_episode.resume_position_ms = progress.position * 1000
-                        mass_episode.fully_played = progress.position >= progress.total
+                        fully_played = progress.position >= progress.total
+                        resume_position_s = progress.position
+                        mass_episode.resume_position_ms = resume_position_s * 1000
+                        mass_episode.fully_played = fully_played
+
+                        # propagate progress to playlog
+                        await self.mass.music.mark_item_played(
+                            mass_episode,
+                            fully_played=fully_played,
+                            seconds_played=resume_position_s,
+                        )
                     break
 
             yield mass_episode
 
-    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+    async def get_podcast_episode(
+        self, prov_episode_id: str, add_progress: bool = True
+    ) -> PodcastEpisode:
         """Get Podcast Episode. Add progress information."""
         podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
-        async for mass_episode in self.get_podcast_episodes(podcast_id):
+        async for mass_episode in self.get_podcast_episodes(podcast_id, add_progress=add_progress):
             _, _guid_or_stream_url = mass_episode.item_id.split(" ")
             # this is enough, as internal
             if guid_or_stream_url == _guid_or_stream_url:
@@ -449,9 +506,9 @@ class GPodder(MusicProvider):
                 self.logger.debug("Found an updated external resume position.")
                 return action.position >= action.total, max(action.position * 1000, 0)
         self.logger.debug("Did not find an updated resume position, falling back to stored.")
-        # if we did not find a resume position, nothing changed since our last timestamp
+        # If we did not find a resume position, nothing changed since our last timestamp
         # we raise NotImplementedError, such that MA falls back to the already stored
-        # resume_position
+        # resume_position in its playlog.
         raise NotImplementedError
 
     async def on_played(
@@ -467,6 +524,8 @@ class GPodder(MusicProvider):
         if media_item is None or not isinstance(media_item, PodcastEpisode):
             return
         if media_type != MediaType.PODCAST_EPISODE:
+            return
+        if time.time() - self.progress_guard_timestamp <= 5:
             return
         podcast_id, guid_or_stream_url = prov_item_id.split(" ")
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
