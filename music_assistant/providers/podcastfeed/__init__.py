@@ -207,7 +207,8 @@ class PodcastMusicprovider(MusicProvider):
         )
 
     async def _get_podcast(self) -> dict[str, Any]:
-        # see music-assistant/server@6aae82e
+        # without user agent, some feeds can not be retrieved
+        # https://github.com/music-assistant/support/issues/3596
         assert self.feed_url is not None
         response = await self.mass.http_session.get(
             self.feed_url, headers={"User-Agent": "Mozilla/5.0"}
