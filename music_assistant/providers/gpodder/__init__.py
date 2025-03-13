@@ -402,7 +402,7 @@ class GPodder(MusicProvider):
             for progress in progresses:
                 # we have to test both, as we are comparing to external input.
                 _test = [progress.guid, progress.episode]
-                if guid in _test or stream_url in _test:
+                if prov_podcast_id == progress.podcast and (guid in _test or stream_url in _test):
                     if isinstance(progress, EpisodeActionNew):
                         mass_episode.resume_position_ms = 0
                         mass_episode.fully_played = False
@@ -445,7 +445,10 @@ class GPodder(MusicProvider):
                 if isinstance(action, EpisodeActionNew):
                     # no progress, it might have been actively reset
                     return False, 0
+                _progress = (action.position >= action.total, max(action.position * 1000, 0))
+                self.logger.debug("Found an updated external resume position.")
                 return action.position >= action.total, max(action.position * 1000, 0)
+        self.logger.debug("Did not find an updated resume position, falling back to stored.")
         # if we did not find a resume position, nothing changed since our last timestamp
         # we raise NotImplementedError, such that MA falls back to the already stored
         # resume_position
