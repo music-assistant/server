@@ -138,7 +138,6 @@ class FullyKioskProvider(PlayerProvider):
         if not (player := self.mass.players.get(player_id)):
             return
         player.name = self._fully.deviceInfo["deviceName"]
-        # player.volume_level = snap_client.volume
         for volume_dict in self._fully.deviceInfo.get("audioVolumes", []):
             if str(AUDIOMANAGER_STREAM_MUSIC) in volume_dict:
                 volume = volume_dict[str(AUDIOMANAGER_STREAM_MUSIC)]

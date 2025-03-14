@@ -385,7 +385,10 @@ class StreamsController(CoreController):
         http_profile: str = await self.mass.config.get_player_config_value(
             queue_id, CONF_HTTP_PROFILE
         )
-        if http_profile == "forced_content_length" and queue_item.duration:
+        if http_profile == "forced_content_length" and not queue_item.duration:
+            # just set an insane high content length to make sure the player keeps playing
+            resp.content_length = get_chunksize(output_format, 12 * 3600)
+        elif http_profile == "forced_content_length":
             # guess content length based on duration
             resp.content_length = get_chunksize(output_format, queue_item.duration)
         elif http_profile == "chunked":

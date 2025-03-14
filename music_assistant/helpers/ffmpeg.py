@@ -103,6 +103,10 @@ class FFMpeg(AsyncProcess):
             with suppress(asyncio.CancelledError):
                 await self._stdin_task
         await super().close(send_signal)
+        if self._logger_task and not self._logger_task.done():
+            self._logger_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._logger_task
 
     async def _log_reader_task(self) -> None:
         """Read ffmpeg log from stderr."""
@@ -220,6 +224,8 @@ def get_ffmpeg_args(  # noqa: PLR0915
     """Collect all args to send to the ffmpeg process."""
     if extra_args is None:
         extra_args = []
+    if extra_input_args is None:
+        extra_input_args = []
     # generic args
     generic_args = [
         "ffmpeg",
@@ -232,51 +238,48 @@ def get_ffmpeg_args(  # noqa: PLR0915
         "file,hls,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp,concat",
     ]
     # collect input args
-    input_args = []
-    if extra_input_args:
-        input_args += extra_input_args
-    if input_path.startswith("http"):
-        # append reconnect options for direct stream from http
-        input_args += [
-            # Reconnect automatically when disconnected before EOF is hit.
-            "-reconnect",
-            "1",
-            # Set the maximum delay in seconds after which to give up reconnecting.
-            "-reconnect_delay_max",
-            "30",
-            # If set then even streamed/non seekable streams will be reconnected on errors.
-            "-reconnect_streamed",
-            "1",
-            # Reconnect automatically in case of TCP/TLS errors during connect.
-            "-reconnect_on_network_error",
-            "1",
-            # A comma separated list of HTTP status codes to reconnect on.
-            # The list can include specific status codes (e.g. 503) or the strings 4xx / 5xx.
-            "-reconnect_on_http_error",
-            "5xx,4xx",
-        ]
-    if input_format.content_type.is_pcm():
-        input_args += [
-            "-ac",
-            str(input_format.channels),
-            "-channel_layout",
-            "mono" if input_format.channels == 1 else "stereo",
-            "-ar",
-            str(input_format.sample_rate),
-            "-acodec",
-            input_format.content_type.name.lower(),
-            "-f",
-            input_format.content_type.value,
-            "-i",
-            input_path,
-        ]
-    elif input_format.codec_type != ContentType.UNKNOWN:
-        input_args += ["-acodec", input_format.codec_type.name.lower(), "-i", input_path]
-    elif "-f" in extra_input_args:
+    if "-f" in extra_input_args:
         # input format is already specified in the extra input args
-        pass
+        input_args = extra_input_args
     else:
-        # let ffmpeg auto detect the content type from the metadata/headers
+        input_args = [*extra_input_args]
+        if input_path.startswith("http"):
+            # append reconnect options for direct stream from http
+            input_args += [
+                # Reconnect automatically when disconnected before EOF is hit.
+                "-reconnect",
+                "1",
+                # Set the maximum delay in seconds after which to give up reconnecting.
+                "-reconnect_delay_max",
+                "30",
+                # If set then even streamed/non seekable streams will be reconnected on errors.
+                "-reconnect_streamed",
+                "1",
+                # Reconnect automatically in case of TCP/TLS errors during connect.
+                "-reconnect_on_network_error",
+                "1",
+                # A comma separated list of HTTP status codes to reconnect on.
+                # The list can include specific status codes (e.g. 503) or the strings 4xx / 5xx.
+                "-reconnect_on_http_error",
+                "5xx,4xx",
+            ]
+        if input_format.content_type.is_pcm():
+            input_args += [
+                "-ac",
+                str(input_format.channels),
+                "-channel_layout",
+                "mono" if input_format.channels == 1 else "stereo",
+                "-ar",
+                str(input_format.sample_rate),
+                "-acodec",
+                input_format.content_type.name.lower(),
+                "-f",
+                input_format.content_type.value,
+            ]
+        if input_format.codec_type != ContentType.UNKNOWN:
+            input_args += ["-acodec", input_format.codec_type.name.lower()]
+
+        # add input path at the end
         input_args += ["-i", input_path]
 
     # collect output args
