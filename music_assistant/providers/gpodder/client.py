@@ -285,8 +285,6 @@ class GPodderClient:
             episode_action = EpisodeActionNew(
                 podcast=podcast_id, episode=episode_id, timestamp=utc_timestamp
             )
-            if self.is_nextcloud:
-                episode_action.guid = guid
         else:
             episode_action = EpisodeActionPlay(
                 podcast=podcast_id,
