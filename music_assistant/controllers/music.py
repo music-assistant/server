@@ -485,10 +485,7 @@ class MusicController(CoreController):
         if media_types is None:
             media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
-        available_providers = (
-            "library",
-            *get_global_cache_value("unique_providers", []),
-        )
+        available_providers = ("library", *get_global_cache_value("unique_providers", []))
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
@@ -498,10 +495,7 @@ class MusicController(CoreController):
         )
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[ItemMapping] = []
-        available_providers = (
-            "library",
-            *get_global_cache_value("available_providers", []),
-        )
+        available_providers = ("library", *get_global_cache_value("available_providers", []))
         for db_row in db_rows:
             result.append(
                 ItemMapping.from_dict(
@@ -520,10 +514,7 @@ class MusicController(CoreController):
     @api_command("music/in_progress_items")
     async def in_progress_items(self, limit: int = 10) -> list[ItemMapping]:
         """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
-        available_providers = (
-            "library",
-            *get_global_cache_value("unique_providers", []),
-        )
+        available_providers = ("library", *get_global_cache_value("unique_providers", []))
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
@@ -542,7 +533,7 @@ class MusicController(CoreController):
                         "provider": db_row["provider"],
                         "media_type": db_row["media_type"],
                         "name": db_row["name"],
-                        "image": (json_loads(db_row["image"]) if db_row["image"] else None),
+                        "image": json_loads(db_row["image"]) if db_row["image"] else None,
                         "available": db_row["provider"] in available_providers,
                     }
                 )
@@ -931,9 +922,9 @@ class MusicController(CoreController):
                     "provider": media_item.provider,
                     "media_type": media_item.media_type.value,
                     "name": media_item.name,
-                    "image": (
-                        serialize_to_json(media_item.image.to_dict()) if media_item.image else None
-                    ),
+                    "image": serialize_to_json(media_item.image.to_dict())
+                    if media_item.image
+                    else None,
                     "fully_played": fully_played,
                     "seconds_played": seconds_played,
                     "timestamp": timestamp,
@@ -1211,7 +1202,7 @@ class MusicController(CoreController):
                         "Error while removing %s: %s",
                         db_row["item_id"],
                         str(err),
-                        exc_info=(err if self.logger.isEnabledFor(logging.DEBUG) else None),
+                        exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                     )
                     errors += 1
 
