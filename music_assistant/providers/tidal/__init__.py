@@ -116,19 +116,6 @@ class TidalQualityEnum(StrEnum):
     HI_RES = "HI_RES_LOSSLESS"  # "Max - Up to 24bit, 192kHz"
 
 
-class TidalMix(Playlist):
-    """Special Playlist subclass for Tidal mixes.
-
-    This allows distinguishing between regular playlists and mixes
-    to avoid unnecessary double API calls.
-    """
-
-    @property
-    def is_mix(self) -> bool:
-        """Flag to identify this as a Tidal mix."""
-        return True
-
-
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -782,31 +769,36 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
 
-    async def get_playlist(self, prov_playlist_id: str) -> TidalMix | Playlist:
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details for given playlist id."""
-        # First check if we have a cached playlist that tells us if it's a mix
-        try:
-            playlist = await self.mass.music.playlists.get_library_item_by_prov_id(
-                prov_playlist_id, self.instance_id
-            )
+        # Check if this is a mix by ID prefix
+        is_mix = prov_playlist_id.startswith("mix_")
 
-            if isinstance(playlist, TidalMix):
-                # We know it's a mix, call mix API directly
-                self.logger.debug("Using cached knowledge that %s is a Tidal Mix", prov_playlist_id)
-                return await self._get_mix_details(prov_playlist_id)
-        except (MediaNotFoundError, ValueError, KeyError, TypeError) as err:
-            # If anything goes wrong with the cache lookup, continue with normal flow
-            self.logger.debug("Error checking cached playlist type: %s", err)
+        if is_mix:
+            # Strip prefix and use mix API
+            actual_id = prov_playlist_id[4:]  # Remove "mix_" prefix
+            try:
+                return await self._get_mix_details(actual_id)
+            except ResourceTemporarilyUnavailable:
+                raise
+            except (ClientError, KeyError, ValueError) as err:
+                raise MediaNotFoundError(f"Mix {prov_playlist_id} not found") from err
 
-        # Try regular playlist endpoint first
+        # Try regular playlist endpoint
         try:
             api_result = await self._get_data(f"playlists/{prov_playlist_id}")
             playlist_obj = self._extract_data(api_result)
             return self._parse_playlist(playlist_obj)
         except MediaNotFoundError:
-            # If not found, try as a Tidal mix
+            # If not found, try as a Tidal mix (might be unidentified mix)
             self.logger.debug("Playlist %s not found, trying as Tidal Mix", prov_playlist_id)
-            return await self._get_mix_details(prov_playlist_id)
+            try:
+                return await self._get_mix_details(prov_playlist_id)
+            except ResourceTemporarilyUnavailable:
+                raise
+            except (ClientError, KeyError, ValueError) as err:
+                # Re-raise the original error with the requested ID
+                raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
         except ResourceTemporarilyUnavailable:
             raise
         except (ClientError, KeyError, ValueError) as err:
@@ -879,21 +871,31 @@ class TidalProvider(MusicProvider):
         page_size = 200
         offset = page * page_size
 
-        # First check if we have a cached playlist that tells us if it's a mix
-        playlist = await self.mass.music.playlists.get_library_item_by_prov_id(
-            prov_playlist_id, self.instance_id
-        )
+        # Check if this is a mix by ID prefix
+        is_mix = prov_playlist_id.startswith("mix_")
 
-        if isinstance(playlist, TidalMix):
-            # We know it's a mix, call mix API directly
-            return await self._get_mix_playlist_tracks(prov_playlist_id, page_size, offset)
+        if is_mix:
+            # Strip prefix and use mix API
+            actual_id = prov_playlist_id[4:]  # Remove "mix_" prefix
+            try:
+                return await self._get_mix_playlist_tracks(actual_id, page_size, offset)
+            except ResourceTemporarilyUnavailable:
+                raise
+            except (ClientError, KeyError, ValueError) as err:
+                raise MediaNotFoundError(f"Mix playlist {prov_playlist_id} not found") from err
 
         # Otherwise try regular endpoint first, fall back only if needed
         try:
             return await self._get_regular_playlist_tracks(prov_playlist_id, page_size, offset)
         except MediaNotFoundError:
             self.logger.debug("Playlist not found, trying as Tidal Mix")
-            return await self._get_mix_playlist_tracks(prov_playlist_id, page_size, offset)
+            try:
+                return await self._get_mix_playlist_tracks(prov_playlist_id, page_size, offset)
+            except ResourceTemporarilyUnavailable:
+                raise
+            except (ClientError, KeyError, ValueError) as err:
+                # Re-raise the original error with the requested ID
+                raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
 
     async def _get_regular_playlist_tracks(
         self, prov_playlist_id: str, page_size: int, offset: int
@@ -1663,15 +1665,14 @@ class TidalProvider(MusicProvider):
                 )
         return track
 
-    def _parse_playlist(
-        self, playlist_obj: dict[str, Any], is_mix: bool = False
-    ) -> TidalMix | Playlist:
+    def _parse_playlist(self, playlist_obj: dict[str, Any], is_mix: bool = False) -> Playlist:
         """Parse tidal playlist object to generic layout."""
         # Get ID based on playlist type
-        playlist_id = str(playlist_obj.get("id" if is_mix else "uuid", ""))
+        raw_id = str(playlist_obj.get("id" if is_mix else "uuid", ""))
 
-        # Create the correct class based on type
-        playlist_class = TidalMix if is_mix else Playlist
+        # Add prefix for mixes to distinguish them
+        playlist_id = f"mix_{raw_id}" if is_mix else raw_id
+
         # Owner logic differs between types
         if is_mix:
             owner_name = "Created by Tidal"
@@ -1692,20 +1693,20 @@ class TidalProvider(MusicProvider):
                 elif self.auth.user_id:
                     owner_name = str(self.auth.user_id)
 
-        # URL path differs by type
+        # URL path differs by type - use raw_id for URLs
         url_path = "mix" if is_mix else "playlist"
 
-        playlist = playlist_class(
+        playlist = Playlist(
             item_id=playlist_id,
             provider=self.instance_id if is_editable else self.lookup_key,
             name=playlist_obj.get("title", "Unknown"),
             owner=owner_name,
             provider_mappings={
                 ProviderMapping(
-                    item_id=playlist_id,
+                    item_id=playlist_id,  # Use raw ID for provider mapping
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{BROWSE_URL}/{url_path}/{playlist_id}",
+                    url=f"{BROWSE_URL}/{url_path}/{raw_id}",
                 )
             },
             is_editable=is_editable,
