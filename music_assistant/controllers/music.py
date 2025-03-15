@@ -504,7 +504,7 @@ class MusicController(CoreController):
                         "provider": db_row["provider"],
                         "media_type": db_row["media_type"],
                         "name": db_row["name"],
-                        "image": (json_loads(db_row["image"]) if db_row["image"] else None),
+                        "image": json_loads(db_row["image"]) if db_row["image"] else None,
                         "available": db_row["provider"] in available_providers,
                     }
                 )

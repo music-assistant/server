@@ -999,7 +999,7 @@ class TidalProvider(MusicProvider):
                         continue
 
                     # Create folder description and icon
-                    description = f"Tidal {content_type.name.lower()} collection"
+                    subtitle = f"Tidal {content_type.name.lower()} collection"
                     icon = get_icon_for_type(content_type)
 
                     if is_because_module:
@@ -1019,7 +1019,7 @@ class TidalProvider(MusicProvider):
                             name=f"{self.lookup_key} - {module_title}",
                             provider=self.lookup_key,
                             items=UniqueList(module_items),
-                            description=description,
+                            subtitle=subtitle,
                             icon=icon,
                         )
                         results.append(folder)
@@ -1034,14 +1034,14 @@ class TidalProvider(MusicProvider):
             # Create a single folder for all "Because you listened to" items if we have any
             if because_items:
                 sources_summary = ", ".join(sorted(because_modules))
-                folder_description = f"Recommendations based on: {sources_summary}"
+                folder_subtitle = f"Recommendations based on: {sources_summary}"
 
                 because_folder = RecommendationFolder(
                     item_id="because_you_listened_to",
                     name=f"{self.lookup_key} - Because You Listened To: {sources_summary}",
                     provider=self.lookup_key,
                     items=UniqueList(because_items),
-                    description=folder_description,
+                    subtitle=folder_subtitle,
                     icon="mdi-headphones-box",
                 )
                 # Add as first item in results
