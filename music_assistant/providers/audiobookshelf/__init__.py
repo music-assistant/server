@@ -392,6 +392,9 @@ class Audiobookshelf(MusicProvider):
                 # use expanded version for chapters/ caching.
                 books_expanded = await self._client.get_library_item_batch_book(item_ids=book_ids)
                 for book_expanded in books_expanded:
+                    # If the book has no audiofiles, we skip -> ebook only.
+                    if len(book_expanded.media.tracks) == 0:
+                        continue
                     mass_audiobook = parse_audiobook(
                         abs_audiobook=book_expanded,
                         lookup_key=self.lookup_key,
@@ -926,6 +929,9 @@ class Audiobookshelf(MusicProvider):
         abs_items = [items] if isinstance(items, LibraryItemExpanded) else items
         for abs_item in abs_items:
             if isinstance(abs_item, LibraryItemExpandedBook):
+                # If the book has no audiofiles, we skip -> ebook only.
+                if len(abs_item.media.tracks) == 0:
+                    continue
                 self.logger.debug(
                     'Updated book "%s" via socket.', abs_item.media.metadata.title or ""
                 )
