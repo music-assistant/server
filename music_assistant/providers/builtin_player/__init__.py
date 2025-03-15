@@ -214,6 +214,8 @@ class BuiltinPlayerProvider(PlayerProvider):
                 else BuiltinPlayerEventType.POWER_OFF
             ),
         )
+        if (not powered) and (player := self.mass.players.get(player_id)):
+            player.powered = False
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
@@ -233,7 +235,11 @@ class BuiltinPlayerProvider(PlayerProvider):
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player."""
-        await self.cmd_power(player_id, False)
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            player_id,
+            BuiltinPlayerEvent(type=BuiltinPlayerEventType.TIMEOUT),
+        )
         await self.unregister_player(player_id)
 
     async def register_player(self, player_name: str, player_id: str | None) -> Player:
@@ -310,6 +316,11 @@ class BuiltinPlayerProvider(PlayerProvider):
         if not (instance := self.instances[player_id]):
             raise RuntimeError("No instance found")
         instance.last_update = time()
+
+        if not player.powered and state.powered:
+            # The player was powered off, so this state message is already out of date
+            # Skip, it.
+            return
 
         player.elapsed_time_last_updated = time()
         player.elapsed_time = float(state.position)
