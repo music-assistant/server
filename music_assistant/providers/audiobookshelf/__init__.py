@@ -22,6 +22,8 @@ from aioaudiobookshelf.schema.library import (
     LibraryItemMinifiedPodcast,
 )
 from aioaudiobookshelf.schema.library import LibraryMediaType as AbsLibraryMediaType
+from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
+from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -35,10 +37,13 @@ from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
     BrowseFolder,
+    MediaItem,
     MediaItemType,
     MediaItemTypeOrItemMapping,
     PodcastEpisode,
+    UniqueList,
 )
+from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.models.music_provider import MusicProvider
@@ -49,7 +54,7 @@ from music_assistant.providers.audiobookshelf.parsers import (
 )
 
 from .constants import (
-    ABSBROWSEITEMSTOPATH,
+    ABS_BROWSE_ITEMS_TO_PATH,
     CACHE_CATEGORY_LIBRARIES,
     CACHE_KEY_LIBRARIES,
     CONF_HIDE_EMPTY_PODCASTS,
@@ -165,6 +170,7 @@ class Audiobookshelf(MusicProvider):
             ProviderFeature.LIBRARY_PODCASTS,
             ProviderFeature.LIBRARY_AUDIOBOOKS,
             ProviderFeature.BROWSE,
+            ProviderFeature.RECOMMENDATIONS,
         }
 
     async def handle_async_init(self) -> None:
@@ -539,6 +545,68 @@ class Audiobookshelf(MusicProvider):
 
         return False, 0
 
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get recommendations."""
+        folders: list[RecommendationFolder] = []
+        for library_id, library in self.libraries.audiobooks.items():
+            library_name = library.name
+            shelves = await self._client.get_library_personalized_view(
+                library_id=library_id, limit=10
+            )
+            for shelf in shelves:
+                media_type: MediaType
+                match shelf.type_:
+                    case AbsShelfType.PODCAST:
+                        media_type = MediaType.PODCAST
+                    case AbsShelfType.EPISODE:
+                        media_type = MediaType.PODCAST_EPISODE
+                    case AbsShelfType.BOOK | AbsShelfType.SERIES:
+                        media_type = MediaType.AUDIOBOOK
+                    case _:
+                        # this would be authors, currently
+                        continue
+
+                # shelf ids follow pattern:
+                # recently-added
+                # newest-episodes
+                # etc
+                name = f"{shelf.id_.capitalize().replace('-', ' ')} ({library_name})"
+
+                # Recently added is the _only_ case, where we get a full podcast
+                # We have a podcast object with only the episodes matching the
+                # shelf.id_ otherwise.
+                if media_type in [MediaType.AUDIOBOOK, MediaType.PODCAST]:
+                    match shelf.id_:
+                        case (
+                            AbsShelfId.RECENTLY_ADDED
+                            | AbsShelfId.LISTEN_AGAIN
+                            | AbsShelfId.DISCOVER
+                            | AbsShelfId.RECENT_SERIES
+                            | AbsShelfId.CONTINUE_SERIES
+                        ):
+                            items: list[MediaItem] = []
+                            for entity in shelf.entities:
+                                item = await self.mass.music.get_library_item_by_prov_id(
+                                    media_type=media_type,
+                                    provider_instance_id_or_domain=self.instance_id,
+                                    item_id=entity.id_,
+                                )
+                                if item is not None:
+                                    items.append(item)
+                        case _:
+                            continue
+                folders.append(
+                    RecommendationFolder(
+                        item_id=f"{shelf.id_} {library_id}",
+                        name=name,
+                        # translation_key=shelf.id_,
+                        items=UniqueList(items),
+                        provider=self.lookup_key,
+                    )
+                )
+
+        return folders
+
     async def on_played(
         self,
         media_type: MediaType,
@@ -730,7 +798,7 @@ class Audiobookshelf(MusicProvider):
     def _browse_lib_audiobooks(self, current_path: str) -> Sequence[MediaItemTypeOrItemMapping]:
         items = []
         for item_name in AbsBrowseItemsBook:
-            path = current_path + "/" + ABSBROWSEITEMSTOPATH[item_name]
+            path = current_path + "/" + ABS_BROWSE_ITEMS_TO_PATH[item_name]
             items.append(
                 BrowseFolder(
                     item_id=item_name.lower(),

@@ -2,6 +2,8 @@
 
 from enum import StrEnum
 
+from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
+
 # CONFIG
 CONF_URL = "url"
 CONF_USERNAME = "username"
@@ -45,10 +47,23 @@ class AbsBrowseItemsPodcast(StrEnum):
     PODCASTS = "Podcasts"
 
 
-ABSBROWSEITEMSTOPATH: dict[str, str] = {
+ABS_BROWSE_ITEMS_TO_PATH: dict[str, str] = {
     AbsBrowseItemsBook.AUTHORS: AbsBrowsePaths.AUTHORS,
     AbsBrowseItemsBook.NARRATORS: AbsBrowsePaths.NARRATORS,
     AbsBrowseItemsBook.SERIES: AbsBrowsePaths.SERIES,
     AbsBrowseItemsBook.COLLECTIONS: AbsBrowsePaths.COLLECTIONS,
     AbsBrowseItemsBook.AUDIOBOOKS: AbsBrowsePaths.AUDIOBOOKS,
+}
+
+ABS_SHELF_ID_ICONS: dict[str, str] = {
+    AbsShelfId.LISTEN_AGAIN: "mdi-book-refresh-outline",
+    AbsShelfId.CONTINUE_LISTENING: "mdi-clock-outline",
+    AbsShelfId.CONTINUE_SERIES: "mdi-play-box-multiple-outline",
+    AbsShelfId.RECOMMENDED: "mdi-lightbulb-outline",
+    AbsShelfId.RECENTLY_ADDED: "mdi-plus-box-multiple-outline",
+    AbsShelfId.EPISODES_RECENTLY_ADDED: "mdi-plus-box-multiple-outline",
+    AbsShelfId.RECENT_SERIES: "mdi-bookshelf",
+    AbsShelfId.NEWEST_AUTHORS: "mdi-plus-box-multiple-outline",
+    AbsShelfId.NEWEST_EPISODES: "mdi-plus-box-multiple-outline",
+    AbsShelfId.DISCOVER: "mdi-magnify",
 }
