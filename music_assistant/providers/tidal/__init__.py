@@ -1033,7 +1033,7 @@ class TidalProvider(MusicProvider):
 
             # Create a single folder for all "Because you listened to" items if we have any
             if because_items:
-                sources_summary = ", ".join(sorted(because_modules))
+                sources_summary = " - ".join(sorted(because_modules))
                 folder_subtitle = f"Recommendations based on: {sources_summary}"
 
                 because_folder = RecommendationFolder(
