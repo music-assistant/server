@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, cast
 import shortuuid
 from aiohttp import web
 from music_assistant_models.builtin_player import BuiltinPlayerEvent, BuiltinPlayerState
-from music_assistant_models.constants import PLAYER_CONTROL_NONE
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     BuiltinPlayerEventType,
     ContentType,
@@ -199,6 +199,22 @@ class BuiltinPlayerProvider(PlayerProvider):
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.PLAY_MEDIA, media_url=url),
         )
 
+    async def cmd_power(self, player_id: str, powered: bool) -> None:
+        """Send POWER command to given player.
+
+        - player_id: player_id of the player to handle the command.
+        - powered: bool if player should be powered on or off.
+        """
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            player_id,
+            BuiltinPlayerEvent(
+                type=BuiltinPlayerEventType.POWER_ON
+                if powered
+                else BuiltinPlayerEventType.POWER_OFF
+            ),
+        )
+
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
 
@@ -217,6 +233,7 @@ class BuiltinPlayerProvider(PlayerProvider):
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player."""
+        await self.cmd_power(player_id, False)
         await self.unregister_player(player_id)
 
     async def register_player(self, player_name: str, player_id: str | None) -> Player:
@@ -241,6 +258,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
+            PlayerFeature.POWER,
         }
 
         self.instances[player_id] = PlayerInstance(
@@ -258,7 +276,8 @@ class BuiltinPlayerProvider(PlayerProvider):
             type=PlayerType.PLAYER,
             name=player_name,
             available=True,
-            power_control=PLAYER_CONTROL_NONE,
+            power_control=PLAYER_CONTROL_NATIVE,
+            powered=False,
             device_info=DeviceInfo(),
             supported_features=player_features,
             needs_poll=True,
@@ -278,6 +297,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         if player := self.mass.players.get(player_id):
             player.available = False
             player.state = PlayerState.IDLE
+            player.powered = False
 
     async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> None:
         """Update current state of a player.
@@ -295,11 +315,17 @@ class BuiltinPlayerProvider(PlayerProvider):
         player.elapsed_time = float(state.position)
         player.volume_muted = state.muted
         player.volume_level = state.volume
-        if state.playing:
+        if not state.powered:
+            player.powered = False
+            player.state = PlayerState.IDLE
+        elif state.playing:
+            player.powered = True
             player.state = PlayerState.PLAYING
         elif state.paused:
+            player.powered = True
             player.state = PlayerState.PAUSED
         else:
+            player.powered = True
             player.state = PlayerState.IDLE
 
         self.mass.players.update(player_id)
