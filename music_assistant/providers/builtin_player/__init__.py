@@ -59,6 +59,7 @@ if TYPE_CHECKING:
 
 # If the player does not send an update within this time, it will be considered offline
 DURATION_UNTIL_TIMEOUT = 70
+POLL_INTERVAL = 10
 
 
 async def setup(
@@ -261,7 +262,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             device_info=DeviceInfo(),
             supported_features=player_features,
             needs_poll=True,
-            poll_interval=10,
+            poll_interval=POLL_INTERVAL,
         )
 
         await self.mass.players.register_or_update(player)
