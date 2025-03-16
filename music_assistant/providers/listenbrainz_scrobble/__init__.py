@@ -108,7 +108,9 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         return Listen(
             track_name=report.name,
             artist_name=report.artist,
+            artist_mbids=report.artist_mbids,
             release_name=report.album,
+            release_mbid=report.album_mbid,
             recording_mbid=report.mbid,
             listening_from="music-assistant",
         )

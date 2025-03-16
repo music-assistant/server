@@ -1952,6 +1952,8 @@ class PlayerQueuesController(CoreController):
                 is_playing=is_playing,
             )
         )
+
+        album = getattr(item_to_report.media_item, "album", None)
         # signal 'media item played' event,
         # which is useful for plugins that want to do scrobbling
         self.mass.signal_event(
@@ -1962,11 +1964,13 @@ class PlayerQueuesController(CoreController):
                 media_type=item_to_report.media_item.media_type,
                 name=item_to_report.media_item.name,
                 artist=getattr(item_to_report.media_item, "artist_str", None),
-                album=(
-                    album.name
-                    if (album := getattr(item_to_report.media_item, "album", None))
+                artist_mbids=(
+                    [a.mbid for a in artists if a.mbid]
+                    if (artists := getattr(item_to_report.media_item, "artists", None))
                     else None
                 ),
+                album=(album.name if album else None),
+                album_mbid=(album.mbid if album else None),
                 image_url=(
                     self.mass.metadata.get_image_url(item_to_report.media_item.image, size=512)
                     if item_to_report.media_item.image
