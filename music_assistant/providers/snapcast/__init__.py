@@ -679,6 +679,14 @@ class SnapCastProvider(PlayerProvider):
             if stream.identifier == stream_name:
                 return stream
 
+        if self._use_builtin_server:
+            extra_args = (
+                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
+                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20--api-port={self.mass.webserver.publish_port}"
+            )
+        else:
+            extra_args = ""
+
         attempts = 50
         while attempts:
             attempts -= 1
@@ -689,9 +697,7 @@ class SnapCastProvider(PlayerProvider):
                 # (like 24 bits bit depth) does not seem to work at all!
                 f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
                 f"&idle_threshold={self._snapcast_stream_idle_threshold}"
-                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
-                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20--api-port={self.mass.webserver.publish_port}"
-                f"&name={stream_name}"
+                f"{extra_args}&name={stream_name}"
             )
             if "id" not in result:
                 # if the port is already taken, the result will be an error
