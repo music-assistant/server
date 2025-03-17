@@ -288,6 +288,8 @@ class BuiltinPlayerProvider(PlayerProvider):
             supported_features=player_features,
             needs_poll=True,
             poll_interval=POLL_INTERVAL,
+            hidden_by_default=True,
+            expose_to_ha_by_default=False,
         )
 
         await self.mass.players.register_or_update(player)
