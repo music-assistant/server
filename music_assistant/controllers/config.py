@@ -798,7 +798,7 @@ class ConfigController:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _migrate(self) -> None:
+    async def _migrate(self) -> None:  # noqa: PLR0915
         changed = False
 
         # Older versions of MA can create corrupt entries with no domain if retrying
@@ -868,6 +868,14 @@ class ConfigController:
                 provider_config["domain"] = "squeezelite"
                 self._data[CONF_PROVIDERS][new_instance_id] = provider_config
                 changed = True
+
+        # migrate "hide_player" -->  "hide_player_in_ui"
+        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+            if not (values := player_config.get("values")):
+                continue
+            if values.pop("hide_player", None):
+                player_config["values"]["hide_player_in_ui"] = ["always"]
+            changed = True
 
         if changed:
             await self._async_save()

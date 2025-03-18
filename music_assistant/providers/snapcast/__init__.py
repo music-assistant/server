@@ -142,6 +142,8 @@ async def get_config_entries(
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
+            depends_on=CONF_USE_EXTERNAL_SERVER,
+            depends_on_value_not=True,
             help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
@@ -153,6 +155,8 @@ async def get_config_entries(
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
+            depends_on=CONF_USE_EXTERNAL_SERVER,
+            depends_on_value_not=True,
             help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
@@ -164,6 +168,8 @@ async def get_config_entries(
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
+            depends_on=CONF_USE_EXTERNAL_SERVER,
+            depends_on_value_not=True,
             help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
@@ -174,6 +180,8 @@ async def get_config_entries(
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
+            depends_on=CONF_USE_EXTERNAL_SERVER,
+            depends_on_value_not=True,
             help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
@@ -202,6 +210,8 @@ async def get_config_entries(
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
+            depends_on=CONF_USE_EXTERNAL_SERVER,
+            depends_on_value_not=True,
             help_link=CONF_HELP_LINK,
         ),
         ConfigEntry(
@@ -353,6 +363,11 @@ class SnapCastProvider(PlayerProvider):
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
         for snap_client in self._snapserver.clients:
+            if not snap_client.identifier:
+                self.logger.warning(
+                    "Detected Snapclient %s without identifier, skipping", snap_client.friendly_name
+                )
+                continue
             self._handle_player_init(snap_client)
             snap_client.set_callback(self._handle_player_update)
         for snap_client in self._snapserver.clients:
@@ -411,7 +426,7 @@ class SnapCastProvider(PlayerProvider):
         if stream := self._get_snapstream(player_id):
             if stream.identifier == "default":
                 player.active_source = None
-            elif not stream.identifier.startswith("Music Assistant"):
+            elif not stream.identifier.startswith(MASS_STREAM_POSTFIX):
                 player.active_source = stream.identifier
         else:
             player.active_source = None
@@ -444,14 +459,25 @@ class SnapCastProvider(PlayerProvider):
                 stream_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await stream_task
-        # assign default/empty stream to the player
-        await self._get_snapgroup(player_id).set_stream("default")
-        await asyncio.sleep(0.5)
+
         player.state = PlayerState.IDLE
         player.current_media = None
         player.active_source = None
         self._set_childs_state(player_id)
         self.mass.players.update(player_id)
+
+        # assign default/empty stream to the player
+        # this removed the player/group specific MA stream which was dynamically created
+        # and assigns the default stream to the player
+        # we do this delayed so we can reuse the stream if a new play command is issued
+        async def clear_stream():
+            with suppress(KeyError):
+                await self._get_snapgroup(player_id).set_stream("default")
+                await self._delete_current_snapstream(self._get_snapstream(player_id))
+
+        self.mass.call_later(
+            30, self.mass.create_task, clear_stream, task_id=f"snapcast_clear_stream_{player_id}"
+        )
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send MUTE command to given player."""
@@ -541,13 +567,6 @@ class SnapCastProvider(PlayerProvider):
             ugp_stream = ugp_provider.ugp_streams[media.queue_id]
             input_format = ugp_stream.base_pcm_format
             audio_source = ugp_stream.subscribe_raw()
-        elif media.media_type == MediaType.RADIO:
-            # use single item stream request for radio streams
-            input_format = DEFAULT_SNAPCAST_FORMAT
-            audio_source = self.mass.streams.get_queue_item_stream(
-                queue_item=self.mass.player_queues.get_item(media.queue_id, media.queue_item_id),
-                pcm_format=DEFAULT_SNAPCAST_FORMAT,
-            )
         elif media.queue_id and media.queue_item_id:
             # regular queue (flow) stream request
             input_format = DEFAULT_SNAPCAST_PCM_FORMAT
@@ -606,6 +625,8 @@ class SnapCastProvider(PlayerProvider):
         self._stream_tasks[player_id] = self.mass.create_task(_streamer())
 
     async def _delete_current_snapstream(self, stream: Snapstream) -> None:
+        if not stream.identifier.startswith(MASS_STREAM_POSTFIX):
+            return
         with suppress(TypeError, KeyError, AttributeError):
             await self._snapserver.stream_remove_stream(stream.identifier)
 
@@ -650,11 +671,21 @@ class SnapCastProvider(PlayerProvider):
         """Create new stream on snapcast server (or return existing one)."""
         mass_queue = self.mass.player_queues.get(queue_id)
         stream_name = f"{MASS_STREAM_POSTFIX} - {mass_queue.display_name}"
+        # cancel any existing clear stream task
+        self.mass.cancel_timer(f"snapcast_clear_stream_{player_id}")
 
         # prefer to reuse existing stream if possible
         for stream in self._snapserver.streams:
             if stream.identifier == stream_name:
                 return stream
+
+        if self._use_builtin_server:
+            extra_args = (
+                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
+                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20--api-port={self.mass.webserver.publish_port}"
+            )
+        else:
+            extra_args = ""
 
         attempts = 50
         while attempts:
@@ -666,9 +697,7 @@ class SnapCastProvider(PlayerProvider):
                 # (like 24 bits bit depth) does not seem to work at all!
                 f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
                 f"&idle_threshold={self._snapcast_stream_idle_threshold}"
-                f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
-                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20--api-port={self.mass.webserver.publish_port}"
-                f"&name={stream_name}"
+                f"{extra_args}&name={stream_name}"
             )
             if "id" not in result:
                 # if the port is already taken, the result will be an error
@@ -744,7 +773,6 @@ class SnapCastProvider(PlayerProvider):
             f"--stream.codec={self._snapcast_server_transport_codec}",
             f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
-            "--stream.source=pipe:///tmp/snapfifo?name=default&sampleformat=48000:16:2",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             # keep reading from stdout until exit

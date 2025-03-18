@@ -17,6 +17,7 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
+    CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     CONF_IP_ADDRESS,
     CONF_PASSWORD,
@@ -159,6 +160,7 @@ class FullyKioskProvider(PlayerProvider):
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
+            CONF_ENTRY_HTTP_PROFILE,
         )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:

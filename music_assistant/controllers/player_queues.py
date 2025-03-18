@@ -777,9 +777,6 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
         queue.flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
-        # no point in enabling flow mode for radio sources
-        if queue_item.media_type == MediaType.RADIO:
-            queue.flow_mode = False
         queue.current_item = queue_item
 
         # handle resume point of audiobook(chapter) or podcast(episode)

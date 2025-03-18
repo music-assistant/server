@@ -245,7 +245,7 @@ class MyDemoPlayerprovider(PlayerProvider):
         # configuration entries. If you do not need player specific configuration entries,
         # you can leave this method out completely to accept the default implementation.
         # Please note that you need to call the super() method to get the default entries.
-        return ()
+        return await super().get_player_config_entries(player_id)
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""

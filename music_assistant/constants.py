@@ -8,7 +8,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
-from music_assistant_models.enums import ConfigEntryType, ContentType
+from music_assistant_models.enums import ConfigEntryType, ContentType, HidePlayerOption
 from music_assistant_models.media_items import AudioFormat
 
 API_SCHEMA_VERSION: Final[int] = 26
@@ -63,7 +63,8 @@ CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_CROSSFADE: Final[str] = "crossfade"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
-CONF_HIDE_PLAYER: Final[str] = "hide_player"
+CONF_HIDE_PLAYER_IN_UI: Final[str] = "hide_player_in_ui"
+CONF_EXPOSE_PLAYER_TO_HA: Final[str] = "expose_player_to_ha"
 CONF_SYNC_ADJUST: Final[str] = "sync_adjust"
 CONF_TTS_PRE_ANNOUNCE: Final[str] = "tts_pre_announce"
 CONF_ANNOUNCE_VOLUME_STRATEGY: Final[str] = "announce_volume_strategy"
@@ -85,14 +86,12 @@ CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
-CONF_AUDIO_CACHE_MAX_SIZE: Final[str] = "audio_cache_max_size"
 
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
-DEFAULT_ALLOW_AUDIO_CACHE: Final[str] = "auto"
-DEFAULT_AUDIO_CACHE_MAX_SIZE: Final[int] = 5  # 5gb
+
 
 # common db tables
 DB_TABLE_PLAYLOG: Final[str] = "playlog"
@@ -191,6 +190,9 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     default_value=False,
     description="When this player is turned ON, automatically start playing "
     "(if there are items in the queue).",
+    depends_on=CONF_POWER_CONTROL,
+    depends_on_value_not="none",
+    category="player_controls",
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
@@ -303,12 +305,61 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     category="advanced",
 )
 
-CONF_ENTRY_HIDE_PLAYER = ConfigEntry(
-    key=CONF_HIDE_PLAYER,
-    type=ConfigEntryType.BOOLEAN,
-    label="Hide this player in the user interface",
-    default_value=False,
+CONF_ENTRY_CROSSFADE_DURATION_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_CROSSFADE_DURATION.to_dict(), "hidden": True}
 )
+
+CONF_ENTRY_HIDE_PLAYER_IN_UI = ConfigEntry(
+    key=CONF_HIDE_PLAYER_IN_UI,
+    type=ConfigEntryType.STRING,
+    label="Hide this player in the user interface",
+    multi_value=True,
+    options=[
+        ConfigValueOption("Always", HidePlayerOption.ALWAYS.value),
+        ConfigValueOption("When powered off", HidePlayerOption.WHEN_OFF.value),
+        ConfigValueOption("When group active", HidePlayerOption.WHEN_GROUP_ACTIVE.value),
+        ConfigValueOption("When synced", HidePlayerOption.WHEN_SYNCED.value),
+        ConfigValueOption("When unavailable", HidePlayerOption.WHEN_UNAVAILABLE.value),
+    ],
+    default_value=[
+        HidePlayerOption.WHEN_UNAVAILABLE.value,
+        HidePlayerOption.WHEN_GROUP_ACTIVE.value,
+        HidePlayerOption.WHEN_SYNCED.value,
+    ],
+)
+CONF_ENTRY_HIDE_PLAYER_IN_UI_ALWAYS_DEFAULT = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HIDE_PLAYER_IN_UI.to_dict(), "default_value": [HidePlayerOption.ALWAYS.value]}
+)
+
+CONF_ENTRY_HIDE_PLAYER_IN_UI_GROUP_PLAYER = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_HIDE_PLAYER_IN_UI.to_dict(),
+        "default_value": [HidePlayerOption.WHEN_UNAVAILABLE.value],
+        "options": [
+            ConfigValueOption("Always", HidePlayerOption.ALWAYS.value).to_dict(),
+            ConfigValueOption("When powered off", HidePlayerOption.WHEN_OFF.value).to_dict(),
+            ConfigValueOption(
+                "When unavailable", HidePlayerOption.WHEN_UNAVAILABLE.value
+            ).to_dict(),
+        ],
+    }
+)
+
+CONF_ENTRY_EXPOSE_PLAYER_TO_HA = ConfigEntry(
+    key=CONF_EXPOSE_PLAYER_TO_HA,
+    type=ConfigEntryType.BOOLEAN,
+    label="Expose this player to Home Assistant",
+    default_value=True,
+    description="Expose this player to the Home Assistant integration. \n"
+    "If disabled, this player will not be imported into Home Assistant.",
+    category="advanced",
+    # NOTE: This setting is hidden for now, until the HA integration has been updated
+    hidden=True,
+)
+CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_EXPOSE_PLAYER_TO_HA.to_dict(), "default_value": False}
+)
+
 
 CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
     key=CONF_OUTPUT_CODEC,
@@ -497,8 +548,12 @@ CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
     "other playback related issues. In most cases the default setting is fine.",
 )
 
+CONF_ENTRY_HTTP_PROFILE_DEFAULT_1 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "chunked"}
+)
+
 CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "chunked", "hidden": True}
+    {**CONF_ENTRY_HTTP_PROFILE_DEFAULT_1.to_dict(), "hidden": True}
 )
 CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
     {
@@ -507,6 +562,10 @@ CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
         "hidden": True,
     }
 )
+CONF_ENTRY_HTTP_PROFILE_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "hidden": True}
+)
+
 
 CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
     key=CONF_ENABLE_ICY_METADATA,
@@ -606,22 +665,6 @@ def create_sample_rates_config_entry(
     return conf_entry
 
 
-BASE_PLAYER_CONFIG_ENTRIES = (
-    # config entries that are valid for all players
-    CONF_ENTRY_PLAYER_ICON,
-    CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_VOLUME_NORMALIZATION,
-    CONF_ENTRY_OUTPUT_LIMITER,
-    CONF_ENTRY_AUTO_PLAY,
-    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
-    CONF_ENTRY_HIDE_PLAYER,
-    CONF_ENTRY_TTS_PRE_ANNOUNCE,
-    CONF_ENTRY_SAMPLE_RATES,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-    CONF_ENTRY_OUTPUT_CODEC,
-)
-
-
 DEFAULT_STREAM_HEADERS = {
     "Server": "Music Assistant",
     "transferMode.dlna.org": "Streaming",
@@ -659,6 +702,7 @@ CACHE_CATEGORY_PLAYER_QUEUE_STATE: Final[int] = 7
 CACHE_CATEGORY_MEDIA_INFO: Final[int] = 8
 CACHE_CATEGORY_LIBRARY_ITEMS: Final[int] = 9
 CACHE_CATEGORY_PLAYERS: Final[int] = 10
+CACHE_CATEGORY_RECOMMENDATIONS: Final[int] = 11
 
 # CACHE base keys
 CACHE_KEY_PLAYER_POWER: Final[str] = "player_power"

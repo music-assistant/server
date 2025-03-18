@@ -243,6 +243,8 @@ class SpotifyConnectProvider(PluginProvider):
             await librespot.close(True)
             self.logger.info("Spotify Connect background daemon stopped for %s", self.name)
             await check_output("rm", "-f", self.named_pipe)
+            if not self._librespot_started.is_set():
+                self.unload_with_error("Unable to initialize librespot daemon.")
             # auto restart if not stopped manually
             if not self._stop_called and self._librespot_started.is_set():
                 self._setup_player_daemon()

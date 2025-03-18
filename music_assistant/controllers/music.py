@@ -565,7 +565,7 @@ class MusicController(CoreController):
         )
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
-        return [item for sublist in zip_longest(*results_per_provider) for item in sublist]
+        return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
 
     async def _get_default_recommendations(self) -> list[RecommendationFolder]:
         """Return default recommendations."""

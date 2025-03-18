@@ -48,7 +48,6 @@ from music_assistant.constants import (
     CONF_ENTRY_DEPRECATED_EQ_MID,
     CONF_ENTRY_DEPRECATED_EQ_TREBLE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-    CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_PORT,
@@ -316,7 +315,6 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_DEPRECATED_EQ_BASS,
                 CONF_ENTRY_DEPRECATED_EQ_MID,
                 CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-                CONF_ENTRY_OUTPUT_CHANNELS,
                 CONF_ENTRY_CROSSFADE_DURATION,
                 CONF_ENTRY_OUTPUT_CODEC,
                 CONF_ENTRY_SYNC_ADJUST,
@@ -401,12 +399,6 @@ class SlimprotoProvider(PlayerProvider):
             ugp_stream = ugp_provider.ugp_streams[media.queue_id]
             # Filter is later applied in MultiClientStream
             audio_source = ugp_stream.get_stream(master_audio_format, filter_params=None)
-        elif media.media_type == MediaType.RADIO:
-            # use single item stream request for radio streams
-            audio_source = self.mass.streams.get_queue_item_stream(
-                queue_item=self.mass.player_queues.get_item(media.queue_id, media.queue_item_id),
-                pcm_format=master_audio_format,
-            )
         elif media.queue_id and media.queue_item_id:
             # regular queue stream request
             audio_source = self.mass.streams.get_queue_flow_stream(

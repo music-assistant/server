@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import urllib.parse
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -31,7 +32,6 @@ from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     CONF_ALLOW_AUDIO_CACHE,
-    CONF_AUDIO_CACHE_MAX_SIZE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE,
@@ -46,8 +46,6 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
-    DEFAULT_ALLOW_AUDIO_CACHE,
-    DEFAULT_AUDIO_CACHE_MAX_SIZE,
     DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
     ICY_HEADERS,
@@ -66,9 +64,10 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import (
-    clean_old_files,
+    get_free_space,
     get_ip,
     get_ips,
+    has_enough_space,
     select_free_port,
     try_parse_bool,
 )
@@ -84,6 +83,8 @@ if TYPE_CHECKING:
 
 
 isfile = wrap(os.path.isfile)
+
+AUDIO_CACHE_MAX_SIZE: Final[int] = 2  # 2gb
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -115,10 +116,14 @@ class StreamsController(CoreController):
         )
         self.manifest.icon = "cast-audio"
         self.announcements: dict[str, str] = {}
-        # create cache dir if needed
-        self._audio_cache_dir = audio_cache_dir = os.path.join(self.mass.cache_path, ".audio")
-        if not os.path.isdir(audio_cache_dir):
-            os.makedirs(audio_cache_dir)
+        # TEMP: remove old cache dir
+        # remove after 2.5.0b15 or b16
+        prev_cache_dir = os.path.join(self.mass.cache_path, ".audio")
+        if os.path.isdir(prev_cache_dir):
+            shutil.rmtree(prev_cache_dir)
+        # prefer /tmp/.audio as audio cache dir
+        self._audio_cache_dir = os.path.join("/tmp/.audio")  # noqa: S108
+        self.allow_cache_default = "auto"
 
     @property
     def base_url(self) -> str:
@@ -127,7 +132,7 @@ class StreamsController(CoreController):
 
     @property
     def audio_cache_dir(self) -> str:
-        """Return the directory where audio cache files are stored."""
+        """Return the directory where (temporary) audio cache files are stored."""
         return self._audio_cache_dir
 
     async def get_config_entries(
@@ -217,7 +222,7 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_ALLOW_AUDIO_CACHE,
                 type=ConfigEntryType.STRING,
-                default_value=DEFAULT_ALLOW_AUDIO_CACHE,
+                default_value=self.allow_cache_default,
                 options=[
                     ConfigValueOption("Always", "always"),
                     ConfigValueOption("Disabled", "disabled"),
@@ -236,16 +241,6 @@ class StreamsController(CoreController):
                 category="advanced",
                 required=True,
             ),
-            ConfigEntry(
-                key=CONF_AUDIO_CACHE_MAX_SIZE,
-                type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_AUDIO_CACHE_MAX_SIZE,
-                label="Maximum size of audio cache",
-                description="The maximum amount of diskspace (in GB) "
-                "the audio cache may consume (if enabled).",
-                range=(1, 50),
-                category="advanced",
-            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -255,7 +250,18 @@ class StreamsController(CoreController):
         FFMPEG_LOGGER.setLevel(self.logger.level)
         # perform check for ffmpeg version
         await check_ffmpeg_version()
-        await self._clean_audio_cache()
+        # note that on HAOS we run /tmp in tmpfs so we need to check if we're running
+        # on a system that has enough space to store the audio cache in the tmpfs
+        # if not, we choose another location
+        if await get_free_space("/tmp") < AUDIO_CACHE_MAX_SIZE * 1.5:  # noqa: S108
+            self._audio_cache_dir = os.path.join(os.path.expanduser("~"), ".audio")
+        if not await asyncio.to_thread(os.path.isdir, self._audio_cache_dir):
+            await asyncio.to_thread(os.makedirs, self._audio_cache_dir)
+        self.allow_cache_default = (
+            "auto"
+            if await has_enough_space(self._audio_cache_dir, AUDIO_CACHE_MAX_SIZE * 1.5)
+            else "disabled"
+        )
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
@@ -658,6 +664,7 @@ class StreamsController(CoreController):
             output_format_str=request.match_info["fmt"],
             player=player,
             content_sample_rate=plugin_source.audio_format.sample_rate,
+            content_bit_depth=plugin_source.audio_format.bit_depth,
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
@@ -795,7 +802,7 @@ class StreamsController(CoreController):
                 pcm_format=pcm_format,
             ):
                 # buffer size needs to be big enough to include the crossfade part
-                req_buffer_size = pcm_sample_size * 2 if not use_crossfade else crossfade_size
+                req_buffer_size = pcm_sample_size if not use_crossfade else crossfade_size
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -996,7 +1003,7 @@ class StreamsController(CoreController):
             # for radio stations (or other live streams) that do not provide any look ahead buffer
             # without this, some radio streams jitter a lot, especially with dynamic normalization,
             # if the stream does not provide a look ahead buffer
-            pad_silence_seconds = 2
+            pad_silence_seconds = 4
 
         first_chunk_received = False
         async for chunk in get_media_stream(
@@ -1090,17 +1097,3 @@ class StreamsController(CoreController):
             bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
             channels=2,
         )
-
-    async def _clean_audio_cache(self) -> None:
-        """Clean up audio cache periodically."""
-        max_cache_size = await self.mass.config.get_core_config_value(
-            self.domain, CONF_AUDIO_CACHE_MAX_SIZE
-        )
-        cache_enabled = await self.mass.config.get_core_config_value(
-            self.domain, CONF_ALLOW_AUDIO_CACHE
-        )
-        if cache_enabled == "disabled":
-            max_cache_size = 0.001
-        await clean_old_files(self.audio_cache_dir, max_cache_size)
-        # reschedule self
-        self.mass.call_later(3600, self._clean_audio_cache)

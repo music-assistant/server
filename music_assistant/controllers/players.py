@@ -21,6 +21,7 @@ from music_assistant_models.constants import (
 )
 from music_assistant_models.enums import (
     EventType,
+    HidePlayerOption,
     MediaType,
     PlayerFeature,
     PlayerState,
@@ -47,7 +48,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_PLAYER_ICON,
-    CONF_HIDE_PLAYER,
+    CONF_HIDE_PLAYER_IN_UI,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
@@ -982,6 +983,11 @@ class PlayerController(CoreController):
         if self.mass.closing:
             return
 
+        if (existing := self.get(player.player_id)) and not existing.available and player.available:
+            # player was previously unavailable, but is now available again
+            self.logger.info("Player %s is available again", player.name)
+            del self._players[player.player_id]
+
         if player.player_id in self._players:
             self._players[player.player_id] = player
             self.update(player.player_id)
@@ -1474,7 +1480,9 @@ class PlayerController(CoreController):
     async def _set_player_state_from_config(self, player: Player, config: PlayerConfig) -> None:
         """Set player state from config."""
         player.display_name = config.name or player.name or config.default_name or player.player_id
-        player.hidden = config.get_value(CONF_HIDE_PLAYER)
+        player.hide_player_in_ui = {
+            HidePlayerOption(x) for x in config.get_value(CONF_HIDE_PLAYER_IN_UI)
+        }
         player.icon = config.get_value(CONF_ENTRY_PLAYER_ICON.key)
         player.power_control = config.get_value(CONF_POWER_CONTROL)
         if player.power_control == PLAYER_CONTROL_FAKE:

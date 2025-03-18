@@ -11,17 +11,34 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NATIVE,
     PLAYER_CONTROL_NONE,
 )
-from music_assistant_models.enums import ConfigEntryType, PlayerFeature
+from music_assistant_models.enums import ConfigEntryType, PlayerFeature, PlayerType
 from music_assistant_models.errors import UnsupportedFeaturedException
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
-    BASE_PLAYER_CONFIG_ENTRIES,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+    CONF_ENTRY_EXPOSE_PLAYER_TO_HA,
+    CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED,
+    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_HIDE_PLAYER_IN_UI,
+    CONF_ENTRY_HIDE_PLAYER_IN_UI_ALWAYS_DEFAULT,
+    CONF_ENTRY_HIDE_PLAYER_IN_UI_GROUP_PLAYER,
+    CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_OUTPUT_LIMITER,
+    CONF_ENTRY_PLAYER_ICON,
+    CONF_ENTRY_PLAYER_ICON_GROUP,
+    CONF_ENTRY_SAMPLE_RATES,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_VOLUME_NORMALIZATION,
+    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
@@ -48,15 +65,85 @@ class PlayerProvider(Provider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        base_entries = (
+            # config entries that are valid for all/most players
+            CONF_ENTRY_PLAYER_ICON,
+            CONF_ENTRY_FLOW_MODE,
+            CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+            CONF_ENTRY_CROSSFADE_DURATION,
+            CONF_ENTRY_VOLUME_NORMALIZATION,
+            CONF_ENTRY_OUTPUT_LIMITER,
+            CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+            CONF_ENTRY_TTS_PRE_ANNOUNCE,
+        )
+        if not (player := self.mass.players.get(player_id)):
+            return base_entries
+
+        if player.type == PlayerType.GROUP:
+            # return group player specific entries
+            return (
+                *base_entries,
+                CONF_ENTRY_PLAYER_ICON_GROUP,
+                CONF_ENTRY_HIDE_PLAYER_IN_UI_GROUP_PLAYER,
+                # add player control entries as hidden entries
+                ConfigEntry(
+                    key=CONF_POWER_CONTROL,
+                    type=ConfigEntryType.STRING,
+                    label=CONF_POWER_CONTROL,
+                    default_value=PLAYER_CONTROL_NATIVE,
+                    hidden=True,
+                ),
+                ConfigEntry(
+                    key=CONF_VOLUME_CONTROL,
+                    type=ConfigEntryType.STRING,
+                    label=CONF_VOLUME_CONTROL,
+                    default_value=PLAYER_CONTROL_NATIVE,
+                    hidden=True,
+                ),
+                ConfigEntry(
+                    key=CONF_MUTE_CONTROL,
+                    type=ConfigEntryType.STRING,
+                    label=CONF_MUTE_CONTROL,
+                    # disable mute control for group players for now
+                    # TODO: work out if all child players support mute control
+                    default_value=PLAYER_CONTROL_NONE,
+                    hidden=True,
+                ),
+                CONF_ENTRY_AUTO_PLAY,
+            )
         return (
-            *BASE_PLAYER_CONFIG_ENTRIES,
+            # config entries that are valid for all players
+            *base_entries,
+            (
+                CONF_ENTRY_HIDE_PLAYER_IN_UI_ALWAYS_DEFAULT
+                if player and player.hidden_by_default
+                else CONF_ENTRY_HIDE_PLAYER_IN_UI
+            ),
+            (
+                CONF_ENTRY_EXPOSE_PLAYER_TO_HA
+                if player and player.expose_to_ha_by_default
+                else CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED
+            ),
+            # add player control entries
+            *self._create_player_control_config_entries(player),
+            CONF_ENTRY_AUTO_PLAY,
+            CONF_ENTRY_SAMPLE_RATES,
+            CONF_ENTRY_OUTPUT_CODEC,
+            CONF_ENTRY_OUTPUT_CHANNELS,
             # add default entries for announce feature
             CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
             CONF_ENTRY_ANNOUNCE_VOLUME,
             CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
             CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+            CONF_ENTRY_HIDE_PLAYER_IN_UI_ALWAYS_DEFAULT
+            if player and player.hidden_by_default
+            else CONF_ENTRY_HIDE_PLAYER_IN_UI,
+            CONF_ENTRY_EXPOSE_PLAYER_TO_HA
+            if player and player.expose_to_ha_by_default
+            else CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED,
             # add player control entries
-            *self._create_player_control_config_entries(self.mass.players.get(player_id)),
+            *self._create_player_control_config_entries(player),
+            CONF_ENTRY_AUTO_PLAY,
         )
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:

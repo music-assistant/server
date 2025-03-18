@@ -22,7 +22,6 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar
 from urllib.parse import urlparse
 
-import aiofiles
 import cchardet as chardet
 import ifaddr
 from zeroconf import IPVersion
@@ -477,28 +476,33 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
 
 async def has_tmpfs_mount() -> bool:
     """Check if we have a tmpfs mount."""
-    try:
-        async with aiofiles.open("/proc/mounts") as file:
-            async for line in file:
-                if "tmpfs /tmp tmpfs rw" in line:
-                    return True
-    except (FileNotFoundError, OSError, PermissionError):
-        pass
-    return False
 
+    def _has_tmpfs_mount() -> bool:
+        """Check if we have a tmpfs mount."""
+        try:
+            with open("/proc/mounts") as file:
+                for line in file:
+                    if "tmpfs /tmp tmpfs rw" in line:
+                        return True
+        except (FileNotFoundError, OSError, PermissionError):
+            pass
+        return False
 
-async def get_tmp_free_space() -> float:
-    """Return free space on tmp in GB's."""
-    return await get_free_space("/tmp")  # noqa: S108
+    return await asyncio.to_thread(_has_tmpfs_mount)
 
 
 async def get_free_space(folder: str) -> float:
     """Return free space on given folderpath in GB."""
-    try:
-        if res := await asyncio.to_thread(shutil.disk_usage, folder):
-            return res.free / float(1 << 30)
-    except (FileNotFoundError, OSError, PermissionError):
-        return 0.0
+
+    def _get_free_space(folder: str) -> float:
+        """Return free space on given folderpath in GB."""
+        try:
+            if res := shutil.disk_usage(folder):
+                return res.free / float(1 << 30)
+        except (FileNotFoundError, OSError, PermissionError):
+            return 0.0
+
+    return await asyncio.to_thread(_get_free_space, folder)
 
 
 async def has_enough_space(folder: str, size: int) -> bool:

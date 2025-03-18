@@ -1,6 +1,5 @@
 """Allows scrobbling of tracks with the help of PyLast."""
 
-import asyncio
 import logging
 import time
 from collections.abc import Callable
@@ -15,12 +14,12 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import LoginFailed, SetupFailedError
-from music_assistant_models.event import MassEvent
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.auth import AuthenticationHelper
+from music_assistant.helpers.scrobbler import ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
@@ -81,87 +80,43 @@ class LastFMScrobbleProvider(PluginProvider):
             unload_cb()
 
 
-class LastFMEventHandler:
+class LastFMEventHandler(ScrobblerHelper):
     """Handles the event handling."""
 
-    logger: logging.Logger
     network: pylast._Network
-    currently_playing: str | None = None
-    last_scrobbled: str | None = None
 
     def __init__(self, network: pylast._Network, logger: logging.Logger) -> None:
         """Initialize."""
+        super().__init__(logger)
         self.network = network
-        self.logger = logger
 
-    async def _on_mass_media_item_played(self, event: MassEvent) -> None:
-        """Media item has finished playing, we'll scrobble the track."""
+    def _is_configured(self) -> bool:
         if self.network is None:
             self.logger.error("no network available during _on_mass_media_item_played")
-            return
-
-        report: MediaItemPlaybackProgressReport = event.data
-
-        # poor mans attempt to detect a song on loop
-        if not report.fully_played and report.uri == self.last_scrobbled:
-            self.logger.debug(
-                "reset _last_scrobbled and _currently_playing because the song was restarted"
-            )
-            self.last_scrobbled = None
-            # reset currently playing to avoid it expiring when looping single songs
-            self.currently_playing = None
-
-        def update_now_playing() -> None:
-            try:
-                self.network.update_now_playing(
-                    report.artist,
-                    report.name,
-                    report.album,
-                    duration=report.duration,
-                    mbid=report.mbid,
-                )
-                self.logger.debug(f"track {report.uri} marked as 'now playing'")
-                self.currently_playing = report.uri
-            except Exception as err:
-                self.logger.exception(err)
-
-        def scrobble() -> None:
-            try:
-                # album artist and track number are not available without an extra API call
-                # so they won't be scrobbled
-                self.network.scrobble(
-                    report.artist,
-                    report.name,
-                    time.time(),
-                    report.album,
-                    duration=report.duration,
-                    mbid=report.mbid,
-                )
-                self.last_scrobbled = report.uri
-            except Exception as err:
-                self.logger.exception(err)
-
-        # update now playing if needed
-        if report.is_playing and (
-            self.currently_playing is None or self.currently_playing != report.uri
-        ):
-            await asyncio.to_thread(update_now_playing)
-
-        if self.should_scrobble(report):
-            await asyncio.to_thread(scrobble)
-
-    def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
-        """Determine if a track should be scrobbled, to be extended later."""
-        if self.last_scrobbled == report.uri:
-            self.logger.debug("skipped scrobbling due to duplicate event")
             return False
 
-        # ideally we want more precise control
-        # but because the event is triggered every 30s
-        # and we don't have full queue details to determine
-        # the exact context in which the event was fired
-        # we can only rely on fully_played for now
-        return bool(report.fully_played)
+        return True
+
+    def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
+        self.network.update_now_playing(
+            report.artist,
+            report.name,
+            report.album,
+            duration=report.duration,
+            mbid=report.mbid,
+        )
+
+    def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
+        # album artist and track number are not available without an extra API call
+        # so they won't be scrobbled
+        self.network.scrobble(
+            report.artist,
+            report.name,
+            time.time(),
+            report.album,
+            duration=report.duration,
+            mbid=report.mbid,
+        )
 
 
 # configuration keys

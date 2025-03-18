@@ -21,7 +21,7 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
     PlayerConfig,
 )
-from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
+from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -42,22 +42,17 @@ from music_assistant_models.media_items import AudioFormat, UniqueList
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
-    BASE_PLAYER_CONFIG_ENTRIES,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
     CONF_ENABLE_ICY_METADATA,
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_FLOW_MODE,
     CONF_GROUP_MEMBERS,
     CONF_HTTP_PROFILE,
-    CONF_MUTE_CONTROL,
     CONF_OUTPUT_CODEC,
-    CONF_POWER_CONTROL,
     CONF_SAMPLE_RATES,
-    CONF_VOLUME_CONTROL,
     DEFAULT_PCM_FORMAT,
     create_sample_rates_config_entry,
 )
@@ -233,35 +228,10 @@ class PlayerGroupProvider(PlayerProvider):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         # default entries for player groups
         base_entries = (
-            *BASE_PLAYER_CONFIG_ENTRIES,
-            CONF_ENTRY_PLAYER_ICON_GROUP,
+            *await super().get_player_config_entries(player_id),
             CONF_ENTRY_GROUP_TYPE,
             CONF_ENTRY_GROUP_MEMBERS,
             CONFIG_ENTRY_DYNAMIC_MEMBERS,
-            # add player control entries as hidden entries
-            ConfigEntry(
-                key=CONF_POWER_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_POWER_CONTROL,
-                default_value=PLAYER_CONTROL_NATIVE,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_VOLUME_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_VOLUME_CONTROL,
-                default_value=PLAYER_CONTROL_NATIVE,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_MUTE_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_MUTE_CONTROL,
-                # disable mute control for group players for now
-                # TODO: work out if all child players support mute control
-                default_value=PLAYER_CONTROL_NONE,
-                hidden=True,
-            ),
         )
         # group type is static and can not be changed. we just grab the existing, stored value
         group_type: str = self.mass.config.get_raw_player_config_value(
@@ -494,12 +464,6 @@ class PlayerGroupProvider(PlayerProvider):
                 plugin_source_id=media.custom_data["source_id"],
                 output_format=UGP_FORMAT,
                 player_id=media.custom_data["player_id"],
-            )
-        elif media.media_type == MediaType.RADIO:
-            # use single item stream request for radio streams
-            audio_source = self.mass.streams.get_queue_item_stream(
-                queue_item=self.mass.player_queues.get_item(media.queue_id, media.queue_item_id),
-                pcm_format=UGP_FORMAT,
             )
         elif media.queue_id and media.queue_item_id:
             # regular queue stream request
