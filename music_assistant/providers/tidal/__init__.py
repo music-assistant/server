@@ -332,7 +332,7 @@ class TidalProvider(MusicProvider):
             config_updater=self._update_auth_config,
             logger=self.logger,
         )
-        self.page_cache_ttl = 12 * 3600
+        self.page_cache_ttl = 3 * 3600
 
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
         """Update auth config with new auth info."""
@@ -1018,10 +1018,11 @@ class TidalProvider(MusicProvider):
 
                         folder = RecommendationFolder(
                             item_id=item_id,
-                            name=f"{self.lookup_key} - {module_title}",
+                            name=module_title,
                             provider=self.lookup_key,
                             items=UniqueList(module_items),
                             subtitle=subtitle,
+                            translation_key=item_id,
                             icon=icon,
                         )
                         results.append(folder)
@@ -1040,10 +1041,11 @@ class TidalProvider(MusicProvider):
 
                 because_folder = RecommendationFolder(
                     item_id="because_you_listened_to",
-                    name=f"{self.lookup_key} - Because You Listened To: {sources_summary}",
+                    name=f"Because You Listened To: {sources_summary}",
                     provider=self.lookup_key,
                     items=UniqueList(because_items),
                     subtitle=folder_subtitle,
+                    translation_key="because_you_listened_to",
                     icon="mdi-headphones-box",
                 )
                 # Add as first item in results
@@ -1063,7 +1065,7 @@ class TidalProvider(MusicProvider):
                 results,
                 category=CACHE_CATEGORY_RECOMMENDATIONS,
                 base_key=self.lookup_key,
-                expiration=3600,
+                expiration=12 * 3600,
             )
 
         except (ClientError, ResourceTemporarilyUnavailable) as err:
