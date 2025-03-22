@@ -853,6 +853,7 @@ class YoutubeMusicProvider(MusicProvider):
                         "skip": ["translated_subs", "dash"],
                         "player_client": ["web_music"],
                         "player_skip": ["webpage"],
+                        "formats": ["missing_pot"],
                     }
                 },
             }
