@@ -94,7 +94,9 @@ class AudibleHelper:
 
             # Check if we've reached the end
             total_items = library.get("total_results", 0)
-            if page * page_size >= total_items:
+            if len(items) < page_size:
+                break
+            if total_items > 0 and page * page_size >= total_items:
                 break
 
             page += 1
