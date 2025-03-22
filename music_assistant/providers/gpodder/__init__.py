@@ -372,7 +372,10 @@ class GPodder(MusicProvider):
                     # we do not have to add the progress, these would make calls twice,
                     # and we only use the object to propagate to playlog
                     self.progress_guard_timestamp = time.time()
-                    _episode_id = f"{feed_url} {_progress.episode}"
+                    if _progress.guid is None:
+                        _episode_id = f"{feed_url} {_progress.episode}"
+                    else:
+                        _episode_id = f"{feed_url} {_progress.guid}"
                     mass_episode = await self.get_podcast_episode(_episode_id, add_progress=False)
                     if isinstance(_progress, EpisodeActionNew):
                         await self.mass.music.mark_item_unplayed(mass_episode)
