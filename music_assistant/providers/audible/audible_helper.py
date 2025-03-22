@@ -112,10 +112,9 @@ class AudibleHelper:
                 "Audible: Got %s items (total reported by API: %s)", len(items), total_items
             )
 
-            if not items or len(items) < page_size:
+            if not items:
                 self.logger.debug(
-                    "Audible: No more items or fewer than page size returned, "
-                    "ending pagination (processed %s items)",
+                    "Audible: No more items returned, ending pagination (processed %s items)",
                     total_processed,
                 )
                 break
@@ -163,6 +162,15 @@ class AudibleHelper:
                 total_processed,
                 total_items,
             )
+
+            # Check if we received fewer items than page_size, which means we've reached the end
+            if len(items) < page_size:
+                self.logger.debug(
+                    "Audible: Fewer than page size returned, "
+                    "ending pagination (processed %s items)",
+                    total_processed,
+                )
+                break
 
         if iteration >= max_iterations:
             self.logger.warning(
