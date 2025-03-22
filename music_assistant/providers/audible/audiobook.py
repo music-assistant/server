@@ -1,24 +1,13 @@
-"""Helper for parsing and using audible api."""
+"""Audiobook functionality for Audible provider."""
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import html
-import json
 import logging
-import os
-import re
 from collections.abc import AsyncGenerator
-from os import PathLike
 from typing import Any
-from urllib.parse import parse_qs, urlparse
 
-import audible
-import audible.register
-from audible import AsyncClient
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
@@ -30,77 +19,92 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.audible.api import AudibleAPI, html_to_txt
 
 CACHE_DOMAIN = "audible"
-CACHE_CATEGORY_API = 0
 CACHE_CATEGORY_AUDIOBOOK = 1
 CACHE_CATEGORY_CHAPTERS = 2
 
-# Cache for authenticator objects to avoid repeated file reads
-_AUTH_CACHE: dict[str, audible.Authenticator] = {}
+AUDIOBOOK_RESPONSE_GROUPS = (
+    "contributors,"
+    "customer_rights,"
+    "media,"
+    "product_attrs,"
+    "product_desc,"
+    "product_details,"
+    "product_extended_attrs"
+)
+
+AUDIOBOOK_DETAIL_RESPONSE_GROUPS = (
+    "contributors,"
+    "customer_rights,"
+    "media,"
+    "product_attrs,"
+    "product_desc,"
+    "product_details,"
+    "product_extended_attrs,"
+    "is_finished"
+)
+
+CHAPTER_RESPONSE_GROUPS = "chapter_info,content_reference,content_url"
 
 
-async def cached_authenticator_from_file(path: str) -> audible.Authenticator:
-    """Get an authenticator from file with caching to avoid repeated file reads."""
-    logger = logging.getLogger("audible_helper")
-    if path in _AUTH_CACHE:
-        return _AUTH_CACHE[path]
-
-    logger.debug("Loading authenticator from file %s and caching it", path)
-    auth = await asyncio.to_thread(audible.Authenticator.from_file, path)
-    _AUTH_CACHE[path] = auth
-    return auth
-
-
-class AudibleHelper:
-    """Helper for parsing and using audible api."""
+class AudiobookHelper:
+    """Helper for Audible audiobook functionality."""
 
     def __init__(
         self,
+        api: AudibleAPI,
         mass: MusicAssistant,
-        client: AsyncClient,
         provider_domain: str,
         provider_instance: str,
         logger: logging.Logger | None = None,
     ):
-        """Initialize the Audible Helper."""
+        """Initialize the Audiobook Helper."""
+        self.api = api
         self.mass = mass
-        self.client = client
         self.provider_domain = provider_domain
         self.provider_instance = provider_instance
-        self.logger = logger or logging.getLogger("audible_helper")
+        self.logger = logger or logging.getLogger("audible_audiobook")
+
+    async def _get_from_cache(self, key: str, category: int, default: Any = None) -> Any:
+        """Get item from cache with standard parameters."""
+        return await self.mass.cache.get(
+            key=key, base_key=CACHE_DOMAIN, category=category, default=default
+        )
+
+    async def _set_to_cache(self, key: str, category: int, data: Any) -> None:
+        """Set item to cache with standard parameters."""
+        await self.mass.cache.set(key=key, base_key=CACHE_DOMAIN, category=category, data=data)
+
+    async def _create_media_item_image(
+        self, image_url: str, image_type: ImageType
+    ) -> MediaItemImage:
+        """Create a MediaItemImage with standard parameters."""
+        return MediaItemImage(
+            type=image_type,
+            path=image_url,
+            provider=self.provider_instance,
+            remotely_accessible=True,
+        )
 
     async def get_library(self) -> AsyncGenerator[Audiobook, None]:
-        """Fetch the user's library with pagination."""
-        response_groups = [
-            "contributors",
-            "media",
-            "product_attrs",
-            "product_desc",
-            "product_details",
-            "product_extended_attrs",
-        ]
-
+        """Fetch the user's audiobook library with pagination."""
         page = 1
         page_size = 50
         total_processed = 0
-        max_iterations = 100
-        iteration = 0
 
-        while iteration < max_iterations:
-            iteration += 1
-
+        while True:
             self.logger.debug(
-                "Audible: Fetching library page %s with page_size %s (processed so far: %s)",
+                "Audible: Fetching library page %s with page_size %s",
                 page,
                 page_size,
-                total_processed,
             )
 
-            library = await self._call_api(
+            library = await self.api.call_api(
                 "library",
                 use_cache=False,
-                response_groups=",".join(response_groups),
+                response_groups=AUDIOBOOK_RESPONSE_GROUPS,
                 page=page,
                 num_results=page_size,
             )
@@ -112,15 +116,14 @@ class AudibleHelper:
                 "Audible: Got %s items (total reported by API: %s)", len(items), total_items
             )
 
-            if not items or len(items) < page_size:
+            if not items:
                 self.logger.debug(
-                    "Audible: No more items or fewer than page size returned, "
-                    "ending pagination (processed %s items)",
+                    "Audible: No more items returned, ending pagination (processed %s items)",
                     total_processed,
                 )
                 break
 
-            items_processed_this_page = 0
+            page_processed = 0
             for audiobook_data in items:
                 content_type = audiobook_data.get("content_delivery_type", "")
                 if content_type in ("PodcastParent", "NonAudio"):
@@ -129,13 +132,20 @@ class AudibleHelper:
                         audiobook_data.get("title", "Unknown"),
                         content_type,
                     )
-                    total_processed += 1
+                    continue
+                customer_rights = audiobook_data.get(
+                    "customer_rights", {"is_consumable_offline": False}
+                )
+                is_consumable_offline = customer_rights.get("is_consumable_offline", False)
+                if not is_consumable_offline:
+                    self.logger.info(
+                        "Skipping audiobook: %s, no stream license.",
+                        audiobook_data.get("title", "Unknown"),
+                    )
                     continue
 
                 asin = audiobook_data.get("asin")
-                cached_book = await self.mass.cache.get(
-                    key=asin, base_key=CACHE_DOMAIN, category=CACHE_CATEGORY_AUDIOBOOK, default=None
-                )
+                cached_book = await self._get_from_cache(asin, CACHE_CATEGORY_AUDIOBOOK)
 
                 try:
                     if cached_book is not None:
@@ -144,17 +154,24 @@ class AudibleHelper:
                     else:
                         album = await self._parse_audiobook(audiobook_data)
                         yield album
-
+                    page_processed += 1
                     total_processed += 1
-                    items_processed_this_page += 1
+
                 except MediaNotFoundError as exc:
                     self.logger.warning(f"Skipping invalid audiobook: {exc}")
-                    total_processed += 1
                     continue
 
             self.logger.debug(
-                "Audible: Processed %s valid audiobooks on page %s", items_processed_this_page, page
+                "Audible: Processed %s valid audiobooks on page %s", page_processed, page
             )
+
+            # If we got fewer items than requested, we've reached the end
+            if len(items) < page_size:
+                self.logger.debug(
+                    "Audible: Fewer items than page size returned, ending pagination "
+                    f"(processed {total_processed} items total)",
+                )
+                break
 
             page += 1
             self.logger.debug(
@@ -164,31 +181,16 @@ class AudibleHelper:
                 total_items,
             )
 
-        if iteration >= max_iterations:
-            self.logger.warning(
-                "Audible: Reached maximum iteration limit (%s) with %s items processed",
-                max_iterations,
-                total_processed,
-            )
-        else:
-            self.logger.info(
-                "Audible: Successfully retrieved %s audiobooks from library", total_processed
-            )
-
     async def get_audiobook(self, asin: str, use_cache: bool = True) -> Audiobook:
         """Fetch the audiobook by asin."""
         if use_cache:
-            cached_book = await self.mass.cache.get(
-                key=asin, base_key=CACHE_DOMAIN, category=CACHE_CATEGORY_AUDIOBOOK, default=None
-            )
+            cached_book = await self._get_from_cache(asin, CACHE_CATEGORY_AUDIOBOOK)
             if cached_book is not None:
                 return await self._parse_audiobook(cached_book)
-        response = await self._call_api(
+
+        response = await self.api.call_api(
             f"library/{asin}",
-            response_groups="""
-                contributors, media, price, product_attrs, product_desc, product_details,
-                product_extended_attrs,is_finished
-                """,
+            response_groups=AUDIOBOOK_DETAIL_RESPONSE_GROUPS,
         )
 
         if response is None:
@@ -198,12 +200,7 @@ class AudibleHelper:
         if item_data is None:
             raise MediaNotFoundError(f"Audiobook data for ASIN {asin} is empty")
 
-        await self.mass.cache.set(
-            key=asin,
-            base_key=CACHE_DOMAIN,
-            category=CACHE_CATEGORY_AUDIOBOOK,
-            data=item_data,
-        )
+        await self._set_to_cache(asin, CACHE_CATEGORY_AUDIOBOOK, item_data)
         return await self._parse_audiobook(item_data)
 
     async def get_stream(self, asin: str) -> StreamDetails:
@@ -220,7 +217,7 @@ class AudibleHelper:
             duration = sum(chapter["length_ms"] for chapter in chapters) / 1000
 
         try:
-            playback_info = await self.client.post(
+            playback_info = await self.api.client.post(
                 f"content/{asin}/licenserequest",
                 body={
                     "quality": "High",
@@ -276,15 +273,13 @@ class AudibleHelper:
             )
             return []
 
-        chapters_data: list[Any] = await self.mass.cache.get(
-            base_key=CACHE_DOMAIN, category=CACHE_CATEGORY_CHAPTERS, key=asin, default=[]
-        )
+        chapters_data: list[Any] = await self._get_from_cache(asin, CACHE_CATEGORY_CHAPTERS, [])
 
         if not chapters_data:
             try:
-                response = await self._call_api(
+                response = await self.api.call_api(
                     f"content/{asin}/metadata",
-                    response_groups="chapter_info, always-returned, content_reference, content_url",
+                    response_groups=CHAPTER_RESPONSE_GROUPS,
                     chapter_titles_type="Flat",
                 )
 
@@ -304,12 +299,7 @@ class AudibleHelper:
 
                 chapters_data = chapter_info.get("chapters", [])
 
-                await self.mass.cache.set(
-                    base_key=CACHE_DOMAIN,
-                    category=CACHE_CATEGORY_CHAPTERS,
-                    key=asin,
-                    data=chapters_data,
-                )
+                await self._set_to_cache(asin, CACHE_CATEGORY_CHAPTERS, chapters_data)
             except Exception as exc:
                 self.logger.error(f"Error fetching chapters for ASIN {asin}: {exc}")
                 chapters_data = []
@@ -322,7 +312,7 @@ class AudibleHelper:
             return 0
 
         try:
-            response = await self._call_api("annotations/lastpositions", asins=asin)
+            response = await self.api.call_api("annotations/lastpositions", asins=asin)
 
             if not response:
                 self.logger.debug(f"No last position data available for ASIN {asin}")
@@ -370,8 +360,14 @@ class AudibleHelper:
                 self.logger.warning(f"No ACR available for ASIN {asin}, cannot report position")
                 return
 
-            await self.client.put(
-                f"lastpositions/{asin}", body={"acr": acr, "asin": asin, "position_ms": position_ms}
+            await self.api.client.put(
+                f"lastpositions/{asin}",
+                body={
+                    "acr": acr,
+                    "asin": asin,
+                    "position_ms": position_ms,
+                    "response_groups": "last_position",
+                },
             )
 
             self.logger.debug(f"Successfully reported position {position_ms}ms for ASIN {asin}")
@@ -387,24 +383,8 @@ class AudibleHelper:
         except Exception as exc:
             self.logger.error(f"Unexpected error reporting position for ASIN {asin}: {exc}")
 
-    async def _call_api(self, path: str, **kwargs: Any) -> Any:
-        response = None
-        use_cache = kwargs.pop("use_cache", False)
-        params_str = json.dumps(kwargs, sort_keys=True)
-        params_hash = hashlib.md5(params_str.encode()).hexdigest()
-        cache_key_with_params = f"{path}:{params_hash}"
-        if use_cache:
-            response = await self.mass.cache.get(
-                key=cache_key_with_params, base_key=CACHE_DOMAIN, category=CACHE_CATEGORY_API
-            )
-        if not response:
-            response = await self.client.get(path, **kwargs)
-            await self.mass.cache.set(
-                key=cache_key_with_params, base_key=CACHE_DOMAIN, data=response
-            )
-        return response
-
     async def _parse_audiobook(self, audiobook_data: dict[str, Any] | None) -> Audiobook:
+        """Parse audiobook data from Audible API and convert to Music Assistant Audiobook object."""
         if audiobook_data is None:
             self.logger.error("Received None audiobook_data in _parse_audiobook")
             raise MediaNotFoundError("Audiobook data not found")
@@ -444,33 +424,25 @@ class AudibleHelper:
             narrators=UniqueList(narrators),
         )
         book.metadata.copyright = audiobook_data.get("copyright")
-        book.metadata.description = _html_to_txt(
+        book.metadata.description = html_to_txt(
             str(audiobook_data.get("extended_product_description", ""))
         )
         book.metadata.languages = UniqueList([audiobook_data.get("language", "")])
         book.metadata.release_date = audiobook_data.get("release_date")
         reviews = audiobook_data.get("editorial_reviews", [])
         if reviews:
-            book.metadata.review = _html_to_txt(reviews[0])
+            book.metadata.review = html_to_txt(reviews[0])
         book.metadata.genres = {
             genre.replace("_", " ") for genre in audiobook_data.get("platinum_keywords", "")
         }
-        book.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=audiobook_data.get("product_images", {}).get("500"),
-                    provider=self.provider_instance,
-                    remotely_accessible=True,
-                ),
-                MediaItemImage(
-                    type=ImageType.CLEARART,
-                    path=audiobook_data.get("product_images", {}).get("500"),
-                    provider=self.provider_instance,
-                    remotely_accessible=True,
-                ),
-            ]
-        )
+        image_url = audiobook_data.get("product_images", {}).get("500")
+        if image_url:
+            book.metadata.images = UniqueList(
+                [
+                    await self._create_media_item_image(image_url, ImageType.THUMB),
+                    await self._create_media_item_image(image_url, ImageType.CLEARART),
+                ]
+            )
 
         chapters = []
         for index, chapter_data in enumerate(chapters_data):
@@ -493,89 +465,3 @@ class AudibleHelper:
         book.metadata.chapters = chapters
         book.resume_position_ms = await self.get_last_postion(asin=asin)
         return book
-
-    async def deregister(self) -> None:
-        """Deregister this provider from Audible."""
-        await asyncio.to_thread(self.client.auth.deregister_device)
-
-
-def _html_to_txt(html_text: str) -> str:
-    txt = html.unescape(html_text)
-    tags = re.findall("<[^>]+>", txt)
-    for tag in tags:
-        txt = txt.replace(tag, "")
-    return txt
-
-
-async def audible_get_auth_info(locale: str) -> tuple[str, str, str]:
-    """
-    Generate the login URL and auth info for Audible OAuth flow asynchronously.
-
-    Args:
-        locale: The locale string (e.g., 'us', 'uk', 'de') to determine region settings
-    Returns:
-        A tuple containing:
-        - code_verifier (str): The OAuth code verifier string
-        - oauth_url (str): The complete OAuth URL for login
-        - serial (str): The generated device serial number
-    """
-    locale_obj = audible.localization.Locale(locale)
-    code_verifier = await asyncio.to_thread(audible.login.create_code_verifier)
-    oauth_url, serial = await asyncio.to_thread(
-        audible.login.build_oauth_url,
-        country_code=locale_obj.country_code,
-        domain=locale_obj.domain,
-        market_place_id=locale_obj.market_place_id,
-        code_verifier=code_verifier,
-        with_username=False,
-    )
-
-    return code_verifier.decode(), oauth_url, serial
-
-
-async def audible_custom_login(
-    code_verifier: str, response_url: str, serial: str, locale: str
-) -> audible.Authenticator:
-    """
-    Complete the authentication using the code_verifier, response_url, and serial asynchronously.
-
-    Args:
-        code_verifier: The code verifier string used in OAuth flow
-        response_url: The response URL containing the authorization code
-        serial: The device serial number
-        locale: The locale string
-    Returns:
-        Audible Authenticator object
-    Raises:
-        LoginFailed: If authorization code is not found in the URL
-    """
-    auth = audible.Authenticator()
-    auth.locale = audible.localization.Locale(locale)
-
-    response_url_parsed = urlparse(response_url)
-    parsed_qs = parse_qs(response_url_parsed.query)
-
-    authorization_codes = parsed_qs.get("openid.oa2.authorization_code")
-    if not authorization_codes:
-        raise LoginFailed("Authorization code not found in the provided URL.")
-
-    authorization_code = authorization_codes[0]
-    registration_data = await asyncio.to_thread(
-        audible.register.register,
-        authorization_code=authorization_code,
-        code_verifier=code_verifier.encode(),
-        domain=auth.locale.domain,
-        serial=serial,
-    )
-    auth._update_attrs(**registration_data)
-    return auth
-
-
-async def check_file_exists(path: str | PathLike[str]) -> bool:
-    """Async file exists check."""
-    return await asyncio.to_thread(os.path.exists, path)
-
-
-async def remove_file(path: str | PathLike[str]) -> None:
-    """Async file delete."""
-    await asyncio.to_thread(os.remove, path)
