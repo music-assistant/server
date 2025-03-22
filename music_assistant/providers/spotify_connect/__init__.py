@@ -215,7 +215,7 @@ class SpotifyConnectProvider(PluginProvider):
                 "--volume-ctrl",
                 "fixed",
                 "--initial-volume",
-                f"{self.player.volume_level if self.player else 100}",
+                f"{self.player.volume_level if self.player and self.player.volume_level else 100}",
                 "--enable-volume-normalisation",
                 # forward events to the events script
                 "--onevent",
