@@ -53,4 +53,4 @@ websocket-client==1.8.0
 xmltodict==0.14.2
 yt-dlp==2025.2.19
 ytmusicapi==1.10.1
-zeroconf==0.145.1
+zeroconf==0.146.1
