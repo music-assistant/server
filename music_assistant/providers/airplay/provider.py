@@ -548,7 +548,6 @@ class AirplayProvider(PlayerProvider):
                 raw_request += recv
                 if len(recv) < 1024:
                     break
-            
             if not raw_request:
                 # Some device (Phorus PS10) seems to send empty request
                 # Maybe as a ack message? we have nothing to do here with empty request
