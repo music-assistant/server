@@ -13,7 +13,7 @@ dependencies = [
   "aiodns>=3.2.0",
   "Brotli>=1.0.9",
   "aiohttp==3.11.12",
-  "aiohttp-fast-zlib==0.2.2",
+  "aiohttp-fast-zlib==0.2.3",
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
   "aiosqlite==0.21.0",
