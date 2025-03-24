@@ -113,6 +113,7 @@ def parse_podcast_episode(
         provider=lookup_key,
         name=episode.title,
         duration=int(episode.duration),
+        publish_date=None,
         position=position,
         podcast=ItemMapping(
             item_id=prov_podcast_id,

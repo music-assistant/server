@@ -1188,6 +1188,7 @@ class LocalFileSystemProvider(MusicProvider):
             provider=self.instance_id,
             name=tags.title,
             sort_name=tags.title_sort,
+            publish_date=None,
             provider_mappings={
                 ProviderMapping(
                     item_id=file_item.relative_path,
