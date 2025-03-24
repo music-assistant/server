@@ -553,7 +553,7 @@ class AirplayProvider(PlayerProvider):
                 # Maybe as a ack message? we have nothing to do here with empty request
                 # so we return early.
                 return
-                
+
             request = raw_request.decode("UTF-8")
             if "\r\n\r\n" in request:
                 headers_raw, body = request.split("\r\n\r\n", 1)
