@@ -31,9 +31,9 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.itunes_podcasts.parsers import parse_podcast, parse_podcast_episode
 from music_assistant.providers.itunes_podcasts.schema import ITunesSearchResults
 
 if TYPE_CHECKING:
@@ -201,7 +201,7 @@ class ITunesPodcastsProvider(MusicProvider):
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast."""
-        parsed = await self._get_cached_podcast(prov_podcast_id)
+        parsed = await self._cache_get_podcast(prov_podcast_id)
 
         return parse_podcast(
             feed_url=prov_podcast_id,
@@ -215,7 +215,7 @@ class ITunesPodcastsProvider(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get podcast episodes."""
-        podcast = await self._get_cached_podcast(prov_podcast_id)
+        podcast = await self._cache_get_podcast(prov_podcast_id)
         podcast_cover = podcast.get("cover_url")
         episodes = podcast.get("episodes", [])
         for cnt, episode in enumerate(episodes):
@@ -232,7 +232,7 @@ class ITunesPodcastsProvider(MusicProvider):
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
         prov_podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
-        podcast = await self._get_cached_podcast(prov_podcast_id)
+        podcast = await self._cache_get_podcast(prov_podcast_id)
         podcast_cover = podcast.get("cover_url")
         episodes = podcast.get("episodes", [])
         for cnt, episode in enumerate(episodes):
@@ -254,7 +254,7 @@ class ITunesPodcastsProvider(MusicProvider):
         raise MediaNotFoundError("Episode not found")
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
-        podcast = await self._get_cached_podcast(podcast_id)
+        podcast = await self._cache_get_podcast(podcast_id)
         episodes = podcast.get("episodes", [])
         for cnt, episode in enumerate(episodes):
             episode_enclosures = episode.get("enclosures", [])
@@ -284,7 +284,7 @@ class ITunesPodcastsProvider(MusicProvider):
             allow_seek=True,
         )
 
-    async def _get_cached_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
+    async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
             key=prov_podcast_id,
             base_key=self.lookup_key,

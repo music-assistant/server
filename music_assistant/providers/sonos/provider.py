@@ -24,7 +24,9 @@ from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_ENTRY_OUTPUT_CODEC,
     MASS_LOGO_ONLINE,
@@ -146,8 +148,10 @@ class SonosPlayerProvider(PlayerProvider):
         base_entries = (
             *await super().get_player_config_entries(player_id),
             CONF_ENTRY_CROSSFADE,
+            CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_OUTPUT_CODEC,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
             create_sample_rates_config_entry(
                 max_sample_rate=48000, max_bit_depth=24, safe_max_bit_depth=24, hidden=True
             ),
@@ -331,6 +335,7 @@ class SonosPlayerProvider(PlayerProvider):
                 item_id=media.queue_item_id,
                 queue_version=sonos_player.queue_version,
             )
+            self.mass.call_later(5, sonos_player.sync_play_modes, media.queue_id)
             return
 
         # play a single uri/url
@@ -497,20 +502,18 @@ class SonosPlayerProvider(PlayerProvider):
             "reports": {
                 "sendUpdateAfterMillis": 1000,
                 "periodicIntervalMillis": 30000,
-                "sendPlaybackActions": True,
+                "sendPlaybackActions": False,
             },
             "playbackPolicies": {
                 "canSkip": True,
                 "limitedSkips": False,
                 "canSkipToItem": True,
                 "canSkipBack": True,
-                "canSeek": False,  # somehow not working correctly, investigate later
+                "canSeek": True,
                 "canRepeat": True,
                 "canRepeatOne": True,
                 "canCrossfade": True,
-                "canShuffle": False,  # handled by our queue controller itself
-                "showNNextTracks": 5,
-                "showNPreviousTracks": 5,
+                "canShuffle": True,
             },
         }
         return web.json_response(result)
@@ -542,14 +545,23 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _parse_sonos_queue_item(self, queue_item: QueueItem) -> dict[str, Any]:
         """Parse a Sonos queue item to a PlayerMedia object."""
+        stream_url = await self.mass.streams.resolve_stream_url(queue_item)
         return {
             "id": queue_item.queue_item_id,
             "deleted": not queue_item.available,
-            "policies": {},
+            "policies": {
+                "canCrossfade": True,
+                "canSkip": True,
+                "canSkipBack": True,
+                "canSkipToItem": True,
+                "canSeek": True,
+                "canRepeat": True,
+                "canRepeatOne": True,
+            },
             "track": {
                 "type": "track",
                 "mediaUrl": await self.mass.streams.resolve_stream_url(queue_item),
-                "contentType": "audio/flac",
+                "contentType": f"audio/{stream_url.split('.')[-1]}",
                 "service": {
                     "name": "Music Assistant",
                     "id": "8",

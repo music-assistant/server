@@ -36,7 +36,6 @@ CACHE_CATEGORY_API = 0
 CACHE_CATEGORY_AUDIOBOOK = 1
 CACHE_CATEGORY_CHAPTERS = 2
 
-# Cache for authenticator objects to avoid repeated file reads
 _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 
 
@@ -112,10 +111,9 @@ class AudibleHelper:
                 "Audible: Got %s items (total reported by API: %s)", len(items), total_items
             )
 
-            if not items or len(items) < page_size:
+            if not items:
                 self.logger.debug(
-                    "Audible: No more items or fewer than page size returned, "
-                    "ending pagination (processed %s items)",
+                    "Audible: No more items returned, ending pagination (processed %s items)",
                     total_processed,
                 )
                 break
@@ -163,6 +161,14 @@ class AudibleHelper:
                 total_processed,
                 total_items,
             )
+
+            if len(items) < page_size:
+                self.logger.debug(
+                    "Audible: Fewer than page size returned, "
+                    "ending pagination (processed %s items)",
+                    total_processed,
+                )
+                break
 
         if iteration >= max_iterations:
             self.logger.warning(

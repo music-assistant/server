@@ -3,8 +3,9 @@
   "domain": "podcastfeed",
   "name": "Podcast RSS Feed",
   "description": "A parser for podcast rss feeds",
-  "codeowners": ["@saeugetier"],
-  "requirements": ["podcastparser==0.6.10"],
+  "codeowners": [
+    "@saeugetier"
+  ],
   "documentation": "https://music-assistant.io/music-providers/podcastfeed/",
   "multi_instance": true
 }

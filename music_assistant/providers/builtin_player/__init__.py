@@ -23,11 +23,8 @@ from typing import TYPE_CHECKING, cast
 
 import shortuuid
 from aiohttp import web
-from music_assistant_models.builtin_player import (
-    BuiltinPlayerEvent,
-    BuiltinPlayerState,
-)
-from music_assistant_models.constants import PLAYER_CONTROL_NONE
+from music_assistant_models.builtin_player import BuiltinPlayerEvent, BuiltinPlayerState
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     BuiltinPlayerEventType,
     ContentType,
@@ -39,16 +36,13 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.player import (
-    DeviceInfo,
-    Player,
-    PlayerMedia,
-)
+from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
+    CONF_ENTRY_HTTP_PROFILE,
     DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
 )
@@ -59,16 +53,13 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import (
-        ConfigEntry,
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
 
 # If the player does not send an update within this time, it will be considered offline
 DURATION_UNTIL_TIMEOUT = 70
+POLL_INTERVAL = 10
 
 
 async def setup(
@@ -147,6 +138,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
+            CONF_ENTRY_HTTP_PROFILE,
         )
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -207,6 +199,24 @@ class BuiltinPlayerProvider(PlayerProvider):
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.PLAY_MEDIA, media_url=url),
         )
 
+    async def cmd_power(self, player_id: str, powered: bool) -> None:
+        """Send POWER command to given player.
+
+        - player_id: player_id of the player to handle the command.
+        - powered: bool if player should be powered on or off.
+        """
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            player_id,
+            BuiltinPlayerEvent(
+                type=BuiltinPlayerEventType.POWER_ON
+                if powered
+                else BuiltinPlayerEventType.POWER_OFF
+            ),
+        )
+        if (not powered) and (player := self.mass.players.get(player_id)):
+            player.powered = False
+
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
 
@@ -225,6 +235,11 @@ class BuiltinPlayerProvider(PlayerProvider):
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player."""
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            player_id,
+            BuiltinPlayerEvent(type=BuiltinPlayerEventType.TIMEOUT),
+        )
         await self.unregister_player(player_id)
 
     async def register_player(self, player_name: str, player_id: str | None) -> Player:
@@ -249,6 +264,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
+            PlayerFeature.POWER,
         }
 
         self.instances[player_id] = PlayerInstance(
@@ -266,11 +282,14 @@ class BuiltinPlayerProvider(PlayerProvider):
             type=PlayerType.PLAYER,
             name=player_name,
             available=True,
-            power_control=PLAYER_CONTROL_NONE,
+            power_control=PLAYER_CONTROL_NATIVE,
+            powered=False,
             device_info=DeviceInfo(),
             supported_features=player_features,
             needs_poll=True,
-            poll_interval=10,
+            poll_interval=POLL_INTERVAL,
+            hidden_by_default=True,
+            expose_to_ha_by_default=False,
         )
 
         await self.mass.players.register_or_update(player)
@@ -286,6 +305,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         if player := self.mass.players.get(player_id):
             player.available = False
             player.state = PlayerState.IDLE
+            player.powered = False
 
     async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> None:
         """Update current state of a player.
@@ -299,15 +319,26 @@ class BuiltinPlayerProvider(PlayerProvider):
             raise RuntimeError("No instance found")
         instance.last_update = time()
 
+        if not player.powered and state.powered:
+            # The player was powered off, so this state message is already out of date
+            # Skip, it.
+            return
+
         player.elapsed_time_last_updated = time()
         player.elapsed_time = float(state.position)
         player.volume_muted = state.muted
         player.volume_level = state.volume
-        if state.playing:
+        if not state.powered:
+            player.powered = False
+            player.state = PlayerState.IDLE
+        elif state.playing:
+            player.powered = True
             player.state = PlayerState.PLAYING
         elif state.paused:
+            player.powered = True
             player.state = PlayerState.PAUSED
         else:
+            player.powered = True
             player.state = PlayerState.IDLE
 
         self.mass.players.update(player_id)

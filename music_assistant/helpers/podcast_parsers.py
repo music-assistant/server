@@ -16,19 +16,29 @@ from music_assistant_models.media_items import (
 
 
 def parse_podcast(
-    *, feed_url: str, parsed_feed: dict[str, Any], lookup_key: str, domain: str, instance_id: str
+    *,
+    feed_url: str,
+    parsed_feed: dict[str, Any],
+    lookup_key: str,
+    domain: str,
+    instance_id: str,
+    mass_item_id: str | None = None,
 ) -> Podcast:
-    """Podcast -> Mass Podcast."""
+    """Podcast -> Mass Podcast.
+
+    The item_id is the feed url by default, or the optional mass_item_id instead.
+    """
     publisher = parsed_feed.get("author") or parsed_feed.get("itunes_author", "NO_AUTHOR")
+    item_id = feed_url if mass_item_id is None else mass_item_id
     mass_podcast = Podcast(
-        item_id=feed_url,
+        item_id=item_id,
         name=parsed_feed.get("title", "NO_TITLE"),
         publisher=publisher,
         provider=lookup_key,
         uri=parsed_feed.get("link"),
         provider_mappings={
             ProviderMapping(
-                item_id=feed_url,
+                item_id=item_id,
                 provider_domain=domain,
                 provider_instance=instance_id,
             )
@@ -65,6 +75,18 @@ def parse_podcast(
     return mass_podcast
 
 
+def get_stream_url_and_guid_from_episode(
+    *, episode: dict[str, Any]
+) -> tuple[str | None, str | None]:
+    """Give episode's stream url and guid, if it exists."""
+    episode_enclosures = episode.get("enclosures", [])
+    if len(episode_enclosures) < 1:
+        raise RuntimeError
+    stream_url = episode_enclosures[0].get("url", None)
+    guid = episode.get("guid")
+    return stream_url, guid
+
+
 def parse_podcast_episode(
     *,
     episode: dict[str, Any],
@@ -74,20 +96,25 @@ def parse_podcast_episode(
     lookup_key: str,
     domain: str,
     instance_id: str,
+    mass_item_id: str | None = None,
 ) -> PodcastEpisode:
-    """Podcast Episode -> Mass Podcast Episode."""
+    """Podcast Episode -> Mass Podcast Episode.
+
+    The item_id is {prov_podcast_id} {guid_or_stream_url} by default, or the optional mass_item_id
+    instead. The podcast_cover is used, if the episode should not have its own cover.
+    """
     episode_duration = episode.get("total_time", 0.0)
     episode_title = episode.get("title", "NO_EPISODE_TITLE")
     episode_cover = episode.get("episode_art_url", podcast_cover)
     episode_published = episode.get("published")
-    episode_enclosures = episode.get("enclosures", [])
-    if len(episode_enclosures) < 1:
-        raise RuntimeError
-    stream_url = episode_enclosures[0].get("url", None)
-    # not all feeds have a guid, but a guid is preferred as identification
-    guid_or_stream_url = episode.get("guid", stream_url)
 
-    episode_id = f"{prov_podcast_id} {guid_or_stream_url}"
+    stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
+    guid_or_stream_url = guid if guid is not None else stream_url
+    if stream_url is None:
+        raise RuntimeError("Episode has no stream information!")
+
+    # Default episode id. A guid is preferred as identification.
+    episode_id = f"{prov_podcast_id} {guid_or_stream_url}" if mass_item_id is None else mass_item_id
     mass_episode = PodcastEpisode(
         item_id=episode_id,
         provider=lookup_key,

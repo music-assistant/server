@@ -853,6 +853,7 @@ class YoutubeMusicProvider(MusicProvider):
                         "skip": ["translated_subs", "dash"],
                         "player_client": ["web_music"],
                         "player_skip": ["webpage"],
+                        "formats": ["missing_pot"],
                     }
                 },
             }
@@ -862,7 +863,8 @@ class YoutubeMusicProvider(MusicProvider):
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(err) from err
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
-                stream_format = next(format_selector({"formats": info["formats"]}))
+                if not (stream_format := next(format_selector({"formats": info["formats"]})), None):
+                    raise UnplayableMediaError("No stream formats found")
                 return stream_format
 
         return await asyncio.to_thread(_extract_best_stream_url_format)

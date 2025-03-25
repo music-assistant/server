@@ -34,14 +34,13 @@ from music_assistant_models.errors import (
 from music_assistant_models.streamdetails import AudioFormat
 
 from music_assistant.constants import (
-    CONF_ALLOW_MEMORY_CACHE,
+    CONF_ALLOW_AUDIO_CACHE,
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
-    DEFAULT_ALLOW_MEMORY_CACHE,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
@@ -53,7 +52,7 @@ from .dsp import filter_to_ffmpeg_params
 from .ffmpeg import FFMpeg, get_ffmpeg_stream
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, communicate
-from .util import detect_charset
+from .util import detect_charset, has_enough_space
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig, PlayerConfig
@@ -70,6 +69,8 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
 HTTP_HEADERS = {"User-Agent": "Lavf/60.16.100.MusicAssistant"}
 HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 
+SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
+
 
 async def remove_file(file_path: str) -> None:
     """Remove file path (if it exists)."""
@@ -83,142 +84,179 @@ class StreamCache:
     """
     StreamCache.
 
-    Basic class to handle (temporary) in-memory caching of audio streams.
+    Basic class to handle caching of audio streams to a (semi) temporary file.
     Useful in case of slow or unreliable network connections, faster seeking,
     or when the audio stream is slow itself.
     """
 
     async def create(self) -> None:
         """Create the cache file (if needed)."""
-        self.mass.cancel_timer(f"clear_cache_{self.cache_id}")
+        if self._cache_file is not None and await asyncio.to_thread(
+            os.path.exists, self._cache_file
+        ):
+            # cache file already exists
+            self.mass.cancel_timer(f"remove_cache_file_{self._cache_file}")
+            if self._first_part_received.is_set():
+                # cache file is ready, no action needed
+                return
+        else:
+            # create new cache file
+            cache_id = shortuuid.random(30)
+            self._cache_file = os.path.join(self.mass.streams.audio_cache_dir, cache_id)
+        # start fetch task if its not already running
         if self._fetch_task is None:
-            self._fetch_task = self.mass.create_task(self._fill_cache())
+            self._fetch_task = self.mass.create_task(self._create_cache_file())
         # wait until the first part of the file is received
         await self._first_part_received.wait()
 
-    async def get_audio_stream(self) -> AsyncGenerator[bytes, None]:
-        """Stream audio from cachedata (while it might even still being written)."""
-        try:
-            self._subscribers += 1
-            bytes_read = 0
-            chunksize = 64000
-            await self.create()
-            while True:
-                async with self._lock:
-                    chunk = self._data[bytes_read : bytes_read + chunksize]
-                    bytes_read += len(chunk)
-                if len(chunk) < chunksize and self._all_data_written.is_set():
-                    # reached EOF
-                    break
-                elif not chunk:
-                    # data is not yet available, wait a bit
-                    await asyncio.sleep(0.05)
-                else:
-                    yield chunk
-                del chunk
-                await asyncio.sleep(0)  # yield to eventloop
-        finally:
-            self._subscribers -= 1
-            if self._subscribers == 0:
-                # set a timer to remove the tempfile after 1 minute
-                # if the file is accessed again within this period,
-                # the timer will be cancelled
-                self.mass.call_later(60, self._clear, task_id=f"clear_cache_{self.cache_id}")
+    def release(self) -> None:
+        """Release the cache file."""
+        self._subscribers -= 1
+        if self._subscribers <= 0:
+            # schedule removal of the cache file
+            self.mass.call_later(
+                1800, remove_file, self._cache_file, task_id=f"remove_cache_file_{self._cache_file}"
+            )
 
-    async def _fill_cache(self) -> None:
+    async def get_audio_stream(self) -> str | AsyncGenerator[bytes, None]:
+        """
+        Get the cached audio stream.
+
+        Returns a string with the path of the cachefile if the file is ready.
+        If the file is not yet ready, it will return an async generator that will
+        stream the (intermediate) audio data from the cache file.
+        """
+        self._subscribers += 1
+
+        async def _stream_from_cache() -> AsyncGenerator[bytes, None]:
+            chunksize = get_chunksize(self.streamdetails.audio_format, 1)
+            async with aiofiles.open(self._cache_file, "rb") as file:
+                while True:
+                    chunk = await file.read(chunksize)
+                    if chunk:
+                        yield chunk
+                        await asyncio.sleep(0)  # yield to eventloop
+                        del chunk
+                    elif self._all_data_written.is_set():
+                        # reached EOF
+                        break
+                    else:
+                        # data is not yet available, wait a bit
+                        await asyncio.sleep(0.05)
+
+        if await asyncio.to_thread(os.path.exists, self._cache_file):
+            if self._fetch_task is None:
+                # a complete cache file already exists on disk from a previous run
+                return self._cache_file
+            if self._all_data_written.is_set():
+                # cache file is ready
+                return self._cache_file
+
+        # cache file does not exist at all (or is still being written)
+        await self.create()
+        return _stream_from_cache()
+
+    async def _create_cache_file(self) -> None:
         time_start = time.time()
-        self.logger.debug("Fetching audio stream for %s", self.streamdetails.uri)
+        self.logger.debug("Creating audio cache for %s", self.streamdetails.uri)
+        extra_input_args = self.org_extra_input_args or []
         if self.org_stream_type == StreamType.CUSTOM:
             audio_source = self.mass.get_provider(self.streamdetails.provider).get_audio_stream(
                 self.streamdetails,
             )
-        elif self.org_stream_type in (StreamType.HTTP, StreamType.ENCRYPTED_HTTP, StreamType.HLS):
+        elif self.org_stream_type == StreamType.ICY:
+            raise NotImplementedError("Caching of this streamtype is not supported!")
+        elif self.org_stream_type == StreamType.HLS:
+            if self.streamdetails.media_type == MediaType.RADIO:
+                raise NotImplementedError("Caching of this streamtype is not supported!")
+            substream = await get_hls_substream(self.mass, self.org_path)
+            audio_source = substream.path
+        elif self.org_stream_type == StreamType.ENCRYPTED_HTTP:
             audio_source = self.org_path
+            extra_input_args += ["-decryption_key", self.streamdetails.decryption_key]
+        elif self.org_stream_type == StreamType.MULTI_FILE:
+            audio_source = get_multi_file_stream(self.mass, self.streamdetails)
         else:
-            raise NotImplementedError("Caching of this streamtype is not supported")
+            audio_source = self.org_path
 
-        extra_input_args = self.org_extra_input_args or []
-        if self.streamdetails.decryption_key:
-            extra_input_args += [
-                "-decryption_key",
-                self.streamdetails.decryption_key,
-            ]
-
-        # we always use an intermediate ffmpeg process to fetch the original audio source
+        # we always use ffmpeg to fetch the original audio source
         # this may feel a bit redundant, but it's the most reliable way to fetch the audio
         # because ffmpeg has all logic to handle different audio formats, codecs, etc.
         # and it also accounts for complicated cases such as encrypted streams or
         # m4a/mp4 streams with the moov atom at the end of the file.
-        # ffmpeg will produce a lossless copy of the original codec to stdout.
+        # ffmpeg will produce a lossless copy of the original codec.
         self._first_part_received.clear()
         self._all_data_written.clear()
-        self._data = b""
-        async for chunk in get_ffmpeg_stream(
-            audio_input=audio_source,
-            input_format=self.streamdetails.audio_format,
-            output_format=self.streamdetails.audio_format,
-            chunk_size=64000,
-            # apply readrate limiting to avoid buffering too much data too fast
-            # so we only allow reading into the cache max 5 times the normal speed
-            extra_input_args=["-readrate", "5", *extra_input_args],
-        ):
-            async with self._lock:
-                self._data += chunk
-                del chunk
-                await asyncio.sleep(0)  # yield to eventloop
-            if not self._first_part_received.is_set():
-                self._first_part_received.set()
-                self.logger.debug(
-                    "First part received for %s after %.2fs",
-                    self.streamdetails.uri,
-                    time.time() - time_start,
-                )
-        self._all_data_written.set()
-        self.logger.debug(
-            "Writing all data for %s done in %.2fs",
-            self.streamdetails.uri,
-            time.time() - time_start,
-        )
+        try:
+            ffmpeg_proc = FFMpeg(
+                audio_input=audio_source,
+                input_format=self.org_audio_format,
+                output_format=self.streamdetails.audio_format,
+                extra_input_args=extra_input_args,
+                audio_output=self._cache_file,
+                collect_log_history=True,
+            )
+            await ffmpeg_proc.start()
+            # wait until the first data is written to the cache file
+            while ffmpeg_proc.returncode is None:
+                await asyncio.sleep(0.1)
+                if not await asyncio.to_thread(os.path.exists, self._cache_file):
+                    continue
+                if await asyncio.to_thread(os.path.getsize, self._cache_file) > 64000:
+                    break
+
+            self._first_part_received.set()
+            self.logger.debug(
+                "First part received for %s after %.2fs",
+                self.streamdetails.uri,
+                time.time() - time_start,
+            )
+            # wait until ffmpeg is done
+            await ffmpeg_proc.wait()
+
+            if ffmpeg_proc.returncode != 0:
+                ffmpeg_proc.logger.warning("\n".join(ffmpeg_proc.log_history))
+                raise AudioError(f"FFMpeg error {ffmpeg_proc.returncode}")
+
+            self._all_data_written.set()
+            self.logger.debug(
+                "Writing all data for %s done in %.2fs",
+                self.streamdetails.uri,
+                time.time() - time_start,
+            )
+        except Exception as err:
+            self.logger.error("Error while creating cache for %s: %s", self.streamdetails.uri, err)
+            # remove the cache file
+            await remove_file(self._cache_file)
+        finally:
+            await ffmpeg_proc.close()
 
     def __init__(self, mass: MusicAssistant, streamdetails: StreamDetails) -> None:
         """Initialize the StreamCache."""
         self.mass = mass
         self.streamdetails = streamdetails
-        self.cache_id = shortuuid.random(20)
         self.logger = LOGGER.getChild("cache")
+        self._cache_file: str | None = None
         self._fetch_task: asyncio.Task | None = None
         self._subscribers: int = 0
         self._first_part_received = asyncio.Event()
         self._all_data_written = asyncio.Event()
-        self._data: bytes = b""
-        self._lock: asyncio.Lock = asyncio.Lock()
         self.org_path: str | None = streamdetails.path
         self.org_stream_type: StreamType | None = streamdetails.stream_type
         self.org_extra_input_args: list[str] | None = streamdetails.extra_input_args
+        self.org_audio_format = streamdetails.audio_format
+        streamdetails.audio_format = AudioFormat(
+            content_type=ContentType.NUT,
+            codec_type=streamdetails.audio_format.codec_type,
+            sample_rate=streamdetails.audio_format.sample_rate,
+            bit_depth=streamdetails.audio_format.bit_depth,
+            channels=streamdetails.audio_format.channels,
+        )
         streamdetails.path = "-"
         streamdetails.stream_type = StreamType.CACHE
         streamdetails.can_seek = True
         streamdetails.allow_seek = True
         streamdetails.extra_input_args = []
-
-    async def _clear(self) -> None:
-        """Clear the cache."""
-        self.logger.debug("Cleaning up cache %s", self.streamdetails.uri)
-        if self._fetch_task and not self._fetch_task.done():
-            self._fetch_task.cancel()
-        self._fetch_task = None
-        self._first_part_received.clear()
-        self._all_data_written.clear()
-        del self._data
-        self._data = b""
-
-    def __del__(self) -> None:
-        """Ensure the cache data gets cleaned up."""
-        if self.mass.closing:
-            # edge case: MA is closing
-            return
-        self.mass.cancel_timer(f"remove_file_{self.cache_id}")
-        del self._data
 
 
 async def crossfade_pcm_parts(
@@ -506,10 +544,8 @@ async def get_stream_details(
         streamdetails.provider,
         media_type=queue_item.media_type,
     ):
-        streamdetails.loudness = float(result[0]) if isinstance(result[0], int | float) else None
-        streamdetails.loudness_album = (
-            float(result[1]) if isinstance(result[1], int | float) else None
-        )
+        streamdetails.loudness = result[0]
+        streamdetails.loudness_album = result[1]
     streamdetails.prefer_album_loudness = prefer_album_loudness
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
@@ -529,24 +565,9 @@ async def get_stream_details(
         int((time.time() - time_start) * 1000),
     )
 
-    if streamdetails.decryption_key:
-        # using intermediate cache is mandatory for encrypted streams
-        streamdetails.enable_cache = True
-
     # determine if we may use caching for the audio stream
     if streamdetails.enable_cache is None:
-        allow_cache = mass.config.get_raw_core_config_value(
-            "streams", CONF_ALLOW_MEMORY_CACHE, DEFAULT_ALLOW_MEMORY_CACHE
-        )
-        streamdetails.enable_cache = (
-            allow_cache
-            and streamdetails.duration is not None
-            and streamdetails.media_type
-            in (MediaType.TRACK, MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
-            and streamdetails.stream_type
-            in (StreamType.HTTP, StreamType.ENCRYPTED_HTTP, StreamType.CUSTOM, StreamType.HLS)
-            and get_chunksize(streamdetails.audio_format, streamdetails.duration) < 100000000
-        )
+        streamdetails.enable_cache = await _is_cache_allowed(mass, streamdetails)
 
     # handle temporary cache support of audio stream
     if streamdetails.enable_cache:
@@ -563,6 +584,56 @@ async def get_stream_details(
         )
 
     return streamdetails
+
+
+async def _is_cache_allowed(mass: MusicAssistant, streamdetails: StreamDetails) -> bool:
+    """Check if caching is allowed for the given streamdetails."""
+    if streamdetails.media_type not in (
+        MediaType.TRACK,
+        MediaType.AUDIOBOOK,
+        MediaType.PODCAST_EPISODE,
+    ):
+        return False
+    if streamdetails.stream_type in (StreamType.ICY, StreamType.LOCAL_FILE, StreamType.UNKNOWN):
+        return False
+    if streamdetails.stream_type == StreamType.LOCAL_FILE:
+        # no need to cache local files
+        return False
+    allow_cache = mass.config.get_raw_core_config_value(
+        "streams", CONF_ALLOW_AUDIO_CACHE, mass.streams.allow_cache_default
+    )
+    if allow_cache == "disabled":
+        return False
+    if not await has_enough_space(mass.streams.audio_cache_dir, 0.5):
+        return False
+    if allow_cache == "always":
+        return True
+    # auto mode
+    if streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
+        # always prefer cache for encrypted streams
+        return True
+    if not streamdetails.duration:
+        # we can't determine filesize without duration so play it safe and dont allow cache
+        return False
+    estimated_filesize = get_chunksize(streamdetails.audio_format, streamdetails.duration)
+    if streamdetails.stream_type == StreamType.MULTI_FILE:
+        # prefer cache to speedup multi-file streams
+        # (if total filesize smaller than 1.5GB)
+        max_filesize = 1.5 * 1024 * 1024 * 1024
+    elif streamdetails.stream_type == StreamType.CUSTOM:
+        # prefer cache for custom streams (to speedup seeking)
+        max_filesize = 250 * 1024 * 1024  # 250MB
+        return get_chunksize(streamdetails.audio_format, streamdetails.duration) < max_filesize
+    elif streamdetails.stream_type == StreamType.HLS:
+        # prefer cache for HLS streams (to speedup seeking)
+        max_filesize = 250 * 1024 * 1024  # 250MB
+    elif streamdetails.provider in SLOW_PROVIDERS:
+        # prefer cache for slow providers
+        max_filesize = 250 * 1024 * 1024  # 250MB
+    else:
+        max_filesize = 25 * 1024 * 1024
+
+    return estimated_filesize < max_filesize
 
 
 async def get_media_stream(
@@ -585,7 +656,9 @@ async def get_media_stream(
     stream_type = streamdetails.stream_type
     if stream_type == StreamType.CACHE:
         cache = cast(StreamCache, streamdetails.cache)
-        audio_source = cache.get_audio_stream()
+        audio_source = await cache.get_audio_stream()
+    elif stream_type == StreamType.MULTI_FILE:
+        audio_source = get_multi_file_stream(mass, streamdetails)
     elif stream_type == StreamType.CUSTOM:
         audio_source = mass.get_provider(streamdetails.provider).get_audio_stream(
             streamdetails,
@@ -601,6 +674,9 @@ async def get_media_stream(
             # with ffmpeg, where they just stop after some minutes,
             # so we tell ffmpeg to loop around in this case.
             extra_input_args += ["-stream_loop", "-1", "-re"]
+    elif stream_type == StreamType.ENCRYPTED_HTTP:
+        audio_source = streamdetails.path
+        extra_input_args += ["-decryption_key", streamdetails.decryption_key]
     else:
         audio_source = streamdetails.path
 
@@ -717,6 +793,8 @@ async def get_media_stream(
         if bytes_sent == 0:
             # edge case: no audio data was sent
             raise AudioError("No audio was received")
+        elif ffmpeg_proc.returncode not in (0, None):
+            raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}")
         finished = True
     except (Exception, GeneratorExit) as err:
         if isinstance(err, asyncio.CancelledError | GeneratorExit):
@@ -724,31 +802,30 @@ async def get_media_stream(
             cancelled = True
             raise
         logger.error("Error while streaming %s: %s", streamdetails.uri, err)
+        # dump the last 10 lines of the log in case of an unclean exit
+        logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
         streamdetails.stream_error = True
     finally:
         # always ensure close is called which also handles all cleanup
         await ffmpeg_proc.close()
-
         # try to determine how many seconds we've streamed
         seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-        if not cancelled and ffmpeg_proc.returncode not in (0, 255):
-            # dump the last 5 lines of the log in case of an unclean exit
-            log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
-        else:
-            log_tail = ""
         logger.debug(
-            "stream %s (with code %s) for %s - seconds streamed: %s %s",
+            "stream %s (with code %s) for %s - seconds streamed: %s",
             "cancelled" if cancelled else "finished" if finished else "aborted",
             ffmpeg_proc.returncode,
             streamdetails.uri,
             seconds_streamed,
-            log_tail,
         )
-
         streamdetails.seconds_streamed = seconds_streamed
         # store accurate duration
         if finished and not streamdetails.seek_position and seconds_streamed:
             streamdetails.duration = seconds_streamed
+
+        # release cache if needed
+        if cache := streamdetails.cache:
+            cache = cast(StreamCache, streamdetails.cache)
+            cache.release()
 
         # parse loudnorm data if we have that collected (and enabled)
         if (
@@ -1105,6 +1182,35 @@ async def get_file_stream(
             yield data
 
 
+async def get_multi_file_stream(
+    mass: MusicAssistant,  # noqa: ARG001
+    streamdetails: StreamDetails,
+) -> AsyncGenerator[bytes, None]:
+    """Return audio stream for a concatenation of multiple files."""
+    files_list: list[str] = streamdetails.data
+    # concat input files
+    temp_file = f"/tmp/{shortuuid.random(20)}.txt"  # noqa: S108
+    async with aiofiles.open(temp_file, "w") as f:
+        for path in files_list:
+            await f.write(f"file '{path}'\n")
+
+    try:
+        async for chunk in get_ffmpeg_stream(
+            audio_input=temp_file,
+            input_format=streamdetails.audio_format,
+            output_format=AudioFormat(
+                content_type=ContentType.NUT,
+                sample_rate=streamdetails.audio_format.sample_rate,
+                bit_depth=streamdetails.audio_format.bit_depth,
+                channels=streamdetails.audio_format.channels,
+            ),
+            extra_input_args=["-safe", "0", "-f", "concat", "-i", temp_file],
+        ):
+            yield chunk
+    finally:
+        await remove_file(temp_file)
+
+
 async def get_preview_stream(
     mass: MusicAssistant,
     provider_instance_id_or_domain: str,
@@ -1178,7 +1284,7 @@ def get_chunksize(
         return pcm_size
     if fmt.content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
         return pcm_size
-    if fmt.bit_rate:
+    if fmt.bit_rate and fmt.bit_rate < 10000:
         return int(((fmt.bit_rate * 1000) / 8) * seconds)
     if fmt.content_type in (ContentType.FLAC, ContentType.WAVPACK, ContentType.ALAC):
         # assume 74.7% compression ratio (level 0)
@@ -1335,7 +1441,8 @@ async def analyze_loudness(
         media_type=streamdetails.media_type,
     ):
         # only when needed we do the analyze job
-        streamdetails.loudness = result
+        streamdetails.loudness = result[0]
+        streamdetails.loudness_album = result[1]
         return
 
     logger = LOGGER.getChild("analyze_loudness")
@@ -1348,7 +1455,9 @@ async def analyze_loudness(
     ]
     if streamdetails.stream_type == StreamType.CACHE:
         cache = cast(StreamCache, streamdetails.cache)
-        audio_source = cache.get_audio_stream()
+        audio_source = await cache.get_audio_stream()
+    elif streamdetails.stream_type == StreamType.MULTI_FILE:
+        audio_source = get_multi_file_stream(mass, streamdetails)
     elif streamdetails.stream_type == StreamType.CUSTOM:
         audio_source = mass.get_provider(streamdetails.provider).get_audio_stream(
             streamdetails,
@@ -1400,6 +1509,11 @@ async def analyze_loudness(
                 streamdetails.uri,
                 loudness,
             )
+        finally:
+            # release cache if needed
+            if cache := streamdetails.cache:
+                cache = cast(StreamCache, streamdetails.cache)
+                cache.release()
 
 
 def _get_normalization_mode(

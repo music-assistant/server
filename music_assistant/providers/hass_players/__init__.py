@@ -20,8 +20,6 @@ from music_assistant_models.errors import InvalidDataError, LoginFailed, SetupFa
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
     CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
@@ -62,8 +60,6 @@ CONF_PLAYERS = "players"
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_ENABLE_ICY_METADATA,
@@ -518,8 +514,8 @@ class HomeAssistantPlayers(PlayerProvider):
             player.powered = state["state"] not in OFF_STATES
         player.extra_data["hass_supported_features"] = hass_supported_features
 
-        self._update_player_attributes(player, state["attributes"])
         await self.mass.players.register_or_update(player)
+        self._update_player_attributes(player, state["attributes"])
 
     def _on_entity_state_update(self, event: EntityStateEvent) -> None:
         """Handle Entity State event."""

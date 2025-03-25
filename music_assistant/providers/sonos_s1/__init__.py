@@ -33,8 +33,9 @@ from soco.discovery import discover, scan_network
 from music_assistant.constants import (
     CONF_CROSSFADE,
     CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_1,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_ENTRY_OUTPUT_CODEC,
     VERBOSE_LOG_LEVEL,
@@ -179,21 +180,14 @@ class SonosPlayerProvider(PlayerProvider):
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
         base_entries = await super().get_player_config_entries(player_id)
-        if not (self.sonosplayers.get(player_id)):
-            # most probably a syncgroup
-            return (
-                *base_entries,
-                CONF_ENTRY_CROSSFADE,
-                CONF_ENTRY_OUTPUT_CODEC,
-                CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-            )
         return (
             *base_entries,
             CONF_ENTRY_CROSSFADE,
+            CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
             CONF_ENTRY_SAMPLE_RATES,
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-            CONF_ENTRY_HTTP_PROFILE_FORCED_1,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
         )
 
     def is_device_invisible(self, ip_address: str) -> bool:

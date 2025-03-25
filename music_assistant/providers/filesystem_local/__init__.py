@@ -59,7 +59,6 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
 )
 from music_assistant.helpers.compare import compare_strings, create_safe_string
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.helpers.tags import AudioTags, async_parse_tags, parse_tags, split_items
@@ -847,35 +846,6 @@ class LocalFileSystemProvider(MusicProvider):
             return await self._get_stream_details_for_podcast_episode(item_id)
         return await self._get_stream_details_for_track(item_id)
 
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """
-        Return the (custom) audio stream for the provider item.
-
-        Will only be called when the stream_type is set to CUSTOM,
-        currently only for multi-part audiobooks.
-        """
-        stream_data: tuple[AudioFormat, list[tuple[str, float]]] = streamdetails.data
-        format_org, file_based_chapters = stream_data
-        total_duration = 0.0
-        for chapter_file, chapter_duration in file_based_chapters:
-            total_duration += chapter_duration
-            if total_duration < seek_position:
-                continue
-            seek_position_netto = round(
-                max(0, seek_position - (total_duration - chapter_duration)), 2
-            )
-            async for chunk in get_ffmpeg_stream(
-                self.get_absolute_path(chapter_file),
-                input_format=format_org,
-                # output format is always pcm because we are sending
-                # the result of multiple files as one big stream
-                output_format=streamdetails.audio_format,
-                extra_input_args=["-ss", str(seek_position_netto)] if seek_position_netto else [],
-            ):
-                yield chunk
-
     async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
@@ -1646,29 +1616,32 @@ class LocalFileSystemProvider(MusicProvider):
 
         prov_mapping = next(x for x in library_item.provider_mappings if x.item_id == item_id)
         file_item = await self.resolve(item_id)
-
-        file_based_chapters: list[tuple[str, float]] | None
-        if file_based_chapters := await self.cache.get(
+        duration = library_item.duration
+        chapters_cache_key = f"{self.lookup_key}.audiobook.chapters"
+        file_based_chapters: list[tuple[str, float]] | None = await self.cache.get(
             file_item.relative_path,
-            base_key=f"{self.lookup_key}.audiobook.chapters",
-        ):
-            # this is a multi-file audiobook, we have the chapter(files) stored in cache
-            # use custom stream to simply send the chapter files one by one
+            base_key=chapters_cache_key,
+        )
+        if file_based_chapters is None:
+            # no cache available for this audiobook, we need to parse the chapters
+            tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+            await self._parse_audiobook(file_item, tags)
+            file_based_chapters = await self.cache.get(
+                file_item.relative_path,
+                base_key=chapters_cache_key,
+            )
+
+        if file_based_chapters:
+            # this is a multi-file audiobook
             return StreamDetails(
                 provider=self.instance_id,
                 item_id=item_id,
-                # for the concatanated stream, we need to use a pcm stream format
-                audio_format=AudioFormat(
-                    content_type=ContentType.from_bit_depth(prov_mapping.audio_format.bit_depth),
-                    sample_rate=prov_mapping.audio_format.sample_rate,
-                    channels=prov_mapping.audio_format.channels,
-                ),
+                audio_format=prov_mapping.audio_format,
                 media_type=MediaType.AUDIOBOOK,
-                stream_type=StreamType.CUSTOM,
-                duration=library_item.duration,
-                data=(prov_mapping.audio_format, file_based_chapters),
+                stream_type=StreamType.MULTI_FILE,
+                duration=duration,
+                data=[self.get_absolute_path(x[0]) for x in file_based_chapters],
                 allow_seek=True,
-                can_seek=True,
             )
 
         # regular single-file streaming, simply let ffmpeg deal with the file directly
@@ -1691,8 +1664,10 @@ class LocalFileSystemProvider(MusicProvider):
     ) -> tuple[int, list[MediaItemChapter]]:
         """Return the chapters for an audiobook."""
         chapters: list[MediaItemChapter] = []
+        all_chapter_files: list[tuple[str, float]] = []
+        total_duration = 0.0
         if tags.chapters:
-            # The chapters are embedded in the file
+            # The chapters are embedded in the file tags
             chapters = [
                 MediaItemChapter(
                     position=chapter.chapter_id,
@@ -1702,40 +1677,45 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 for chapter in tags.chapters
             ]
-            return (try_parse_int(tags.duration) or 0, chapters)
-        # there could be multiple files for this audiobook in the same folder,
-        # where each file is a portion/chapter of the audiobook
-        # try to gather the chapters by traversing files in the same folder
-        chapter_file_tags: list[AudioTags] = []
-        total_duration = 0.0
-        abs_path = self.get_absolute_path(audiobook_file_item.parent_path)
-        for item in await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=True):
-            if "." not in item.relative_path or item.is_dir:
-                continue
-            if item.ext not in AUDIOBOOK_EXTENSIONS:
-                continue
-            item_tags = await async_parse_tags(item.absolute_path, item.file_size)
-            if not (tags.album == item_tags.album or (item_tags.tags.get("title") is None)):
-                continue
-            if item_tags.track is None:
-                continue
-            chapter_file_tags.append(item_tags)
-        chapter_file_tags.sort(key=lambda x: x.track or 0)
-        all_chapter_files: list[tuple[str, float]] = []
-        for chapter_tags in chapter_file_tags:
-            assert chapter_tags.duration is not None
-            chapters.append(
-                MediaItemChapter(
-                    position=chapter_tags.track or 0,
-                    name=chapter_tags.title,
-                    start=total_duration,
-                    end=total_duration + chapter_tags.duration,
+            total_duration = try_parse_int(tags.duration) or 0
+        else:
+            # there could be multiple files for this audiobook in the same folder,
+            # where each file is a portion/chapter of the audiobook
+            # try to gather the chapters by traversing files in the same folder
+            chapter_file_tags: list[AudioTags] = []
+            abs_path = self.get_absolute_path(audiobook_file_item.parent_path)
+            for item in await asyncio.to_thread(
+                sorted_scandir, self.base_path, abs_path, sort=True
+            ):
+                if "." not in item.relative_path or item.is_dir:
+                    continue
+                if item.ext not in AUDIOBOOK_EXTENSIONS:
+                    continue
+                item_tags = await async_parse_tags(item.absolute_path, item.file_size)
+                if not (tags.album == item_tags.album or (item_tags.tags.get("title") is None)):
+                    continue
+                if item_tags.track is None:
+                    continue
+                chapter_file_tags.append(item_tags)
+            chapter_file_tags.sort(key=lambda x: x.track or 0)
+            for chapter_tags in chapter_file_tags:
+                assert chapter_tags.duration is not None
+                chapters.append(
+                    MediaItemChapter(
+                        position=chapter_tags.track or 0,
+                        name=chapter_tags.title,
+                        start=total_duration,
+                        end=total_duration + chapter_tags.duration,
+                    )
                 )
-            )
-            all_chapter_files.append(
-                (get_relative_path(self.base_path, chapter_tags.filename), chapter_tags.duration)
-            )
-            total_duration += chapter_tags.duration
+                all_chapter_files.append(
+                    (
+                        get_relative_path(self.base_path, chapter_tags.filename),
+                        chapter_tags.duration,
+                    )
+                )
+                total_duration += chapter_tags.duration
+
         # store chapter files in cache
         # for easy access from streamdetails
         await self.cache.set(

@@ -89,7 +89,11 @@ class TidalAuthManager:
             return False
 
         # Parse stored auth data
-        self._auth_info = json.loads(auth_data)
+        try:
+            self._auth_info = json.loads(auth_data)
+        except json.JSONDecodeError as err:
+            self.logger.error("Invalid authentication data: %s", err)
+            return False
 
         # Ensure we have a valid token
         return await self.ensure_valid_token()

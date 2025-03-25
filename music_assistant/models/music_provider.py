@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     Radio,
+    RecommendationFolder,
     SearchResults,
     Track,
 )
@@ -535,8 +536,8 @@ class MusicProvider(Provider):
                     item_id="artists",
                     provider=self.instance_id,
                     path=path + "artists",
-                    name="",
-                    label="artists",
+                    name="Artists",
+                    translation_key="artists",
                     is_playable=True,
                 )
             )
@@ -546,8 +547,8 @@ class MusicProvider(Provider):
                     item_id="albums",
                     provider=self.instance_id,
                     path=path + "albums",
-                    name="",
-                    label="albums",
+                    name="Albums",
+                    translation_key="albums",
                     is_playable=True,
                 )
             )
@@ -557,8 +558,8 @@ class MusicProvider(Provider):
                     item_id="tracks",
                     provider=self.domain,
                     path=path + "tracks",
-                    name="",
-                    label="tracks",
+                    name="Tracks",
+                    translation_key="tracks",
                     is_playable=True,
                 )
             )
@@ -568,8 +569,8 @@ class MusicProvider(Provider):
                     item_id="playlists",
                     provider=self.instance_id,
                     path=path + "playlists",
-                    name="",
-                    label="playlists",
+                    name="Playlists",
+                    translation_key="playlists",
                     is_playable=True,
                 )
             )
@@ -579,8 +580,8 @@ class MusicProvider(Provider):
                     item_id="radios",
                     provider=self.instance_id,
                     path=path + "radios",
-                    name="",
-                    label="radios",
+                    name="Radio",
+                    translation_key="radios",
                 )
             )
         if ProviderFeature.LIBRARY_AUDIOBOOKS in self.supported_features:
@@ -589,8 +590,8 @@ class MusicProvider(Provider):
                     item_id="audiobooks",
                     provider=self.instance_id,
                     path=path + "audiobooks",
-                    name="",
-                    label="audiobooks",
+                    name="Audiobooks",
+                    translation_key="audiobooks",
                 )
             )
         if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
@@ -599,8 +600,8 @@ class MusicProvider(Provider):
                     item_id="podcasts",
                     provider=self.instance_id,
                     path=path + "podcasts",
-                    name="",
-                    label="podcasts",
+                    name="Podcasts",
+                    translation_key="podcasts",
                 )
             )
         if len(items) == 1:
@@ -608,12 +609,12 @@ class MusicProvider(Provider):
             return await self.browse(items[0].path)
         return items
 
-    async def recommendations(self) -> list[MediaItemType]:
-        """Get this provider's recommendations.
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's recommendations.
 
-        Returns a actual and personalised list of Media items with recommendations
-        form this provider for the user/account. It may return nested levels with
-        BrowseFolder items.
+        Returns an actual (and often personalised) list of recommendations
+        from this provider for the user/account.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError

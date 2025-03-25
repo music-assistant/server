@@ -163,7 +163,7 @@ class AsyncProcess:
 
     async def read_stderr(self) -> bytes:
         """Read line from stderr."""
-        if self._close_called:
+        if self.returncode is not None:
             return b""
         try:
             return await self.proc.stderr.readline()
