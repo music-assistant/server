@@ -4,7 +4,7 @@
   "name": "YouTube Music",
   "description": "Support for the YouTube Music streaming provider in Music Assistant.",
   "codeowners": ["@MarvinSchenkel"],
-  "requirements": ["ytmusicapi==1.10.1", "yt-dlp==2025.2.19", "duration-parser==1.0.1"],
+  "requirements": ["ytmusicapi==1.10.2", "yt-dlp==2025.2.19", "duration-parser==1.0.1"],
   "documentation": "https://music-assistant.io/music-providers/youtube-music/",
   "multi_instance": true
 }
