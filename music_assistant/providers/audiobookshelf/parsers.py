@@ -1,5 +1,8 @@
 """Parser for ABS -> MASS."""
 
+from contextlib import suppress
+from datetime import datetime
+
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
 )
@@ -71,7 +74,13 @@ def parse_podcast(
         mass_podcast.metadata.languages = UniqueList([abs_podcast.media.metadata.language])
     if abs_podcast.media.metadata.genres is not None:
         mass_podcast.metadata.genres = set(abs_podcast.media.metadata.genres)
-    mass_podcast.metadata.release_date = abs_podcast.media.metadata.release_date
+
+    # podcast object has no published_at int, but an iso string
+    if abs_podcast.media.metadata.release_date is not None:
+        with suppress(ValueError):
+            mass_podcast.metadata.release_date = datetime.fromisoformat(
+                abs_podcast.media.metadata.release_date
+            )
 
     if isinstance(abs_podcast, AbsLibraryItemExpandedPodcast | AbsLibraryItemPodcast):
         mass_podcast.total_episodes = len(abs_podcast.media.episodes)
@@ -102,8 +111,11 @@ def parse_podcast_episode(
     url = f"{base_url}{episode.audio_track.content_url}"
     episode_id = f"{prov_podcast_id} {episode.id_}"
 
+    release_date: datetime | None = None
     if episode.published_at is not None:
         position = -episode.published_at
+        # abs published_at is ms epoch
+        release_date = datetime.fromtimestamp(episode.published_at / 1000)
     else:
         position = 0
         if fallback_episode_cnt is not None:
@@ -113,7 +125,6 @@ def parse_podcast_episode(
         provider=lookup_key,
         name=episode.title,
         duration=int(episode.duration),
-        publish_date=None,
         position=position,
         podcast=ItemMapping(
             item_id=prov_podcast_id,
@@ -133,6 +144,8 @@ def parse_podcast_episode(
             )
         },
     )
+
+    mass_episode.metadata.release_date = release_date
 
     # cover image
     if token is not None:
@@ -184,7 +197,19 @@ def parse_audiobook(
     mass_audiobook.metadata.description = abs_audiobook.media.metadata.description
     if abs_audiobook.media.metadata.language is not None:
         mass_audiobook.metadata.languages = UniqueList([abs_audiobook.media.metadata.language])
-    mass_audiobook.metadata.release_date = abs_audiobook.media.metadata.published_date
+
+    if abs_audiobook.media.metadata.published_date is not None:
+        with suppress(ValueError):
+            mass_audiobook.metadata.release_date = datetime.fromisoformat(
+                abs_audiobook.media.metadata.published_date
+            )
+    elif abs_audiobook.media.metadata.published_year is not None:
+        with suppress(ValueError):
+            # ruff: noqa: DTZ001 # ignore tzinfo, this is a fallback attempt
+            mass_audiobook.metadata.release_date = datetime(
+                year=int(abs_audiobook.media.metadata.published_year), month=1, day=1
+            )
+
     if abs_audiobook.media.metadata.genres is not None:
         mass_audiobook.metadata.genres = set(abs_audiobook.media.metadata.genres)
 
