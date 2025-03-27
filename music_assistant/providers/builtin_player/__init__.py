@@ -307,13 +307,17 @@ class BuiltinPlayerProvider(PlayerProvider):
             player.state = PlayerState.IDLE
             player.powered = False
 
-    async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> None:
+    async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> bool:
         """Update current state of a player.
 
         A player must periodically update the state of through this `builtin_player/update_state`
         API command.
+
+        Returns False in case the player already timed out or simply doesn't exist.
+        In that case, register the player first with `builtin_player/register`.
         """
-        player = cast(Player, self.mass.players.get(player_id, raise_unavailable=True))
+        if not (player := self.mass.players.get(player_id)):
+            return False
 
         if not (instance := self.instances[player_id]):
             raise RuntimeError("No instance found")
@@ -322,7 +326,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         if not player.powered and state.powered:
             # The player was powered off, so this state message is already out of date
             # Skip, it.
-            return
+            return True
 
         player.elapsed_time_last_updated = time()
         player.elapsed_time = float(state.position)
@@ -342,6 +346,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             player.state = PlayerState.IDLE
 
         self.mass.players.update(player_id)
+        return True
 
     async def _serve_audio_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve the flow stream audio to a player."""
