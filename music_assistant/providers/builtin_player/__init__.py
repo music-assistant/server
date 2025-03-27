@@ -58,8 +58,8 @@ if TYPE_CHECKING:
 
 
 # If the player does not send an update within this time, it will be considered offline
-DURATION_UNTIL_TIMEOUT = 70
-POLL_INTERVAL = 10
+DURATION_UNTIL_TIMEOUT = 180  # 3 minutes in case the tab is throttled by chrome
+POLL_INTERVAL = 30
 
 
 async def setup(
