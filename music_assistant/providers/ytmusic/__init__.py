@@ -613,6 +613,12 @@ class YoutubeMusicProvider(MusicProvider):
             "x-origin": YTM_DOMAIN,
             "Cookie": self._cookie,
         }
+        if "__Secure-3PAPISID" not in self._cookie:
+            raise LoginFailed(
+                "Invalid Cookie detected. Cookie is missing the __Secure-3PAPISID field. "
+                "Please ensure you are passing the correct cookie. You can verify this by checking if the string"
+                "'__Secure-3PAPISID' is present in the cookie string."
+            )
         sapisid = sapisid_from_cookie(self._cookie)
         headers["Authorization"] = get_authorization(sapisid + " " + YTM_DOMAIN)
         self._headers = headers
