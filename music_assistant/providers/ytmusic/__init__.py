@@ -47,7 +47,7 @@ from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
-from music_assistant.constants import CONF_USERNAME
+from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -870,8 +870,8 @@ class YoutubeMusicProvider(MusicProvider):
         def _extract_best_stream_url_format() -> dict[str, Any]:
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
             ydl_opts = {
-                # "quiet": self.logger.level > logging.DEBUG,
-                "verbose": True,
+                "quiet": self.logger.level > logging.DEBUG,
+                "verbose": self.logger.level == VERBOSE_LOG_LEVEL,
                 "cookiefile": StringIO(self._netscape_cookie),
                 # This enforces a player client and skips unnecessary scraping to increase speed
                 "extractor_args": {
