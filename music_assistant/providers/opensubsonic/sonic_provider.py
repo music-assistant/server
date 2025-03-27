@@ -359,6 +359,9 @@ class OpenSonicProvider(MusicProvider):
             duration=sonic_episode.duration,
         )
 
+        if sonic_episode.publish_date:
+            episode.metadata.release_date = sonic_episode.publish_date
+
         if sonic_episode.description:
             episode.metadata.description = sonic_episode.description
 
