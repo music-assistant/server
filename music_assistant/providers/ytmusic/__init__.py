@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 import yt_dlp
+from aiohttp import ClientConnectorError
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -188,6 +189,10 @@ class YoutubeMusicProvider(MusicProvider):
         self._po_token_server_url = (
             self.config.get_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
         )
+        if not await self._verify_po_token_url():
+            raise LoginFailed(
+                "PO Token server URL is not reachable. Make sure you have installed the YT Music PO Token Generator addon from the MusicAssistant repository."
+            )
         yt_username = self.config.get_value(CONF_USERNAME)
         self._yt_user = yt_username if is_brand_account(yt_username) else None
         # yt-dlp needs a netscape formatted cookie
@@ -896,6 +901,16 @@ class YoutubeMusicProvider(MusicProvider):
         if not artist_id and artist_obj["name"] == "Various Artists":
             artist_id = VARIOUS_ARTISTS_YTM_ID
         return self._get_item_mapping(MediaType.ARTIST, artist_id, artist_obj.get("name"))
+
+    async def _verify_po_token_url(self) -> bool:
+        """Ping the PO Token server and verify the response."""
+        url = f"{self._po_token_server_url}/ping"
+        try:
+            async with self.mass.http_session.get(url) as response:
+                response.raise_for_status()
+                return response.status == 200
+        except ClientConnectorError:
+            return False
 
     async def _user_has_ytm_premium(self) -> bool:
         """Check if the user has Youtube Music Premium."""
