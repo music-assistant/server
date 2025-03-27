@@ -191,7 +191,7 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if not await self._verify_po_token_url():
             raise LoginFailed(
-                "PO Token server URL is not reachable. Make sure you have installed the YT Music PO Token Generator addon from the MusicAssistant repository."
+                "PO Token server URL is not reachable. Make sure you have installed the YT Music PO Token Generator addon from the MusicAssistant repository and that it is running."
             )
         yt_username = self.config.get_value(CONF_USERNAME)
         self._yt_user = yt_username if is_brand_account(yt_username) else None
@@ -870,7 +870,8 @@ class YoutubeMusicProvider(MusicProvider):
         def _extract_best_stream_url_format() -> dict[str, Any]:
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
             ydl_opts = {
-                "quiet": self.logger.level > logging.DEBUG,
+                # "quiet": self.logger.level > logging.DEBUG,
+                "verbose": True,
                 "cookiefile": StringIO(self._netscape_cookie),
                 # This enforces a player client and skips unnecessary scraping to increase speed
                 "extractor_args": {
@@ -914,6 +915,7 @@ class YoutubeMusicProvider(MusicProvider):
         try:
             async with self.mass.http_session.get(url) as response:
                 response.raise_for_status()
+                self.logger.debug("PO Token server responded with %s", response.status)
                 return response.status == 200
         except ClientConnectorError:
             return False
