@@ -80,6 +80,8 @@ if TYPE_CHECKING:
 
 
 CONF_COOKIE = "cookie"
+CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"
+DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"
@@ -157,6 +159,15 @@ async def get_config_entries(
             description="The Login cookie you grabbed from an existing session, "
             "see the documentation.",
         ),
+        ConfigEntry(
+            key=CONF_PO_TOKEN_SERVER_URL,
+            type=ConfigEntryType.STRING,
+            default_value=DEFAULT_PO_TOKEN_SERVER_URL,
+            label="PO Token Server URL",
+            required=True,
+            description="The URL to the PO Token server. Can be left as default for most people. \n\n"
+            "**Note that this does require you to have the 'YT Music PO Token Generator' addon installed!**",
+        ),
     )
 
 
@@ -174,6 +185,9 @@ class YoutubeMusicProvider(MusicProvider):
         """Set up the YTMusic provider."""
         logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
         self._cookie = self.config.get_value(CONF_COOKIE)
+        self._po_token_server_url = (
+            self.config.get_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
+        )
         yt_username = self.config.get_value(CONF_USERNAME)
         self._yt_user = yt_username if is_brand_account(yt_username) else None
         # yt-dlp needs a netscape formatted cookie
@@ -853,8 +867,8 @@ class YoutubeMusicProvider(MusicProvider):
                         "skip": ["translated_subs", "dash"],
                         "player_client": ["web_music"],
                         "player_skip": ["webpage"],
-                        "formats": ["missing_pot"],
-                    }
+                        "getpot_bgutil_baseurl": [self._po_token_server_url],
+                    },
                 },
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
