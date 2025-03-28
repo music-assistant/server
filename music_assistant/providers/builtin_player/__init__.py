@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 
 
 # If the player does not send an update within this time, it will be considered offline
-DURATION_UNTIL_TIMEOUT = 180  # 3 minutes in case the tab is throttled by chrome
+DURATION_UNTIL_TIMEOUT = 90  # 30 second extra headroom
 POLL_INTERVAL = 30
 
 
