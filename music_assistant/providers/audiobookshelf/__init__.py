@@ -55,6 +55,7 @@ from music_assistant.providers.audiobookshelf.parsers import (
 
 from .constants import (
     ABS_BROWSE_ITEMS_TO_PATH,
+    ABS_SHELF_ID_ICONS,
     CACHE_CATEGORY_LIBRARIES,
     CACHE_KEY_LIBRARIES,
     CONF_HIDE_EMPTY_PODCASTS,
@@ -575,6 +576,7 @@ class Audiobookshelf(MusicProvider):
                 # etc
                 name = f"{shelf.id_.capitalize().replace('-', ' ')} ({library_name})"
 
+                items: list[MediaItem] = []
                 # Recently added is the _only_ case, where we get a full podcast
                 # We have a podcast object with only the episodes matching the
                 # shelf.id_ otherwise.
@@ -587,7 +589,6 @@ class Audiobookshelf(MusicProvider):
                             | AbsShelfId.RECENT_SERIES
                             | AbsShelfId.CONTINUE_SERIES
                         ):
-                            items: list[MediaItem] = []
                             for entity in shelf.entities:
                                 item = await self.mass.music.get_library_item_by_prov_id(
                                     media_type=media_type,
@@ -602,6 +603,7 @@ class Audiobookshelf(MusicProvider):
                     RecommendationFolder(
                         item_id=f"{shelf.id_} {library_id}",
                         name=name,
+                        icon=ABS_SHELF_ID_ICONS.get(shelf.id_),
                         # translation_key=shelf.id_,
                         items=UniqueList(items),
                         provider=self.lookup_key,
