@@ -24,9 +24,11 @@ from typing import TYPE_CHECKING, cast
 import shortuuid
 from aiohttp import web
 from music_assistant_models.builtin_player import BuiltinPlayerEvent, BuiltinPlayerState
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     BuiltinPlayerEventType,
+    ConfigEntryType,
     ContentType,
     EventType,
     PlayerFeature,
@@ -43,6 +45,11 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE,
+    CONF_ENTRY_HTTP_PROFILE_HIDDEN,
+    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
+    CONF_MUTE_CONTROL,
+    CONF_POWER_CONTROL,
+    CONF_VOLUME_CONTROL,
     DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
 )
@@ -53,7 +60,7 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
 
@@ -133,12 +140,35 @@ class BuiltinPlayerProvider(PlayerProvider):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return (
             *await super().get_player_config_entries(player_id),
-            # For now only flow mode is supported
-            # TODO: also allow regular streams
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_HTTP_PROFILE,
+            # Hide power/volume/mute control options since they are guaranteed to work
+            ConfigEntry(
+                key=CONF_POWER_CONTROL,
+                type=ConfigEntryType.STRING,
+                label=CONF_POWER_CONTROL,
+                default_value=PLAYER_CONTROL_NATIVE,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_VOLUME_CONTROL,
+                type=ConfigEntryType.STRING,
+                label=CONF_VOLUME_CONTROL,
+                default_value=PLAYER_CONTROL_NATIVE,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_MUTE_CONTROL,
+                type=ConfigEntryType.STRING,
+                label=CONF_MUTE_CONTROL,
+                default_value=PLAYER_CONTROL_NATIVE,
+                hidden=True,
+            ),
+            # These options don't do anything here
+            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
+            CONF_ENTRY_HTTP_PROFILE_HIDDEN,
         )
 
     async def cmd_stop(self, player_id: str) -> None:
