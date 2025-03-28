@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -26,10 +25,10 @@ class ScrobblerHelper:
         """Override if subclass needs specific configuration."""
         return True
 
-    def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
+    async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
         """Send a Now Playing update to the scrobbling service."""
 
-    def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
+    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         """Scrobble."""
 
     async def _on_mass_media_item_played(self, event: MassEvent) -> None:
@@ -48,29 +47,31 @@ class ScrobblerHelper:
             # reset currently playing to avoid it expiring when looping single songs
             self.currently_playing = None
 
-        def update_now_playing() -> None:
+        async def update_now_playing() -> None:
             try:
-                self._update_now_playing(report)
+                await self._update_now_playing(report)
                 self.logger.debug(f"track {report.uri} marked as 'now playing'")
                 self.currently_playing = report.uri
             except Exception as err:
+                # TODO: try to make this a more specific exception instead of a generic one
                 self.logger.exception(err)
 
-        def scrobble() -> None:
+        async def scrobble() -> None:
             try:
-                self._scrobble(report)
+                await self._scrobble(report)
                 self.last_scrobbled = report.uri
             except Exception as err:
+                # TODO: try to make this a more specific exception instead of a generic one
                 self.logger.exception(err)
 
         # update now playing if needed
         if report.is_playing and (
             self.currently_playing is None or self.currently_playing != report.uri
         ):
-            await asyncio.to_thread(update_now_playing)
+            await update_now_playing()
 
         if self.should_scrobble(report):
-            await asyncio.to_thread(scrobble)
+            await scrobble()
 
     def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
         """Determine if a track should be scrobbled, to be extended later."""

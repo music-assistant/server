@@ -1,5 +1,6 @@
 """Podcastfeed -> Mass."""
 
+from datetime import datetime
 from typing import Any
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType
@@ -106,7 +107,11 @@ def parse_podcast_episode(
     episode_duration = episode.get("total_time", 0.0)
     episode_title = episode.get("title", "NO_EPISODE_TITLE")
     episode_cover = episode.get("episode_art_url", podcast_cover)
-    episode_published = episode.get("published")
+
+    # this is unix epoch in s, and 0 if unknown
+    episode_published: int | None = episode.get("published")
+    if episode_published == 0:
+        episode_published = None
 
     stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
     guid_or_stream_url = guid if guid is not None else stream_url
@@ -139,7 +144,8 @@ def parse_podcast_episode(
             )
         },
     )
-    mass_episode.metadata.release_date = episode_published
+    if episode_published is not None:
+        mass_episode.metadata.release_date = datetime.fromtimestamp(episode_published)
 
     # chapter
     if chapters := episode.get("chapters"):

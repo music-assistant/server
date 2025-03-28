@@ -552,6 +552,10 @@ CONF_ENTRY_HTTP_PROFILE_DEFAULT_1 = ConfigEntry.from_dict(
     {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "chunked"}
 )
 
+CONF_ENTRY_HTTP_PROFILE_DEFAULT_2 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length"}
+)
+
 CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
     {**CONF_ENTRY_HTTP_PROFILE_DEFAULT_1.to_dict(), "hidden": True}
 )

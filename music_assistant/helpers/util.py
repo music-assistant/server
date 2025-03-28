@@ -26,6 +26,7 @@ import cchardet as chardet
 import ifaddr
 from zeroconf import IPVersion
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
@@ -299,24 +300,6 @@ async def get_folder_size(folderpath: str) -> float:
     return await asyncio.to_thread(_get_folder_size, folderpath)
 
 
-async def clean_old_files(folderpath: str, max_size: float) -> None:
-    """Clean old files in folder to make room for new files."""
-    foldersize = await get_folder_size(folderpath)
-    if foldersize < max_size:
-        return
-
-    def _clean_old_files(foldersize: float):
-        files: list[os.DirEntry] = [x for x in os.scandir(folderpath) if x.is_file()]
-        files.sort(key=lambda x: x.stat().st_mtime)
-        for _file in files:
-            foldersize -= _file.stat().st_size / float(1 << 30)
-            os.remove(_file.path)
-            if foldersize < max_size:
-                return
-
-    await asyncio.to_thread(_clean_old_files, foldersize)
-
-
 def get_changed_keys(
     dict1: dict[str, Any],
     dict2: dict[str, Any],
@@ -505,6 +488,20 @@ async def get_free_space(folder: str) -> float:
     return await asyncio.to_thread(_get_free_space, folder)
 
 
+async def get_free_space_percentage(folder: str) -> float:
+    """Return free space on given folderpath in percentage."""
+
+    def _get_free_space(folder: str) -> float:
+        """Return free space on given folderpath in GB."""
+        try:
+            if res := shutil.disk_usage(folder):
+                return res.free / res.total * 100
+        except (FileNotFoundError, OSError, PermissionError):
+            return 0.0
+
+    return await asyncio.to_thread(_get_free_space, folder)
+
+
 async def has_enough_space(folder: str, size: int) -> bool:
     """Check if folder has enough free space."""
     return await get_free_space(folder) > size
@@ -514,6 +511,14 @@ def divide_chunks(data: bytes, chunk_size: int) -> Iterator[bytes]:
     """Chunk bytes data into smaller chunks."""
     for i in range(0, len(data), chunk_size):
         yield data[i : i + chunk_size]
+
+
+async def remove_file(file_path: str) -> None:
+    """Remove file path (if it exists)."""
+    if not await asyncio.to_thread(os.path.exists, file_path):
+        return
+    await asyncio.to_thread(os.remove, file_path)
+    LOGGER.log(VERBOSE_LOG_LEVEL, "Removed file: %s", file_path)
 
 
 def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:

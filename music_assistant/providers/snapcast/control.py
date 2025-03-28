@@ -39,10 +39,14 @@ def send(json_msg: dict[str, Any]):
 class MusicAssistantControl:
     """Music Assistant websocket remote control Snapcast plugin."""
 
-    def __init__(self, queue_id: str, api_port: int) -> None:
+    def __init__(
+        self, queue_id: str, streamserver_ip: str, streamserver_port: int, api_port: int
+    ) -> None:
         """Initialize."""
         self.queue_id = queue_id
         self.api_port = api_port
+        self.streamserver_ip = streamserver_ip
+        self.streamserver_port = streamserver_port
         self._metadata = {}
         self._properties = {}
         self._request_callbacks: dict[str, MessageCallback] = {}
@@ -202,7 +206,9 @@ class MusicAssistantControl:
             if image_path := current_queue_item.get("image", {}).get("path"):
                 image_path_encoded = urllib.parse.quote_plus(image_path)
                 image_url = (
-                    f"http://localhost:{self.api_port}/imageproxy?path={image_path_encoded}"
+                    # we prefer the streamserver for the imageproxy because it is enabled by default
+                    # where the api server is by default protected
+                    f"http://{self.streamserver_ip}:{self.streamserver_port}/imageproxy?path={image_path_encoded}"
                     f"&provider={current_queue_item['image']['provider']}"
                     "&size=512"
                 )
@@ -282,11 +288,17 @@ if __name__ == "__main__":
     # Parse command line
     queue_id = None
     api_port = None
+    streamserver_ip = None
+    streamserver_port = None
     for arg in sys.argv:
         if arg.startswith("--stream="):
             stream_id = arg.split("=")[1]
         if arg.startswith("--queueid="):
             queue_id = arg.split("=")[1]
+        if arg.startswith("--streamserver-ip="):
+            streamserver_ip = arg.split("=")[1]
+        if arg.startswith("--streamserver-port="):
+            streamserver_port = arg.split("=")[1]
         if arg.startswith("--api-port="):
             api_port = arg.split("=")[1]
 
@@ -309,7 +321,7 @@ if __name__ == "__main__":
         "Initializing for stream_id %s, queue_id %s and api_port %s", stream_id, queue_id, api_port
     )
 
-    ctrl = MusicAssistantControl(queue_id, int(api_port))
+    ctrl = MusicAssistantControl(queue_id, streamserver_ip, int(streamserver_port), int(api_port))
 
     # keep listening for messages on stdin and forward them
     try:

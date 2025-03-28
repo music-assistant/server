@@ -25,6 +25,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
+from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import PlayerMedia
 
@@ -165,7 +166,8 @@ class SpotifyConnectProvider(PluginProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._librespot_bin = await get_librespot_binary()
-        if self.mass.players.get(self.mass_player_id):
+        self.player = self.mass.players.get(self.mass_player_id)
+        if self.player:
             self._setup_player_daemon()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -213,7 +215,7 @@ class SpotifyConnectProvider(PluginProvider):
                 "--volume-ctrl",
                 "fixed",
                 "--initial-volume",
-                "100",
+                f"{self.player.volume_level if self.player and self.player.volume_level else 100}",
                 "--enable-volume-normalisation",
                 # forward events to the events script
                 "--onevent",
@@ -271,10 +273,12 @@ class SpotifyConnectProvider(PluginProvider):
         json_data = await request.json()
         self.logger.debug("Received metadata on webservice: \n%s", json_data)
 
+        event_name = json_data.get("event")
+
         # handle session connected event
         # this player has become the active spotify connect player
         # we need to start the playback
-        if json_data.get("event") in ("sink", "playing") and (not self._source_details.in_use_by):
+        if event_name in ("sink", "playing") and (not self._source_details.in_use_by):
             # initiate playback by selecting this source on the default player
             self.logger.debug("Initiating playback on %s", self.mass_player_id)
             self.mass.create_task(
@@ -302,5 +306,13 @@ class SpotifyConnectProvider(PluginProvider):
             self._source_details.metadata.artist = artist
             self._source_details.metadata.album = album
             self._source_details.metadata.image_url = image_url
+
+        if event_name == "volume_changed" and (volume := json_data.get("volume")):
+            # Spotify Connect volume is 0-65535
+            volume = int(int(volume) / 65535 * 100)
+            try:
+                await self.mass.players.cmd_volume_set(self.mass_player_id, volume)
+            except UnsupportedFeaturedException:
+                self.logger.debug(f"Player {self.mass_player_id} does not support volume control")
 
         return Response()

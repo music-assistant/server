@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 import yt_dlp
+from aiohttp import ClientConnectorError
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -46,7 +47,7 @@ from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
-from music_assistant.constants import CONF_USERNAME
+from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -80,6 +81,8 @@ if TYPE_CHECKING:
 
 
 CONF_COOKIE = "cookie"
+CONF_PO_TOKEN_SERVER_URL = "po_token_server_url"
+DEFAULT_PO_TOKEN_SERVER_URL = "http://127.0.0.1:4416"
 
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_COOKIE_DOMAIN = ".youtube.com"
@@ -157,6 +160,17 @@ async def get_config_entries(
             description="The Login cookie you grabbed from an existing session, "
             "see the documentation.",
         ),
+        ConfigEntry(
+            key=CONF_PO_TOKEN_SERVER_URL,
+            type=ConfigEntryType.STRING,
+            default_value=DEFAULT_PO_TOKEN_SERVER_URL,
+            label="PO Token Server URL",
+            required=True,
+            description="The URL to the PO Token server. "
+            "Can be left as default for most people. \n\n"
+            "**Note that this does require you to have the "
+            "'YT Music PO Token Generator' addon installed!**",
+        ),
     )
 
 
@@ -174,6 +188,15 @@ class YoutubeMusicProvider(MusicProvider):
         """Set up the YTMusic provider."""
         logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
         self._cookie = self.config.get_value(CONF_COOKIE)
+        self._po_token_server_url = (
+            self.config.get_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
+        )
+        if not await self._verify_po_token_url():
+            raise LoginFailed(
+                "PO Token server URL is not reachable. "
+                "Make sure you have installed the YT Music PO Token Generator "
+                "and that it is running."
+            )
         yt_username = self.config.get_value(CONF_USERNAME)
         self._yt_user = yt_username if is_brand_account(yt_username) else None
         # yt-dlp needs a netscape formatted cookie
@@ -594,6 +617,13 @@ class YoutubeMusicProvider(MusicProvider):
             "x-origin": YTM_DOMAIN,
             "Cookie": self._cookie,
         }
+        if "__Secure-3PAPISID" not in self._cookie:
+            raise LoginFailed(
+                "Invalid Cookie detected. Cookie is missing the __Secure-3PAPISID field. "
+                "Please ensure you are passing the correct cookie. "
+                "You can verify this by checking if the string "
+                "'__Secure-3PAPISID' is present in the cookie string."
+            )
         sapisid = sapisid_from_cookie(self._cookie)
         headers["Authorization"] = get_authorization(sapisid + " " + YTM_DOMAIN)
         self._headers = headers
@@ -846,6 +876,7 @@ class YoutubeMusicProvider(MusicProvider):
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
             ydl_opts = {
                 "quiet": self.logger.level > logging.DEBUG,
+                "verbose": self.logger.level == VERBOSE_LOG_LEVEL,
                 "cookiefile": StringIO(self._netscape_cookie),
                 # This enforces a player client and skips unnecessary scraping to increase speed
                 "extractor_args": {
@@ -853,7 +884,8 @@ class YoutubeMusicProvider(MusicProvider):
                         "skip": ["translated_subs", "dash"],
                         "player_client": ["web_music"],
                         "player_skip": ["webpage"],
-                    }
+                        "getpot_bgutil_baseurl": [self._po_token_server_url],
+                    },
                 },
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -881,6 +913,17 @@ class YoutubeMusicProvider(MusicProvider):
         if not artist_id and artist_obj["name"] == "Various Artists":
             artist_id = VARIOUS_ARTISTS_YTM_ID
         return self._get_item_mapping(MediaType.ARTIST, artist_id, artist_obj.get("name"))
+
+    async def _verify_po_token_url(self) -> bool:
+        """Ping the PO Token server and verify the response."""
+        url = f"{self._po_token_server_url}/ping"
+        try:
+            async with self.mass.http_session.get(url) as response:
+                response.raise_for_status()
+                self.logger.debug("PO Token server responded with %s", response.status)
+                return response.status == 200
+        except ClientConnectorError:
+            return False
 
     async def _user_has_ytm_premium(self) -> bool:
         """Check if the user has Youtube Music Premium."""

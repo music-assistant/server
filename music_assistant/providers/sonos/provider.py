@@ -26,7 +26,7 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_ENTRY_OUTPUT_CODEC,
     MASS_LOGO_ONLINE,
@@ -151,7 +151,7 @@ class SonosPlayerProvider(PlayerProvider):
             CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_OUTPUT_CODEC,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             create_sample_rates_config_entry(
                 max_sample_rate=48000, max_bit_depth=24, safe_max_bit_depth=24, hidden=True
             ),
@@ -219,6 +219,17 @@ class SonosPlayerProvider(PlayerProvider):
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         if sonos_player := self.sonos_players[player_id]:
+            active_source = sonos_player.mass_player.active_source
+            if self.mass.player_queues.get(active_source):
+                # Sonos seems to be bugged when playing our queue tracks and we send pause,
+                # it can't resume the current track and simply aborts/skips it
+                # so we stop the player instead.
+                # https://github.com/music-assistant/support/issues/3758
+                # TODO: revisit this later and find out how this can be so bugged
+                # probably some strange DLNA flag or whatever needs to be set.
+                await self.cmd_stop(player_id)
+                return
+
             await sonos_player.cmd_pause()
 
     async def cmd_seek(self, player_id: str, position: int) -> None:
@@ -509,7 +520,8 @@ class SonosPlayerProvider(PlayerProvider):
                 "limitedSkips": False,
                 "canSkipToItem": True,
                 "canSkipBack": True,
-                "canSeek": True,
+                # seek needs to be disabled because we dont properly support range requests
+                "canSeek": False,
                 "canRepeat": True,
                 "canRepeatOne": True,
                 "canCrossfade": True,
@@ -546,6 +558,13 @@ class SonosPlayerProvider(PlayerProvider):
     async def _parse_sonos_queue_item(self, queue_item: QueueItem) -> dict[str, Any]:
         """Parse a Sonos queue item to a PlayerMedia object."""
         stream_url = await self.mass.streams.resolve_stream_url(queue_item)
+        if streamdetails := queue_item.streamdetails:
+            duration = streamdetails.duration or queue_item.duration
+            if duration and streamdetails.seek_position:
+                duration -= streamdetails.seek_position
+        else:
+            duration = queue_item.duration
+
         return {
             "id": queue_item.queue_item_id,
             "deleted": not queue_item.available,
@@ -554,7 +573,8 @@ class SonosPlayerProvider(PlayerProvider):
                 "canSkip": True,
                 "canSkipBack": True,
                 "canSkipToItem": True,
-                "canSeek": True,
+                # seek needs to be disabled because we dont properly support range requests
+                "canSeek": False,
                 "canRepeat": True,
                 "canRepeatOne": True,
             },
@@ -574,7 +594,7 @@ class SonosPlayerProvider(PlayerProvider):
                 )
                 if queue_item.image
                 else None,
-                "durationMillis": queue_item.duration * 1000 if queue_item.duration else None,
+                "durationMillis": duration * 1000 if duration else None,
                 "artist": {
                     "name": artist_str,
                 }

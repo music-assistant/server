@@ -13,7 +13,7 @@ import os
 import shutil
 import urllib.parse
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -52,8 +52,8 @@ from music_assistant.constants import (
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
+    CACHE_FILES_IN_USE,
     crossfade_pcm_parts,
     get_chunksize,
     get_media_stream,
@@ -61,13 +61,15 @@ from music_assistant.helpers.audio import (
     get_silence,
     get_stream_details,
 )
+from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import (
+    get_folder_size,
     get_free_space,
+    get_free_space_percentage,
     get_ip,
     get_ips,
-    has_enough_space,
     select_free_port,
     try_parse_bool,
 )
@@ -83,8 +85,6 @@ if TYPE_CHECKING:
 
 
 isfile = wrap(os.path.isfile)
-
-AUDIO_CACHE_MAX_SIZE: Final[int] = 2  # 2gb
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -234,7 +234,7 @@ class StreamsController(CoreController):
                 "On systems with limited diskspace, this can be disabled, "
                 "but may result in less smooth playback or slower seeking.\n\n"
                 "**Always:** Enforce caching of audio streams at all times "
-                "(as long as there is enough free space)."
+                "(as long as there is enough free space).\n"
                 "**Disabled:** Never cache audio streams.\n"
                 "**Auto:** Let Music Assistant decide if caching "
                 "should be used on a per-item base.",
@@ -250,18 +250,19 @@ class StreamsController(CoreController):
         FFMPEG_LOGGER.setLevel(self.logger.level)
         # perform check for ffmpeg version
         await check_ffmpeg_version()
-        # note that on HAOS we run /tmp in tmpfs so we need to check if we're running
-        # on a system that has enough space to store the audio cache in the tmpfs
-        # if not, we choose another location
-        if await get_free_space("/tmp") < AUDIO_CACHE_MAX_SIZE * 1.5:  # noqa: S108
-            self._audio_cache_dir = os.path.join(os.path.expanduser("~"), ".audio")
+        # select a folder to store temporary audio cache files
+        # note that on HAOS we run /tmp in tmpfs so we need
+        # to pick another temporary location which is not /tmp
+        # we prefer the root/user dir because on the docker install
+        # it will be cleaned up on a reboot
+        self._audio_cache_dir = os.path.join(os.path.expanduser("~"), ".audio")
         if not await asyncio.to_thread(os.path.isdir, self._audio_cache_dir):
             await asyncio.to_thread(os.makedirs, self._audio_cache_dir)
-        self.allow_cache_default = (
-            "auto"
-            if await has_enough_space(self._audio_cache_dir, AUDIO_CACHE_MAX_SIZE * 1.5)
-            else "disabled"
-        )
+        # enable cache by default if we have enough free space only
+        disk_percentage_free = await get_free_space_percentage(self._audio_cache_dir)
+        self.allow_cache_default = "auto" if disk_percentage_free > 25 else "disabled"
+        # schedule cleanup of old audio cache files
+        await self._clean_audio_cache()
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
@@ -311,9 +312,13 @@ class StreamsController(CoreController):
         """Resolve the stream URL for the given QueueItem."""
         if not player_id:
             player_id = queue_item.queue_id
-        output_codec = ContentType.try_parse(
-            await self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
-        )
+        try:
+            conf_output_codec = await self.mass.config.get_player_config_value(
+                player_id, CONF_OUTPUT_CODEC
+            )
+        except KeyError:
+            conf_output_codec = "flac"
+        output_codec = ContentType.try_parse(conf_output_codec)
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
@@ -1097,3 +1102,31 @@ class StreamsController(CoreController):
             bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
             channels=2,
         )
+
+    async def _clean_audio_cache(self) -> None:
+        """Clean up audio cache periodically."""
+        free_space_in_cache_dir = await get_free_space(self._audio_cache_dir)
+        # calculate max cache size based on free space in cache dir
+        max_cache_size = min(15, free_space_in_cache_dir * 0.2)
+        cache_enabled = await self.mass.config.get_core_config_value(
+            self.domain, CONF_ALLOW_AUDIO_CACHE
+        )
+        if cache_enabled == "disabled":
+            max_cache_size = 0.001
+
+        def _clean_old_files(foldersize: float):
+            files: list[os.DirEntry] = [x for x in os.scandir(self._audio_cache_dir) if x.is_file()]
+            files.sort(key=lambda x: x.stat().st_atime)
+            for _file in files:
+                if _file.path in CACHE_FILES_IN_USE:
+                    continue
+                foldersize -= _file.stat().st_size / float(1 << 30)
+                os.remove(_file.path)
+                if foldersize < max_cache_size:
+                    return
+
+        foldersize = await get_folder_size(self._audio_cache_dir)
+        if foldersize > max_cache_size:
+            await asyncio.to_thread(_clean_old_files, foldersize)
+        # reschedule self
+        self.mass.call_later(3600, self._clean_audio_cache)

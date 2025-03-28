@@ -264,10 +264,14 @@ class SoundcloudMusicProvider(MusicProvider):
         for index, item in enumerate(playlist_obj["tracks"], 1):
             try:
                 # Skip some ugly "tracks" entries, example:
-                # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE',
-                # 'policy': 'ALLOW'}
+                # {'id': 123, 'kind': 'track', 'monetization_model': 'NOT_APPLICABLE'}
                 if "title" in item:
                     if track := await self._parse_track(item, index):
+                        result.append(track)
+                # But also try to get the track details if the track is not in the playlist
+                else:
+                    track_details = await self._soundcloud.get_track_details(item["id"])
+                    if track := await self._parse_track(track_details[0], index):
                         result.append(track)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse track failed: %s", item, exc_info=error)

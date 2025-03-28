@@ -4,17 +4,13 @@
 # released under the Creative Commons Attribution-ShareAlike(BY-SA) 4.0 license.
 # https://creativecommons.org/licenses/by-sa/4.0/
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import Any
 
 from liblistenbrainz import Listen, ListenBrainz
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-    ProviderConfig,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import SetupFailedError
@@ -48,9 +44,6 @@ async def setup(
 class ListenBrainzScrobbleProvider(PluginProvider):
     """Plugin provider to support scrobbling of tracks."""
 
-    _client: ListenBrainz = None
-    _on_unload: list[Callable[[], None]] = []
-
     def __init__(
         self,
         mass: MusicAssistant,
@@ -61,6 +54,7 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config)
         self._client = client
+        self._on_unload: list[Callable[[], None]] = []
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -68,7 +62,7 @@ class ListenBrainzScrobbleProvider(PluginProvider):
 
         handler = ListenBrainzEventHandler(self._client, self.logger)
 
-        # subscribe to internal event
+        # subscribe to media_item_played event
         self._on_unload.append(
             self.mass.subscribe(handler._on_mass_media_item_played, EventType.MEDIA_ITEM_PLAYED)
         )
@@ -86,21 +80,12 @@ class ListenBrainzScrobbleProvider(PluginProvider):
 class ListenBrainzEventHandler(ScrobblerHelper):
     """Handles the event handling."""
 
-    _client: ListenBrainz = None
-
     def __init__(self, client: ListenBrainz, logger: logging.Logger) -> None:
         """Initialize."""
         super().__init__(logger)
         self._client = client
 
-    def _is_configured(self) -> bool:
-        """Check that we are configured."""
-        if self._client is None:
-            self.logger.error("no client available during _on_mass_media_item_played")
-            return False
-        return True
-
-    def _make_listen(self, report: Any) -> Listen:
+    def _make_listen(self, report: MediaItemPlaybackProgressReport) -> Listen:
         # album artist and track number are not available without an extra API call
         # so they won't be scrobbled
 
@@ -108,28 +93,40 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         return Listen(
             track_name=report.name,
             artist_name=report.artist,
+            artist_mbids=report.artist_mbids,
             release_name=report.album,
+            release_mbid=report.album_mbid,
             recording_mbid=report.mbid,
             listening_from="music-assistant",
         )
 
-    def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
-        try:
-            listen = self._make_listen(report)
-            self._client.submit_playing_now(listen)
-            self.logger.debug(f"track {report.uri} marked as 'now playing'")
-            self._currently_playing = report.uri
-        except Exception as err:
-            self.logger.exception(err)
+    async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
+        def handler() -> None:
+            try:
+                listen = self._make_listen(report)
+                self._client.submit_playing_now(listen)
+                self.logger.debug(f"track {report.uri} marked as 'now playing'")
+                self._currently_playing = report.uri
+            except Exception as err:
+                self.logger.exception(err)
 
-    def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
-        try:
-            listen = self._make_listen(report)
-            listen.listened_at = int(time.time())
-            self._client.submit_single_listen(listen)
-            self._last_scrobbled = report.uri
-        except Exception as err:
-            self.logger.exception(err)
+        # the listenbrainz client is not async friendly,
+        # so we need to run it in a executor thread
+        await asyncio.to_thread(handler)
+
+    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
+        def handler() -> None:
+            try:
+                listen = self._make_listen(report)
+                listen.listened_at = int(time.time())
+                self._client.submit_single_listen(listen)
+                self._last_scrobbled = report.uri
+            except Exception as err:
+                self.logger.exception(err)
+
+        # the listenbrainz client is not async friendly,
+        # so we need to run it in a executor thread
+        await asyncio.to_thread(handler)
 
 
 async def get_config_entries(

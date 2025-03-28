@@ -192,6 +192,8 @@ class AsyncProcess:
     async def close(self, send_signal: bool = False) -> None:
         """Close/terminate the process and wait for exit."""
         self._close_called = True
+        if not self.proc:
+            return
         if send_signal and self.returncode is None:
             self.proc.send_signal(SIGINT)
         if self.proc.stdin and not self.proc.stdin.is_closing():

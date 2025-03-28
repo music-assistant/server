@@ -164,6 +164,7 @@ class HomeAssistantPlayers(PlayerProvider):
     """Home Assistant PlayerProvider for Music Assistant."""
 
     hass_prov: HomeAssistantProvider
+    on_unload_callbacks: list[callable] | None = None
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -180,11 +181,24 @@ class HomeAssistantPlayers(PlayerProvider):
                 continue
             await self._setup_player(state, entity_registry, device_registry)
         # register for entity state updates
-        await self.hass_prov.hass.subscribe_entities(self._on_entity_state_update, player_ids)
+        self.on_unload_callbacks = [
+            await self.hass_prov.hass.subscribe_entities(self._on_entity_state_update, player_ids)
+        ]
         # remove any leftover players (after reconfigure of players)
         for player in self.players:
             if player.player_id not in player_ids:
                 self.mass.players.remove(player.player_id)
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        is_removed will be set to True when the provider is removed from the configuration.
+        """
+        if self.on_unload_callbacks:
+            for callback in self.on_unload_callbacks:
+                callback()
 
     async def get_player_config_entries(
         self,
@@ -563,12 +577,25 @@ class HomeAssistantPlayers(PlayerProvider):
             if key == "media_content_id":
                 player.current_item_id = value
             if key == "group_members":
-                if value and value[0] == player.player_id:
-                    player.group_childs.set(value)
+                group_members: list[str] = (
+                    [
+                        # ignore integrations that incorrectly set the group members attribute
+                        # (e.g. linkplay)
+                        x
+                        for x in value
+                        if x.startswith("media_player.")
+                    ]
+                    if value
+                    else []
+                )
+                if group_members and group_members[0] == player.player_id:
+                    # first in the list is the group leader
+                    player.group_childs.set(group_members)
                     player.synced_to = None
-                elif value and value[0] != player.player_id:
+                elif group_members and group_members[0] != player.player_id:
+                    # this player is not the group leader
                     player.group_childs.clear()
-                    player.synced_to = value[0]
+                    player.synced_to = group_members[0]
                 else:
                     player.group_childs.clear()
                     player.synced_to = None

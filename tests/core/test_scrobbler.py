@@ -22,10 +22,10 @@ class DummyHandler(ScrobblerHelper):
     def _is_configured(self) -> bool:
         return True
 
-    def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
+    async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
         self._now_playing += 1
 
-    def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
+    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         self._tracked += 1
 
 
@@ -97,7 +97,9 @@ def create_report(
             media_type=MediaType.TRACK,
             name="track",
             artist=None,
+            artist_mbids=None,
             album=None,
+            album_mbid=None,
             image_url=None,
             duration=duration,
             mbid="",

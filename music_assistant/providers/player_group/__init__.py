@@ -932,8 +932,8 @@ class PlayerGroupProvider(PlayerProvider):
             output_format = await self.mass.streams.get_output_format(
                 output_format_str=output_format_str,
                 player=child_player,
-                default_sample_rate=UGP_FORMAT.sample_rate,
-                default_bit_depth=24,
+                content_sample_rate=UGP_FORMAT.sample_rate,
+                content_bit_depth=UGP_FORMAT.bit_depth,
             )
         elif output_format_str == "flac":
             output_format = AudioFormat(content_type=ContentType.FLAC)

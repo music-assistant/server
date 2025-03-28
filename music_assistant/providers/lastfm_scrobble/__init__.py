@@ -1,8 +1,10 @@
 """Allows scrobbling of tracks with the help of PyLast."""
 
+import asyncio
 import logging
 import time
 from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 import pylast
 from music_assistant_models.config_entries import (
@@ -38,34 +40,37 @@ async def setup(
     else:
         logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+    # run async setup of provider to catch any login issues early
+    await provider.async_setup()
     return provider
 
 
 class LastFMScrobbleProvider(PluginProvider):
     """Plugin provider to support scrobbling of tracks."""
 
-    _on_unload: list[Callable[[], None]] = []
+    network: pylast._Network
+    _on_unload: list[Callable[[], None]]
 
-    def _get_network_config(self) -> dict[str, ConfigValueType]:
-        return {
-            CONF_API_KEY: self.config.get_value(CONF_API_KEY),
-            CONF_API_SECRET: self.config.get_value(CONF_API_SECRET),
-            CONF_PROVIDER: self.config.get_value(CONF_PROVIDER),
-            CONF_USERNAME: self.config.get_value(CONF_USERNAME),
-            CONF_SESSION_KEY: self.config.get_value(CONF_SESSION_KEY),
-        }
+    async def async_setup(self) -> None:
+        """Handle async setup."""
+        self._on_unload: list[Callable[[], None]] = []
+
+        if not self.config.get_value(CONF_API_KEY) or not self.config.get_value(CONF_API_SECRET):
+            raise SetupFailedError("API Key and Secret need to be set")
+
+        if not self.config.get_value(CONF_SESSION_KEY):
+            self.logger.info("No session key available, don't forget to authenticate!")
+            return
+        # creating the network instance is (potentially) blocking IO
+        # so run it in an executor thread to be safe
+        self.network = await asyncio.to_thread(get_network, self._get_network_config())
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
 
-        if not self.config.get_value(CONF_SESSION_KEY):
-            self.logger.info("No session key available, don't forget to authenticate!")
-            return
-
-        handler = LastFMEventHandler(_get_network(self._get_network_config()), self.logger)
-
-        # subscribe to internal event
+        # subscribe to media_item_played event
+        handler = LastFMEventHandler(self.network, self.logger)
         self._on_unload.append(
             self.mass.subscribe(handler._on_mass_media_item_played, EventType.MEDIA_ITEM_PLAYED)
         )
@@ -79,6 +84,15 @@ class LastFMScrobbleProvider(PluginProvider):
         for unload_cb in self._on_unload:
             unload_cb()
 
+    def _get_network_config(self) -> dict[str, ConfigValueType]:
+        return {
+            CONF_API_KEY: self.config.get_value(CONF_API_KEY),
+            CONF_API_SECRET: self.config.get_value(CONF_API_SECRET),
+            CONF_PROVIDER: self.config.get_value(CONF_PROVIDER),
+            CONF_USERNAME: self.config.get_value(CONF_USERNAME),
+            CONF_SESSION_KEY: self.config.get_value(CONF_SESSION_KEY),
+        }
+
 
 class LastFMEventHandler(ScrobblerHelper):
     """Handles the event handling."""
@@ -90,15 +104,11 @@ class LastFMEventHandler(ScrobblerHelper):
         super().__init__(logger)
         self.network = network
 
-    def _is_configured(self) -> bool:
-        if self.network is None:
-            self.logger.error("no network available during _on_mass_media_item_played")
-            return False
-
-        return True
-
-    def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
-        self.network.update_now_playing(
+    async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
+        # the lastfm client is not async friendly,
+        # so we need to run it in a executor thread
+        await asyncio.to_thread(
+            self.network.update_now_playing,
             report.artist,
             report.name,
             report.album,
@@ -106,13 +116,16 @@ class LastFMEventHandler(ScrobblerHelper):
             mbid=report.mbid,
         )
 
-    def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
-        # album artist and track number are not available without an extra API call
+    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
+        # the listenbrainz client is not async friendly,
+        # so we need to run it in a executor thread
+        # NOTE: album artist and track number are not available without an extra API call
         # so they won't be scrobbled
-        self.network.scrobble(
-            report.artist,
+        await asyncio.to_thread(
+            self.network.scrobble,
+            report.artist or "unknown artist",
             report.name,
-            time.time(),
+            int(time.time()),
             report.album,
             duration=report.duration,
             mbid=report.mbid,
@@ -192,7 +205,7 @@ async def get_config_entries(
         session_id = str(values.get("session_id"))
 
         async with AuthenticationHelper(mass, session_id) as auth_helper:
-            network = _get_network(values)
+            network = get_network(values)
             skg = pylast.SessionKeyGenerator(network)
 
             # pylast says it does web auth, but actually does desktop auth
@@ -261,10 +274,12 @@ async def get_config_entries(
     return tuple(entries)
 
 
-def _get_network(config: dict[str, ConfigValueType]) -> pylast._Network:
+def get_network(config: dict[str, ConfigValueType]) -> pylast._Network:
+    """Create a network instance."""
     key = config.get(CONF_API_KEY)
     secret = config.get(CONF_API_SECRET)
     session_key = config.get(CONF_SESSION_KEY)
+    username = config.get(CONF_USERNAME)
 
     assert key
     assert key != SECURE_STRING_SUBSTITUTE
@@ -276,14 +291,16 @@ def _get_network(config: dict[str, ConfigValueType]) -> pylast._Network:
 
     provider: str = str(config.get(CONF_PROVIDER))
 
+    if TYPE_CHECKING:
+        key = cast(str, key)
+        secret = cast(str, secret)
+        session_key = cast(str, session_key)
+        username = cast(str, username)
+
     match provider.lower():
         case "lastfm":
-            return pylast.LastFMNetwork(
-                key, secret, username=config.get(CONF_USERNAME), session_key=session_key
-            )
+            return pylast.LastFMNetwork(key, secret, username=username, session_key=session_key)
         case "librefm":
-            return pylast.LibreFMNetwork(
-                key, secret, username=config.get(CONF_USERNAME), session_key=session_key
-            )
+            return pylast.LibreFMNetwork(key, secret, username=username, session_key=session_key)
         case _:
             raise SetupFailedError(f"unknown provider {provider} configured")

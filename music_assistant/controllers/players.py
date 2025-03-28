@@ -48,6 +48,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_PLAYER_ICON,
+    CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_PLAYER_IN_UI,
     CONF_MUTE_CONTROL,
     CONF_PLAYERS,
@@ -1348,6 +1349,8 @@ class PlayerController(CoreController):
         # if the PlayerQueue was playing, restart playback
         # TODO: add property to ConfigEntry if it requires a restart of playback on change
         elif not player_disabled and resume_queue and resume_queue.state == PlayerState.PLAYING:
+            # always stop first to ensure the player uses the new config
+            await self.mass.player_queues.stop(resume_queue.queue_id)
             self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id)
         # check for group memberships that need to be updated
         if player_disabled and player.active_group and player_provider:
@@ -1483,6 +1486,7 @@ class PlayerController(CoreController):
         player.hide_player_in_ui = {
             HidePlayerOption(x) for x in config.get_value(CONF_HIDE_PLAYER_IN_UI)
         }
+        player.expose_to_ha = bool(config.get_value(CONF_EXPOSE_PLAYER_TO_HA))
         player.icon = config.get_value(CONF_ENTRY_PLAYER_ICON.key)
         player.power_control = config.get_value(CONF_POWER_CONTROL)
         if player.power_control == PLAYER_CONTROL_FAKE:

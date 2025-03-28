@@ -295,6 +295,10 @@ class RaopStream:
             if "Cannot connect to AirPlay device" in line:
                 self.ffmpeg_reader_task.cancel()
                 raise PlayerCommandFailed("Cannot connect to AirPlay device")
+        # repeat sending the volume level to the player because some players seem
+        # to ignore it the first time
+        # https://github.com/music-assistant/support/issues/3330
+        await self.send_cli_command(f"VOLUME={mass_player.volume_level}\n")
         # start reading the stderr of the cliraop process from another task
         self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
 
@@ -462,7 +466,7 @@ class RaopStream:
 
     async def _send_metadata(self, queue: PlayerQueue) -> None:
         """Send metadata to player (and connected sync childs)."""
-        if not queue or not queue.current_item:
+        if not queue or not queue.current_item or self._stopped:
             return
         duration = min(queue.current_item.duration or 0, 3600)
         title = queue.current_item.name
@@ -490,7 +494,7 @@ class RaopStream:
         await self.send_cli_command(cmd)
 
         # get image
-        if not queue.current_item.image:
+        if not queue.current_item.image or self._stopped:
             return
 
         # the image format needs to be 500x500 jpeg for maximum compatibility with players
@@ -501,7 +505,7 @@ class RaopStream:
 
     async def _send_progress(self, queue: PlayerQueue) -> None:
         """Send progress report to player (and connected sync childs)."""
-        if not queue or not queue.current_item:
+        if not queue or not queue.current_item or self._stopped:
             return
         progress = int(queue.corrected_elapsed_time)
         await self.send_cli_command(f"PROGRESS={progress}\n")

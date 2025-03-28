@@ -682,7 +682,10 @@ class SnapCastProvider(PlayerProvider):
         if self._use_builtin_server:
             extra_args = (
                 f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
-                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20--api-port={self.mass.webserver.publish_port}"
+                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
+                f"--api-port={self.mass.webserver.publish_port}%20"
+                f"--streamserver-ip={self.mass.streams.publish_ip}%20"
+                f"--streamserver-port={self.mass.streams.publish_port}"
             )
         else:
             extra_args = ""
