@@ -24,9 +24,11 @@ from typing import TYPE_CHECKING, cast
 import shortuuid
 from aiohttp import web
 from music_assistant_models.builtin_player import BuiltinPlayerEvent, BuiltinPlayerState
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     BuiltinPlayerEventType,
+    ConfigEntryType,
     ContentType,
     EventType,
     PlayerFeature,
@@ -43,6 +45,11 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE,
+    CONF_ENTRY_HTTP_PROFILE_HIDDEN,
+    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
+    CONF_MUTE_CONTROL,
+    CONF_POWER_CONTROL,
+    CONF_VOLUME_CONTROL,
     DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
 )
@@ -53,13 +60,13 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
 
 # If the player does not send an update within this time, it will be considered offline
-DURATION_UNTIL_TIMEOUT = 70
-POLL_INTERVAL = 10
+DURATION_UNTIL_TIMEOUT = 90  # 30 second extra headroom
+POLL_INTERVAL = 30
 
 
 async def setup(
@@ -133,12 +140,35 @@ class BuiltinPlayerProvider(PlayerProvider):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return (
             *await super().get_player_config_entries(player_id),
-            # For now only flow mode is supported
-            # TODO: also allow regular streams
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_HTTP_PROFILE,
+            # Hide power/volume/mute control options since they are guaranteed to work
+            ConfigEntry(
+                key=CONF_POWER_CONTROL,
+                type=ConfigEntryType.STRING,
+                label=CONF_POWER_CONTROL,
+                default_value=PLAYER_CONTROL_NATIVE,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_VOLUME_CONTROL,
+                type=ConfigEntryType.STRING,
+                label=CONF_VOLUME_CONTROL,
+                default_value=PLAYER_CONTROL_NATIVE,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_MUTE_CONTROL,
+                type=ConfigEntryType.STRING,
+                label=CONF_MUTE_CONTROL,
+                default_value=PLAYER_CONTROL_NATIVE,
+                hidden=True,
+            ),
+            # These options don't do anything here
+            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
+            CONF_ENTRY_HTTP_PROFILE_HIDDEN,
         )
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -307,13 +337,17 @@ class BuiltinPlayerProvider(PlayerProvider):
             player.state = PlayerState.IDLE
             player.powered = False
 
-    async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> None:
+    async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> bool:
         """Update current state of a player.
 
         A player must periodically update the state of through this `builtin_player/update_state`
         API command.
+
+        Returns False in case the player already timed out or simply doesn't exist.
+        In that case, register the player first with `builtin_player/register`.
         """
-        player = cast(Player, self.mass.players.get(player_id, raise_unavailable=True))
+        if not (player := self.mass.players.get(player_id)):
+            return False
 
         if not (instance := self.instances[player_id]):
             raise RuntimeError("No instance found")
@@ -322,7 +356,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         if not player.powered and state.powered:
             # The player was powered off, so this state message is already out of date
             # Skip, it.
-            return
+            return True
 
         player.elapsed_time_last_updated = time()
         player.elapsed_time = float(state.position)
@@ -342,6 +376,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             player.state = PlayerState.IDLE
 
         self.mass.players.update(player_id)
+        return True
 
     async def _serve_audio_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve the flow stream audio to a player."""
