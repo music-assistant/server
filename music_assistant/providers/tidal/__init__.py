@@ -819,9 +819,39 @@ class TidalProvider(MusicProvider):
             mix_obj = {
                 "id": prov_mix_id,
                 "title": tidal_mix.get("title", "Unknown Mix"),
-                "images": tidal_mix.get("images", {}),
                 "updated": tidal_mix.get("lastUpdated", ""),
+                "images": {},  # Initialize empty images dict
             }
+
+            # Safely extract the mix object and its images from the header module
+            rows = tidal_mix.get("rows", [])
+            if rows and isinstance(rows, list) and len(rows) > 0:
+                first_row = rows[0]
+                if isinstance(first_row, dict):
+                    modules = first_row.get("modules", [])
+                    if modules and isinstance(modules, list) and len(modules) > 0:
+                        header_module = modules[0]
+                        if isinstance(header_module, dict):
+                            mix_data = header_module.get("mix", {})
+                            if isinstance(mix_data, dict):
+                                # Get images if they exist
+                                if "images" in mix_data and isinstance(mix_data["images"], dict):
+                                    mix_obj["images"] = mix_data["images"]
+                                    self.logger.debug(
+                                        "Successfully extracted mix images from header module"
+                                    )
+
+                                # Get subtitle if it exists
+                                subtitle = mix_data.get("subTitle")
+                                if subtitle:
+                                    mix_obj["subTitle"] = subtitle
+
+            # Safely check if we have useful images
+            images = mix_obj.get("images", {})
+            if images and any(key in images for key in ["MEDIUM", "LARGE", "SMALL"]):
+                self.logger.debug("Found images for mix %s: %s", prov_mix_id, list(images.keys()))
+            else:
+                self.logger.debug("No images found for mix %s", prov_mix_id)
 
             return self._parse_playlist(mix_obj, is_mix=True)
         except ResourceTemporarilyUnavailable:
@@ -1722,9 +1752,15 @@ class TidalProvider(MusicProvider):
             if "popularity" in playlist_obj:
                 playlist.metadata.popularity = playlist_obj.get("popularity", 0)
 
+        # Add the description from the subtitle for mixes
+        if is_mix:
+            subtitle = playlist_obj.get("subTitle")
+            if subtitle:
+                playlist.metadata.description = subtitle
+
         # Handle images differently based on type
         if is_mix:
-            if pictures := playlist_obj.get("images", {}).get("MEDIUM"):
+            if pictures := playlist_obj.get("images", {}).get("LARGE"):
                 image_url = pictures.get("url", "")
                 if image_url:
                     playlist.metadata.images = UniqueList(
