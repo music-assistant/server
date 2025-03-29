@@ -250,12 +250,11 @@ class StreamsController(CoreController):
         FFMPEG_LOGGER.setLevel(self.logger.level)
         # perform check for ffmpeg version
         await check_ffmpeg_version()
-        # select a folder to store temporary audio cache files
-        # note that on HAOS we run /tmp in tmpfs so we need
-        # to pick another temporary location which is not /tmp
-        # we prefer the root/user dir because on the docker install
-        # it will be cleaned up on a reboot
-        self._audio_cache_dir = os.path.join(os.path.expanduser("~"), ".audio")
+        if self.mass.running_as_hass_addon:
+            # When running as HAOS add-on, we run /tmp as tmpfs so we need
+            # to pick another temporary location which is not /tmp.
+            # We prefer the root/user dir because it will be cleaned up on a reboot
+            self._audio_cache_dir = os.path.join(os.path.expanduser("~"), ".audio")
         if not await asyncio.to_thread(os.path.isdir, self._audio_cache_dir):
             await asyncio.to_thread(os.makedirs, self._audio_cache_dir)
         # enable cache by default if we have enough free space only
