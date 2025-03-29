@@ -203,7 +203,8 @@ class TracksController(MediaControllerBase[Track]):
                 "AND artists.search_name LIKE :search_artist"
             )
             extra_query_params["search_artist"] = f"%{artist_search_str}%"
-            return result + await self._get_library_items_by_query(
+            existing_uris = {item.uri for item in result}
+            for _track in await self._get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=limit,
@@ -212,7 +213,10 @@ class TracksController(MediaControllerBase[Track]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
-            )
+            ):
+                # prevent duplicates (when artist is also in the title)
+                if _track.uri not in existing_uris:
+                    result.append(_track)
         return result
 
     async def versions(

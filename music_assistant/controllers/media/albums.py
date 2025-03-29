@@ -166,7 +166,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 else "AND artists.search_name LIKE :search_artist"
             )
             extra_query_params["search_artist"] = f"%{search}%"
-            return result + await self._get_library_items_by_query(
+            existing_uris = {item.uri for item in result}
+            for _album in await self._get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=limit,
@@ -175,7 +176,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
-            )
+            ):
+                # prevent duplicates (when artist is also in the title)
+                if _album.uri not in existing_uris:
+                    result.append(_album)
         return result
 
     async def library_count(
