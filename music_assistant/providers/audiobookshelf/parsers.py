@@ -19,7 +19,10 @@ from aioaudiobookshelf.schema.library import (
     LibraryItemPodcast as AbsLibraryItemPodcast,
 )
 from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
-from aioaudiobookshelf.schema.podcast import PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded
+from aioaudiobookshelf.schema.podcast import PodcastEpisode as AbsPodcastEpisode
+from aioaudiobookshelf.schema.podcast import (
+    PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded,
+)
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import Audiobook as MassAudiobook
 from music_assistant_models.media_items import (
@@ -92,7 +95,7 @@ def parse_podcast(
 
 def parse_podcast_episode(
     *,
-    episode: AbsPodcastEpisodeExpanded,
+    episode: AbsPodcastEpisode | AbsPodcastEpisodeExpanded,
     prov_podcast_id: str,
     fallback_episode_cnt: int | None = None,
     lookup_key: str,
@@ -107,9 +110,37 @@ def parse_podcast_episode(
     For an episode the id is set to f"{podcast_id} {episode_id}".
     ABS ids have no spaces, so we can split at a space to retrieve both
     in other functions.
+
+    NOTE: We should always use a PodcastEpisodeExpanded when possible.
+    A PodcastEpisode has only limited information, and is currently only used
+    within the recommendations.
     """
-    url = f"{base_url}{episode.audio_track.content_url}"
     episode_id = f"{prov_podcast_id} {episode.id_}"
+
+    if isinstance(episode, AbsPodcastEpisodeExpanded):
+        url = f"{base_url}{episode.audio_track.content_url}"
+        duration = int(episode.duration)
+        provider_mappings = {
+            ProviderMapping(
+                item_id=episode_id,
+                provider_domain=domain,
+                provider_instance=instance_id,
+                audio_format=AudioFormat(
+                    content_type=ContentType.UNKNOWN,
+                ),
+                url=url,
+            )
+        }
+    else:
+        # PodcastEpisode
+        duration = 0  # mass default
+        provider_mappings = {
+            ProviderMapping(
+                item_id=episode_id,
+                provider_domain=domain,
+                provider_instance=instance_id,
+            )
+        }
 
     release_date: datetime | None = None
     if episode.published_at is not None:
@@ -124,7 +155,7 @@ def parse_podcast_episode(
         item_id=episode_id,
         provider=lookup_key,
         name=episode.title,
-        duration=int(episode.duration),
+        duration=duration,
         position=position,
         podcast=ItemMapping(
             item_id=prov_podcast_id,
@@ -132,17 +163,7 @@ def parse_podcast_episode(
             name=episode.title,
             media_type=MediaType.PODCAST,
         ),
-        provider_mappings={
-            ProviderMapping(
-                item_id=episode_id,
-                provider_domain=domain,
-                provider_instance=instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.UNKNOWN,
-                ),
-                url=url,
-            )
-        },
+        provider_mappings=provider_mappings,
     )
 
     mass_episode.metadata.release_date = release_date

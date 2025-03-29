@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
@@ -11,6 +12,7 @@ from aioaudiobookshelf.client.items import (
     LibraryItemExpandedPodcast as AbsLibraryItemExpandedPodcast,
 )
 from aioaudiobookshelf.exceptions import LoginError as AbsLoginError
+from aioaudiobookshelf.schema.author import AuthorExpanded
 from aioaudiobookshelf.schema.calls_authors import (
     AuthorWithItemsAndSeries as AbsAuthorWithItemsAndSeries,
 )
@@ -24,7 +26,12 @@ from aioaudiobookshelf.schema.library import (
 from aioaudiobookshelf.schema.library import LibraryMediaType as AbsLibraryMediaType
 from aioaudiobookshelf.schema.shelf import (
     SeriesShelf,
+    ShelfAuthors,
+    ShelfBook,
+    ShelfEpisode,
     ShelfLibraryItemMinified,
+    ShelfPodcast,
+    ShelfSeries,
 )
 from aioaudiobookshelf.schema.shelf import (
     ShelfId as AbsShelfId,
@@ -556,99 +563,156 @@ class Audiobookshelf(MusicProvider):
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendations."""
-        folders: list[RecommendationFolder] = []
+        # We have to avoid "flooding" the home page, which becomes especially troublesome if users
+        # have multiple libraries. Instead we collect per ShelfId, and make sure, that we always get
+        # roughly the same amount of items per row, no matter the amount of libraries
+        # List of list (one list per lib) here, such that we can pick the items per lib later.
+        items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType]]] = {}
+
         all_libraries = {**self.libraries.audiobooks, **self.libraries.podcasts}
-        for library_id, library in all_libraries.items():
-            library_name = library.name
+        max_items_per_row = 20
+        limit_items_per_lib = max_items_per_row // len(all_libraries)
+        limit_items_per_lib = 1 if limit_items_per_lib == 0 else limit_items_per_lib
+
+        for library_id in all_libraries:
             shelves = await self._client.get_library_personalized_view(
-                library_id=library_id, limit=10
+                library_id=library_id, limit=limit_items_per_lib
             )
-            for shelf in shelves:
-                media_type: MediaType
-                match shelf.type_:
-                    case AbsShelfType.PODCAST:
-                        media_type = MediaType.PODCAST
-                    case AbsShelfType.EPISODE:
-                        media_type = MediaType.PODCAST_EPISODE
-                    case AbsShelfType.BOOK | AbsShelfType.SERIES:
-                        media_type = MediaType.AUDIOBOOK
-                    case _:
-                        # this would be authors, currently
-                        continue
+            await self._recommendations_iter_shelves(shelves, library_id, items_by_shelf_id)
 
-                # shelf ids follow pattern:
-                # recently-added
-                # newest-episodes
-                # etc
-                name = f"{shelf.id_.capitalize().replace('-', ' ')} ({library_name})"
+        folders: list[RecommendationFolder] = []
+        for shelf_id, item_lists in items_by_shelf_id.items():
+            # we have something like [[A, B], [C, D, E], [F]]
+            # and want [A, C, F, B, D, E]
+            recommendation_items = [
+                x
+                for x in itertools.chain.from_iterable(itertools.zip_longest(*item_lists))
+                if x is not None
+            ][:max_items_per_row]
 
-                items: list[MediaItemType] = []
-                # Recently added is the _only_ case, where we get a full podcast
-                # We have a podcast object with only the episodes matching the
-                # shelf.id_ otherwise.
-                match shelf.id_:
-                    case (
-                        AbsShelfId.RECENTLY_ADDED
-                        | AbsShelfId.LISTEN_AGAIN
-                        | AbsShelfId.DISCOVER
-                        | AbsShelfId.NEWEST_EPISODES
-                        | AbsShelfId.CONTINUE_LISTENING
-                    ):
-                        for entity in shelf.entities:
-                            assert isinstance(entity, ShelfLibraryItemMinified)
-                            item: MediaItemType | None = None
-                            if media_type in [MediaType.PODCAST, MediaType.AUDIOBOOK]:
-                                item = await self.mass.music.get_library_item_by_prov_id(
-                                    media_type=media_type,
-                                    provider_instance_id_or_domain=self.instance_id,
-                                    item_id=entity.id_,
-                                )
-                            elif media_type == MediaType.PODCAST_EPISODE:
-                                podcast_id = entity.id_
-                                if entity.recent_episode is None:
-                                    continue
-                                episode_id = entity.recent_episode.id_
-                                item = await self.get_podcast_episode(
-                                    prov_episode_id=f"{podcast_id} {episode_id}", add_progress=False
-                                )
-                            if item is not None:
-                                items.append(item)
-                    case AbsShelfId.RECENT_SERIES | AbsShelfId.CONTINUE_SERIES:
-                        # we jump into a browse folder here, set path up as if browse function
-                        # used.
-                        for entity in shelf.entities:
-                            assert isinstance(entity, SeriesShelf)
-                            if len(entity.books) > 0:
-                                _library_id = entity.books[0].library_id
-                            else:
-                                continue
-                            path = (
-                                f"{self.instance_id}://"
-                                f"{AbsBrowsePaths.LIBRARIES_BOOK} {_library_id}/"
-                                f"{AbsBrowsePaths.SERIES}/{entity.id_}"
-                            )
-                            items.append(
-                                BrowseFolder(
-                                    item_id=entity.id_,
-                                    name=entity.name,
-                                    provider=self.lookup_key,
-                                    path=path,
-                                )
-                            )
-                if not items:
-                    continue
-                folders.append(
-                    RecommendationFolder(
-                        item_id=f"{shelf.id_} {library_id}",
-                        name=name,
-                        icon=ABS_SHELF_ID_ICONS.get(shelf.id_),
-                        # translation_key=shelf.id_,
-                        items=UniqueList(items),
-                        provider=self.lookup_key,
-                    )
+            # shelf ids follow pattern:
+            # recently-added
+            # newest-episodes
+            # etc
+            name = f"{shelf_id.capitalize().replace('-', ' ')}"
+            folders.append(
+                RecommendationFolder(
+                    item_id=f"{shelf_id}",
+                    name=name,
+                    icon=ABS_SHELF_ID_ICONS.get(shelf_id),
+                    # translation_key=shelf.id_,
+                    items=UniqueList(recommendation_items),
+                    provider=self.lookup_key,
                 )
+            )
 
         return folders
+
+    async def _recommendations_iter_shelves(
+        self,
+        shelves: list[ShelfBook | ShelfPodcast | ShelfAuthors | ShelfEpisode | ShelfSeries],
+        library_id: str,
+        items_by_shelf_id: dict[AbsShelfId, list[list[MediaItemType]]],
+    ) -> None:
+        for shelf in shelves:
+            media_type: MediaType
+            match shelf.type_:
+                case AbsShelfType.PODCAST:
+                    media_type = MediaType.PODCAST
+                case AbsShelfType.EPISODE:
+                    media_type = MediaType.PODCAST_EPISODE
+                case AbsShelfType.BOOK:
+                    media_type = MediaType.AUDIOBOOK
+                case AbsShelfType.SERIES | AbsShelfType.AUTHORS:
+                    media_type = MediaType.FOLDER
+                case _:
+                    # this would be authors, currently
+                    continue
+
+            items: list[MediaItemType] = []
+            # Recently added is the _only_ case, where we get a full podcast
+            # We have a podcast object with only the episodes matching the
+            # shelf.id_ otherwise.
+            match shelf.id_:
+                case (
+                    AbsShelfId.RECENTLY_ADDED
+                    | AbsShelfId.LISTEN_AGAIN
+                    | AbsShelfId.DISCOVER
+                    | AbsShelfId.NEWEST_EPISODES
+                    | AbsShelfId.CONTINUE_LISTENING
+                ):
+                    for entity in shelf.entities:
+                        assert isinstance(entity, ShelfLibraryItemMinified)
+                        item: MediaItemType | None = None
+                        if media_type in [MediaType.PODCAST, MediaType.AUDIOBOOK]:
+                            item = await self.mass.music.get_library_item_by_prov_id(
+                                media_type=media_type,
+                                provider_instance_id_or_domain=self.instance_id,
+                                item_id=entity.id_,
+                            )
+                        elif media_type == MediaType.PODCAST_EPISODE:
+                            podcast_id = entity.id_
+                            if entity.recent_episode is None:
+                                continue
+                            # we only have a PodcastEpisode here, with limited information
+                            item = parse_podcast_episode(
+                                episode=entity.recent_episode,
+                                prov_podcast_id=podcast_id,
+                                lookup_key=self.lookup_key,
+                                domain=self.domain,
+                                instance_id=self.instance_id,
+                                token=self._client.token,
+                                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                            )
+                        if item is not None:
+                            items.append(item)
+                case AbsShelfId.RECENT_SERIES | AbsShelfId.CONTINUE_SERIES:
+                    # we jump into a browse folder here, set path up as if browse function
+                    # used.
+                    for entity in shelf.entities:
+                        assert isinstance(entity, SeriesShelf)
+                        if len(entity.books) == 0:
+                            continue
+                        path = (
+                            f"{self.instance_id}://"
+                            f"{AbsBrowsePaths.LIBRARIES_BOOK} {library_id}/"
+                            f"{AbsBrowsePaths.SERIES}/{entity.id_}"
+                        )
+                        items.append(
+                            BrowseFolder(
+                                item_id=entity.id_,
+                                name=entity.name,
+                                provider=self.lookup_key,
+                                path=path,
+                            )
+                        )
+                case AbsShelfId.NEWEST_AUTHORS:
+                    # same as for series, use a folder
+                    for entity in shelf.entities:
+                        assert isinstance(entity, AuthorExpanded)
+                        if entity.num_books == 0:
+                            continue
+                        path = (
+                            f"{self.instance_id}://"
+                            f"{AbsBrowsePaths.LIBRARIES_BOOK} {library_id}/"
+                            f"{AbsBrowsePaths.AUTHORS}/{entity.id_}"
+                        )
+                        items.append(
+                            BrowseFolder(
+                                item_id=entity.id_,
+                                name=entity.name,
+                                provider=self.lookup_key,
+                                path=path,
+                            )
+                        )
+            if not items:
+                continue
+
+            # add collected items
+            assert isinstance(shelf.id_, AbsShelfId)
+            items_collected = items_by_shelf_id.get(shelf.id_, [])
+            items_collected.append(items)
+            items_by_shelf_id[shelf.id_] = items_collected
 
     async def on_played(
         self,
