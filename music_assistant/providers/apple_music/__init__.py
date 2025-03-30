@@ -19,7 +19,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -70,6 +74,7 @@ DEVELOPER_TOKEN = app_var(8)
 WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
+UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
 
 
 async def setup(
@@ -588,7 +593,7 @@ class AppleMusicProvider(MusicProvider):
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.instance_id if is_editable else self.lookup_key,
-            name=attributes["name"],
+            name=attributes.get("name", UNKNOWN_PLAYLIST_NAME),
             owner=attributes.get("curatorName", "me"),
             provider_mappings={
                 ProviderMapping(
@@ -665,6 +670,8 @@ class AppleMusicProvider(MusicProvider):
                 # backoff time. There is no documentation on this.
                 self.logger.debug("Apple Music Rate Limiter. Headers: %s", response.headers)
                 raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
+            if response.status == 500:
+                raise MusicAssistantError("Unexpected server error when calling Apple Music")
             response.raise_for_status()
             return await response.json(loads=json_loads)
 
