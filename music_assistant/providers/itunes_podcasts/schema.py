@@ -56,3 +56,54 @@ class ITunesSearchResults(_BaseModel):
 
     result_count: int = field(metadata=field_options(alias="resultCount"), default=0)
     results: list[PodcastSearchResult] = field(default_factory=list)
+
+
+# below is only what we need
+
+
+@dataclass(kw_only=True)
+class TopPodcastsGenres(_BaseModel):
+    """TopPodcastsGenres."""
+
+    genre_id: str | int = field(metadata=field_options(alias="genreId"), default="")
+    name: str
+
+
+@dataclass(kw_only=True)
+class TopPodcastsResult(_BaseModel):
+    """TopPodcastsResult."""
+
+    artist_name: str = field(metadata=field_options(alias="artistName"), default="")
+    id_: str | int = field(metadata=field_options(alias="id"))
+    name: str
+    genres: list[TopPodcastsGenres] = field(default_factory=list)
+    artwork_url_30: str | None = field(metadata=field_options(alias="artworkUrl30"), default=None)
+    artwork_url_60: str | None = field(metadata=field_options(alias="artworkUrl60"), default=None)
+    artwork_url_100: str | None = field(metadata=field_options(alias="artworkUrl100"), default=None)
+    artwork_url_600: str | None = field(metadata=field_options(alias="artworkUrl600"), default=None)
+
+
+@dataclass(kw_only=True)
+class TopPodcastsResults(_BaseModel):
+    """TopPodcastsResults."""
+
+    country: str
+    results: list[TopPodcastsResult] = field(default_factory=list)
+
+
+@dataclass(kw_only=True)
+class TopPodcastsResponse(_BaseModel):
+    """TopPodcastsResponse."""
+
+    feed: TopPodcastsResults | None = None
+
+
+# HELPER
+@dataclass(kw_only=True)
+class TopPodcastsHelper(_BaseModel):
+    """TopPodcastsHelper.
+
+    This is used to cache the recommendations.
+    """
+
+    top_podcasts: list[PodcastSearchResult] = field(default_factory=list)

@@ -150,7 +150,7 @@ def parse_podcast_episode(
     # chapter
     if chapters := episode.get("chapters"):
         _chapters = []
-        for cnt, chapter in chapters:
+        for cnt, chapter in enumerate(chapters):
             if not isinstance(chapter, dict):
                 continue
             title = chapter.get("title")

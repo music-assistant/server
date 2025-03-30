@@ -26,6 +26,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     UniqueList,
 )
@@ -34,7 +35,12 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.itunes_podcasts.schema import ITunesSearchResults
+from music_assistant.providers.itunes_podcasts.schema import (
+    ITunesSearchResults,
+    PodcastSearchResult,
+    TopPodcastsHelper,
+    TopPodcastsResponse,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -49,6 +55,8 @@ CONF_EXPLICIT = "explicit"
 CONF_NUM_EPISODES = "num_episodes"
 
 CACHE_CATEGORY_PODCASTS = 0
+CACHE_CATEGORY_RECOMMENDATIONS = 1
+CACHE_KEY_TOP_PODCASTS = "top-podcasts"
 
 
 async def setup(
@@ -112,9 +120,7 @@ class ITunesPodcastsProvider(MusicProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SEARCH,
-        }
+        return {ProviderFeature.SEARCH, ProviderFeature.RECOMMENDATIONS}
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -164,8 +170,11 @@ class ITunesPodcastsProvider(MusicProvider):
             json_response = await response.read()
         if not json_response:
             return []
-        podcast_list: list[Podcast] = []
         results = ITunesSearchResults.from_json(json_response).results
+        return self._get_podcast_list(results)
+
+    def _get_podcast_list(self, results: list[PodcastSearchResult]) -> list[Podcast]:
+        podcast_list: list[Podcast] = []
         for result in results:
             if result.feed_url is None or result.track_name is None:
                 continue
@@ -253,6 +262,24 @@ class ITunesPodcastsProvider(MusicProvider):
 
         raise MediaNotFoundError("Episode not found")
 
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get recommendations.
+
+        This provider uses a list of top podcasts for the configured country.
+        """
+        search_results = await self._cache_get_top_podcasts()
+        podcast_list = self._get_podcast_list(search_results)
+        return [
+            RecommendationFolder(
+                item_id="itunes-top-podcasts",
+                name="Trending podcasts",
+                icon="mdi-trending-up",
+                # translation_key=shelf.id_,
+                items=UniqueList(podcast_list),
+                provider=self.lookup_key,
+            )
+        ]
+
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         podcast = await self._cache_get_podcast(podcast_id)
         episodes = podcast.get("episodes", [])
@@ -283,6 +310,25 @@ class ITunesPodcastsProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    @throttle_with_retries
+    async def _get_podcast_search_result_from_itunes_id(
+        self, itunes_id: int
+    ) -> PodcastSearchResult:
+        params = {"id": itunes_id}
+        url = "https://itunes.apple.com/lookup?"
+        response = await self.mass.http_session.get(url, params=params)
+        json_response = b""
+        if response.status == 200:
+            json_response = await response.read()
+        if not json_response:
+            raise MediaNotFoundError
+        search_results = ITunesSearchResults.from_json(json_response)
+        if search_results.result_count == 0:
+            raise MediaNotFoundError
+        if search_results.result_count > 1:
+            self.logger.warning("More than a single result for podcast.")
+        return search_results.results[0]
 
     async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
@@ -316,3 +362,49 @@ class ITunesPodcastsProvider(MusicProvider):
             data=parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day
         )
+
+    async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:
+        await self.mass.cache.set(
+            key=CACHE_KEY_TOP_PODCASTS,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
+            data=top_podcast_helper.to_dict(),
+            expiration=60 * 60 * 6,  # 6 hours
+        )
+
+    async def _cache_get_top_podcasts(self) -> list[PodcastSearchResult]:
+        parsed_top_podcasts = await self.mass.cache.get(
+            key=CACHE_KEY_TOP_PODCASTS,
+            base_key=self.lookup_key,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
+        )
+        if parsed_top_podcasts is not None:
+            helper = TopPodcastsHelper.from_dict(parsed_top_podcasts)
+            return helper.top_podcasts
+
+        # 15 results
+        # keep 20 requests max per minute in mind
+        # https://rss.marketingtools.apple.com/
+        country = str(self.config.get_value(CONF_LOCALE))
+        url = f"https://rss.marketingtools.apple.com/api/v2/{country}/podcasts/top/15/podcasts.json"
+        response = await self.mass.http_session.get(url)
+        json_response = b""
+        if response.status == 200:
+            json_response = await response.read()
+        if not json_response:
+            return []
+
+        top_podcasts_response = TopPodcastsResponse.from_json(json_response)
+
+        if top_podcasts_response.feed is None:
+            return []
+
+        helper = TopPodcastsHelper()
+        for top_podcast in top_podcasts_response.feed.results:
+            podcast_search_result = await self._get_podcast_search_result_from_itunes_id(
+                int(top_podcast.id_)
+            )
+            helper.top_podcasts.append(podcast_search_result)
+
+        await self._cache_set_top_podcasts(top_podcast_helper=helper)
+        return helper.top_podcasts
