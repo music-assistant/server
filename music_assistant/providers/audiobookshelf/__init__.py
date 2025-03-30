@@ -606,6 +606,49 @@ class Audiobookshelf(MusicProvider):
                 )
             )
 
+        # Browse "recommendation" for convenience. If the user has
+        # multiple audiobook libraries, we return a listing of them.
+        # If there is only a single audiobook library, we add the folders
+        # from _browse_lib_audiobooks, i.e. Authors, Narrators etc.
+        # Podcast libs do not have filter folders, so always the root folders.
+        browse_items: list[MediaItemTypeOrItemMapping] = []
+        if len(self.libraries.audiobooks) <= 1:
+            browse_names = [
+                x.name for x in self.libraries.audiobooks.values()
+            ]  # single name (or no name)
+            if len(self.libraries.podcasts) == 1:
+                browse_names.extend(
+                    [x.name for x in self.libraries.podcasts.values()]
+                )  # single name again
+            else:
+                browse_names.append("Podcasts")
+            browse_name = " & ".join(browse_names)
+
+            # audiobooklibs are first, and we have at max 1 audiobook lib
+            _browse_root = self._browse_root(append_mediatype_suffix=False)
+            if len(self.libraries.audiobooks) == 0:
+                browse_items.extend(_browse_root)
+            else:
+                assert isinstance(_browse_root[0], BrowseFolder)
+                _path = _browse_root[0].path
+                browse_items.extend(self._browse_lib_audiobooks(current_path=_path))
+                # add podcast roots
+                browse_items.extend(_browse_root[1:])
+        else:
+            browse_name = "Your libraries"
+
+            browse_items = list(self._browse_root())
+        folders.append(
+            RecommendationFolder(
+                item_id="browse",
+                name=browse_name,
+                icon="mdi-bookshelf",
+                # translation_key=shelf.id_,
+                items=UniqueList(browse_items),
+                provider=self.lookup_key,
+            )
+        )
+
         return folders
 
     async def _recommendations_iter_shelves(
@@ -868,7 +911,9 @@ class Audiobookshelf(MusicProvider):
             return await self._browse_series_books(series_id=series_id)
         return []
 
-    def _browse_root(self) -> Sequence[MediaItemTypeOrItemMapping]:
+    def _browse_root(
+        self, append_mediatype_suffix: bool = True
+    ) -> Sequence[MediaItemTypeOrItemMapping]:
         items = []
 
         def _get_folder(path: str, lib_id: str, lib_name: str) -> BrowseFolder:
@@ -881,11 +926,17 @@ class Audiobookshelf(MusicProvider):
 
         for lib_id, lib in self.libraries.audiobooks.items():
             path = f"{AbsBrowsePaths.LIBRARIES_BOOK} {lib_id}"
-            name = f"{lib.name} ({AbsBrowseItemsBook.AUDIOBOOKS})"
+            if append_mediatype_suffix:
+                name = f"{lib.name} ({AbsBrowseItemsBook.AUDIOBOOKS})"
+            else:
+                name = lib.name
             items.append(_get_folder(path, lib_id, name))
         for lib_id, lib in self.libraries.podcasts.items():
             path = f"{AbsBrowsePaths.LIBRARIES_PODCAST} {lib_id}"
-            name = f"{lib.name} ({AbsBrowseItemsPodcast.PODCASTS})"
+            if append_mediatype_suffix:
+                name = f"{lib.name} ({AbsBrowseItemsPodcast.PODCASTS})"
+            else:
+                name = lib.name
             items.append(_get_folder(path, lib_id, name))
         return items
 
