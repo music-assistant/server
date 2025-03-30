@@ -952,7 +952,7 @@ class PlayerQueuesController(CoreController):
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
-    async def get_next_queue_item(
+    async def preload_next_queue_item(
         self,
         queue_id: str,
         current_item_id: str,
@@ -967,11 +967,12 @@ class PlayerQueuesController(CoreController):
             msg = f"PlayerQueue {queue_id} is not available"
             raise PlayerUnavailableError(msg)
         cur_index = self.index_by_id(queue_id, current_item_id)
+        if cur_index is None:
+            # this is just a guard for bad data
+            raise QueueEmpty("Invalid item id for queue given.")
         next_item: QueueItem | None = None
         idx = 0
         while True:
-            if cur_index is None:
-                break
             next_index = self._get_next_index(queue_id, cur_index + idx)
             if next_index is None:
                 raise QueueEmpty("No more tracks left in the queue.")
@@ -1085,8 +1086,10 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = self.index_by_id(queue_id, item_id)
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
-        # enqueue/precache next track on the player
-        self.enqueue_next_item(queue_id, item_id)
+        # enqueue next track on the player
+        self._enqueue_next_item(queue_id, self._get_next_item(queue_id, item_id))
+        # preload next streamdetails
+        self._preload_next_item(queue_id, queue.index_in_buffer)
 
     # Main queue manipulation methods
 
@@ -1404,8 +1407,10 @@ class PlayerQueuesController(CoreController):
         # all other: just the next index
         return cur_index + 1
 
-    def _get_next_item(self, queue_id: str, cur_index: int | None = None) -> QueueItem | None:
+    def _get_next_item(self, queue_id: str, cur_index: int | str | None = None) -> QueueItem | None:
         """Return next QueueItem for given queue."""
+        if isinstance(cur_index, str):
+            cur_index = self.index_by_id(queue_id, cur_index)
         for _retries in range(3):
             if (next_index := self._get_next_index(queue_id, cur_index)) is None:
                 break
@@ -1431,39 +1436,77 @@ class PlayerQueuesController(CoreController):
             insert_at_index=len(self._queue_items[queue_id]) + 1,
         )
 
-    def enqueue_next_item(self, queue_id: str, current_item_id: str) -> None:
+    def _enqueue_next_item(self, queue_id: str, next_item: QueueItem | None) -> None:
         """Enqueue/precache the next item on the player."""
-        queue = self._queues[queue_id]
-        task_id = f"enqueue_next_item_{queue_id}"
+        if not next_item:
+            # no next item, nothing to do...
+            return
 
-        async def _enqueue_next_item(queue_id: str, current_item_id: str) -> None:
-            if not (current_item := self.get_item(queue_id, current_item_id)):
-                return
-            try:
-                next_item = await self.get_next_queue_item(queue_id, current_item_id)
-            except QueueEmpty:
-                return
-            if not self._queues[queue_id].flow_mode and current_item.media_type != MediaType.RADIO:
-                await self.mass.players.enqueue_next_media(
-                    player_id=queue_id,
-                    media=await self.player_media_from_queue_item(next_item, False),
-                )
+        queue = self._queues[queue_id]
+        if queue.flow_mode:
+            # ignore this for flow mode
+            return
+
+        async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
+            await self.mass.players.enqueue_next_media(
+                player_id=queue_id,
+                media=await self.player_media_from_queue_item(next_item, False),
+            )
             self.logger.debug(
                 "Enqueued next track %s on queue %s",
                 next_item.name,
                 self._queues[queue_id].display_name,
             )
 
-        if not (current_item := self.get_item(queue_id, current_item_id)):
+        # Enqueue the next item immediately once the player started
+        # buffering/playing an item (with a small debounce delay).
+        task_id = f"enqueue_next_item_{queue_id}"
+        self.mass.call_later(1, _enqueue_next_item_on_player, next_item, task_id=task_id)
+
+    def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
+        """
+        Preload the next item in the queue.
+
+        This basically ensures the item is playable and fetches the stream details.
+        If caching is enabled, this will also start filling the stream cache.
+        If an error occurs, the item will be skipped and the next item will be loaded.
+        """
+        queue = self._queues[queue_id]
+
+        async def _preload_streamdetails() -> None:
+            try:
+                new_next_item = await self.preload_next_queue_item(queue_id, item_id_in_buffer)
+            except QueueEmpty:
+                return
+            if (
+                queue.current_item.queue_item_id == item_id_in_buffer
+                and queue.next_item != new_next_item
+            ):
+                # the next item has changed, so we need to enqueue the new one
+                # this can happen when fetching the streamdetails failed so the
+                # track was skipped.
+                queue.next_item = new_next_item
+                await self._enqueue_next_item(queue_id, next_item)
+                return
+
+        if not (current_item := self.get_item(queue_id, item_id_in_buffer)):
             # this should not happen, but guard anyways
             return
+        if current_item.media_type == MediaType.RADIO or not current_item.duration:
+            # radio items or no duration, nothing to do
+            return
+        if not (next_item := self._get_next_item(queue_id, item_id_in_buffer)):
+            return  # nothing to do
+        if next_item.available and next_item.streamdetails:
+            # streamdetails already loaded, nothing to do
+            return
 
-        if not current_item.duration:
-            delay = 5
-        else:
-            delay = max(int((current_item.duration / 2) - queue.elapsed_time), 0)
-
-        self.mass.call_later(delay, _enqueue_next_item, queue_id, current_item_id, task_id=task_id)
+        # preload the streamdetails for the next item 60 seconds before the current item ends
+        # this should be enough time to load the stream details and start buffering
+        # NOTE: we use the duration of the current item, not the next item
+        delay = max(0, current_item.duration - 60)
+        task_id = f"preload_next_item_{queue_id}"
+        self.mass.call_later(delay, _preload_streamdetails, task_id=task_id)
 
     async def _resolve_media_items(
         self, media_item: MediaItemTypeOrItemMapping, start_item: str | None = None

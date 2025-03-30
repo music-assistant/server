@@ -767,7 +767,7 @@ class StreamsController(CoreController):
                 queue_track = start_queue_item
             else:
                 try:
-                    queue_track = await self.mass.player_queues.get_next_queue_item(
+                    queue_track = await self.mass.player_queues.preload_next_queue_item(
                         queue.queue_id, queue_track.queue_item_id
                     )
                 except QueueEmpty:
