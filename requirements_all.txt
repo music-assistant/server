@@ -37,7 +37,7 @@ plexapi==4.16.1
 podcastparser==0.6.10
 py-opensonic==5.3.1
 pyblu==2.0.0
-PyChromecast==14.0.5
+PyChromecast==14.0.7
 pycryptodome==3.22.0
 pylast==5.5.0
 python-fullykiosk==0.0.14
