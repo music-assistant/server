@@ -781,6 +781,7 @@ class PlayerQueuesController(CoreController):
         queue.flow_mode_stream_log = []
         queue.flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
         queue.current_item = queue_item
+        queue.next_item_id_enqueued = None
         # always update session id when we start a new playback session
         queue.session_id = shortuuid.random(length=8)
 
@@ -999,6 +1000,9 @@ class PlayerQueuesController(CoreController):
                 )
                 queue_item.available = False
                 idx += 1
+        if idx != 0:
+            # we skipped some items, signal a queue items update
+            self.update_items(queue_id, self._queue_items[queue_id])
         if next_item is None:
             raise QueueEmpty("No more (playable) tracks left in the queue.")
 
@@ -1094,8 +1098,6 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = self.index_by_id(queue_id, item_id)
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
-        # enqueue next track on the player
-        self._enqueue_next_item(queue_id, self.get_next_item(queue_id, item_id))
         # preload next streamdetails
         self._preload_next_item(queue_id, queue.index_in_buffer)
 
@@ -1118,7 +1120,6 @@ class PlayerQueuesController(CoreController):
         - keep_remaining: keep the remaining items after the insert
         - shuffle: (re)shuffle the items after insert index
         """
-        queue = self._queues[queue_id]
         prev_items = self._queue_items[queue_id][:insert_at_index] if keep_played else []
         next_items = queue_items
 
@@ -1133,16 +1134,6 @@ class PlayerQueuesController(CoreController):
         if shuffle:
             next_items = random.sample(next_items, len(next_items))
         self.update_items(queue_id, prev_items + next_items)
-
-        # if the next index changed we need to tell the player to enqueue the (new) next item
-        index_in_buffer = queue.index_in_buffer or queue.current_index or 0
-        if (
-            insert_at_index == (index_in_buffer + 1)
-            and queue.state != PlayerState.IDLE
-            and (next_item := self.get_next_item(queue_id, index_in_buffer))
-            and queue.next_item_id_enqueued != next_item.queue_item_id
-        ):
-            self._enqueue_next_item(queue_id, next_item)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
@@ -1435,7 +1426,7 @@ class PlayerQueuesController(CoreController):
         """Return next QueueItem for given queue."""
         if isinstance(cur_index, str):
             cur_index = self.index_by_id(queue_id, cur_index)
-        for _retries in range(3):
+        for _ in range(5):
             if (next_index := self._get_next_index(queue_id, cur_index)) is None:
                 break
             next_item = self.get_item(queue_id, next_index)
@@ -1483,10 +1474,10 @@ class PlayerQueuesController(CoreController):
                 self._queues[queue_id].display_name,
             )
 
-        # Enqueue the next item immediately once the player started
-        # buffering/playing an item (with a small debounce delay).
         task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)
+        self.mass.create_task(
+            _enqueue_next_item_on_player(next_item), task_id=task_id, abort_existing=True
+        )
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
@@ -1496,22 +1487,11 @@ class PlayerQueuesController(CoreController):
         If caching is enabled, this will also start filling the stream cache.
         If an error occurs, the item will be skipped and the next item will be loaded.
         """
-        queue = self._queues[queue_id]
 
         async def _preload_streamdetails() -> None:
             try:
-                new_next_item = await self.preload_next_queue_item(queue_id, item_id_in_buffer)
+                await self.preload_next_queue_item(queue_id, item_id_in_buffer)
             except QueueEmpty:
-                return
-            if (
-                queue.current_item.queue_item_id == item_id_in_buffer
-                and queue.next_item != new_next_item
-            ):
-                # the next item has changed, so we need to enqueue the new one
-                # this can happen when fetching the streamdetails failed so the
-                # track was skipped.
-                queue.next_item = new_next_item
-                await self._enqueue_next_item(queue_id, next_item)
                 return
 
         if not (current_item := self.get_item(queue_id, item_id_in_buffer)):
@@ -1786,6 +1766,10 @@ class PlayerQueuesController(CoreController):
             if queue.next_item and queue.next_item.streamdetails:
                 queue.next_item.streamdetails.dsp = dsp
 
+        if queue.next_item and queue.next_item_id_enqueued != queue.next_item.queue_item_id:
+            # the next item has changed, so we need to enqueue the new one
+            self._enqueue_next_item(queue_id, queue.next_item)
+            queue.next_item_id_enqueued = queue.next_item.queue_item_id
         # handle sending a playback progress report
         # we do this every 30 seconds or when the state changes
         if (
