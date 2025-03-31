@@ -143,7 +143,7 @@ async def get_config_entries(
                 label="URL",
                 required=True,
                 description="URL to your Home Assistant instance (e.g. http://192.168.1.1:8123)",
-                value=cast(str, values.get(CONF_URL)) if values else None,
+                value=cast("str", values.get(CONF_URL)) if values else None,
             ),
             ConfigEntry(
                 key=CONF_ACTION_AUTH,
@@ -162,7 +162,7 @@ async def get_config_entries(
                 description="You can either paste a Long Lived Token here manually or use the "
                 "'authenticate' button to generate a token for you with logging in.",
                 depends_on=CONF_URL,
-                value=cast(str, values.get(CONF_AUTH_TOKEN)) if values else None,
+                value=cast("str", values.get(CONF_AUTH_TOKEN)) if values else None,
                 category="advanced",
             ),
             ConfigEntry(
@@ -178,7 +178,7 @@ async def get_config_entries(
 
     # append player controls entries (if we have an active instance)
     if instance_id and (hass_prov := mass.get_provider(instance_id)) and hass_prov.available:
-        hass_prov = cast(HomeAssistantProvider, hass_prov)
+        hass_prov = cast("HomeAssistantProvider", hass_prov)
         return (*base_entries, *(await _get_player_control_config_entries(hass_prov.hass)))
 
     return (
@@ -355,9 +355,9 @@ class HomeAssistantProvider(PluginProvider):
 
     async def _register_player_controls(self) -> None:
         """Register all player controls."""
-        power_controls = cast(list[str], self.config.get_value(CONF_POWER_CONTROLS))
-        mute_controls = cast(list[str], self.config.get_value(CONF_MUTE_CONTROLS))
-        volume_controls = cast(list[str], self.config.get_value(CONF_VOLUME_CONTROLS))
+        power_controls = cast("list[str]", self.config.get_value(CONF_POWER_CONTROLS))
+        mute_controls = cast("list[str]", self.config.get_value(CONF_MUTE_CONTROLS))
+        volume_controls = cast("list[str]", self.config.get_value(CONF_VOLUME_CONTROLS))
         control_entity_ids: set[str] = {
             *power_controls,
             *mute_controls,

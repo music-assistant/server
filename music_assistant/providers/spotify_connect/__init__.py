@@ -114,7 +114,7 @@ class SpotifyConnectProvider(PluginProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config)
-        self.mass_player_id = cast(str, self.config.get_value(CONF_MASS_PLAYER_ID))
+        self.mass_player_id = cast("str", self.config.get_value(CONF_MASS_PLAYER_ID))
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
         self._librespot_bin: str | None = None
         self._stop_called: bool = False

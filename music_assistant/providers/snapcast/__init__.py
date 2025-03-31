@@ -28,7 +28,6 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from snapcast.control import create_server
-from snapcast.control.client import Snapclient
 from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
 
@@ -48,6 +47,7 @@ from music_assistant.models.player_provider import PlayerProvider
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
+    from snapcast.control.client import Snapclient
     from snapcast.control.group import Snapgroup
     from snapcast.control.server import Snapserver
     from snapcast.control.stream import Snapstream
@@ -386,7 +386,7 @@ class SnapCastProvider(PlayerProvider):
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
             snap_client = cast(
-                Snapclient, self._snapserver.client(self._get_snapclient_id(player_id))
+                "Snapclient", self._snapserver.client(self._get_snapclient_id(player_id))
             )
             player = Player(
                 player_id=player_id,

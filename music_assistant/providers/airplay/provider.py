@@ -331,7 +331,7 @@ class AirplayProvider(PlayerProvider):
             )
         elif media.queue_id and media.queue_id.startswith("ugp_"):
             # special case: UGP stream
-            ugp_provider = cast(PlayerGroupProvider, self.mass.get_provider("player_group"))
+            ugp_provider = cast("PlayerGroupProvider", self.mass.get_provider("player_group"))
             ugp_stream = ugp_provider.ugp_streams[media.queue_id]
             input_format = ugp_stream.base_pcm_format
             audio_source = ugp_stream.subscribe_raw()

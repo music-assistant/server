@@ -730,7 +730,7 @@ class MusicController(CoreController):
 
         available_providers = get_global_cache_value("available_providers")
         if TYPE_CHECKING:
-            available_providers = cast(set[str], available_providers)
+            available_providers = cast("set[str]", available_providers)
 
         # fetch the first (available) provider item
         for prov_mapping in sorted(

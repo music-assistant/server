@@ -180,6 +180,7 @@ ignore = [
   "EM102", # Just annoying, not really useful
   "FIX002", # Just annoying, not really useful
   "PLR2004", # Just annoying, not really useful
+  "PGH004", # Just annoying, not really useful
   "PD011", # Just annoying, not really useful
   "S101", # assert is often used to satisfy type checking
   "TC001", # Just annoying, not really useful

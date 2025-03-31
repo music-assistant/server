@@ -182,7 +182,7 @@ async def get_config_entries(  # noqa: PLR0915
             label="Local server IP",
             description="The local server IP (e.g. 192.168.1.77)",
             required=True,
-            value=cast(str, values.get(CONF_LOCAL_SERVER_IP)) if values else None,
+            value=cast("str", values.get(CONF_LOCAL_SERVER_IP)) if values else None,
         ),
         ConfigEntry(
             key=CONF_LOCAL_SERVER_PORT,
@@ -191,7 +191,7 @@ async def get_config_entries(  # noqa: PLR0915
             description="The local server port (e.g. 32400)",
             required=True,
             default_value=32400,
-            value=cast(int, values.get(CONF_LOCAL_SERVER_PORT)) if values else None,
+            value=cast("int", values.get(CONF_LOCAL_SERVER_PORT)) if values else None,
         ),
         ConfigEntry(
             key=CONF_LOCAL_SERVER_SSL,
@@ -216,7 +216,7 @@ async def get_config_entries(  # noqa: PLR0915
             type=ConfigEntryType.SECURE_STRING,
             label=CONF_AUTH_TOKEN,
             action=CONF_AUTH_TOKEN,
-            value=cast(str | None, values.get(CONF_AUTH_TOKEN)) if values else None,
+            value=cast("str | None", values.get(CONF_AUTH_TOKEN)) if values else None,
             hidden=True,
         ),
     ]
@@ -422,7 +422,7 @@ class PlexProvider(MusicProvider):
 
     async def _get_data(self, key: str, cls: type[PlexObjectT]) -> PlexObjectT:
         results = await self._run_async(self._plex_library.fetchItem, key, cls)
-        return cast(PlexObjectT, results)
+        return cast("PlexObjectT", results)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         name, version = parse_title_and_version(name)
@@ -471,19 +471,19 @@ class PlexProvider(MusicProvider):
 
     async def _search_track(self, search_query: str | None, limit: int) -> list[PlexTrack]:
         return cast(
-            list[PlexTrack],
+            "list[PlexTrack]",
             await self._run_async(self._plex_library.searchTracks, title=search_query, limit=limit),
         )
 
     async def _search_album(self, search_query: str, limit: int) -> list[PlexAlbum]:
         return cast(
-            list[PlexAlbum],
+            "list[PlexAlbum]",
             await self._run_async(self._plex_library.searchAlbums, title=search_query, limit=limit),
         )
 
     async def _search_artist(self, search_query: str, limit: int) -> list[PlexArtist]:
         return cast(
-            list[PlexArtist],
+            "list[PlexArtist]",
             await self._run_async(
                 self._plex_library.searchArtists, title=search_query, limit=limit
             ),
@@ -491,31 +491,31 @@ class PlexProvider(MusicProvider):
 
     async def _search_playlist(self, search_query: str, limit: int) -> list[PlexPlaylist]:
         return cast(
-            list[PlexPlaylist],
+            "list[PlexPlaylist]",
             await self._run_async(self._plex_library.playlists, title=search_query, limit=limit),
         )
 
     async def _search_track_advanced(self, limit: int, **kwargs: Any) -> list[PlexTrack]:
         return cast(
-            list[PlexPlaylist],
+            "list[PlexPlaylist]",
             await self._run_async(self._plex_library.searchTracks, filters=kwargs, limit=limit),
         )
 
     async def _search_album_advanced(self, limit: int, **kwargs: Any) -> list[PlexAlbum]:
         return cast(
-            list[PlexPlaylist],
+            "list[PlexPlaylist]",
             await self._run_async(self._plex_library.searchAlbums, filters=kwargs, limit=limit),
         )
 
     async def _search_artist_advanced(self, limit: int, **kwargs: Any) -> list[PlexArtist]:
         return cast(
-            list[PlexPlaylist],
+            "list[PlexPlaylist]",
             await self._run_async(self._plex_library.searchArtists, filters=kwargs, limit=limit),
         )
 
     async def _search_playlist_advanced(self, limit: int, **kwargs: Any) -> list[PlexPlaylist]:
         return cast(
-            list[PlexPlaylist],
+            "list[PlexPlaylist]",
             await self._run_async(self._plex_library.playlists, filters=kwargs, limit=limit),
         )
 
@@ -882,7 +882,7 @@ class PlexProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         if not prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             plex_artist = await self._get_data(prov_artist_id, PlexArtist)
-            plex_albums = cast(list[PlexAlbum], await self._run_async(plex_artist.albums))
+            plex_albums = cast("list[PlexAlbum]", await self._run_async(plex_artist.albums))
             if plex_albums:
                 albums = []
                 for album_obj in plex_albums:

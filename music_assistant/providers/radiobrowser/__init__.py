@@ -191,7 +191,7 @@ class RadioBrowserProvider(MusicProvider):
         """Retrieve library/subscribed radio stations from the provider."""
         stored_radios = self.config.get_value(CONF_STORED_RADIOS)
         if TYPE_CHECKING:
-            stored_radios = cast(list[str], stored_radios)
+            stored_radios = cast("list[str]", stored_radios)
         for item in stored_radios:
             try:
                 yield await self.get_radio(item)
@@ -202,7 +202,7 @@ class RadioBrowserProvider(MusicProvider):
         """Add item to provider's library. Return true on success."""
         stored_radios = self.config.get_value(CONF_STORED_RADIOS)
         if TYPE_CHECKING:
-            stored_radios = cast(list[str], stored_radios)
+            stored_radios = cast("list[str]", stored_radios)
         if item.item_id in stored_radios:
             return False
         self.logger.debug("Adding radio %s to stored radios", item.item_id)
@@ -214,7 +214,7 @@ class RadioBrowserProvider(MusicProvider):
         """Remove item from provider's library. Return true on success."""
         stored_radios = self.config.get_value(CONF_STORED_RADIOS)
         if TYPE_CHECKING:
-            stored_radios = cast(list[str], stored_radios)
+            stored_radios = cast("list[str]", stored_radios)
         if prov_item_id not in stored_radios:
             return False
         self.logger.debug("Removing radio %s from stored radios", prov_item_id)

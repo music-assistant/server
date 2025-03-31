@@ -38,7 +38,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BIND_INTERFACE,
             type=ConfigEntryType.STRING,
-            default_value=cast(str, mass.streams.publish_ip),
+            default_value=cast("str", mass.streams.publish_ip),
             label="Bind interface",
             description="Interface to bind to for Airplay streaming.",
             category="advanced",

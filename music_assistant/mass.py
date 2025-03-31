@@ -307,11 +307,11 @@ class MusicAssistant:
                 continue
             if asyncio.iscoroutinefunction(cb_func):
                 if TYPE_CHECKING:
-                    cb_func = cast(Callable[[MassEvent], Coroutine[Any, Any, None]], cb_func)
+                    cb_func = cast("Callable[[MassEvent], Coroutine[Any, Any, None]]", cb_func)
                 self.create_task(cb_func, event_obj)
             else:
                 if TYPE_CHECKING:
-                    cb_func = cast(Callable[[MassEvent], None], cb_func)
+                    cb_func = cast("Callable[[MassEvent], None]", cb_func)
                 self.loop.call_soon_threadsafe(cb_func, event_obj)
 
     def subscribe(
@@ -428,12 +428,12 @@ class MusicAssistant:
         if asyncio.iscoroutinefunction(target) or asyncio.iscoroutine(target):
             # coroutine function
             if TYPE_CHECKING:
-                target = cast(Coroutine[Any, Any, _R], target)
+                target = cast("Coroutine[Any, Any, _R]", target)
             handle = self.loop.call_later(delay, _create_task, target)
         else:
             # regular callable
             if TYPE_CHECKING:
-                target = cast(Callable[..., _R], target)
+                target = cast("Callable[..., _R]", target)
             handle = self.loop.call_later(delay, target, *args)
         self._tracked_timers[task_id] = handle
         return handle
@@ -700,7 +700,7 @@ class MusicAssistant:
         async def load_provider_manifest(provider_domain: str, provider_path: str) -> None:
             """Preload all available provider manifest files."""
             # get files in subdirectory
-            for file_str in os.listdir(provider_path):
+            for file_str in os.listdir(provider_path):  # noqa: PTH208, RUF100
                 file_path = os.path.join(provider_path, file_str)
                 if not await isfile(file_path):
                     continue
@@ -733,7 +733,7 @@ class MusicAssistant:
                     )
 
         async with TaskManager(self) as tg:
-            for dir_str in os.listdir(PROVIDERS_PATH):
+            for dir_str in os.listdir(PROVIDERS_PATH):  # noqa: PTH208, RUF100
                 if dir_str.startswith(("_", ".")):
                     continue
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)

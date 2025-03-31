@@ -292,10 +292,10 @@ def get_network(config: dict[str, ConfigValueType]) -> pylast._Network:
     provider: str = str(config.get(CONF_PROVIDER))
 
     if TYPE_CHECKING:
-        key = cast(str, key)
-        secret = cast(str, secret)
-        session_key = cast(str, session_key)
-        username = cast(str, username)
+        key = cast("str", key)
+        secret = cast("str", secret)
+        session_key = cast("str", session_key)
+        username = cast("str", username)
 
     match provider.lower():
         case "lastfm":

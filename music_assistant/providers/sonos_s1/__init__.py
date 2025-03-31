@@ -362,7 +362,7 @@ class SonosPlayerProvider(PlayerProvider):
 
         # Handle config option for manual IP's
         manual_ip_config = cast(
-            list[str], self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
+            "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
         )
         for ip_address in manual_ip_config:
             try:
@@ -475,7 +475,7 @@ class SonosPlayerProvider(PlayerProvider):
 async def discover_household_ids(mass: MusicAssistant, prefer_s1: bool = True) -> list[str]:
     """Discover the HouseHold ID of S1 speaker(s) the network."""
     if cache := await mass.cache.get("sonos_household_ids"):
-        return cast(list[str], cache)
+        return cast("list[str]", cache)
     household_ids: list[str] = []
 
     def get_all_sonos_ips() -> set[SoCo]:

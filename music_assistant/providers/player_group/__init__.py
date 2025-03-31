@@ -265,7 +265,7 @@ class PlayerGroupProvider(PlayerProvider):
         if not (player_provider := self.mass.get_provider(group_type)):
             return base_entries  # guard
         if TYPE_CHECKING:
-            player_provider = cast(PlayerProvider, player_provider)
+            player_provider = cast("PlayerProvider", player_provider)
         assert player_provider.instance_id != self.instance_id
         if not (child_player := next((x for x in player_provider.players), None)):
             return base_entries  # guard
@@ -355,7 +355,7 @@ class PlayerGroupProvider(PlayerProvider):
         """Handle POWER command to group player."""
         group_player = self.mass.players.get(player_id, raise_unavailable=True)
         if TYPE_CHECKING:
-            group_player = cast(Player, group_player)
+            group_player = cast("Player", group_player)
 
         # always stop at power off
         if not powered and group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
@@ -593,7 +593,7 @@ class PlayerGroupProvider(PlayerProvider):
         """
         group_player = self.mass.players.get(target_player, raise_unavailable=True)
         if TYPE_CHECKING:
-            group_player = cast(Player, group_player)
+            group_player = cast("Player", group_player)
         dynamic_members_enabled = self.mass.config.get_raw_player_config_value(
             group_player.player_id,
             CONFIG_ENTRY_DYNAMIC_MEMBERS.key,
@@ -608,7 +608,7 @@ class PlayerGroupProvider(PlayerProvider):
             )
         child_player = self.mass.players.get(player_id, raise_unavailable=True)
         if TYPE_CHECKING:
-            group_player = cast(Player, group_player)
+            group_player = cast("Player", group_player)
         if child_player.active_group and child_player.active_group != group_player.player_id:
             raise InvalidDataError(
                 f"Player {child_player.display_name} already has another group active"
@@ -646,8 +646,8 @@ class PlayerGroupProvider(PlayerProvider):
         group_player = self.mass.players.get(target_player, raise_unavailable=True)
         child_player = self.mass.players.get(player_id, raise_unavailable=True)
         if TYPE_CHECKING:
-            group_player = cast(Player, group_player)
-            child_player = cast(Player, child_player)
+            group_player = cast("Player", group_player)
+            child_player = cast("Player", child_player)
         dynamic_members_enabled = self.mass.config.get_raw_player_config_value(
             group_player.player_id,
             CONFIG_ENTRY_DYNAMIC_MEMBERS.key,
@@ -750,7 +750,7 @@ class PlayerGroupProvider(PlayerProvider):
         elif player_provider := self.mass.get_provider(group_type):
             # grab additional details from one of the provider's players
             if TYPE_CHECKING:
-                player_provider = cast(PlayerProvider, player_provider)
+                player_provider = cast("PlayerProvider", player_provider)
             model_name = "Sync Group"
             manufacturer = self.mass.get_provider(group_type).name
             can_group_with = {player_provider.instance_id}

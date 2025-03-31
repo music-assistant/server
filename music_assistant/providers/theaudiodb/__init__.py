@@ -319,7 +319,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         if not album.year:
             album.year = int(adb_album.get("intYearReleased", "0"))
         if album.album_type == AlbumType.UNKNOWN and adb_album.get("strReleaseFormat"):
-            releaseformat = cast(str, adb_album.get("strReleaseFormat"))
+            releaseformat = cast("str", adb_album.get("strReleaseFormat"))
             album.album_type = ALBUMTYPE_MAPPING.get(releaseformat, AlbumType.UNKNOWN)
         # update the artist mbid while at it
         for album_artist in album.artists:
@@ -403,7 +403,7 @@ class AudioDbMetadataProvider(MetadataProvider):
             self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
         ):
             try:
-                result = cast(dict[str, Any], await response.json())
+                result = cast("dict[str, Any]", await response.json())
             except (
                 aiohttp.client_exceptions.ContentTypeError,
                 JSONDecodeError,

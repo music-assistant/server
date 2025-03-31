@@ -1217,7 +1217,7 @@ class PlayerController(CoreController):
         """Return PlayerProvider for given player."""
         player = self._players[player_id]
         player_provider = self.mass.get_provider(player.provider)
-        return cast(PlayerProvider, player_provider)
+        return cast("PlayerProvider", player_provider)
 
     def get_announcement_volume(self, player_id: str, volume_override: int | None) -> int | None:
         """Get the (player specific) volume for a announcement."""

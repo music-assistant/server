@@ -47,7 +47,7 @@ async def get_libraries(
                 auth_token,
                 session=session,
             )
-        for media_section in cast(list[PlexLibrarySection], plex_server.library.sections()):
+        for media_section in cast("list[PlexLibrarySection]", plex_server.library.sections()):
             if media_section.type != PlexMusicSection.TYPE:
                 continue
             # TODO: figure out what plex uses as stable id and use that instead of names
@@ -55,7 +55,7 @@ async def get_libraries(
         return all_libraries
 
     if cache := await mass.cache.get(cache_key, checksum=auth_token):
-        return cast(list[str], cache)
+        return cast("list[str]", cache)
 
     result = await asyncio.to_thread(_get_libraries)
     # use short expiration for in-memory cache

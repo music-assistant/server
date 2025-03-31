@@ -206,7 +206,7 @@ class MetaDataController(CoreController):
     def providers(self) -> list[MetadataProvider]:
         """Return all loaded/running MetadataProviders."""
         if TYPE_CHECKING:
-            return cast(list[MetadataProvider], self.mass.get_providers(ProviderType.METADATA))
+            return cast("list[MetadataProvider]", self.mass.get_providers(ProviderType.METADATA))
         return self.mass.get_providers(ProviderType.METADATA)
 
     @property
@@ -456,7 +456,7 @@ class MetaDataController(CoreController):
         # collect (local) metadata from all local providers
         local_provs = get_global_cache_value("non_streaming_providers")
         if TYPE_CHECKING:
-            local_provs = cast(set[str], local_provs)
+            local_provs = cast("set[str]", local_provs)
 
         # ensure the item is matched to all providers
         await self.mass.music.artists.match_providers(artist)
@@ -522,7 +522,7 @@ class MetaDataController(CoreController):
         unique_keys: set[str] = set()
         local_provs = get_global_cache_value("non_streaming_providers")
         if TYPE_CHECKING:
-            local_provs = cast(set[str], local_provs)
+            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(album.provider_mappings, key=lambda x: x.priority, reverse=True):
             if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
                 continue
@@ -577,7 +577,7 @@ class MetaDataController(CoreController):
         unique_keys: set[str] = set()
         local_provs = get_global_cache_value("non_streaming_providers")
         if TYPE_CHECKING:
-            local_provs = cast(set[str], local_provs)
+            local_provs = cast("set[str]", local_provs)
         for prov_mapping in sorted(track.provider_mappings, key=lambda x: x.priority, reverse=True):
             if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
                 continue
@@ -691,7 +691,7 @@ class MetaDataController(CoreController):
 
         musicbrainz: MusicbrainzProvider = self.mass.get_provider("musicbrainz")
         if TYPE_CHECKING:
-            musicbrainz = cast(MusicbrainzProvider, musicbrainz)
+            musicbrainz = cast("MusicbrainzProvider", musicbrainz)
         # first try with resource URL (e.g. streaming provider share URL)
         for prov_mapping in artist.provider_mappings:
             if prov_mapping.url and prov_mapping.url.startswith("http"):

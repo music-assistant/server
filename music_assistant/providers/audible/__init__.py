@@ -73,8 +73,8 @@ async def get_config_entries(
     if values is None:
         values = {}
 
-    locale = cast(str, values.get("locale", "") or "us")
-    auth_file = cast(str, values.get(CONF_AUTH_FILE))
+    locale = cast("str", values.get("locale", "") or "us")
+    auth_file = cast("str", values.get(CONF_AUTH_FILE))
 
     auth_required = True
     if auth_file and await check_file_exists(auth_file):
@@ -166,7 +166,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Post Login Url",
             required=False,
-            value=cast(str | None, values.get(CONF_POST_LOGIN_URL)),
+            value=cast("str | None", values.get(CONF_POST_LOGIN_URL)),
             hidden=not auth_required,
         ),
         ConfigEntry(
@@ -183,7 +183,7 @@ async def get_config_entries(
             label="Code Verifier",
             hidden=True,
             required=False,
-            value=cast(str | None, values.get(CONF_CODE_VERIFIER)),
+            value=cast("str | None", values.get(CONF_CODE_VERIFIER)),
         ),
         ConfigEntry(
             key=CONF_SERIAL,
@@ -191,7 +191,7 @@ async def get_config_entries(
             label="Serial",
             hidden=True,
             required=False,
-            value=cast(str | None, values.get(CONF_SERIAL)),
+            value=cast("str | None", values.get(CONF_SERIAL)),
         ),
         ConfigEntry(
             key=CONF_LOGIN_URL,
@@ -199,7 +199,7 @@ async def get_config_entries(
             label="Login Url",
             hidden=True,
             required=False,
-            value=cast(str | None, values.get(CONF_LOGIN_URL)),
+            value=cast("str | None", values.get(CONF_LOGIN_URL)),
         ),
         ConfigEntry(
             key=CONF_AUTH_FILE,
@@ -207,7 +207,7 @@ async def get_config_entries(
             label="Authentication File",
             hidden=True,
             required=True,
-            value=cast(str | None, values.get(CONF_AUTH_FILE)),
+            value=cast("str | None", values.get(CONF_AUTH_FILE)),
         ),
     )
 
@@ -220,8 +220,8 @@ class Audibleprovider(MusicProvider):
     ) -> None:
         """Initialize the Audible Audiobook Provider."""
         super().__init__(mass, manifest, config)
-        self.locale = cast(str, self.config.get_value(CONF_LOCALE) or "us")
-        self.auth_file = cast(str, self.config.get_value(CONF_AUTH_FILE))
+        self.locale = cast("str", self.config.get_value(CONF_LOCALE) or "us")
+        self.auth_file = cast("str", self.config.get_value(CONF_AUTH_FILE))
         self._client: audible.AsyncClient | None = None
         audible.log_helper.set_level(getLevelName(self.logger.level))
 

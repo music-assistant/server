@@ -190,4 +190,4 @@ class FanartTvMetadataProvider(MetadataProvider):
             if "error" in result and "limit" in result["error"]:
                 self.logger.warning(result["error"])
                 return None
-            return cast(dict[str, Any], result)
+            return cast("dict[str, Any]", result)

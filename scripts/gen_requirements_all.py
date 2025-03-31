@@ -26,12 +26,12 @@ def gather_requirements_from_manifests() -> list[str]:
     """Gather all of the requirements from provider manifests."""
     dependencies: list[str] = []
     providers_path = "music_assistant/providers"
-    for dir_str in os.listdir(providers_path):
+    for dir_str in os.listdir(providers_path):  # noqa: PTH208, RUF100
         dir_path = os.path.join(providers_path, dir_str)
         if not os.path.isdir(dir_path):
             continue
         # get files in subdirectory
-        for file_str in os.listdir(dir_path):
+        for file_str in os.listdir(dir_path):  # noqa: PTH208, RUF100
             file_path = os.path.join(dir_path, file_str)
             if not os.path.isfile(file_path):
                 continue

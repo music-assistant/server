@@ -133,7 +133,7 @@ def catch_log_exception(
 
     wrapper_func: Callable[..., None] | Callable[..., Coroutine[Any, Any, None]]
     if asyncio.iscoroutinefunction(check_func):
-        async_func = cast(Callable[..., Coroutine[Any, Any, None]], func)
+        async_func = cast("Callable[..., Coroutine[Any, Any, None]]", func)
 
         @wraps(async_func)
         async def async_wrapper(*args: Any) -> None:

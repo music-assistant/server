@@ -168,7 +168,7 @@ class SiriusXMProvider(MusicProvider):
             bind_port=bind_port,
             base_url=self._base_url,
             static_routes=[
-                ("*", "/{tail:.*}", cast(Awaitable, http_handler)),
+                ("*", "/{tail:.*}", cast("Awaitable", http_handler)),
             ],
         )
 

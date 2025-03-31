@@ -431,7 +431,7 @@ class MusicProvider(Provider):
             )
             if not library_item_ids:
                 return [x async for x in self.get_library_artists()]
-            library_items = cast(list[int], library_item_ids)
+            library_items = cast("list[int]", library_item_ids)
             query = "artists.item_id in :ids"
             query_params = {"ids": library_items}
             return await self.mass.music.artists.library_items(
@@ -447,7 +447,7 @@ class MusicProvider(Provider):
             )
             if not library_item_ids:
                 return [x async for x in self.get_library_albums()]
-            library_item_ids = cast(list[int], library_item_ids)
+            library_item_ids = cast("list[int]", library_item_ids)
             query = "albums.item_id in :ids"
             query_params = {"ids": library_item_ids}
             return await self.mass.music.albums.library_items(
@@ -461,7 +461,7 @@ class MusicProvider(Provider):
             )
             if not library_item_ids:
                 return [x async for x in self.get_library_tracks()]
-            library_item_ids = cast(list[int], library_item_ids)
+            library_item_ids = cast("list[int]", library_item_ids)
             query = "tracks.item_id in :ids"
             query_params = {"ids": library_items}
             return await self.mass.music.tracks.library_items(
@@ -475,7 +475,7 @@ class MusicProvider(Provider):
             )
             if not library_item_ids:
                 return [x async for x in self.get_library_radios()]
-            library_item_ids = cast(list[int], library_item_ids)
+            library_item_ids = cast("list[int]", library_item_ids)
             query = "radios.item_id in :ids"
             query_params = {"ids": library_item_ids}
             return await self.mass.music.radio.library_items(
@@ -489,7 +489,7 @@ class MusicProvider(Provider):
             )
             if not library_item_ids:
                 return [x async for x in self.get_library_playlists()]
-            library_item_ids = cast(list[int], library_item_ids)
+            library_item_ids = cast("list[int]", library_item_ids)
             query = "playlists.item_id in :ids"
             query_params = {"ids": library_item_ids}
             return await self.mass.music.playlists.library_items(
@@ -503,7 +503,7 @@ class MusicProvider(Provider):
             )
             if not library_item_ids:
                 return [x async for x in self.get_library_audiobooks()]
-            library_item_ids = cast(list[int], library_item_ids)
+            library_item_ids = cast("list[int]", library_item_ids)
             query = "audiobooks.item_id in :ids"
             query_params = {"ids": library_item_ids}
             return await self.mass.music.audiobooks.library_items(
@@ -517,7 +517,7 @@ class MusicProvider(Provider):
             )
             if not library_item_ids:
                 return [x async for x in self.get_library_podcasts()]
-            library_item_ids = cast(list[int], library_item_ids)
+            library_item_ids = cast("list[int]", library_item_ids)
             query = "podcasts.item_id in :ids"
             query_params = {"ids": library_item_ids}
             return await self.mass.music.podcasts.library_items(

@@ -113,7 +113,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    base_path = cast(str, config.get_value(CONF_PATH))
+    base_path = cast("str", config.get_value(CONF_PATH))
     return LocalFileSystemProvider(mass, manifest, config, base_path)
 
 
@@ -167,7 +167,7 @@ class LocalFileSystemProvider(MusicProvider):
         self.base_path: str = base_path
         self.write_access: bool = False
         self.sync_running: bool = False
-        self.media_content_type = cast(str, config.get_value(CONF_ENTRY_CONTENT_TYPE.key))
+        self.media_content_type = cast("str", config.get_value(CONF_ENTRY_CONTENT_TYPE.key))
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -1010,7 +1010,7 @@ class LocalFileSystemProvider(MusicProvider):
         # prefer (short lived) cache for a bit more speed
         cache_base_key = f"{self.instance_id}.artist"
         if artist_path and (cache := await self.cache.get(artist_path, base_key=cache_base_key)):
-            return cast(Artist, cache)
+            return cast("Artist", cache)
 
         prov_artist_id = artist_path or name
         artist = Artist(
@@ -1309,7 +1309,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         cache_base_key = f"{self.instance_id}.album"
         if album_dir and (cache := await self.cache.get(album_dir, base_key=cache_base_key)):
-            return cast(Album, cache)
+            return cast("Album", cache)
 
         # album artist(s)
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
@@ -1451,7 +1451,7 @@ class LocalFileSystemProvider(MusicProvider):
         """Return local images found in a given folderpath."""
         cache_base_key = f"{self.lookup_key}.folderimages"
         if (cache := await self.cache.get(folder, base_key=cache_base_key)) is not None:
-            return cast(UniqueList[MediaItemImage], cache)
+            return cast("UniqueList[MediaItemImage]", cache)
         if extra_thumb_names is None:
             extra_thumb_names = ()
         images: UniqueList[MediaItemImage] = UniqueList()
@@ -1729,7 +1729,7 @@ class LocalFileSystemProvider(MusicProvider):
         """Return metadata for a podcast."""
         cache_base_key = f"{self.lookup_key}.podcastmetadata"
         if (cache := await self.cache.get(podcast_folder, base_key=cache_base_key)) is not None:
-            return cast(dict[str, Any], cache)
+            return cast("dict[str, Any]", cache)
         data: dict[str, Any] = {}
         metadata_file = os.path.join(podcast_folder, "metadata.json")
         if await self.exists(metadata_file):

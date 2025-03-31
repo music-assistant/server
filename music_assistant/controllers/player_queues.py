@@ -1334,7 +1334,7 @@ class PlayerQueuesController(CoreController):
                 "Fetching resume point to play for Podcast episode %s",
                 episode.name,
             )
-            episode = cast(PodcastEpisode, episode)
+            episode = cast("PodcastEpisode", episode)
             fully_played, resume_position_ms = await self.mass.music.get_resume_position(episode)
             episode.fully_played = fully_played
             episode.resume_position_ms = 0 if fully_played else resume_position_ms

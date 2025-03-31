@@ -640,7 +640,7 @@ class HomeAssistantPlayers(PlayerProvider):
                     if "supported_formats" not in media_player_obj:
                         continue
                     for supported_format_obj in media_player_obj["supported_formats"]:
-                        result.append(cast(ESPHomeSupportedAudioFormat, supported_format_obj))
+                        result.append(cast("ESPHomeSupportedAudioFormat", supported_format_obj))
         except Exception as exc:
             self.logger.warning(
                 "Failed to fetch diagnostics for ESPHome player: %s",

@@ -220,7 +220,7 @@ class BuiltinPlayerProvider(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         url = f"builtin_player/flow/{player_id}.mp3"
-        player = cast(Player, self.mass.players.get(player_id, raise_unavailable=True))
+        player = cast("Player", self.mass.players.get(player_id, raise_unavailable=True))
         player.current_media = media
 
         self.mass.signal_event(

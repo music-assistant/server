@@ -595,7 +595,7 @@ async def get_stream_details(
         if streamdetails.cache is None:
             streamdetails.cache = StreamCache(mass, streamdetails)
         else:
-            streamdetails.cache = cast(StreamCache, streamdetails.cache)
+            streamdetails.cache = cast("StreamCache", streamdetails.cache)
         # create cache (if needed) and wait until the cache is available
         await streamdetails.cache.create()
         LOGGER.debug(
@@ -676,7 +676,7 @@ async def get_media_stream(
     # work out audio source for these streamdetails
     stream_type = streamdetails.stream_type
     if stream_type == StreamType.CACHE:
-        cache = cast(StreamCache, streamdetails.cache)
+        cache = cast("StreamCache", streamdetails.cache)
         audio_source = await cache.get_audio_stream()
     elif stream_type == StreamType.MULTI_FILE:
         audio_source = get_multi_file_stream(mass, streamdetails)
@@ -845,7 +845,7 @@ async def get_media_stream(
 
         # release cache if needed
         if cache := streamdetails.cache:
-            cache = cast(StreamCache, streamdetails.cache)
+            cache = cast("StreamCache", streamdetails.cache)
             cache.release()
 
         # parse loudnorm data if we have that collected (and enabled)
@@ -1475,7 +1475,7 @@ async def analyze_loudness(
         "600",
     ]
     if streamdetails.stream_type == StreamType.CACHE:
-        cache = cast(StreamCache, streamdetails.cache)
+        cache = cast("StreamCache", streamdetails.cache)
         audio_source = await cache.get_audio_stream()
     elif streamdetails.stream_type == StreamType.MULTI_FILE:
         audio_source = get_multi_file_stream(mass, streamdetails)
@@ -1533,7 +1533,7 @@ async def analyze_loudness(
         finally:
             # release cache if needed
             if cache := streamdetails.cache:
-                cache = cast(StreamCache, streamdetails.cache)
+                cache = cast("StreamCache", streamdetails.cache)
                 cache.release()
 
 

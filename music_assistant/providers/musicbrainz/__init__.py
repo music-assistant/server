@@ -67,10 +67,10 @@ def replace_hyphens(data: _T) -> _T:
         for key, value in data.items():
             new_key = key.replace("-", "_")
             new_values[new_key] = replace_hyphens(value)
-        return cast(_T, new_values)
+        return cast("_T", new_values)
 
     if isinstance(data, list):
-        return cast(_T, [replace_hyphens(x) if isinstance(x, dict) else x for x in data])
+        return cast("_T", [replace_hyphens(x) if isinstance(x, dict) else x for x in data])
 
     return data
 

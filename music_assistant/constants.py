@@ -647,7 +647,7 @@ def create_sample_rates_config_entry(
     default_value: list[str] = []
 
     for option in CONF_ENTRY_SAMPLE_RATES.options:
-        option_value = cast(str, option.value)
+        option_value = cast("str", option.value)
         sample_rate_str, bit_depth_str = option_value.split(MULTI_VALUE_SPLITTER, 1)
         sample_rate = int(sample_rate_str)
         bit_depth = int(bit_depth_str)
