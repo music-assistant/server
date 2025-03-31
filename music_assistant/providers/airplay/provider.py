@@ -275,13 +275,7 @@ class AirplayProvider(PlayerProvider):
         player = self.mass.players.get(player_id)
         if not player:
             return
-        if player.group_childs:
-            # pause is not supported while synced, use stop instead
-            self.logger.debug("Player is synced, using STOP instead of PAUSE")
-            await self.cmd_stop(player_id)
-            return
-        airplay_player = self._players[player_id]
-        await airplay_player.cmd_pause()
+        await self.cmd_stop(player_id)
 
     @lock
     async def play_media(
