@@ -13,7 +13,7 @@ aiosonos==0.1.9
 aiosqlite==0.21.0
 async-upnp-client==0.43.0
 audible==0.10.0
-bgutil-ytdlp-pot-provider==0.8.1
+bgutil-ytdlp-pot-provider==0.8.2
 bidict==0.23.1
 certifi==2025.1.31
 colorlog==6.9.0
