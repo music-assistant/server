@@ -74,13 +74,16 @@ class TopPodcastsResult(_BaseModel):
     """TopPodcastsResult."""
 
     artist_name: str = field(metadata=field_options(alias="artistName"), default="")
-    id_: str | int = field(metadata=field_options(alias="id"))
-    name: str
+    id_: str | int = field(metadata=field_options(alias="id"), default="")
+    name: str = ""
     genres: list[TopPodcastsGenres] = field(default_factory=list)
     artwork_url_30: str | None = field(metadata=field_options(alias="artworkUrl30"), default=None)
     artwork_url_60: str | None = field(metadata=field_options(alias="artworkUrl60"), default=None)
     artwork_url_100: str | None = field(metadata=field_options(alias="artworkUrl100"), default=None)
     artwork_url_600: str | None = field(metadata=field_options(alias="artworkUrl600"), default=None)
+    content_advisory_rating: str | None = field(
+        metadata=field_options(alias="contentAdvisoryRating"), default=None
+    )
 
 
 @dataclass(kw_only=True)
