@@ -11,7 +11,6 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
-import shortuuid
 from aiohttp import web
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
@@ -296,7 +295,6 @@ class SonosPlayerProvider(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         sonos_player = self.sonos_players[player_id]
-        sonos_player.queue_version = shortuuid.random(8)
         mass_player = self.mass.players.get(player_id)
         if sonos_player.client.player.is_passive:
             # this should be already handled by the player manager, but just in case...
@@ -339,11 +337,12 @@ class SonosPlayerProvider(PlayerProvider):
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
+            mass_queue = self.mass.player_queues.get(media.queue_id)
             await sonos_player.client.player.group.play_cloud_queue(
                 cloud_queue_url,
                 http_authorization=media.queue_id,
                 item_id=media.queue_item_id,
-                queue_version=sonos_player.queue_version,
+                queue_version=str(int(mass_queue.items_last_updated)),
             )
             self.mass.call_later(5, sonos_player.sync_play_modes, media.queue_id)
             return
@@ -476,10 +475,11 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue Version request: %s", request.query)
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.sonos_players.get(sonos_player_id)):
+        if not (self.sonos_players.get(sonos_player_id)):
             return web.Response(status=501)
+        mass_queue = self.mass.player_queues.get_active_queue(sonos_player_id)
         context_version = request.query.get("contextVersion") or "1"
-        queue_version = sonos_player.queue_version
+        queue_version = str(int(mass_queue.items_last_updated))
         result = {"contextVersion": context_version, "queueVersion": queue_version}
         return web.json_response(result)
 
@@ -494,11 +494,11 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player_id = sonos_playback_id.split(":")[0]
         if not (mass_queue := self.mass.player_queues.get_active_queue(sonos_player_id)):
             return web.Response(status=501)
-        if not (sonos_player := self.sonos_players.get(sonos_player_id)):
+        if not (self.sonos_players.get(sonos_player_id)):
             return web.Response(status=501)
         result = {
             "contextVersion": "1",
-            "queueVersion": sonos_player.queue_version,
+            "queueVersion": str(int(mass_queue.items_last_updated)),
             "container": {
                 "type": "playlist",
                 "name": "Music Assistant",
