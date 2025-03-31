@@ -60,10 +60,10 @@ test = [
 mass = "music_assistant.__main__:main"
 
 [tool.codespell]
-ignore-words-list = "provid,hass,followings,childs"
+# explicit is misspelled in the iTunes API
+ignore-words-list = "provid,hass,followings,childs,explict"
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
-music_assistant/providers/itunes_podcasts/__init__.py,\
 """
 
 [tool.setuptools]
