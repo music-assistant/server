@@ -45,8 +45,6 @@ from music_assistant.constants import (
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
     CONF_ENABLE_ICY_METADATA,
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_FLOW_MODE,
     CONF_GROUP_MEMBERS,
@@ -249,8 +247,6 @@ class PlayerGroupProvider(PlayerProvider):
                 *base_entries,
                 group_members,
                 CONFIG_ENTRY_UGP_NOTE,
-                CONF_ENTRY_CROSSFADE,
-                CONF_ENTRY_CROSSFADE_DURATION,
                 CONF_ENTRY_SAMPLE_RATES_UGP,
                 CONF_ENTRY_FLOW_MODE_ENFORCED,
             )

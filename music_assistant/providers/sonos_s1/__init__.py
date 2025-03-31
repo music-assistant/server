@@ -31,9 +31,6 @@ from soco import config as soco_config
 from soco.discovery import discover, scan_network
 
 from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
@@ -59,6 +56,8 @@ PLAYER_FEATURES = {
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PAUSE,
     PlayerFeature.ENQUEUE,
+    PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
 }
 
 CONF_NETWORK_SCAN = "network_scan"
@@ -182,8 +181,6 @@ class SonosPlayerProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         return (
             *base_entries,
-            CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
             CONF_ENTRY_SAMPLE_RATES,
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
@@ -303,14 +300,15 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle enqueuing of the next queue item on the player."""
         sonos_player = self.sonosplayers[player_id]
         didl_metadata = create_didl_metadata(media)
-        # set crossfade according to player setting
-        crossfade = bool(await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE))
-        if sonos_player.crossfade != crossfade:
+
+        # disable crossfade mode if needed
+        # crossfading is handled by our streams controller
+        if sonos_player.crossfade:
 
             def set_crossfade() -> None:
                 try:
-                    sonos_player.soco.cross_fade = crossfade
-                    sonos_player.crossfade = crossfade
+                    sonos_player.soco.cross_fade = False
+                    sonos_player.crossfade = False
                 except Exception as err:
                     self.logger.warning(
                         "Unable to set crossfade for player %s: %s", sonos_player.zone_name, err

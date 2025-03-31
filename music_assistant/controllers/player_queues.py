@@ -19,6 +19,7 @@ import time
 from types import NoneType
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
+import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -780,6 +781,8 @@ class PlayerQueuesController(CoreController):
         queue.flow_mode_stream_log = []
         queue.flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
         queue.current_item = queue_item
+        # always update session id when we start a new playback session
+        queue.session_id = shortuuid.random(length=8)
 
         # handle resume point of audiobook(chapter) or podcast(episode)
         if not seek_position and (
@@ -1092,7 +1095,7 @@ class PlayerQueuesController(CoreController):
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
         # enqueue next track on the player
-        self._enqueue_next_item(queue_id, self._get_next_item(queue_id, item_id))
+        self._enqueue_next_item(queue_id, self.get_next_item(queue_id, item_id))
         # preload next streamdetails
         self._preload_next_item(queue_id, queue.index_in_buffer)
 
@@ -1136,7 +1139,8 @@ class PlayerQueuesController(CoreController):
         if (
             insert_at_index == (index_in_buffer + 1)
             and queue.state != PlayerState.IDLE
-            and (next_item := self._get_next_item(queue_id, index_in_buffer))
+            and (next_item := self.get_next_item(queue_id, index_in_buffer))
+            and queue.next_item_id_enqueued != next_item.queue_item_id
         ):
             self._enqueue_next_item(queue_id, next_item)
 
@@ -1144,6 +1148,10 @@ class PlayerQueuesController(CoreController):
         """Update the existing queue items, mostly caused by reordering."""
         self._queue_items[queue_id] = queue_items
         self._queues[queue_id].items = len(self._queue_items[queue_id])
+        # to track if the queue items changed we set a timestamp
+        # this is a simple way to detect changes in the list of items
+        # without having to compare the entire list
+        self._queues[queue_id].items_last_updated = time.time()
         self.signal_update(queue_id, True)
 
     # Helper methods
@@ -1197,12 +1205,23 @@ class PlayerQueuesController(CoreController):
         self, queue_item: QueueItem, flow_mode: bool
     ) -> PlayerMedia:
         """Parse PlayerMedia from QueueItem."""
+        queue = self._queues[queue_item.queue_id]
+        if queue_item.streamdetails:
+            # prefer netto duration
+            # when seeking, the player only receives the remaining duration
+            duration = queue_item.streamdetails.duration or queue_item.duration
+            if duration and queue_item.streamdetails.seek_position:
+                duration = duration - queue_item.streamdetails.seek_position
+        else:
+            duration = queue_item.duration
         media = PlayerMedia(
-            uri=await self.mass.streams.resolve_stream_url(queue_item, flow_mode=flow_mode),
+            uri=await self.mass.streams.resolve_stream_url(
+                queue.session_id, queue_item, flow_mode=flow_mode
+            ),
             media_type=MediaType.FLOW_STREAM if flow_mode else queue_item.media_type,
             title="Music Assistant" if flow_mode else queue_item.name,
             image_url=MASS_LOGO_ONLINE,
-            duration=queue_item.duration,
+            duration=duration,
             queue_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
         )
@@ -1412,7 +1431,7 @@ class PlayerQueuesController(CoreController):
         # all other: just the next index
         return cur_index + 1
 
-    def _get_next_item(self, queue_id: str, cur_index: int | str | None = None) -> QueueItem | None:
+    def get_next_item(self, queue_id: str, cur_index: int | str | None = None) -> QueueItem | None:
         """Return next QueueItem for given queue."""
         if isinstance(cur_index, str):
             cur_index = self.index_by_id(queue_id, cur_index)
@@ -1457,6 +1476,7 @@ class PlayerQueuesController(CoreController):
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(next_item, False),
             )
+            queue.next_item_id_enqueued = next_item.queue_item_id
             self.logger.debug(
                 "Enqueued next track %s on queue %s",
                 next_item.name,
@@ -1466,7 +1486,7 @@ class PlayerQueuesController(CoreController):
         # Enqueue the next item immediately once the player started
         # buffering/playing an item (with a small debounce delay).
         task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.call_later(1, _enqueue_next_item_on_player, next_item, task_id=task_id)
+        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
@@ -1500,7 +1520,7 @@ class PlayerQueuesController(CoreController):
         if current_item.media_type == MediaType.RADIO or not current_item.duration:
             # radio items or no duration, nothing to do
             return
-        if not (next_item := self._get_next_item(queue_id, item_id_in_buffer)):
+        if not (next_item := self.get_next_item(queue_id, item_id_in_buffer)):
             return  # nothing to do
         if next_item.available and next_item.streamdetails:
             # streamdetails already loaded, nothing to do
@@ -1509,7 +1529,8 @@ class PlayerQueuesController(CoreController):
         # preload the streamdetails for the next item 60 seconds before the current item ends
         # this should be enough time to load the stream details and start buffering
         # NOTE: we use the duration of the current item, not the next item
-        delay = max(0, current_item.duration - 60)
+        netto_duration = current_item.duration - current_item.streamdetails.seek_position
+        delay = max(0, netto_duration - 60)
         task_id = f"preload_next_item_{queue_id}"
         self.mass.call_later(delay, _preload_streamdetails, task_id=task_id)
 
@@ -1678,7 +1699,7 @@ class PlayerQueuesController(CoreController):
             # get current/next item based on current index
             queue.current_index = current_index
             queue.current_item = current_item = self.get_item(queue_id, current_index)
-            queue.next_item = self._get_next_item(queue_id, current_index) if current_item else None
+            queue.next_item = self.get_next_item(queue_id, current_index) if current_item else None
 
             # correct elapsed time when seeking
             if (

@@ -23,9 +23,6 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
@@ -149,8 +146,6 @@ class SonosPlayerProvider(PlayerProvider):
         """Return Config Entries for the given player."""
         base_entries = (
             *await super().get_player_config_entries(player_id),
-            CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
@@ -529,7 +524,7 @@ class SonosPlayerProvider(PlayerProvider):
                 "canSeek": False,
                 "canRepeat": True,
                 "canRepeatOne": True,
-                "canCrossfade": True,
+                "canCrossfade": False,  # crossfading is handled by our streams controller
                 "canShuffle": True,
             },
         }
@@ -562,7 +557,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _parse_sonos_queue_item(self, queue_item: QueueItem) -> dict[str, Any]:
         """Parse a Sonos queue item to a PlayerMedia object."""
-        stream_url = await self.mass.streams.resolve_stream_url(queue_item)
+        queue = self.mass.player_queues.get(queue_item.queue_id)
+        assert queue  # for type checking
+        stream_url = await self.mass.streams.resolve_stream_url(queue.session_id, queue_item)
         if streamdetails := queue_item.streamdetails:
             duration = streamdetails.duration or queue_item.duration
             if duration and streamdetails.seek_position:
@@ -574,7 +571,7 @@ class SonosPlayerProvider(PlayerProvider):
             "id": queue_item.queue_item_id,
             "deleted": not queue_item.available,
             "policies": {
-                "canCrossfade": True,
+                "canCrossfade": False,  # crossfading is handled by our streams controller
                 "canSkip": True,
                 "canSkipBack": True,
                 "canSkipToItem": True,
@@ -586,7 +583,7 @@ class SonosPlayerProvider(PlayerProvider):
             },
             "track": {
                 "type": "track",
-                "mediaUrl": await self.mass.streams.resolve_stream_url(queue_item),
+                "mediaUrl": stream_url,
                 "contentType": f"audio/{stream_url.split('.')[-1]}",
                 "service": {
                     "name": "Music Assistant",
@@ -681,9 +678,7 @@ class SonosPlayerProvider(PlayerProvider):
                     f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
                 )
 
-        # set crossfade mode if needed
-        crossfade = bool(
-            await self.mass.config.get_player_config_value(sonos_player.player_id, CONF_CROSSFADE)
-        )
-        if sonos_player.client.player.group.play_modes.crossfade != crossfade:
-            await sonos_player.client.player.group.set_play_modes(crossfade=True)
+        # disable crossfade mode if needed
+        # crossfading is handled by our streams controller
+        if sonos_player.client.player.group.play_modes.crossfade:
+            await sonos_player.client.player.group.set_play_modes(crossfade=False)

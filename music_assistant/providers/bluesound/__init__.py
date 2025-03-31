@@ -14,7 +14,6 @@ from pyblu import Status, SyncStatus
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
@@ -310,11 +309,10 @@ class BluesoundPlayerProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(self.player_id)
         if not self.bluos_players.get(player_id):
             # TODO fix player entries
-            return (*base_entries, CONF_ENTRY_CROSSFADE)
+            return (*base_entries,)
         return (
             *base_entries,
             CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-            CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_ENABLE_ICY_METADATA,

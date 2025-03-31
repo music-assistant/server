@@ -41,8 +41,6 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_HTTP_PROFILE_HIDDEN,
@@ -141,8 +139,6 @@ class BuiltinPlayerProvider(PlayerProvider):
         return (
             *await super().get_player_config_entries(player_id),
             CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_HTTP_PROFILE,
             # Hide power/volume/mute control options since they are guaranteed to work
             ConfigEntry(

@@ -28,8 +28,6 @@ from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
     CONF_ENTRY_HTTP_PROFILE,
@@ -57,8 +55,6 @@ if TYPE_CHECKING:
 
 
 PLAYER_CONFIG_ENTRIES = (
-    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
-    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_ENABLE_ICY_METADATA,
@@ -598,6 +594,7 @@ class DLNAPlayerProvider(PlayerProvider):
             # so we simply assume it does and if it doesn't
             # you'll find out at playback time and we log a warning
             PlayerFeature.ENQUEUE,
+            PlayerFeature.GAPLESS_PLAYBACK,
         }
         if dlna_player.device.has_volume_level:
             supported_features.add(PlayerFeature.VOLUME_SET)

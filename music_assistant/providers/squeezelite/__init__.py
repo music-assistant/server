@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 from aioslimproto.client import PlayerState as SlimPlayerState
 from aioslimproto.client import SlimClient
-from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import Preset as SlimPreset
 from aioslimproto.models import VisualisationType as SlimVisualisationType
@@ -40,10 +39,6 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_CROSSFADE_DURATION,
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_DEPRECATED_EQ_BASS,
     CONF_ENTRY_DEPRECATED_EQ_MID,
     CONF_ENTRY_DEPRECATED_EQ_TREBLE,
@@ -311,11 +306,9 @@ class SlimprotoProvider(PlayerProvider):
             base_entries
             + preset_entries
             + (
-                CONF_ENTRY_CROSSFADE,
                 CONF_ENTRY_DEPRECATED_EQ_BASS,
                 CONF_ENTRY_DEPRECATED_EQ_MID,
                 CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-                CONF_ENTRY_CROSSFADE_DURATION,
                 CONF_ENTRY_OUTPUT_CODEC,
                 CONF_ENTRY_SYNC_ADJUST,
                 CONF_ENTRY_DISPLAY,
@@ -460,14 +453,6 @@ class SlimprotoProvider(PlayerProvider):
         auto_play: bool = False,
     ) -> None:
         """Handle playback of an url on slimproto player(s)."""
-        player_id = slimplayer.player_id
-        if crossfade := await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE):
-            transition_duration = await self.mass.config.get_player_config_value(
-                player_id, CONF_CROSSFADE_DURATION
-            )
-        else:
-            transition_duration = 0
-
         metadata = {
             "item_id": media.uri,
             "title": media.title,
@@ -487,8 +472,6 @@ class SlimprotoProvider(PlayerProvider):
             metadata=metadata,
             enqueue=enqueue,
             send_flush=send_flush,
-            transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
-            transition_duration=transition_duration,
             # if autoplay=False playback will not start automatically
             # instead 'buffer ready' will be called when the buffer is full
             # to coordinate a start of multiple synced players
@@ -507,8 +490,6 @@ class SlimprotoProvider(PlayerProvider):
                     metadata=metadata,
                     enqueue=True,
                     send_flush=False,
-                    transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
-                    transition_duration=transition_duration,
                     autostart=True,
                 ),
             )
@@ -657,6 +638,7 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.PAUSE,
                     PlayerFeature.VOLUME_MUTE,
                     PlayerFeature.ENQUEUE,
+                    PlayerFeature.GAPLESS_PLAYBACK,
                 },
                 can_group_with={self.instance_id},
             )

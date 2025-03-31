@@ -33,8 +33,6 @@ from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
     DEFAULT_PCM_FORMAT,
@@ -439,8 +437,6 @@ class SnapCastProvider(PlayerProvider):
         return (
             *base_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
             CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
         )

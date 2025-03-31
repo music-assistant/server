@@ -14,8 +14,6 @@ from music_assistant_models.errors import PlayerUnavailableError, SetupFailedErr
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
@@ -157,8 +155,6 @@ class FullyKioskProvider(PlayerProvider):
         return (
             *base_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
             CONF_ENTRY_HTTP_PROFILE,
         )

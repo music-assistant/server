@@ -22,6 +22,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_EXPOSE_PLAYER_TO_HA,
@@ -69,7 +70,7 @@ class PlayerProvider(Provider):
             # config entries that are valid for all/most players
             CONF_ENTRY_PLAYER_ICON,
             CONF_ENTRY_FLOW_MODE,
-            CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+            CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_VOLUME_NORMALIZATION,
             CONF_ENTRY_OUTPUT_LIMITER,
@@ -78,6 +79,9 @@ class PlayerProvider(Provider):
         )
         if not (player := self.mass.players.get(player_id)):
             return base_entries
+
+        if PlayerFeature.GAPLESS_PLAYBACK not in player.supported_features:
+            base_entries += (CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,)
 
         if player.type == PlayerType.GROUP:
             # return group player specific entries
