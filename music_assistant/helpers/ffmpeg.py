@@ -94,6 +94,20 @@ class FFMpeg(AsyncProcess):
         if isinstance(self.audio_input, AsyncGenerator):
             self._stdin_task = asyncio.create_task(self._feed_stdin())
 
+    async def communicate(
+        self,
+        input: bytes | None = None,  # noqa: A002
+        timeout: float | None = None,
+    ) -> tuple[bytes, bytes]:
+        """Override communicate to avoid blocking."""
+        if self._stdin_task and not self._stdin_task.done():
+            self._stdin_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._stdin_task
+        if self._logger_task and not self._logger_task.done():
+            self._logger_task.cancel()
+        return await super().communicate(input, timeout)
+
     async def close(self, send_signal: bool = True) -> None:
         """Close/terminate the process and wait for exit."""
         if self.closed:

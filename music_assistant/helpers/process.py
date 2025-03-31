@@ -189,6 +189,27 @@ class AsyncProcess:
                 continue
             yield line
 
+    async def communicate(
+        self,
+        input: bytes | None = None,  # noqa: A002
+        timeout: float | None = None,
+    ) -> tuple[bytes, bytes]:
+        """Communicate with the process and return stdout and stderr."""
+        if self.closed:
+            raise RuntimeError("communicate called while process already done")
+        # abort existing readers on stderr/stdout first before we send communicate
+        waiter: asyncio.Future
+        if self.proc.stdout and (waiter := self.proc.stdout._waiter):
+            self.proc.stdout._waiter = None
+            if waiter and not waiter.done():
+                waiter.set_exception(asyncio.CancelledError())
+        if self.proc.stderr and (waiter := self.proc.stderr._waiter):
+            self.proc.stderr._waiter = None
+            if waiter and not waiter.done():
+                waiter.set_exception(asyncio.CancelledError())
+        stdout, stderr = await asyncio.wait_for(self.proc.communicate(input), timeout)
+        return (stdout, stderr)
+
     async def close(self, send_signal: bool = False) -> None:
         """Close/terminate the process and wait for exit."""
         self._close_called = True

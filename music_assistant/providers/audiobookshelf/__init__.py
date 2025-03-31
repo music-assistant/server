@@ -225,6 +225,17 @@ class Audiobookshelf(MusicProvider):
         )
         if cached_libraries is None:
             self.libraries = LibrariesHelper()
+            # We need the library ids for recommendations. If the cache got cleared e.g. by a db
+            # migration, we might end up with empty library helpers on a configured provider. Note,
+            # that the lib item ids are not synced, still only on full provider sync, instead the
+            # sets are empty. Full sync is expensive.
+            # See warning in browse_lib_podcasts / _browse_books
+            libraries = await self._client.get_all_libraries()
+            for library in libraries:
+                if library.media_type == AbsLibraryMediaType.BOOK:
+                    self.libraries.audiobooks[library.id_] = LibraryHelper(name=library.name)
+                elif library.media_type == AbsLibraryMediaType.PODCAST:
+                    self.libraries.podcasts[library.id_] = LibraryHelper(name=library.name)
         else:
             self.libraries = LibrariesHelper.from_dict(cached_libraries)
 
@@ -267,6 +278,8 @@ class Audiobookshelf(MusicProvider):
     async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""
         libraries = await self._client.get_all_libraries()
+        if len(libraries) == 0:
+            self._log_no_libraries()
         for library in libraries:
             if library.media_type == AbsLibraryMediaType.BOOK and media_type == MediaType.AUDIOBOOK:
                 self.libraries.audiobooks[library.id_] = LibraryHelper(name=library.name)
@@ -571,7 +584,13 @@ class Audiobookshelf(MusicProvider):
 
         all_libraries = {**self.libraries.audiobooks, **self.libraries.podcasts}
         max_items_per_row = 20
-        limit_items_per_lib = max_items_per_row // len(all_libraries)
+        num_libraries = len(all_libraries)
+
+        if num_libraries == 0:
+            self._log_no_libraries()
+            return []
+
+        limit_items_per_lib = max_items_per_row // num_libraries
         limit_items_per_lib = 1 if limit_items_per_lib == 0 else limit_items_per_lib
 
         for library_id in all_libraries:
@@ -924,6 +943,10 @@ class Audiobookshelf(MusicProvider):
                 path=f"{self.instance_id}://{path}",
             )
 
+        if len(self.libraries.audiobooks) == 0 and len(self.libraries.podcasts) == 0:
+            self._log_no_libraries()
+            return []
+
         for lib_id, lib in self.libraries.audiobooks.items():
             path = f"{AbsBrowsePaths.LIBRARIES_BOOK} {lib_id}"
             if append_mediatype_suffix:
@@ -942,6 +965,8 @@ class Audiobookshelf(MusicProvider):
 
     async def _browse_lib_podcasts(self, library_id: str) -> list[MediaItemTypeOrItemMapping]:
         """No sub categories for podcasts."""
+        if len(self.libraries.podcasts[library_id].item_ids) == 0:
+            self._log_no_helper_item_ids()
         items = []
         for podcast_id in self.libraries.podcasts[library_id].item_ids:
             mass_item = await self.mass.music.get_library_item_by_prov_id(
@@ -1043,6 +1068,8 @@ class Audiobookshelf(MusicProvider):
         return sorted(items, key=lambda x: x.name)
 
     async def _browse_books(self, library_id: str) -> Sequence[MediaItemTypeOrItemMapping]:
+        if len(self.libraries.audiobooks[library_id].item_ids) == 0:
+            self._log_no_helper_item_ids()
         items = []
         for book_id in self.libraries.audiobooks[library_id].item_ids:
             mass_item = await self.mass.music.get_library_item_by_prov_id(
@@ -1340,4 +1367,13 @@ class Audiobookshelf(MusicProvider):
             base_key=self.cache_base_key,
             category=CACHE_CATEGORY_LIBRARIES,
             data=self.libraries.to_dict(),
+        )
+
+    def _log_no_libraries(self) -> None:
+        self.logger.error("There are no libraries visible to the Audiobookshelf provider.")
+
+    def _log_no_helper_item_ids(self) -> None:
+        self.logger.warning(
+            "Cached item ids are missing. "
+            "Please trigger a full resync of the Audiobookshelf provider manually."
         )

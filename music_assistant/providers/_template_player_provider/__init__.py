@@ -318,7 +318,7 @@ class MyDemoPlayerprovider(PlayerProvider):
         # the queue controller will simply call this play_media method for
         # each item in the queue to play them one by one.
 
-        # In order to support true gapless and/or crossfade, we offer the option of
+        # In order to support true gapless and/or enqueuing, we offer the option of
         # 'flow_mode' playback. In that case the queue controller will stitch together
         # all songs in the playback queue into a single stream and send that to the player.
         # In that case the URI (and metadata) received here is that of the 'flow mode' stream.

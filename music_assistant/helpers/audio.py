@@ -284,14 +284,22 @@ async def crossfade_pcm_parts(
     fade_in_part: bytes,
     fade_out_part: bytes,
     pcm_format: AudioFormat,
+    fade_out_pcm_format: AudioFormat | None = None,
 ) -> bytes:
     """Crossfade two chunks of pcm/raw audio using ffmpeg."""
-    sample_size = pcm_format.pcm_sample_size
+    if fade_out_pcm_format is None:
+        fade_out_pcm_format = pcm_format
+
     # calculate the fade_length from the smallest chunk
-    fade_length = min(len(fade_in_part), len(fade_out_part)) / sample_size
+    fade_length = min(
+        len(fade_in_part) / pcm_format.pcm_sample_size,
+        len(fade_out_part) / fade_out_pcm_format.pcm_sample_size,
+    )
+    # write the fade_out_part to a temporary file
     fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
     async with aiofiles.open(fadeout_filename, "wb") as outfile:
         await outfile.write(fade_out_part)
+
     args = [
         # generic args
         "ffmpeg",
@@ -300,30 +308,42 @@ async def crossfade_pcm_parts(
         "quiet",
         # fadeout part (as file)
         "-acodec",
-        pcm_format.content_type.name.lower(),
-        "-f",
-        pcm_format.content_type.value,
+        fade_out_pcm_format.content_type.name.lower(),
         "-ac",
-        str(pcm_format.channels),
+        str(fade_out_pcm_format.channels),
         "-ar",
-        str(pcm_format.sample_rate),
+        str(fade_out_pcm_format.sample_rate),
+        "-channel_layout",
+        "mono" if fade_out_pcm_format.channels == 1 else "stereo",
+        "-f",
+        fade_out_pcm_format.content_type.value,
         "-i",
         fadeout_filename,
         # fade_in part (stdin)
         "-acodec",
         pcm_format.content_type.name.lower(),
-        "-f",
-        pcm_format.content_type.value,
         "-ac",
         str(pcm_format.channels),
+        "-channel_layout",
+        "mono" if pcm_format.channels == 1 else "stereo",
         "-ar",
         str(pcm_format.sample_rate),
+        "-f",
+        pcm_format.content_type.value,
         "-i",
         "-",
         # filter args
         "-filter_complex",
         f"[0][1]acrossfade=d={fade_length}",
         # output args
+        "-acodec",
+        pcm_format.content_type.name.lower(),
+        "-ac",
+        str(pcm_format.channels),
+        "-channel_layout",
+        "mono" if pcm_format.channels == 1 else "stereo",
+        "-ar",
+        str(pcm_format.sample_rate),
         "-f",
         pcm_format.content_type.value,
         "-",
@@ -346,6 +366,16 @@ async def crossfade_pcm_parts(
         len(fade_in_part),
         len(fade_out_part),
     )
+    if fade_out_pcm_format.sample_rate != pcm_format.sample_rate:
+        # Edge case: the sample rates are different,
+        # we need to resample the fade_out part to the same sample rate as the fade_in part
+        async with FFMpeg(
+            audio_input="-",
+            input_format=fade_out_pcm_format,
+            output_format=pcm_format,
+        ) as ffmpeg:
+            res = await ffmpeg.communicate(fade_out_part)
+            return res[0] + fade_in_part
     return fade_out_part + fade_in_part
 
 

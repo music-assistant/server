@@ -520,6 +520,12 @@ class ConfigController:
         # Save and apply the new config to the player
         self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
         await self.mass.players.on_player_dsp_change(player_id)
+        # send the dsp config updated event
+        self.mass.signal_event(
+            EventType.PLAYER_DSP_CONFIG_UPDATED,
+            object_id=player_id,
+            data=config,
+        )
         return config
 
     def create_default_player_config(

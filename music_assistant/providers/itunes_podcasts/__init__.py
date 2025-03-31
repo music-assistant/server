@@ -247,7 +247,7 @@ class ITunesPodcastsProvider(MusicProvider):
         for cnt, episode in enumerate(episodes):
             episode_enclosures = episode.get("enclosures", [])
             if len(episode_enclosures) < 1:
-                raise RuntimeError
+                raise MediaNotFoundError
             stream_url = episode_enclosures[0].get("url", None)
             if guid_or_stream_url == episode.get("guid", stream_url):
                 return parse_podcast_episode(
@@ -343,7 +343,7 @@ class ITunesPodcastsProvider(MusicProvider):
                 prov_podcast_id, headers={"User-Agent": "Mozilla/5.0"}
             )
             if response.status != 200:
-                raise RuntimeError
+                raise MediaNotFoundError
             feed_data = await response.read()
             feed_stream = BytesIO(feed_data)
             parsed_podcast = podcastparser.parse(
@@ -399,11 +399,25 @@ class ITunesPodcastsProvider(MusicProvider):
         if top_podcasts_response.feed is None:
             return []
 
+        include_explicit = bool(self.config.get_value(CONF_EXPLICIT))
+
         helper = TopPodcastsHelper()
         for top_podcast in top_podcasts_response.feed.results:
-            podcast_search_result = await self._get_podcast_search_result_from_itunes_id(
-                int(top_podcast.id_)
-            )
+            if not include_explicit and top_podcast.content_advisory_rating is not None:
+                # the spelling within the API is wrong.
+                if top_podcast.content_advisory_rating in [
+                    "explicit",
+                    "Explicit",
+                    "Explict",
+                    "explict",
+                ]:
+                    continue
+            try:
+                podcast_search_result = await self._get_podcast_search_result_from_itunes_id(
+                    int(top_podcast.id_)
+                )
+            except MediaNotFoundError:
+                continue
             helper.top_podcasts.append(podcast_search_result)
 
         await self._cache_set_top_podcasts(top_podcast_helper=helper)

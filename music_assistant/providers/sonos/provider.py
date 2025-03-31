@@ -11,7 +11,6 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
-import shortuuid
 from aiohttp import web
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
@@ -23,9 +22,6 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
@@ -149,8 +145,6 @@ class SonosPlayerProvider(PlayerProvider):
         """Return Config Entries for the given player."""
         base_entries = (
             *await super().get_player_config_entries(player_id),
-            CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION_HIDDEN,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
@@ -301,7 +295,6 @@ class SonosPlayerProvider(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         sonos_player = self.sonos_players[player_id]
-        sonos_player.queue_version = shortuuid.random(8)
         mass_player = self.mass.players.get(player_id)
         if sonos_player.client.player.is_passive:
             # this should be already handled by the player manager, but just in case...
@@ -344,11 +337,12 @@ class SonosPlayerProvider(PlayerProvider):
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
+            mass_queue = self.mass.player_queues.get(media.queue_id)
             await sonos_player.client.player.group.play_cloud_queue(
                 cloud_queue_url,
                 http_authorization=media.queue_id,
                 item_id=media.queue_item_id,
-                queue_version=sonos_player.queue_version,
+                queue_version=str(int(mass_queue.items_last_updated)),
             )
             self.mass.call_later(5, sonos_player.sync_play_modes, media.queue_id)
             return
@@ -481,10 +475,11 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue Version request: %s", request.query)
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (sonos_player := self.sonos_players.get(sonos_player_id)):
+        if not (self.sonos_players.get(sonos_player_id)):
             return web.Response(status=501)
+        mass_queue = self.mass.player_queues.get_active_queue(sonos_player_id)
         context_version = request.query.get("contextVersion") or "1"
-        queue_version = sonos_player.queue_version
+        queue_version = str(int(mass_queue.items_last_updated))
         result = {"contextVersion": context_version, "queueVersion": queue_version}
         return web.json_response(result)
 
@@ -499,11 +494,11 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player_id = sonos_playback_id.split(":")[0]
         if not (mass_queue := self.mass.player_queues.get_active_queue(sonos_player_id)):
             return web.Response(status=501)
-        if not (sonos_player := self.sonos_players.get(sonos_player_id)):
+        if not (self.sonos_players.get(sonos_player_id)):
             return web.Response(status=501)
         result = {
             "contextVersion": "1",
-            "queueVersion": sonos_player.queue_version,
+            "queueVersion": str(int(mass_queue.items_last_updated)),
             "container": {
                 "type": "playlist",
                 "name": "Music Assistant",
@@ -529,7 +524,7 @@ class SonosPlayerProvider(PlayerProvider):
                 "canSeek": False,
                 "canRepeat": True,
                 "canRepeatOne": True,
-                "canCrossfade": True,
+                "canCrossfade": False,  # crossfading is handled by our streams controller
                 "canShuffle": True,
             },
         }
@@ -562,7 +557,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _parse_sonos_queue_item(self, queue_item: QueueItem) -> dict[str, Any]:
         """Parse a Sonos queue item to a PlayerMedia object."""
-        stream_url = await self.mass.streams.resolve_stream_url(queue_item)
+        queue = self.mass.player_queues.get(queue_item.queue_id)
+        assert queue  # for type checking
+        stream_url = await self.mass.streams.resolve_stream_url(queue.session_id, queue_item)
         if streamdetails := queue_item.streamdetails:
             duration = streamdetails.duration or queue_item.duration
             if duration and streamdetails.seek_position:
@@ -574,7 +571,7 @@ class SonosPlayerProvider(PlayerProvider):
             "id": queue_item.queue_item_id,
             "deleted": not queue_item.available,
             "policies": {
-                "canCrossfade": True,
+                "canCrossfade": False,  # crossfading is handled by our streams controller
                 "canSkip": True,
                 "canSkipBack": True,
                 "canSkipToItem": True,
@@ -586,7 +583,7 @@ class SonosPlayerProvider(PlayerProvider):
             },
             "track": {
                 "type": "track",
-                "mediaUrl": await self.mass.streams.resolve_stream_url(queue_item),
+                "mediaUrl": stream_url,
                 "contentType": f"audio/{stream_url.split('.')[-1]}",
                 "service": {
                     "name": "Music Assistant",
@@ -681,9 +678,7 @@ class SonosPlayerProvider(PlayerProvider):
                     f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
                 )
 
-        # set crossfade mode if needed
-        crossfade = bool(
-            await self.mass.config.get_player_config_value(sonos_player.player_id, CONF_CROSSFADE)
-        )
-        if sonos_player.client.player.group.play_modes.crossfade != crossfade:
-            await sonos_player.client.player.group.set_play_modes(crossfade=True)
+        # disable crossfade mode if needed
+        # crossfading is handled by our streams controller
+        if sonos_player.client.player.group.play_modes.crossfade:
+            await sonos_player.client.player.group.set_play_modes(crossfade=False)

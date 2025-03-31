@@ -297,16 +297,12 @@ CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED = ConfigEntry(
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     key=CONF_CROSSFADE_DURATION,
     type=ConfigEntryType.INTEGER,
-    range=(1, 10),
+    range=(1, 15),
     default_value=8,
     label="Crossfade duration",
     description="Duration in seconds of the crossfade between tracks (if enabled)",
     depends_on=CONF_CROSSFADE,
     category="advanced",
-)
-
-CONF_ENTRY_CROSSFADE_DURATION_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_CROSSFADE_DURATION.to_dict(), "hidden": True}
 )
 
 CONF_ENTRY_HIDE_PLAYER_IN_UI = ConfigEntry(

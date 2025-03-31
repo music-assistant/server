@@ -14,7 +14,6 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-import shortuuid
 from aiohttp.client_exceptions import ClientConnectorError
 from aiosonos.api.models import ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
@@ -77,7 +76,6 @@ class SonosPlayer:
         # We can do some smart stuff if we link them together where possible.
         # The player we can just guess from the sonos player id (mac address).
         self.airplay_player_id = f"ap{self.player_id[7:-5].lower()}"
-        self.queue_version: str = shortuuid.random(8)
         self._on_cleanup_callbacks: list[Callable[[], None]] = []
 
     @property
@@ -513,8 +511,9 @@ class SonosPlayer:
             # sync crossfade and repeat modes
             await self.sync_play_modes(event.object_id)
         elif event.event == EventType.QUEUE_ITEMS_UPDATED:
-            # update the queue version to force a refresh
-            self.queue_version = shortuuid.random(8)
+            # refresh cloud queue
+            if session_id := self.client.player.group.active_session_id:
+                await self.client.api.playback_session.refresh_cloud_queue(session_id)
 
     async def sync_play_modes(self, queue_id: str) -> None:
         """Sync the play modes between MA and Sonos."""
