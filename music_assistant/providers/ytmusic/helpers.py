@@ -86,7 +86,7 @@ async def get_track(
             "thumbnails"
         ]
         if track_thumbs := track_obj["videoDetails"].get("thumbnail", {}).get("thumbnails"):
-            track["thumbnails"] = track["thumbnails"] + track_thumbs
+            track["thumbnails"] = track.get("thumbnails", []) + track_thumbs
         track["isAvailable"] = track_obj["playabilityStatus"]["status"] == "OK"
         return track
 
