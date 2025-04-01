@@ -284,7 +284,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         if player_id is None:
             player_id = f"ma_{shortuuid.random(10).lower()}"
 
-        instance = self.instances.pop(player_id, None)
+        already_registered = player_id in self.instances
 
         player_features = {
             PlayerFeature.VOLUME_SET,
@@ -293,7 +293,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             PlayerFeature.POWER,
         }
 
-        if instance is None:
+        if not already_registered:
             self.instances[player_id] = PlayerInstance(
                 unregister_cbs=[
                     self.mass.webserver.register_dynamic_route(
@@ -317,7 +317,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             poll_interval=POLL_INTERVAL,
             hidden_by_default=True,
             expose_to_ha_by_default=False,
-            state=PlayerState.IDLE if instance is None else PlayerState.PAUSED,
+            state=PlayerState.IDLE,
         )
 
         await self.mass.players.register_or_update(player)
@@ -348,8 +348,9 @@ class BuiltinPlayerProvider(PlayerProvider):
         if not (player := self.mass.players.get(player_id)):
             return False
 
-        if not (instance := self.instances[player_id]):
-            raise RuntimeError("No instance found")
+        if player_id not in self.instances:
+            return False
+        instance = self.instances[player_id]
         instance.last_update = time()
 
         if not player.powered and state.powered:
