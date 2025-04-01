@@ -323,8 +323,7 @@ class BuiltinPlayerProvider(PlayerProvider):
                 state=PlayerState.IDLE,
             )
         else:
-            if player.state == PlayerState.PLAYING:
-                player.state = PlayerState.PAUSED
+            player.state = PlayerState.IDLE
             player.name = player_name
             player.available = True
             player.powered = False
