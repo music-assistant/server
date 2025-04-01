@@ -332,6 +332,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             player.available = False
             player.state = PlayerState.IDLE
             player.powered = False
+            self.mass.players.update(player.player_id)
 
     async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> bool:
         """Update current state of a player.
