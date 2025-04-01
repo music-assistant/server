@@ -303,22 +303,31 @@ class BuiltinPlayerProvider(PlayerProvider):
                 last_update=time(),
             )
 
-        player = Player(
-            player_id=player_id,
-            provider=self.instance_id,
-            type=PlayerType.PLAYER,
-            name=player_name,
-            available=True,
-            power_control=PLAYER_CONTROL_NATIVE,
-            powered=False,
-            device_info=DeviceInfo(),
-            supported_features=player_features,
-            needs_poll=True,
-            poll_interval=POLL_INTERVAL,
-            hidden_by_default=True,
-            expose_to_ha_by_default=False,
-            state=PlayerState.IDLE,
-        )
+        player = self.mass.players.get(player_id)
+
+        if player is None:
+            player = Player(
+                player_id=player_id,
+                provider=self.instance_id,
+                type=PlayerType.PLAYER,
+                name=player_name,
+                available=True,
+                power_control=PLAYER_CONTROL_NATIVE,
+                powered=False,
+                device_info=DeviceInfo(),
+                supported_features=player_features,
+                needs_poll=True,
+                poll_interval=POLL_INTERVAL,
+                hidden_by_default=True,
+                expose_to_ha_by_default=False,
+                state=PlayerState.IDLE,
+            )
+        else:
+            if player.state == PlayerState.PLAYING:
+                player.state = PlayerState.PAUSED
+            player.name = player_name
+            player.available = True
+            player.powered = False
 
         await self.mass.players.register_or_update(player)
         return player
