@@ -284,7 +284,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         if player_id is None:
             player_id = f"ma_{shortuuid.random(10).lower()}"
 
-        await self.unregister_player(player_id)
+        instance = self.instances.pop(player_id, None)
 
         player_features = {
             PlayerFeature.VOLUME_SET,
@@ -293,14 +293,15 @@ class BuiltinPlayerProvider(PlayerProvider):
             PlayerFeature.POWER,
         }
 
-        self.instances[player_id] = PlayerInstance(
-            unregister_cbs=[
-                self.mass.webserver.register_dynamic_route(
-                    f"/builtin_player/flow/{player_id}.mp3", self._serve_audio_stream
-                ),
-            ],
-            last_update=time(),
-        )
+        if instance is None:
+            self.instances[player_id] = PlayerInstance(
+                unregister_cbs=[
+                    self.mass.webserver.register_dynamic_route(
+                        f"/builtin_player/flow/{player_id}.mp3", self._serve_audio_stream
+                    ),
+                ],
+                last_update=time(),
+            )
 
         player = Player(
             player_id=player_id,
@@ -316,6 +317,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             poll_interval=POLL_INTERVAL,
             hidden_by_default=True,
             expose_to_ha_by_default=False,
+            state=PlayerState.IDLE if instance is None else PlayerState.PAUSED,
         )
 
         await self.mass.players.register_or_update(player)
