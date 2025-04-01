@@ -729,25 +729,36 @@ class Audiobookshelf(MusicProvider):
                         if item is not None:
                             items.append(item)
                 case AbsShelfId.RECENT_SERIES | AbsShelfId.CONTINUE_SERIES:
-                    # we jump into a browse folder here, set path up as if browse function
-                    # used.
-                    for entity in shelf.entities:
-                        assert isinstance(entity, SeriesShelf)
-                        if len(entity.books) == 0:
-                            continue
-                        path = (
-                            f"{self.instance_id}://"
-                            f"{AbsBrowsePaths.LIBRARIES_BOOK} {library_id}/"
-                            f"{AbsBrowsePaths.SERIES}/{entity.id_}"
-                        )
-                        items.append(
-                            BrowseFolder(
-                                item_id=entity.id_,
-                                name=entity.name,
-                                provider=self.lookup_key,
-                                path=path,
+                    # We jump into a browse folder here if we have SeriesShelf, set path up as if
+                    # browse function used.
+                    if isinstance(shelf, ShelfSeries):
+                        for entity in shelf.entities:
+                            assert isinstance(entity, SeriesShelf)
+                            if len(entity.books) == 0:
+                                continue
+                            path = (
+                                f"{self.instance_id}://"
+                                f"{AbsBrowsePaths.LIBRARIES_BOOK} {library_id}/"
+                                f"{AbsBrowsePaths.SERIES}/{entity.id_}"
                             )
-                        )
+                            items.append(
+                                BrowseFolder(
+                                    item_id=entity.id_,
+                                    name=entity.name,
+                                    provider=self.lookup_key,
+                                    path=path,
+                                )
+                            )
+                    elif isinstance(shelf, ShelfBook) and media_type == MediaType.AUDIOBOOK:
+                        # Single books, must be audiobooks
+                        for entity in shelf.entities:
+                            item = await self.mass.music.get_library_item_by_prov_id(
+                                media_type=media_type,
+                                provider_instance_id_or_domain=self.instance_id,
+                                item_id=entity.id_,
+                            )
+                            if item is not None:
+                                items.append(item)
                 case AbsShelfId.NEWEST_AUTHORS:
                     # same as for series, use a folder
                     for entity in shelf.entities:
