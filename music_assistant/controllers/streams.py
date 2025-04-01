@@ -1222,8 +1222,14 @@ class StreamsController(CoreController):
         )
         if not next_item:
             return False
+        # check if next item is a track
+        if next_item.media_type != MediaType.TRACK:
+            self.logger.debug("Skipping crossfade: next item is not a track")
+            return False
         if (
-            queue_item.media_item
+            queue_item.MediaType == MediaType.TRACK
+            and next_item.MediaType == MediaType.TRACK
+            and queue_item.media_item
             and queue_item.media_item.album
             and next_item.media_item
             and next_item.media_item.album
@@ -1234,10 +1240,7 @@ class StreamsController(CoreController):
             # for now we just never crossfade between tracks of the same album
             self.logger.debug("Skipping crossfade: next item is part of the same album")
             return False
-        # check if next item is a track
-        if next_item.media_type != MediaType.TRACK:
-            self.logger.debug("Skipping crossfade: next item is not a track")
-            return False
+
         # check if next item sample rate matches
         if (
             not flow_mode
