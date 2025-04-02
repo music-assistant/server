@@ -47,8 +47,6 @@ from music_assistant.constants import (
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
-from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.player_group import PlayerGroupProvider
 
 from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
@@ -64,6 +62,8 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.providers.player_group import PlayerGroupProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
 
@@ -209,7 +209,8 @@ class StreamCache:
         if self.org_stream_type == StreamType.CUSTOM:
             provider = self.mass.get_provider(self.streamdetails.provider)
             assert provider is not None
-            assert isinstance(provider, MusicProvider)
+            if TYPE_CHECKING:
+                assert isinstance(provider, MusicProvider)
             audio_source = provider.get_audio_stream(
                 self.streamdetails,
             )
@@ -497,7 +498,8 @@ def get_stream_dsp_details(
             try:
                 # We need a bit of a hack here since only the leader knows the correct output format
                 provider = mass.get_provider(player.provider)
-                assert isinstance(provider, PlayerGroupProvider)
+                if TYPE_CHECKING:
+                    assert isinstance(provider, PlayerGroupProvider)
                 if provider:
                     output_format = provider._get_sync_leader(player).output_format
             except RuntimeError:
@@ -577,7 +579,9 @@ async def get_stream_details(
                 continue
             # guard that provider is available
             music_prov = mass.get_provider(prov_media.provider_instance)
-            assert isinstance(music_prov, MusicProvider)
+            assert music_prov is not None
+            if TYPE_CHECKING:
+                assert isinstance(music_prov, MusicProvider)
             if not music_prov:
                 LOGGER.debug(f"Skipping {prov_media} - provider not available")
                 continue  # provider not available ?
@@ -674,7 +678,9 @@ async def _is_cache_allowed(mass: MusicAssistant, streamdetails: StreamDetails) 
         # no need to cache local files
         return False
     allow_cache = mass.config.get_raw_core_config_value(
-        "streams", CONF_ALLOW_AUDIO_CACHE, mass.streams.allow_cache_default
+        "streams",
+        CONF_ALLOW_AUDIO_CACHE,
+        mass.streams.allow_cache_default,  # type: ignore[has-type]
     )
     if allow_cache == "disabled":
         return False
@@ -737,7 +743,9 @@ async def get_media_stream(
         audio_source = get_multi_file_stream(mass, streamdetails)
     elif stream_type == StreamType.CUSTOM:
         music_prov = mass.get_provider(streamdetails.provider)
-        assert isinstance(music_prov, MusicProvider)
+        assert music_prov is not None
+        if TYPE_CHECKING:
+            assert isinstance(music_prov, MusicProvider)
         audio_source = music_prov.get_audio_stream(
             streamdetails,
             seek_position=streamdetails.seek_position if streamdetails.can_seek else 0,
@@ -954,7 +962,8 @@ async def get_media_stream(
         if (finished or seconds_streamed >= 30) and (
             music_prov := mass.get_provider(streamdetails.provider)
         ):
-            assert isinstance(music_prov, MusicProvider)
+            if TYPE_CHECKING:
+                assert isinstance(music_prov, MusicProvider)
             mass.create_task(music_prov.on_streamed(streamdetails))
 
 
@@ -1314,7 +1323,8 @@ async def get_preview_stream(
     """Create a 30 seconds preview audioclip for the given streamdetails."""
     if not (music_prov := mass.get_provider(provider_instance_id_or_domain)):
         raise ProviderUnavailableError
-    assert isinstance(music_prov, MusicProvider)
+    if TYPE_CHECKING:
+        assert isinstance(music_prov, MusicProvider)
     streamdetails = await music_prov.get_stream_details(item_id, media_type)
 
     audio_input: AsyncGenerator[bytes, None] | str
@@ -1562,7 +1572,9 @@ async def analyze_loudness(
         audio_source = get_multi_file_stream(mass, streamdetails)
     elif streamdetails.stream_type == StreamType.CUSTOM:
         music_prov = mass.get_provider(streamdetails.provider)
-        assert isinstance(music_prov, MusicProvider)
+        assert music_prov is not None
+        if TYPE_CHECKING:
+            assert isinstance(music_prov, MusicProvider)
         audio_source = music_prov.get_audio_stream(
             streamdetails,
         )
