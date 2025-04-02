@@ -127,9 +127,11 @@ async def get_config_entries(
     """
     returncode, output = await check_output("snapserver", "-v")
     snapserver_version = int(output.decode().split(".")[1]) if returncode == 0 else -1
-    local_snapserver_present = snapserver_version >= 27
+    local_snapserver_present = snapserver_version >= 27 and snapserver_version != 30
     if returncode == 0 and not local_snapserver_present:
-        raise SetupFailedError("Invalid snapserver version")
+        raise SetupFailedError(
+            f"Invalid snapserver version. Expected >= 27 and != 30, got {snapserver_version}"
+        )
 
     return (
         ConfigEntry(
