@@ -42,7 +42,6 @@ from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_HTTP_PROFILE_HIDDEN,
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
     CONF_MUTE_CONTROL,
@@ -50,6 +49,7 @@ from music_assistant.constants import (
     CONF_VOLUME_CONTROL,
     DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
+    create_sample_rates_config_entry,
 )
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -139,7 +139,6 @@ class BuiltinPlayerProvider(PlayerProvider):
         return (
             *await super().get_player_config_entries(player_id),
             CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_HTTP_PROFILE,
             # Hide power/volume/mute control options since they are guaranteed to work
             ConfigEntry(
                 key=CONF_POWER_CONTROL,
@@ -165,6 +164,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             # These options don't do anything here
             CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
             CONF_ENTRY_HTTP_PROFILE_HIDDEN,
+            create_sample_rates_config_entry(max_sample_rate=48000, max_bit_depth=16),
         )
 
     async def cmd_stop(self, player_id: str) -> None:
