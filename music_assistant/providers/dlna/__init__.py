@@ -325,12 +325,6 @@ class DLNAPlayerProvider(PlayerProvider):
                 "Enable 'flow mode' for this player.",
                 dlna_player.player.display_name,
             )
-        else:
-            self.logger.debug(
-                "Enqued next track (%s) to player %s",
-                title,
-                dlna_player.player.display_name,
-            )
 
     @catch_request_errors
     async def cmd_pause(self, player_id: str) -> None:

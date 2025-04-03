@@ -560,7 +560,7 @@ class MusicController(CoreController):
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
             *[
-                provider_instance.recommendations()
+                self._get_provider_recommendations(provider_instance)
                 for provider_instance in recommendation_providers
             ],
         )
@@ -1191,6 +1191,21 @@ class MusicController(CoreController):
                 items=await self.radio.library_items(favorite=True, limit=10, order_by="random"),
             ),
         ]
+
+    async def _get_provider_recommendations(
+        self, provider: MusicProvider
+    ) -> list[RecommendationFolder]:
+        """Return recommendations from a provider."""
+        try:
+            return await provider.recommendations()
+        except Exception as err:
+            self.logger.warning(
+                "Error while fetching recommendations from %s: %s",
+                provider.name,
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+            )
+            return []
 
     def _start_provider_sync(self, provider: MusicProvider, media_type: MediaType) -> None:
         """Start sync task on provider and track progress."""

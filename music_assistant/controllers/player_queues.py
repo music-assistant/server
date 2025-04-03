@@ -1014,14 +1014,20 @@ class PlayerQueuesController(CoreController):
     ) -> None:
         """Try to load the stream details for the given queue item."""
         queue_id = queue_item.queue_id
+        queue = self._queues[queue_id]
 
         # we use a contextvar to bypass the throttler for this asyncio task/context
         # this makes sure that playback has priority over other requests that may be
         # happening in the background
         BYPASS_THROTTLER.set(True)
 
+        self.logger.debug(
+            "loading (next) item for queue %s...",
+            queue.display_name,
+        )
+
         # work out if we are playing an album and if we should prefer album loudness
-        prefer_album_loudness = (
+        playing_album_tracks = (
             next_index is not None
             and (next_item := self.get_item(queue_id, next_index))
             and (
@@ -1075,7 +1081,7 @@ class PlayerQueuesController(CoreController):
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
-            prefer_album_loudness=prefer_album_loudness,
+            prefer_album_loudness=playing_album_tracks,
         )
         # allow stripping silence from the begin/end of the track if crossfade is enabled
         # this will allow for (much) smoother crossfades
@@ -1094,8 +1100,11 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = self.index_by_id(queue_id, item_id)
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
+        # enqueue the item on the player as soon as one is loaded
+        if next_item := self.get_next_item(queue_id, item_id):
+            self._enqueue_next_item(queue_id, next_item)
         # preload next streamdetails
-        self._preload_next_item(queue_id, queue.index_in_buffer)
+        self._preload_next_item(queue_id, item_id)
 
     # Main queue manipulation methods
 
@@ -1463,12 +1472,13 @@ class PlayerQueuesController(CoreController):
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(next_item, False),
             )
-            queue.next_item_id_enqueued = next_item.queue_item_id
-            self.logger.debug(
-                "Enqueued next track %s on queue %s",
-                next_item.name,
-                self._queues[queue_id].display_name,
-            )
+            if queue.next_item_id_enqueued != next_item.queue_item_id:
+                queue.next_item_id_enqueued = next_item.queue_item_id
+                self.logger.debug(
+                    "Enqueued next track %s on queue %s",
+                    next_item.name,
+                    self._queues[queue_id].display_name,
+                )
 
         task_id = f"enqueue_next_item_{queue_id}"
         self.mass.create_task(
@@ -1483,17 +1493,17 @@ class PlayerQueuesController(CoreController):
         If caching is enabled, this will also start filling the stream cache.
         If an error occurs, the item will be skipped and the next item will be loaded.
         """
-        queue = self._queues[queue_id]
 
         async def _preload_streamdetails() -> None:
-            self.logger.debug(
-                "Preloading next item for queue %s...",
-                queue.display_name,
-            )
             try:
-                await self.preload_next_queue_item(queue_id, item_id_in_buffer)
+                next_item = await self.preload_next_queue_item(queue_id, item_id_in_buffer)
             except QueueEmpty:
                 return
+            # always send enqueue next (even though we may have already sent that)
+            # because it could have been changed and also because some players
+            # sometimes miss the enqueue_next call when its sent too short after
+            # the play_media call, so consider this a safety net.
+            self._enqueue_next_item(queue_id, next_item)
 
         if not (current_item := self.get_item(queue_id, item_id_in_buffer)):
             # this should not happen, but guard anyways
@@ -1510,7 +1520,7 @@ class PlayerQueuesController(CoreController):
             return
 
         task_id = f"preload_next_item_{queue_id}"
-        self.mass.call_later(5, _preload_streamdetails, task_id=task_id)
+        self.mass.call_later(30, _preload_streamdetails, task_id=task_id)
 
     async def _resolve_media_items(
         self, media_item: MediaItemTypeOrItemMapping, start_item: str | None = None
@@ -1764,10 +1774,6 @@ class PlayerQueuesController(CoreController):
             if queue.next_item and queue.next_item.streamdetails:
                 queue.next_item.streamdetails.dsp = dsp
 
-        if queue.next_item and queue.next_item_id_enqueued != queue.next_item.queue_item_id:
-            # the next item has changed, so we need to enqueue the new one
-            self._enqueue_next_item(queue_id, queue.next_item)
-            queue.next_item_id_enqueued = queue.next_item.queue_item_id
         # handle sending a playback progress report
         # we do this every 30 seconds or when the state changes
         if (

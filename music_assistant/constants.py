@@ -349,8 +349,6 @@ CONF_ENTRY_EXPOSE_PLAYER_TO_HA = ConfigEntry(
     description="Expose this player to the Home Assistant integration. \n"
     "If disabled, this player will not be imported into Home Assistant.",
     category="advanced",
-    # NOTE: This setting is hidden for now, until the HA integration has been updated
-    hidden=True,
 )
 CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED = ConfigEntry.from_dict(
     {**CONF_ENTRY_EXPOSE_PLAYER_TO_HA.to_dict(), "default_value": False}

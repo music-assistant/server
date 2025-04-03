@@ -438,6 +438,7 @@ class PlayerController(CoreController):
             and powered
             and self.mass.config.get_raw_player_config_value(player_id, CONF_AUTO_PLAY, False)
             and player.active_source in (None, player_id)
+            and not player.announcement_in_progress
         ):
             await self.mass.player_queues.resume(player_id)
 

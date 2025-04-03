@@ -326,12 +326,6 @@ class SonosPlayerProvider(PlayerProvider):
             self.logger.warning(
                 "Unable to enqueue next track on player: %s: %s", sonos_player.zone_name, err
             )
-        else:
-            self.logger.debug(
-                "Enqued next track (%s) to player %s",
-                media.title or media.uri,
-                sonos_player.soco.player_name,
-            )
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""

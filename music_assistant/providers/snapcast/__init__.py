@@ -127,9 +127,11 @@ async def get_config_entries(
     """
     returncode, output = await check_output("snapserver", "-v")
     snapserver_version = int(output.decode().split(".")[1]) if returncode == 0 else -1
-    local_snapserver_present = snapserver_version >= 27
+    local_snapserver_present = snapserver_version >= 27 and snapserver_version != 30
     if returncode == 0 and not local_snapserver_present:
-        raise SetupFailedError("Invalid snapserver version")
+        raise SetupFailedError(
+            f"Invalid snapserver version. Expected >= 27 and != 30, got {snapserver_version}"
+        )
 
     return (
         ConfigEntry(
@@ -289,7 +291,7 @@ class SnapCastProvider(PlayerProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        return {ProviderFeature.SYNC_PLAYERS}
+        return {ProviderFeature.SYNC_PLAYERS, ProviderFeature.REMOVE_PLAYER}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -441,6 +443,10 @@ class SnapCastProvider(PlayerProvider):
             CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
             CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
         )
+
+    async def remove_player(self, player_id: str) -> None:
+        """Remove the client from the snapserver when it is deleted."""
+        await self._snapserver.delete_client(self._get_snapclient_id(player_id))
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""

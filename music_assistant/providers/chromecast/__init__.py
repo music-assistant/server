@@ -12,7 +12,14 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import pychromecast
-from music_assistant_models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    MediaType,
+    PlayerFeature,
+    PlayerState,
+    PlayerType,
+)
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE, MediaController
@@ -34,7 +41,7 @@ from music_assistant.models.player_provider import PlayerProvider
 from .helpers import CastStatusListener, ChromecastInfo
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.receiver import CastStatus
@@ -44,10 +51,26 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+MASS_APP_ID = "C35B0678"
+APP_MEDIA_RECEIVER = "CC1AD845"
+CONF_USE_MASS_APP = "use_mass_app"
+
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_HTTP_PROFILE,
+    ConfigEntry(
+        key=CONF_USE_MASS_APP,
+        type=ConfigEntryType.BOOLEAN,
+        label="Use Music Assistant Cast App",
+        default_value=True,
+        description="By default, Music Assistant will use a special Music Assistant "
+        "Cast Receiver app to play media on cast devices. It is tweaked to provide "
+        "better metadata and future expansion. \n\n"
+        "If you want to use the official Google Cast Receiver app instead, disable this option, "
+        "for example if your device has issues with the Music Assistant app.",
+        category="advanced",
+    ),
 )
 
 # originally/officially cast supports 96k sample rate (even for groups)
@@ -65,9 +88,6 @@ CONF_ENTRY_SAMPLE_RATES_CAST_GROUP = create_sample_rates_config_entry(
     safe_max_sample_rate=48000,
     safe_max_bit_depth=16,
 )
-
-
-MASS_APP_ID = "C35B0678"
 
 
 # Monkey patch the Media controller here to store the queue items
@@ -298,11 +318,6 @@ class ChromecastProvider(PlayerProvider):
         media_controller = castplayer.cc.media_controller
         queuedata["mediaSessionId"] = media_controller.status.media_session_id
         await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
-        self.logger.debug(
-            "Enqued next track (%s) to player %s",
-            media.title or media.uri,
-            castplayer.player.display_name,
-        )
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
@@ -522,7 +537,7 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.active_group = (
                 group_player.player.active_group or group_player.player.player_id
             )
-        elif castplayer.cc.app_id == MASS_APP_ID:
+        elif castplayer.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             castplayer.player.active_source = castplayer.player_id
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name
@@ -597,9 +612,16 @@ class ChromecastProvider(PlayerProvider):
 
     ### Helpers / utils
 
-    async def _launch_app(self, castplayer: CastPlayer, app_id: str = MASS_APP_ID) -> None:
+    async def _launch_app(self, castplayer: CastPlayer) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
         event = asyncio.Event()
+
+        if self.mass.config.get_raw_player_config_value(
+            castplayer.player_id, CONF_USE_MASS_APP, True
+        ):
+            app_id = MASS_APP_ID
+        else:
+            app_id = APP_MEDIA_RECEIVER
 
         if castplayer.cc.app_id == app_id:
             return  # already active
