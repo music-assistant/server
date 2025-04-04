@@ -57,6 +57,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import json_loads
@@ -384,7 +385,7 @@ class LocalFileSystemProvider(MusicProvider):
     def _process_item(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
         """Process a single item. NOT async friendly."""
         try:
-            self.logger.debug("Processing: %s", item.relative_path)
+            self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
 
             # ignore playlists that are in album directories
             # we need to run this check early because the setting may have changed
