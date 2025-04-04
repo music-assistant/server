@@ -1100,9 +1100,8 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = self.index_by_id(queue_id, item_id)
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
-        # enqueue the item on the player as soon as one is loaded
-        if next_item := self.get_next_item(queue_id, item_id):
-            self._enqueue_next_item(queue_id, next_item)
+        # reset next_item_id_enqueued to account for repeats
+        queue.next_item_id_enqueued = None
         # preload next streamdetails
         self._preload_next_item(queue_id, item_id)
 
@@ -1435,7 +1434,7 @@ class PlayerQueuesController(CoreController):
             if (next_index := self._get_next_index(queue_id, cur_index)) is None:
                 break
             next_item = self.get_item(queue_id, next_index)
-            if next_item.media_item and not next_item.media_item.available:
+            if not next_item.available:
                 # ensure that we skip unavailable items (set by load_next track logic)
                 continue
             return next_item
@@ -1481,9 +1480,7 @@ class PlayerQueuesController(CoreController):
                 )
 
         task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.create_task(
-            _enqueue_next_item_on_player(next_item), task_id=task_id, abort_existing=True
-        )
+        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
@@ -1494,16 +1491,11 @@ class PlayerQueuesController(CoreController):
         If an error occurs, the item will be skipped and the next item will be loaded.
         """
 
-        async def _preload_streamdetails() -> None:
+        async def _preload_streamdetails(item_id_in_buffer: str) -> None:
             try:
-                next_item = await self.preload_next_queue_item(queue_id, item_id_in_buffer)
+                await self.preload_next_queue_item(queue_id, item_id_in_buffer)
             except QueueEmpty:
                 return
-            # always send enqueue next (even though we may have already sent that)
-            # because it could have been changed and also because some players
-            # sometimes miss the enqueue_next call when its sent too short after
-            # the play_media call, so consider this a safety net.
-            self._enqueue_next_item(queue_id, next_item)
 
         if not (current_item := self.get_item(queue_id, item_id_in_buffer)):
             # this should not happen, but guard anyways
@@ -1520,7 +1512,7 @@ class PlayerQueuesController(CoreController):
             return
 
         task_id = f"preload_next_item_{queue_id}"
-        self.mass.call_later(30, _preload_streamdetails, task_id=task_id)
+        self.mass.call_later(30, _preload_streamdetails, item_id_in_buffer, task_id=task_id)
 
     async def _resolve_media_items(
         self, media_item: MediaItemTypeOrItemMapping, start_item: str | None = None
@@ -1785,6 +1777,10 @@ class PlayerQueuesController(CoreController):
         # check if we need to clear the queue if we reached the end
         if "state" in changed_keys and queue.state == PlayerState.IDLE:
             self._handle_end_of_queue(queue, prev_state, new_state)
+
+        # check if we need to enqueue the next item
+        if queue.next_item and queue.next_item.queue_id != queue.next_item_id_enqueued:
+            self._enqueue_next_item(queue_id, queue.next_item)
 
         # watch dynamic radio items refill if needed
         if "current_item_id" in changed_keys:
