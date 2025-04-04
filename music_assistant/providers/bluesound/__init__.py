@@ -248,7 +248,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             if mass_player := self.mass.players.get(self.player_id):
                 cur_address = get_primary_ip_address_from_zeroconf(info)
                 cur_port = get_port_from_zeroconf(info)
-                if cur_address and cur_address != mass_player.device_info.address:
+                if cur_address and cur_address != mass_player.device_info.ip_address:
                     self.logger.debug(
                         "Address updated to %s for player %s", cur_address, mass_player.display_name
                     )
