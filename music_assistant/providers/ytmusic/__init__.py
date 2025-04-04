@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from contextlib import suppress
+from datetime import datetime
 from io import StringIO
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
@@ -866,7 +868,8 @@ class YoutubeMusicProvider(MusicProvider):
         if thumbnails := episode_obj.get("thumbnails"):
             episode.metadata.images = self._parse_thumbnails(thumbnails)
         if release_date := episode_obj.get("date"):
-            episode.metadata.release_date = release_date
+            with suppress(ValueError):
+                episode.metadata.release_date = datetime.fromisoformat(release_date)
         return episode
 
     async def _get_stream_format(self, item_id: str) -> dict[str, Any]:

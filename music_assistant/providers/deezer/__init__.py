@@ -519,8 +519,6 @@ class DeezerProvider(MusicProvider):
             metadata.duration = track.duration
         if hasattr(track, "rank"):
             metadata.popularity = track.rank
-        if hasattr(track, "release_date"):
-            metadata.release_date = track.release_date
         if hasattr(track, "album") and hasattr(track.album, "cover_big"):
             metadata.images = [
                 MediaItemImage(
