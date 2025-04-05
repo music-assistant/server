@@ -773,14 +773,15 @@ class StreamsController(CoreController):
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
             return
-        if start_queue_item.media_type != MediaType.TRACK:
-            use_crossfade = False
         pcm_sample_size = int(
             pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels
         )
         crossfade_enabled = await self.mass.config.get_player_config_value(
             queue.queue_id, CONF_CROSSFADE
         )
+        if start_queue_item.media_type != MediaType.TRACK:
+            # we only support crossfade for tracks, not for radio items
+            crossfade_enabled = False
         crossfade_duration = self.mass.config.get_raw_player_config_value(
             queue.queue_id, CONF_CROSSFADE_DURATION, 10
         )
@@ -830,7 +831,7 @@ class StreamsController(CoreController):
                 pcm_format=pcm_format,
             ):
                 # buffer size needs to be big enough to include the crossfade part
-                req_buffer_size = pcm_sample_size if not use_crossfade else crossfade_size
+                req_buffer_size = pcm_sample_size if not crossfade_enabled else crossfade_size
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
