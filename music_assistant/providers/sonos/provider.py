@@ -22,6 +22,7 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
     CONF_ENTRY_OUTPUT_CODEC,
@@ -145,6 +146,7 @@ class SonosPlayerProvider(PlayerProvider):
         base_entries = (
             *await super().get_player_config_entries(player_id),
             CONF_ENTRY_OUTPUT_CODEC,
+            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             create_sample_rates_config_entry(
                 max_sample_rate=48000, max_bit_depth=24, safe_max_bit_depth=24, hidden=True
