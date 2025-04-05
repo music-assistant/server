@@ -591,12 +591,7 @@ class SnapCastProvider(PlayerProvider):
             )
 
         async def _streamer() -> None:
-            if self._uses_external_server:
-                stream_path = f"tcp://{self._snapcast_server_host}:{stream._stream['uri']['port']}"
-            elif stream.path:
-                stream_path = stream.path
-            else:
-                stream_path = "tcp://" + stream._stream["uri"]["host"]
+            stream_path = f"tcp://{self._snapcast_server_host}:{stream._stream['uri']['port']}"
 
             self.logger.debug("Start streaming to %s", stream_path)
             async with FFMpeg(
