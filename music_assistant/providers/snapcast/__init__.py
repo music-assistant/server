@@ -591,12 +591,9 @@ class SnapCastProvider(PlayerProvider):
             )
 
         async def _streamer() -> None:
-            if not self._use_builtin_server:
-                port = stream._stream["uri"]["port"]
-                stream_path = f"tcp://{self._snapcast_server_host}:{port}"
-            elif stream.path:
+            if stream.path:
                 stream_path = stream.path
-            else:
+            if not stream.path:
                 stream_path = "tcp://" + stream._stream["uri"]["host"]
 
             self.logger.debug("Start streaming to %s", stream_path)
