@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import hashlib
 import html
 import json
@@ -527,7 +528,12 @@ class AudibleHelper:
             str(audiobook_data.get("extended_product_description", ""))
         )
         book.metadata.languages = UniqueList([audiobook_data.get("language") or ""])
-        book.metadata.release_date = audiobook_data.get("release_date")
+        release_date_str = audiobook_data.get("release_date")
+        book.metadata.release_date = (
+            datetime.datetime.strptime(release_date_str, "%Y-%m-%d").astimezone(datetime.UTC)
+            if release_date_str
+            else None
+        )
 
         # Set review if available
         reviews = audiobook_data.get("editorial_reviews", [])
