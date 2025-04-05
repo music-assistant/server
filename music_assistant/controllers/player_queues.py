@@ -1022,7 +1022,7 @@ class PlayerQueuesController(CoreController):
         BYPASS_THROTTLER.set(True)
 
         self.logger.debug(
-            "loading (next) item for queue %s...",
+            "(pre)loading (next) item for queue %s...",
             queue.display_name,
         )
 
@@ -1100,8 +1100,6 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = self.index_by_id(queue_id, item_id)
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
-        # reset next_item_id_enqueued to account for repeats
-        queue.next_item_id_enqueued = None
         # preload next streamdetails
         self._preload_next_item(queue_id, item_id)
 
@@ -1142,12 +1140,18 @@ class PlayerQueuesController(CoreController):
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
         self._queue_items[queue_id] = queue_items
-        self._queues[queue_id].items = len(self._queue_items[queue_id])
+        queue = self._queues[queue_id]
+        queue.items = len(self._queue_items[queue_id])
         # to track if the queue items changed we set a timestamp
         # this is a simple way to detect changes in the list of items
         # without having to compare the entire list
-        self._queues[queue_id].items_last_updated = time.time()
+        queue.items_last_updated = time.time()
         self.signal_update(queue_id, True)
+        if queue.state == PlayerState.PLAYING:
+            # if the queue is playing,
+            # ensure to (re)queue the next track because it might have changed
+            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
+                self._enqueue_next_item(queue_id, next_item)
 
     # Helper methods
 
@@ -1456,7 +1460,7 @@ class PlayerQueuesController(CoreController):
         )
 
     def _enqueue_next_item(self, queue_id: str, next_item: QueueItem | None) -> None:
-        """Enqueue/precache the next item on the player."""
+        """Enqueue the next item on the player."""
         if not next_item:
             # no next item, nothing to do...
             return
@@ -1484,7 +1488,7 @@ class PlayerQueuesController(CoreController):
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
-        Preload the next item in the queue.
+        Preload the streamdetails for the next item in the queue/buffer.
 
         This basically ensures the item is playable and fetches the stream details.
         If caching is enabled, this will also start filling the stream cache.
@@ -1493,7 +1497,8 @@ class PlayerQueuesController(CoreController):
 
         async def _preload_streamdetails(item_id_in_buffer: str) -> None:
             try:
-                await self.preload_next_queue_item(queue_id, item_id_in_buffer)
+                next_item = await self.preload_next_queue_item(queue_id, item_id_in_buffer)
+                self._enqueue_next_item(queue_id, next_item)
             except QueueEmpty:
                 return
 
@@ -1512,7 +1517,7 @@ class PlayerQueuesController(CoreController):
             return
 
         task_id = f"preload_next_item_{queue_id}"
-        self.mass.call_later(30, _preload_streamdetails, item_id_in_buffer, task_id=task_id)
+        self.mass.call_later(0.5, _preload_streamdetails, item_id_in_buffer, task_id=task_id)
 
     async def _resolve_media_items(
         self, media_item: MediaItemTypeOrItemMapping, start_item: str | None = None
@@ -1777,10 +1782,6 @@ class PlayerQueuesController(CoreController):
         # check if we need to clear the queue if we reached the end
         if "state" in changed_keys and queue.state == PlayerState.IDLE:
             self._handle_end_of_queue(queue, prev_state, new_state)
-
-        # check if we need to enqueue the next item
-        if queue.next_item and queue.next_item.queue_id != queue.next_item_id_enqueued:
-            self._enqueue_next_item(queue_id, queue.next_item)
 
         # watch dynamic radio items refill if needed
         if "current_item_id" in changed_keys:
