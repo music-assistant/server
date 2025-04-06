@@ -1022,10 +1022,10 @@ class StreamsController(CoreController):
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
             # volume normalization with known loudness measurement
             # apply volume/gain correction
-            if streamdetails.prefer_album_loudness and streamdetails.loudness_album not in [
+            if streamdetails.prefer_album_loudness and streamdetails.loudness_album not in (
                 inf,
                 -inf,
-            ]:
+            ):
                 gain_correct = streamdetails.target_loudness - streamdetails.loudness_album
             else:
                 gain_correct = streamdetails.target_loudness - streamdetails.loudness
