@@ -29,8 +29,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
-from music_assistant.constants import CONF_CROSSFADE
-
 from .const import (
     CONF_AIRPLAY_MODE,
     PLAYBACK_STATE_MAP,
@@ -520,22 +518,17 @@ class SonosPlayer:
         queue = self.mass.player_queues.get(queue_id)
         if not queue or queue.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
             return
-        crossfade = await self.mass.config.get_player_config_value(queue.queue_id, CONF_CROSSFADE)
         repeat_single_enabled = queue.repeat_mode == RepeatMode.ONE
         repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL
         play_modes = self.client.player.group.play_modes
         if (
-            play_modes.crossfade != crossfade
-            or play_modes.repeat != repeat_all_enabled
+            play_modes.repeat != repeat_all_enabled
             or play_modes.repeat_one != repeat_single_enabled
-            or play_modes.shuffle != queue.shuffle_enabled
         ):
             try:
                 await self.client.player.group.set_play_modes(
-                    crossfade=crossfade,
                     repeat=repeat_all_enabled,
                     repeat_one=repeat_single_enabled,
-                    shuffle=queue.shuffle_enabled,
                 )
             except FailedCommand as err:
                 if "groupCoordinatorChanged" not in str(err):

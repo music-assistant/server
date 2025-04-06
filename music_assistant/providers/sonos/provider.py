@@ -145,8 +145,8 @@ class SonosPlayerProvider(PlayerProvider):
         """Return Config Entries for the given player."""
         base_entries = (
             *await super().get_player_config_entries(player_id),
-            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_OUTPUT_CODEC,
+            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             create_sample_rates_config_entry(
                 max_sample_rate=48000, max_bit_depth=24, safe_max_bit_depth=24, hidden=True
@@ -325,15 +325,16 @@ class SonosPlayerProvider(PlayerProvider):
                 await sonos_player.client.player.group.set_group_members(group_childs)
             return
 
-        if (
-            media.queue_id
-            and media.media_type
-            not in (
-                MediaType.PLUGIN_SOURCE,
-                MediaType.FLOW_STREAM,
-            )
-            and not media.queue_id.startswith("ugp_")
-        ):
+        if media.media_type in (
+            MediaType.PLUGIN_SOURCE,
+            MediaType.FLOW_STREAM,
+        ) or media.queue_id.startswith("ugp_"):
+            # flow stream or plugin source playback
+            # use the legacy playback method for this as it also
+            await self._play_media_legacy(sonos_player, media)
+            return
+
+        if media.queue_id:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
@@ -525,7 +526,7 @@ class SonosPlayerProvider(PlayerProvider):
                 "canRepeat": True,
                 "canRepeatOne": True,
                 "canCrossfade": False,  # crossfading is handled by our streams controller
-                "canShuffle": True,
+                "canShuffle": False,  # handled by our streams controller
             },
         }
         return web.json_response(result)

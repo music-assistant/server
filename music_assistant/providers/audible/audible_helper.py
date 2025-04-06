@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import hashlib
 import html
 import json
@@ -11,6 +10,8 @@ import logging
 import os
 import re
 from collections.abc import AsyncGenerator
+from contextlib import suppress
+from datetime import datetime
 from os import PathLike
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -528,12 +529,9 @@ class AudibleHelper:
             str(audiobook_data.get("extended_product_description", ""))
         )
         book.metadata.languages = UniqueList([audiobook_data.get("language") or ""])
-        release_date_str = audiobook_data.get("release_date")
-        book.metadata.release_date = (
-            datetime.datetime.strptime(release_date_str, "%Y-%m-%d").astimezone(datetime.UTC)
-            if release_date_str
-            else None
-        )
+        if release_date := audiobook_data.get("release_date"):
+            with suppress(ValueError):
+                datetime.datetime.strptime(release_date, "%Y-%m-%d").astimezone(datetime.UTC)
 
         # Set review if available
         reviews = audiobook_data.get("editorial_reviews", [])

@@ -7,6 +7,7 @@ import functools
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
@@ -17,11 +18,7 @@ from aiohttp.client_exceptions import (
     ClientPayloadError,
     ClientResponseError,
 )
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueOption,
-    ConfigValueType,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
     ConfigEntryType,
@@ -53,14 +50,8 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import (
-    CACHE_CATEGORY_DEFAULT,
-    CACHE_CATEGORY_RECOMMENDATIONS,
-)
-from music_assistant.helpers.throttle_retry import (
-    ThrottlerManager,
-    throttle_with_retries,
-)
+from music_assistant.constants import CACHE_CATEGORY_DEFAULT, CACHE_CATEGORY_RECOMMENDATIONS
+from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
 
 from .auth_manager import ManualAuthenticationHelper, TidalAuthManager
@@ -1601,12 +1592,13 @@ class TidalProvider(MusicProvider):
             album.album_type = AlbumType.SINGLE
 
         # Safely parse year
-        release_date = album_obj.get("releaseDate", "")
-        if release_date:
+        if release_date := album_obj.get("releaseDate", ""):
             try:
                 album.year = int(release_date.split("-")[0])
             except (ValueError, IndexError):
                 self.logger.debug("Invalid release date format: %s", release_date)
+            with suppress(ValueError):
+                album.metadata.release_date = datetime.fromisoformat(release_date)
 
         # Safely set metadata
         upc = album_obj.get("upc")
