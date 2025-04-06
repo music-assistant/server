@@ -353,3 +353,15 @@ def convert_to_netscape(raw_cookie_str: str, domain: str) -> str:
     for morsel in cookie.values():
         netscape_cookie += f"{domain}\tTRUE\t/\tTRUE\t0\t{morsel.key}\t{morsel.value}\n"
     return netscape_cookie
+
+
+async def get_home(
+    headers: dict[str, str], language: str = "en", user: str | None = None, limit: int = 3
+) -> dict[str, str]:
+    """Get the recommendations from the home page"""
+
+    def _get_home():
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        return ytm.get_home(limit=limit)
+
+    return await asyncio.to_thread(_get_home)
