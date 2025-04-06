@@ -1,0 +1,12 @@
+{
+  "type": "player",
+  "domain": "improv",
+  "name": "Improv Test",
+  "description": "Just a test implementation",
+  "codeowners": [
+    "@music-assistant"
+  ],
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": false
+}
