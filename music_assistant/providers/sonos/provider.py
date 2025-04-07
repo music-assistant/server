@@ -149,7 +149,12 @@ class SonosPlayerProvider(PlayerProvider):
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             create_sample_rates_config_entry(
-                max_sample_rate=48000, max_bit_depth=24, safe_max_bit_depth=24, hidden=True
+                # set safe max bit depth to 16 bits because the older Sonos players
+                # do not support 24 bit playback (e.g. Play:1)
+                max_sample_rate=48000,
+                max_bit_depth=24,
+                safe_max_bit_depth=16,
+                hidden=False,
             ),
         )
         if not (sonos_player := self.sonos_players.get(player_id)):
