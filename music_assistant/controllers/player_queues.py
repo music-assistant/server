@@ -1041,9 +1041,9 @@ class PlayerQueuesController(CoreController):
                 and queue_item.media_item.album.item_id == next_item.media_item.album.item_id
             )
         )
+        current_index = self.index_by_id(queue_id, queue_item.queue_item_id)
         previous_track_from_same_album = (
-            queue.current_index is not None
-            and (previous_index := max(queue.current_index - 1, 0))
+            (previous_index := max(current_index - 1, 0))
             and (previous_index > 0)
             and (previous_item := self.get_item(queue_id, previous_index))
             and (
