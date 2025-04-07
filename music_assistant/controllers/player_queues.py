@@ -384,7 +384,8 @@ class PlayerQueuesController(CoreController):
         # this makes sure that playback has priority over other requests that may be
         # happening in the background
         BYPASS_THROTTLER.set(True)
-        queue = self._queues[queue_id]
+        if not (queue := self.get(queue_id)):
+            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # always fetch the underlying player so we can raise early if its not available
         queue_player = self.mass.players.get(queue_id, True)
         if queue_player.announcement_in_progress:
