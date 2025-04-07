@@ -232,6 +232,16 @@ class SonosPlayer:
             if player_provider := self.mass.get_provider(airplay.provider):
                 await player_provider.cmd_pause(airplay.player_id)
             return
+        active_source = self.mass_player.active_source
+        if self.mass.player_queues.get(active_source):
+            # Sonos seems to be bugged when playing our queue tracks and we send pause,
+            # it can't resume the current track and simply aborts/skips it
+            # so we stop the player instead.
+            # https://github.com/music-assistant/support/issues/3758
+            # TODO: revisit this later once we implemented support for range requests
+            # as I have the feeling the pause issue is related to seek support (=range requests)
+            await self.cmd_stop()
+            return
         if not self.client.player.group.playback_actions.can_pause:
             await self.cmd_stop()
             return

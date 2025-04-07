@@ -215,17 +215,6 @@ class SonosPlayerProvider(PlayerProvider):
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         if sonos_player := self.sonos_players[player_id]:
-            active_source = sonos_player.mass_player.active_source
-            if self.mass.player_queues.get(active_source):
-                # Sonos seems to be bugged when playing our queue tracks and we send pause,
-                # it can't resume the current track and simply aborts/skips it
-                # so we stop the player instead.
-                # https://github.com/music-assistant/support/issues/3758
-                # TODO: revisit this later and find out how this can be so bugged
-                # probably some strange DLNA flag or whatever needs to be set.
-                await self.cmd_stop(player_id)
-                return
-
             await sonos_player.cmd_pause()
 
     async def cmd_seek(self, player_id: str, position: int) -> None:
