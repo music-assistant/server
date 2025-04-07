@@ -1029,8 +1029,9 @@ class PlayerQueuesController(CoreController):
             queue.display_name,
         )
 
-        # work out if we are playing an album and if we should prefer album loudness
-        playing_album_tracks = (
+        # work out if we are playing an album and if we should prefer album
+        # loudness
+        next_track_from_same_album = (
             next_index is not None
             and (next_item := self.get_item(queue_id, next_index))
             and (
@@ -1043,6 +1044,22 @@ class PlayerQueuesController(CoreController):
                 and queue_item.media_item.album.item_id == next_item.media_item.album.item_id
             )
         )
+        current_index = self.index_by_id(queue_id, queue_item.queue_item_id)
+        previous_track_from_same_album = (
+            (previous_index := max(current_index - 1, 0))
+            and (previous_index > 0)
+            and (previous_item := self.get_item(queue_id, previous_index))
+            and (
+                queue_item.media_item
+                and hasattr(queue_item.media_item, "album")
+                and queue_item.media_item.album
+                and previous_item.media_item
+                and hasattr(previous_item.media_item, "album")
+                and previous_item.media_item.album
+                and queue_item.media_item.album.item_id == previous_item.media_item.album.item_id
+            )
+        )
+        playing_album_tracks = next_track_from_same_album or previous_track_from_same_album
         if queue_item.media_item and queue_item.media_item.media_type == MediaType.TRACK:
             album = queue_item.media_item.album
             # prefer the full library media item so we have all metadata and provider(quality) info
