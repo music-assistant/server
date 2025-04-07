@@ -602,7 +602,8 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         if (queue := self.get(queue_id)) and queue.active:
-            queue.resume_pos = queue.corrected_elapsed_time
+            if queue.state == PlayerState.PLAYING:
+                queue.resume_pos = queue.corrected_elapsed_time
         # forward the actual command to the player provider
         if player_provider := self.mass.players.get_player_provider(queue.queue_id):
             await player_provider.cmd_stop(queue_id)
@@ -634,7 +635,8 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         if queue := self._queues.get(queue_id):
-            queue.resume_pos = queue.corrected_elapsed_time
+            if queue.state == PlayerState.PLAYING:
+                queue.resume_pos = queue.corrected_elapsed_time
         # forward the actual command to the player controller
         await self.mass.players.cmd_pause(queue_id)
 
