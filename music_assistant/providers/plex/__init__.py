@@ -56,6 +56,7 @@ from plexapi.server import PlexServer
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.timeline import setup as setup_timeline_reporter
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.plex.helpers import discover_local_servers, get_libraries
@@ -323,6 +324,7 @@ class PlexProvider(MusicProvider):
     _plex_library: PlexMusicSection = None
     _myplex_account: MyPlexAccount = None
     _baseurl: str
+    _timeline_reporter = None
 
     async def handle_async_init(self) -> None:
         """Set up the music provider by connecting to the server."""
@@ -379,6 +381,10 @@ class PlexProvider(MusicProvider):
             self._plex_library = await self._run_async(
                 self._plex_server.library.section, library_name
             )
+
+            # Initialize timeline reporter
+            self._timeline_reporter = await setup_timeline_reporter(self.mass)
+            self.logger.info("Plex timeline reporter initialized")
         except requests.exceptions.ConnectionError as err:
             raise SetupFailedError from err
 
@@ -914,7 +920,20 @@ class PlexProvider(MusicProvider):
             ),
             stream_type=StreamType.HTTP,
             duration=plex_track.duration,
-            data=plex_track,
+            data={
+                "plex_track": plex_track,
+                "rating_key": str(plex_track.ratingKey),
+                "key": plex_track.key,
+                "duration": plex_track.duration,
+                "base_url": self._baseurl,
+                "token": str(self.config.get_value(CONF_AUTH_TOKEN)),
+                "machine_identifier": self._plex_server.machineIdentifier,
+                "server_url": (
+                    f"{'https' if self.config.get_value(CONF_LOCAL_SERVER_SSL) else 'http'}://"
+                    f"{self.config.get_value(CONF_LOCAL_SERVER_IP)}"
+                    f":{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
+                ),
+            },
             can_seek=True,
             allow_seek=True,
         )
@@ -944,9 +963,19 @@ class PlexProvider(MusicProvider):
         """Handle callback when an item completed streaming."""
 
         def mark_played() -> None:
-            item = streamdetails.data
+            plex_data = streamdetails.data
+            if not plex_data or not isinstance(plex_data, dict):
+                self.logger.warning(
+                    "Failed to mark track as played in Plex: no valid data available"
+                )
+                return
+
+            if "rating_key" not in plex_data:
+                self.logger.warning("Failed to mark track as played in Plex: no rating_key in data")
+                return
+
             params = {
-                "key": str(item.ratingKey),
+                "key": plex_data["rating_key"],
                 "identifier": "com.plexapp.plugins.library",
             }
             self._plex_server.query("/:/scrobble", params=params)
@@ -966,3 +995,9 @@ class PlexProvider(MusicProvider):
             return self._myplex_account
 
         return await asyncio.to_thread(_refresh_plex_token)
+
+    async def close(self) -> None:
+        """Close the music provider."""
+        if self._timeline_reporter:
+            await self._timeline_reporter.close()
+            self._timeline_reporter = None

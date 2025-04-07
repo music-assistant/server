@@ -634,6 +634,8 @@ class PlayerQueuesController(CoreController):
         """
         if queue := self._queues.get(queue_id):
             queue.resume_pos = queue.corrected_elapsed_time
+            queue.state = PlayerState.PAUSED
+            self.signal_update(queue_id)
         # forward the actual command to the player controller
         await self.mass.players.cmd_pause(queue_id)
 
@@ -1045,7 +1047,7 @@ class PlayerQueuesController(CoreController):
             # prefer the full library media item so we have all metadata and provider(quality) info
             # always request the full library item as there might be other qualities available
             if library_item := await self.mass.music.get_library_item_by_prov_id(
-                queue_item.media_item.media_type,
+                queue_item.media_type,
                 queue_item.media_item.item_id,
                 queue_item.media_item.provider,
             ):
@@ -1663,6 +1665,22 @@ class PlayerQueuesController(CoreController):
         queue.available = player.available
         queue.items = len(self._queue_items[queue_id])
 
+        self.logger.debug(
+            "Player %s state update: player state=%s, queue state=%s",
+            player.display_name,
+            player.state,
+            queue.state,
+        )
+
+        if player.state == PlayerState.PAUSED and queue.state != PlayerState.PAUSED:
+            self.logger.info(
+                "Setting queue state to PAUSED to match player state for %s", player.display_name
+            )
+            queue.state = PlayerState.PAUSED
+            self.signal_update(queue_id)
+            return
+
+        # Normal queue state update from player state
         queue.state = player.state or PlayerState.IDLE if queue.active else PlayerState.IDLE
         # update current item/index from player report
         if queue.active and queue.state in (PlayerState.PLAYING, PlayerState.PAUSED):
