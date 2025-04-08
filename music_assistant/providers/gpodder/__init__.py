@@ -16,14 +16,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
-from enum import StrEnum
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
 from music_assistant_models.config_entries import (
     ConfigEntry,
-    ConfigValueOption,
     ConfigValueType,
     ProviderConfig,
 )
@@ -54,6 +52,7 @@ from music_assistant.helpers.podcast_parsers import (
     parse_podcast_episode,
 )
 from music_assistant.models.music_provider import MusicProvider
+
 from .client import (
     EpisodeActionDelete,
     EpisodeActionNew,
@@ -82,19 +81,6 @@ CONF_URL_NC = "url_nc"
 # General config
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_MAX_NUM_EPISODES = "max_num_episodes"
-CONF_DELETED_EPISODES = "deleted_episodes"
-
-
-class DeletedEpisodesHandling(StrEnum):
-    """DeletedEpisodesHandling.
-
-    If we find an EpisodeActionDelete, we either mark played, or hide it
-    in the episode listing.
-    """
-
-    MARK_PLAYED = "mark_played"
-    HIDE = "hide"
-    NONE = "none"
 
 
 CACHE_CATEGORY_PODCAST_ITEMS = 0  # the individual parsed podcast (dict from podcastparser)
@@ -245,20 +231,6 @@ async def get_config_entries(
             value=values.get(CONF_MAX_NUM_EPISODES),
         ),
         ConfigEntry(
-            key=CONF_DELETED_EPISODES,
-            type=ConfigEntryType.STRING,
-            label="Handling of deleted episodes",
-            description="",
-            multi_value=False,
-            options=[
-                ConfigValueOption("Hide", DeletedEpisodesHandling.HIDE.value),
-                ConfigValueOption("Mark played", DeletedEpisodesHandling.MARK_PLAYED.value),
-                ConfigValueOption("No handling", DeletedEpisodesHandling.NONE.value),
-            ],
-            default_value=DeletedEpisodesHandling.NONE.value,
-            value=values.get(CONF_DELETED_EPISODES),
-        ),
-        ConfigEntry(
             key=CONF_VERIFY_SSL,
             type=ConfigEntryType.BOOLEAN,
             label="Verify SSL",
@@ -308,8 +280,6 @@ class GPodder(MusicProvider):
         nc_token = self.config.get_value(CONF_TOKEN_NC)
 
         self.max_episodes = int(float(str(self.config.get_value(CONF_MAX_NUM_EPISODES))))
-
-        self.conf_deleted_episodes = str(self.config.get_value(CONF_DELETED_EPISODES))
 
         self._client = GPodderClient(session=self.mass.http_session, logger=self.logger)
 
@@ -409,10 +379,6 @@ class GPodder(MusicProvider):
             _already_processed = set()
             _episode_actions = [x for x in episode_actions if x.podcast == feed_url]
             for _action in _episode_actions:
-                if self.conf_deleted_episodes == DeletedEpisodesHandling.NONE.value and isinstance(
-                    _action, EpisodeActionDelete
-                ):
-                    continue
                 if _action.episode not in _already_processed:
                     _already_processed.add(_action.episode)
                     # we do not have to add the progress, these would make calls twice,
@@ -445,15 +411,10 @@ class GPodder(MusicProvider):
                                 fully_played=_action.position >= _action.total,
                                 seconds_played=_action.position,
                             )
-                        case EpisodeActionDelete():
-                            match self.conf_deleted_episodes:
-                                case DeletedEpisodesHandling.HIDE.value:
-                                    # mark unplayed, so it disappears from playlog
-                                    await self.mass.music.mark_item_unplayed(mass_episode)
-                                case DeletedEpisodesHandling.MARK_PLAYED.value:
-                                    await self.mass.music.mark_item_played(
-                                        mass_episode, fully_played=True
-                                    )
+                        # case EpisodeActionDelete():
+                        #     # mark unplayed, so it disappears from playlog
+                        #     # it will be marked unavailable when yielding episodes
+                        #     await self.mass.music.mark_item_unplayed(mass_episode)
 
             # cache
             yield parse_podcast(
@@ -511,7 +472,6 @@ class GPodder(MusicProvider):
             )
             stream_url, guid = get_stream_url_and_guid_from_episode(episode=parsed_episode)
 
-            _filter_episode = False
             for action in episode_actions:
                 # we have to test both, as we are comparing to external input.
                 _test = [action.guid, action.episode]
@@ -538,18 +498,9 @@ class GPodder(MusicProvider):
                             seconds_played=resume_position_s,
                         )
                     elif isinstance(action, EpisodeActionDelete):
-                        match self.conf_deleted_episodes:
-                            case DeletedEpisodesHandling.HIDE.value:
-                                _filter_episode = True
-                            case DeletedEpisodesHandling.MARK_PLAYED.value:
-                                await self.mass.music.mark_item_played(
-                                    mass_episode,
-                                    fully_played=True,
-                                )
+                        for mapping in mass_episode.provider_mappings:
+                            mapping.available = False
                     break
-            if _filter_episode:
-                continue
-
             yield mass_episode
 
     async def get_podcast_episode(
