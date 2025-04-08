@@ -811,13 +811,16 @@ class MusicController(CoreController):
         """Store (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return
+        if loudness in (None, inf, -inf):
+            # skip invalid values
+            return
         values = {
             "item_id": item_id,
             "media_type": media_type.value,
             "provider": provider.lookup_key,
             "loudness": loudness,
         }
-        if album_loudness is not None:
+        if album_loudness not in (None, inf, -inf):
             values["loudness_album"] = album_loudness
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
 
@@ -826,7 +829,7 @@ class MusicController(CoreController):
         item_id: str,
         provider_instance_id_or_domain: str,
         media_type: MediaType = MediaType.TRACK,
-    ) -> tuple[float, float] | None:
+    ) -> tuple[float, float | None] | None:
         """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return None
@@ -839,7 +842,11 @@ class MusicController(CoreController):
             },
         )
         if db_row and db_row["loudness"] != inf and db_row["loudness"] != -inf:
-            return (db_row["loudness"], db_row["loudness_album"])
+            loudness = db_row["loudness"]
+            loudness_album = db_row["loudness_album"]
+            if loudness_album in (inf, -inf):
+                loudness_album = None
+            return (loudness, loudness_album)
 
         return None
 

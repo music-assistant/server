@@ -14,7 +14,6 @@ import shutil
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from math import inf
 from typing import TYPE_CHECKING
 
 from aiofiles.os import wrap
@@ -1022,10 +1021,7 @@ class StreamsController(CoreController):
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
             # volume normalization with known loudness measurement
             # apply volume/gain correction
-            if streamdetails.prefer_album_loudness and streamdetails.loudness_album not in (
-                inf,
-                -inf,
-            ):
+            if streamdetails.prefer_album_loudness and streamdetails.loudness_album is not None:
                 gain_correct = streamdetails.target_loudness - streamdetails.loudness_album
             else:
                 gain_correct = streamdetails.target_loudness - streamdetails.loudness
