@@ -951,8 +951,16 @@ class PlayerController(CoreController):
         self.mass.config.create_default_player_config(
             player_id, player.provider, player.name, player.enabled_by_default
         )
-
+        # mark player as unavailable during the add process
+        if not player.available:
+            # this shouldn't happen, but let's guard it anyways
+            raise RuntimeError(f"Attempt to register an unavailable player: {player.name}")
+        player.available = False
         player.enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
+
+        # ignore disabled players
+        if not player.enabled:
+            return
 
         # register playerqueue for this player
         self.mass.create_task(self.mass.player_queues.on_player_register(player))
@@ -961,11 +969,6 @@ class PlayerController(CoreController):
         self._player_throttlers[player_id] = Throttler(1, 0.2)
 
         self._players[player_id] = player
-
-        # ignore disabled players
-        if not player.enabled:
-            return
-
         # ensure initial player state gets populated with values from config
         player_config = await self.mass.config.get_player_config(player_id)
         await self._set_player_state_from_config(player, player_config)
@@ -975,7 +978,7 @@ class PlayerController(CoreController):
             player_id,
             player.display_name,
         )
-
+        player.available = True
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
         # always call update to fix special attributes like display name, group volume etc.
         self.update(player.player_id)

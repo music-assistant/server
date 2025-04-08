@@ -76,7 +76,7 @@ class AudibleHelper:
     ) -> tuple[Audiobook | None, int]:
         """Process a single audiobook item from the library."""
         content_type = audiobook_data.get("content_delivery_type", "")
-        if content_type in ("PodcastParent", "NonAudio"):
+        if content_type not in ("SinglePartBook",):
             self.logger.debug(
                 "Skipping non-audiobook item: %s (%s)",
                 audiobook_data.get("title", "Unknown"),

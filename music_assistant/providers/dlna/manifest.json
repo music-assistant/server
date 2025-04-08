@@ -7,7 +7,7 @@
     "@music-assistant"
   ],
   "requirements": [
-    "async-upnp-client==0.43.0"
+    "async-upnp-client==0.44.0"
   ],
   "documentation": "https://music-assistant.io/player-support/dlna/",
   "multi_instance": false,

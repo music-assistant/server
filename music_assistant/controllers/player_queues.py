@@ -384,7 +384,8 @@ class PlayerQueuesController(CoreController):
         # this makes sure that playback has priority over other requests that may be
         # happening in the background
         BYPASS_THROTTLER.set(True)
-        queue = self._queues[queue_id]
+        if not (queue := self.get(queue_id)):
+            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # always fetch the underlying player so we can raise early if its not available
         queue_player = self.mass.players.get(queue_id, True)
         if queue_player.announcement_in_progress:
@@ -601,7 +602,8 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         if (queue := self.get(queue_id)) and queue.active:
-            queue.resume_pos = queue.corrected_elapsed_time
+            if queue.state == PlayerState.PLAYING:
+                queue.resume_pos = queue.corrected_elapsed_time
         # forward the actual command to the player provider
         if player_provider := self.mass.players.get_player_provider(queue.queue_id):
             await player_provider.cmd_stop(queue_id)
@@ -633,7 +635,8 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         if queue := self._queues.get(queue_id):
-            queue.resume_pos = queue.corrected_elapsed_time
+            if queue.state == PlayerState.PLAYING:
+                queue.resume_pos = queue.corrected_elapsed_time
         # forward the actual command to the player controller
         await self.mass.players.cmd_pause(queue_id)
 
@@ -1026,8 +1029,9 @@ class PlayerQueuesController(CoreController):
             queue.display_name,
         )
 
-        # work out if we are playing an album and if we should prefer album loudness
-        playing_album_tracks = (
+        # work out if we are playing an album and if we should prefer album
+        # loudness
+        next_track_from_same_album = (
             next_index is not None
             and (next_item := self.get_item(queue_id, next_index))
             and (
@@ -1040,6 +1044,22 @@ class PlayerQueuesController(CoreController):
                 and queue_item.media_item.album.item_id == next_item.media_item.album.item_id
             )
         )
+        current_index = self.index_by_id(queue_id, queue_item.queue_item_id)
+        previous_track_from_same_album = (
+            (previous_index := max(current_index - 1, 0))
+            and (previous_index > 0)
+            and (previous_item := self.get_item(queue_id, previous_index))
+            and (
+                queue_item.media_item
+                and hasattr(queue_item.media_item, "album")
+                and queue_item.media_item.album
+                and previous_item.media_item
+                and hasattr(previous_item.media_item, "album")
+                and previous_item.media_item.album
+                and queue_item.media_item.album.item_id == previous_item.media_item.album.item_id
+            )
+        )
+        playing_album_tracks = next_track_from_same_album or previous_track_from_same_album
         if queue_item.media_item and queue_item.media_item.media_type == MediaType.TRACK:
             album = queue_item.media_item.album
             # prefer the full library media item so we have all metadata and provider(quality) info
