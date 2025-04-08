@@ -449,7 +449,7 @@ class RaopStream:
                 lost_packets += 1
                 if lost_packets == 100:
                     logger.error("High packet loss detected, restarting playback...")
-                    self.mass.create_task(self.mass.player_queues.resume(queue.queue_id))
+                    self.mass.create_task(self.mass.player_queues.resume(queue.queue_id, False))
                 else:
                     logger.warning("Packet loss detected!")
             if "end of stream reached" in line:

@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     ContentType,
     EventType,
     MediaType,
+    PlayerFeature,
     PlayerState,
     ProviderFeature,
     QueueOption,
@@ -638,7 +639,36 @@ class PlayerQueuesController(CoreController):
             if queue.state == PlayerState.PLAYING:
                 queue.resume_pos = queue.corrected_elapsed_time
         # forward the actual command to the player controller
-        await self.mass.players.cmd_pause(queue_id)
+        queue_player = self.mass.players.get(queue_id)
+        if not (player_provider := self.mass.players.get_player_provider(queue.queue_id)):
+            return  # guard
+
+        if PlayerFeature.PAUSE not in queue_player.supported_features:
+            # if player does not support pause, we need to send stop
+            await player_provider.cmd_stop(queue_player.player_id)
+            return
+        await player_provider.cmd_pause(queue_player.player_id)
+
+        async def _watch_pause() -> None:
+            count = 0
+            # wait for pause
+            while count < 5 and queue_player.state == PlayerState.PLAYING:
+                count += 1
+                await asyncio.sleep(1)
+            # wait for unpause
+            if queue_player.state != PlayerState.PAUSED:
+                return
+            count = 0
+            while count < 30 and queue_player.state == PlayerState.PAUSED:
+                count += 1
+                await asyncio.sleep(1)
+            # if player is still paused when the limit is reached, send stop
+            if queue_player.state == PlayerState.PAUSED:
+                await player_provider.cmd_stop(queue_player.player_id)
+
+        # we auto stop a player from paused when its paused for 30 seconds
+        if not queue_player.announcement_in_progress:
+            self.mass.create_task(_watch_pause())
 
     @api_command("player_queues/play_pause")
     async def play_pause(self, queue_id: str) -> None:
@@ -733,6 +763,7 @@ class PlayerQueuesController(CoreController):
             # resume requested while already playing,
             # use current position as resume position
             resume_pos = queue.corrected_elapsed_time
+            fade_in = False
         else:
             resume_pos = queue.resume_pos or queue.elapsed_time
 
@@ -745,9 +776,13 @@ class PlayerQueuesController(CoreController):
             resume_pos = 0
 
         if resume_item is not None:
-            resume_pos = resume_pos if resume_pos > 10 else 0
             queue_player = self.mass.players.get(queue_id)
-            if fade_in is None and queue_player.state == PlayerState.IDLE:
+            if (
+                fade_in is None
+                and queue_player.state == PlayerState.IDLE
+                and (time.time() - queue.elapsed_time_last_updated) > 60
+            ):
+                # enable fade in effect if the player is idle for a while
                 fade_in = resume_pos > 0
             if resume_item.media_type == MediaType.RADIO:
                 # we're not able to skip in online radio so this is pointless

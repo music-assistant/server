@@ -915,7 +915,7 @@ class PlayerGroupProvider(PlayerProvider):
                 changed = True
         if changed and player.state == PlayerState.PLAYING:
             # Restart playback to ensure all members play the same content
-            await self.mass.player_queues.resume(player.player_id)
+            await self.mass.player_queues.resume(player.player_id, False)
 
     async def _serve_ugp_stream(self, request: web.Request) -> web.Response:
         """Serve the UGP (multi-client) flow stream audio to a player."""
