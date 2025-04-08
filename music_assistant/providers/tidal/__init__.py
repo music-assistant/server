@@ -466,15 +466,21 @@ class TidalProvider(MusicProvider):
             return await self._handle_response(response, return_etag)
 
     @prepare_api_request
-    async def _post_data(
+    async def _post_or_put_data(
         self,
         endpoint: str,
         data: dict[str, Any] | None = None,
         as_form: bool = False,
+        method: str = "POST",
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Post data to Tidal API using mass.http_session."""
-        url = f"{self.BASE_URL}/{endpoint}"
+        """Send data to Tidal API using specified HTTP method."""
+        base_url = kwargs.pop("base_url", self.BASE_URL)
+        # Use BASE_URL_V2 for PUT requests to mixes endpoints
+        if method == "PUT" and "mixes" in endpoint:
+            base_url = self.BASE_URL_V2
+
+        url = f"{base_url}/{endpoint}"
 
         if as_form:
             # Set content type for form data
@@ -482,18 +488,34 @@ class TidalProvider(MusicProvider):
             headers["Content-Type"] = "application/x-www-form-urlencoded"
             kwargs["headers"] = headers
             # Use data parameter for form-encoded data
-            async with self.mass.http_session.post(url, data=data, **kwargs) as response:
-                return cast(
-                    "dict[str, Any]",
-                    await self._handle_response(response, return_etag=False),
-                )
-        else:
-            # Use json parameter for JSON data (default)
+            if method == "POST":
+                async with self.mass.http_session.post(url, data=data, **kwargs) as response:
+                    return cast(
+                        "dict[str, Any]",
+                        await self._handle_response(response, return_etag=False),
+                    )
+            elif method == "PUT":
+                async with self.mass.http_session.put(url, data=data, **kwargs) as response:
+                    return cast(
+                        "dict[str, Any]",
+                        await self._handle_response(response, return_etag=False),
+                    )
+        # Use json parameter for JSON data (default)
+        elif method == "POST":
             async with self.mass.http_session.post(url, json=data, **kwargs) as response:
                 return cast(
                     "dict[str, Any]",
                     await self._handle_response(response, return_etag=False),
                 )
+        elif method == "PUT":
+            async with self.mass.http_session.put(url, json=data, **kwargs) as response:
+                return cast(
+                    "dict[str, Any]",
+                    await self._handle_response(response, return_etag=False),
+                )
+
+        # If we get here, the method was not supported
+        raise ValueError(f"Unsupported HTTP method: {method}")
 
     @prepare_api_request
     async def _delete_data(
@@ -1090,7 +1112,7 @@ class TidalProvider(MusicProvider):
                 results,
                 category=CACHE_CATEGORY_RECOMMENDATIONS,
                 base_key=self.lookup_key,
-                expiration=12 * 3600,
+                expiration=3600,
             )
 
         except (ClientError, ResourceTemporarilyUnavailable) as err:
@@ -1291,11 +1313,12 @@ class TidalProvider(MusicProvider):
         try:
             # Get the page structure
             self.logger.debug("Fetching fresh page content for '%s'", page_path)
+            locale = self.mass.metadata.locale.replace("_", "-")
             api_result = await self._get_data(
                 page_path,
                 base_url="https://listen.tidal.com/v1",
                 params={
-                    "locale": "en_US",
+                    "locale": locale,
                     "deviceType": "BROWSER",
                     "countryCode": self.auth.country_code or "US",
                 },
@@ -1366,6 +1389,14 @@ class TidalProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         user_id = self.auth.user_id
+        mix_path = "favorites/mixes"
+
+        async for mix_item in self._paginate_api(
+            mix_path, item_key="items", base_url=self.BASE_URL_V2
+        ):
+            if mix_item and mix_item.get("id"):
+                yield self._parse_playlist(mix_item, is_mix=True)
+
         playlist_path = f"users/{user_id}/playlistsAndFavoritePlaylists"
 
         async for playlist_item in self._paginate_api(playlist_path, nested_key="playlist"):
@@ -1374,54 +1405,96 @@ class TidalProvider(MusicProvider):
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
-        endpoint = None
-        data = {}
+        endpoint, data, is_mix = self._get_library_endpoint_data(
+            item.item_id, item.media_type, "add"
+        )
 
-        if item.media_type == MediaType.ARTIST:
-            endpoint = "favorites/artists"
-            data = {"artistId": item.item_id}
-        elif item.media_type == MediaType.ALBUM:
-            endpoint = "favorites/albums"
-            data = {"albumId": item.item_id}
-        elif item.media_type == MediaType.TRACK:
-            endpoint = "favorites/tracks"
-            data = {"trackId": item.item_id}
-        elif item.media_type == MediaType.PLAYLIST:
-            endpoint = "favorites/playlists"
-            data = {"playlistId": item.item_id}
-        else:
+        if not endpoint:
             return False
 
-        endpoint = f"users/{self.auth.user_id}/{endpoint}"
-
-        await self._post_data(endpoint, data=data, as_form=True)
-        return True
+        try:
+            if is_mix:
+                await self._post_or_put_data(endpoint, data=data, as_form=True, method="PUT")
+            else:
+                endpoint = f"users/{self.auth.user_id}/{endpoint}"
+                await self._post_or_put_data(endpoint, data=data, as_form=True)
+            return True
+        except (ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable) as err:
+            self.logger.warning(
+                "Failed to add %s:%s to library: %s", item.media_type, item.item_id, err
+            )
+            return False
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from library."""
-        endpoint = None
+        endpoint, data, is_mix = self._get_library_endpoint_data(prov_item_id, media_type, "remove")
 
-        if media_type == MediaType.ARTIST:
-            endpoint = f"favorites/artists/{prov_item_id}"
-        elif media_type == MediaType.ALBUM:
-            endpoint = f"favorites/albums/{prov_item_id}"
-        elif media_type == MediaType.TRACK:
-            endpoint = f"favorites/tracks/{prov_item_id}"
-        elif media_type == MediaType.PLAYLIST:
-            endpoint = f"favorites/playlists/{prov_item_id}"
-        else:
+        if not endpoint:
             return False
 
-        endpoint = f"users/{self.auth.user_id}/{endpoint}"
-
         try:
-            await self._delete_data(endpoint)
+            if is_mix:
+                await self._post_or_put_data(endpoint, data=data, as_form=True, method="PUT")
+            else:
+                endpoint = f"users/{self.auth.user_id}/{endpoint}"
+                await self._delete_data(endpoint)
             return True
         except (ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable) as err:
             self.logger.warning(
                 "Failed to remove %s:%s from library: %s", media_type, prov_item_id, err
             )
             return False
+
+    def _get_library_endpoint_data(
+        self, item_id: str, media_type: MediaType, operation: str
+    ) -> tuple[str | None, dict[str, Any], bool]:
+        """Get the endpoint, data, and mix flag for library operations."""
+        is_mix = False
+        data = {}
+
+        # Check if this is a mix by ID prefix
+        if media_type == MediaType.PLAYLIST and item_id.startswith("mix_"):
+            is_mix = True
+            # Strip prefix for API calls
+            mix_id = item_id[4:]  # Remove "mix_" prefix
+
+            if operation == "add":
+                endpoint = "favorites/mixes/add"
+                data = {"mixIds": mix_id, "onArtifactNotFound": "FAIL", "deviceType": "BROWSER"}
+            else:  # remove
+                endpoint = "favorites/mixes/remove"
+                data = {"mixIds": mix_id, "deviceType": "BROWSER"}
+            return endpoint, data, is_mix
+
+        # Regular items
+        if media_type == MediaType.ARTIST:
+            if operation == "add":
+                endpoint = "favorites/artists"
+                data = {"artistId": item_id}
+            else:
+                endpoint = f"favorites/artists/{item_id}"
+        elif media_type == MediaType.ALBUM:
+            if operation == "add":
+                endpoint = "favorites/albums"
+                data = {"albumId": item_id}
+            else:
+                endpoint = f"favorites/albums/{item_id}"
+        elif media_type == MediaType.TRACK:
+            if operation == "add":
+                endpoint = "favorites/tracks"
+                data = {"trackId": item_id}
+            else:
+                endpoint = f"favorites/tracks/{item_id}"
+        elif media_type == MediaType.PLAYLIST:
+            if operation == "add":
+                endpoint = "favorites/playlists"
+                data = {"uuids": item_id}
+            else:
+                endpoint = f"favorites/playlists/{item_id}"
+        else:
+            return None, {}, False
+
+        return endpoint, data, is_mix
 
     #
     # PLAYLIST MANAGEMENT
@@ -1433,7 +1506,7 @@ class TidalProvider(MusicProvider):
         data = {"title": name, "description": ""}
 
         try:
-            playlist_obj = await self._post_data(
+            playlist_obj = await self._post_or_put_data(
                 f"users/{self.auth.user_id}/playlists", data=data, as_form=True
             )
 
@@ -1467,7 +1540,7 @@ class TidalProvider(MusicProvider):
 
             # Force using form data instead of JSON and include ETag
             headers = {"If-None-Match": etag} if etag else {}
-            await self._post_data(
+            await self._post_or_put_data(
                 f"playlists/{prov_playlist_id}/items",
                 data=data,
                 as_form=True,
