@@ -54,7 +54,7 @@ from music_assistant.helpers.podcast_parsers import (
     parse_podcast_episode,
 )
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.gpodder.client import (
+from .client import (
     EpisodeActionDelete,
     EpisodeActionNew,
     EpisodeActionPlay,
