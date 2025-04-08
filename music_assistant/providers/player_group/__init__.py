@@ -664,7 +664,7 @@ class PlayerGroupProvider(PlayerProvider):
         player_provider = self.mass.players.get_player_provider(child_player.player_id)
         if group_type == GROUP_TYPE_UNIVERSAL:
             if was_playing:
-                # stop playing the group player
+                # stop playing the child player that was unjoined from the UGP
                 await player_provider.cmd_stop(child_player.player_id)
             self._update_attributes(group_player)
             return
@@ -672,7 +672,7 @@ class PlayerGroupProvider(PlayerProvider):
         if child_player.group_childs:
             # this is the sync leader, unsync all its childs!
             # NOTE that some players/providers might support this in a less intrusive way
-            # but for now we just ungroup all childs to keep thinngs universal
+            # but for now we just ungroup all childs to keep things universal
             self.logger.info("Detected ungroup of sync leader, ungrouping all childs")
             async with TaskManager(self.mass) as tg:
                 for sync_child_id in child_player.group_childs:
