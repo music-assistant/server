@@ -676,15 +676,20 @@ async def _is_cache_allowed(mass: MusicAssistant, streamdetails: StreamDetails) 
     elif streamdetails.stream_type == StreamType.CUSTOM:
         # prefer cache for custom streams (to speedup seeking)
         max_filesize = 250 * 1024 * 1024  # 250MB
-        return get_chunksize(streamdetails.audio_format, streamdetails.duration) < max_filesize
     elif streamdetails.stream_type == StreamType.HLS:
         # prefer cache for HLS streams (to speedup seeking)
         max_filesize = 250 * 1024 * 1024  # 250MB
+    elif streamdetails.media_type in (
+        MediaType.AUDIOBOOK,
+        MediaType.PODCAST_EPISODE,
+    ):
+        # prefer cache for audiobooks and episodes (to speedup seeking)
+        max_filesize = 2 * 1024 * 1024 * 1024  # 2GB
     elif streamdetails.provider in SLOW_PROVIDERS:
         # prefer cache for slow providers
-        max_filesize = 500 * 1024 * 1024  # 500MB
+        max_filesize = 2 * 1024 * 1024 * 1024  # 2GB
     else:
-        max_filesize = 25 * 1024 * 1024
+        max_filesize = 50 * 1024 * 1024
 
     return estimated_filesize < max_filesize
 
