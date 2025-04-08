@@ -411,10 +411,6 @@ class GPodder(MusicProvider):
                                 fully_played=_action.position >= _action.total,
                                 seconds_played=_action.position,
                             )
-                        # case EpisodeActionDelete():
-                        #     # mark unplayed, so it disappears from playlog
-                        #     # it will be marked unavailable when yielding episodes
-                        #     await self.mass.music.mark_item_unplayed(mass_episode)
 
             # cache
             yield parse_podcast(
