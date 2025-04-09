@@ -1836,6 +1836,12 @@ class TidalProvider(MusicProvider):
             if "popularity" in playlist_obj:
                 playlist.metadata.popularity = playlist_obj.get("popularity", 0)
 
+        # Add the description from the subtitle for mixes
+        if is_mix:
+            subtitle = playlist_obj.get("subTitle")
+            if subtitle:
+                playlist.metadata.description = subtitle
+
         # Handle images differently based on type
         if is_mix:
             if pictures := playlist_obj.get("images", {}).get("MEDIUM"):
