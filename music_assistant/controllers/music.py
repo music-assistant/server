@@ -842,10 +842,11 @@ class MusicController(CoreController):
             },
         )
         if db_row and db_row["loudness"] != inf and db_row["loudness"] != -inf:
-            loudness = db_row["loudness"]
+            loudness = round(db_row["loudness"], 2)
             loudness_album = db_row["loudness_album"]
-            if loudness_album in (inf, -inf):
-                loudness_album = None
+            loudness_album = (
+                None if loudness_album in (None, inf, -inf) else round(loudness_album, 2)
+            )
             return (loudness, loudness_album)
 
         return None
