@@ -488,13 +488,12 @@ class TidalProvider(MusicProvider):
                     "dict[str, Any]",
                     await self._handle_response(response, return_etag=False),
                 )
-        else:
-            # Use json parameter for JSON data (default)
-            async with self.mass.http_session.post(url, json=data, **kwargs) as response:
-                return cast(
-                    "dict[str, Any]",
-                    await self._handle_response(response, return_etag=False),
-                )
+        # Use json parameter for JSON data (default)
+        async with self.mass.http_session.post(url, json=data, **kwargs) as response:
+            return cast(
+                "dict[str, Any]",
+                await self._handle_response(response, return_etag=False),
+            )
 
     @prepare_api_request
     async def _put_data(
@@ -522,13 +521,12 @@ class TidalProvider(MusicProvider):
                     "dict[str, Any]",
                     await self._handle_response(response, return_etag=False),
                 )
-        else:
-            # Use json parameter for JSON data (default)
-            async with self.mass.http_session.put(url, json=data, **kwargs) as response:
-                return cast(
-                    "dict[str, Any]",
-                    await self._handle_response(response, return_etag=False),
-                )
+        # Use json parameter for JSON data (default)
+        async with self.mass.http_session.put(url, json=data, **kwargs) as response:
+            return cast(
+                "dict[str, Any]",
+                await self._handle_response(response, return_etag=False),
+            )
 
     @prepare_api_request
     async def _delete_data(
