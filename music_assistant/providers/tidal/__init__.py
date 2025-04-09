@@ -466,20 +466,15 @@ class TidalProvider(MusicProvider):
             return await self._handle_response(response, return_etag)
 
     @prepare_api_request
-    async def _post_or_put_data(
+    async def _post_data(
         self,
         endpoint: str,
         data: dict[str, Any] | None = None,
         as_form: bool = False,
-        method: str = "POST",
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Send data to Tidal API using specified HTTP method."""
+        """Send POST data to Tidal API."""
         base_url = kwargs.pop("base_url", self.BASE_URL)
-        # Use BASE_URL_V2 for PUT requests to mixes endpoints
-        if method == "PUT" and "mixes" in endpoint:
-            base_url = self.BASE_URL_V2
-
         url = f"{base_url}/{endpoint}"
 
         if as_form:
@@ -488,34 +483,52 @@ class TidalProvider(MusicProvider):
             headers["Content-Type"] = "application/x-www-form-urlencoded"
             kwargs["headers"] = headers
             # Use data parameter for form-encoded data
-            if method == "POST":
-                async with self.mass.http_session.post(url, data=data, **kwargs) as response:
-                    return cast(
-                        "dict[str, Any]",
-                        await self._handle_response(response, return_etag=False),
-                    )
-            elif method == "PUT":
-                async with self.mass.http_session.put(url, data=data, **kwargs) as response:
-                    return cast(
-                        "dict[str, Any]",
-                        await self._handle_response(response, return_etag=False),
-                    )
-        # Use json parameter for JSON data (default)
-        elif method == "POST":
+            async with self.mass.http_session.post(url, data=data, **kwargs) as response:
+                return cast(
+                    "dict[str, Any]",
+                    await self._handle_response(response, return_etag=False),
+                )
+        else:
+            # Use json parameter for JSON data (default)
             async with self.mass.http_session.post(url, json=data, **kwargs) as response:
                 return cast(
                     "dict[str, Any]",
                     await self._handle_response(response, return_etag=False),
                 )
-        elif method == "PUT":
+
+    @prepare_api_request
+    async def _put_data(
+        self,
+        endpoint: str,
+        data: dict[str, Any] | None = None,
+        as_form: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Send PUT data to Tidal API."""
+        # Use BASE_URL_V2 for PUT requests to mixes endpoints
+        base_url = kwargs.pop(
+            "base_url", self.BASE_URL_V2 if "mixes" in endpoint else self.BASE_URL
+        )
+        url = f"{base_url}/{endpoint}"
+
+        if as_form:
+            # Set content type for form data
+            headers = kwargs.get("headers", {})
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            kwargs["headers"] = headers
+            # Use data parameter for form-encoded data
+            async with self.mass.http_session.put(url, data=data, **kwargs) as response:
+                return cast(
+                    "dict[str, Any]",
+                    await self._handle_response(response, return_etag=False),
+                )
+        else:
+            # Use json parameter for JSON data (default)
             async with self.mass.http_session.put(url, json=data, **kwargs) as response:
                 return cast(
                     "dict[str, Any]",
                     await self._handle_response(response, return_etag=False),
                 )
-
-        # If we get here, the method was not supported
-        raise ValueError(f"Unsupported HTTP method: {method}")
 
     @prepare_api_request
     async def _delete_data(
@@ -1414,10 +1427,10 @@ class TidalProvider(MusicProvider):
 
         try:
             if is_mix:
-                await self._post_or_put_data(endpoint, data=data, as_form=True, method="PUT")
+                await self._put_data(endpoint, data=data, as_form=True)
             else:
                 endpoint = f"users/{self.auth.user_id}/{endpoint}"
-                await self._post_or_put_data(endpoint, data=data, as_form=True)
+                await self._post_data(endpoint, data=data, as_form=True)
             return True
         except (ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable) as err:
             self.logger.warning(
@@ -1434,7 +1447,7 @@ class TidalProvider(MusicProvider):
 
         try:
             if is_mix:
-                await self._post_or_put_data(endpoint, data=data, as_form=True, method="PUT")
+                await self._put_data(endpoint, data=data, as_form=True)
             else:
                 endpoint = f"users/{self.auth.user_id}/{endpoint}"
                 await self._delete_data(endpoint)
@@ -1506,7 +1519,7 @@ class TidalProvider(MusicProvider):
         data = {"title": name, "description": ""}
 
         try:
-            playlist_obj = await self._post_or_put_data(
+            playlist_obj = await self._post_data(
                 f"users/{self.auth.user_id}/playlists", data=data, as_form=True
             )
 
@@ -1540,7 +1553,7 @@ class TidalProvider(MusicProvider):
 
             # Force using form data instead of JSON and include ETag
             headers = {"If-None-Match": etag} if etag else {}
-            await self._post_or_put_data(
+            await self._post_data(
                 f"playlists/{prov_playlist_id}/items",
                 data=data,
                 as_form=True,
