@@ -934,9 +934,7 @@ class PlayerController(CoreController):
             player_id, player.provider, player.name, player.enabled_by_default
         )
         # mark player as unavailable during the add process
-        if not player.available:
-            # this shouldn't happen, but let's guard it anyways
-            raise RuntimeError(f"Attempt to register an unavailable player: {player.name}")
+        player_available = player.available
         player.available = False
         player.enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
 
@@ -960,7 +958,7 @@ class PlayerController(CoreController):
             player_id,
             player.display_name,
         )
-        player.available = True
+        player.available = player_available
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
         # always call update to fix special attributes like display name, group volume etc.
         self.update(player.player_id)
