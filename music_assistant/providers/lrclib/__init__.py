@@ -1,4 +1,5 @@
-"""The LRCLIB Metadata provider for Music Assistant.
+"""
+The LRCLIB Metadata provider for Music Assistant.
 
 Used for retrieval of synchronized lyrics.
 """
@@ -96,7 +97,7 @@ class LrclibProvider(MetadataProvider):
         artist_name = track.artists[0].name
         album_name = track.album.name if track.album else "Unknown Album"
 
-        duration = track.duration if track.duration else 0
+        duration = track.duration or 0
 
         if not duration:
             self.logger.debug("Skipping lyrics lookup for %s: No duration information", track.name)
