@@ -674,6 +674,8 @@ class MusicProvider(Provider):
                     library_item = await controller.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+
+                cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
                 self.logger.warning(
