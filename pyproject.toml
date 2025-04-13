@@ -162,7 +162,7 @@ warn_unused_configs = true
 warn_unused_ignores = true
 
 [tool.ruff.format]
-# Force Linux/MacOS line endings
+# Force Linux/macOS line endings
 line-ending = "lf"
 
 [tool.pytest.ini_options]

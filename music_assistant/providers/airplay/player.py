@@ -10,15 +10,15 @@ from music_assistant_models.enums import PlayerState
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
-    from .provider import AirplayProvider
+    from .provider import AirPlayProvider
     from .raop import RaopStream
 
 
 class AirPlayPlayer:
-    """Holds the details of the (discovered) Airplay (RAOP) player."""
+    """Holds the details of the (discovered) AirPlay (RAOP) player."""
 
     def __init__(
-        self, prov: AirplayProvider, player_id: str, discovery_info: AsyncServiceInfo, address: str
+        self, prov: AirPlayProvider, player_id: str, discovery_info: AsyncServiceInfo, address: str
     ) -> None:
         """Initialize AirPlayPlayer."""
         self.prov = prov

@@ -199,7 +199,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         }
 
         if platform.system() == "Darwin":
-            # NOTE: MacOS does not support special characters in the username/password
+            # NOTE: macOS does not support special characters in the username/password
             password_str = f":{password}" if password else ""
             mount_cmd = [
                 "mount",

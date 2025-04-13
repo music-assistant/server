@@ -1,4 +1,4 @@
-"""Airplay Player provider for Music Assistant."""
+"""AirPlay Player provider for Music Assistant."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant.mass import MusicAssistant
 
 from .const import CONF_BIND_INTERFACE
-from .provider import AirplayProvider
+from .provider import AirPlayProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -40,7 +40,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value=cast("str", mass.streams.publish_ip),
             label="Bind interface",
-            description="Interface to bind to for Airplay streaming.",
+            description="Interface to bind to for AirPlay streaming.",
             category="advanced",
         ),
     )
@@ -50,4 +50,4 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return AirplayProvider(mass, manifest, config)
+    return AirPlayProvider(mass, manifest, config)
