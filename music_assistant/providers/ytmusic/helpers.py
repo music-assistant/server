@@ -368,6 +368,7 @@ async def get_home(
 
     return await asyncio.to_thread(_get_home)
 
+
 def determine_recommendation_icon(name: str) -> str:
     """Determine the icon for a recommendation based on its name."""
     query = name.lower()
