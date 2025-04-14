@@ -1,3 +1,5 @@
+"""Constants for YT Music provider."""
+
 from enum import StrEnum
 
 

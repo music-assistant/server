@@ -360,7 +360,7 @@ def convert_to_netscape(raw_cookie_str: str, domain: str) -> str:
 async def get_home(
     headers: dict[str, str], language: str = "en", user: str | None = None, limit: int = 3
 ) -> dict[str, str]:
-    """Get the recommendations from the home page"""
+    """Get the recommendations from the home page."""
 
     def _get_home():
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
