@@ -599,7 +599,7 @@ class YoutubeMusicProvider(MusicProvider):
         for section in recommendations:
             folder = RecommendationFolder(
                 name=section["title"],
-                item_id=f'{self.instance_id}_{section["title"]}',
+                item_id=f"{self.instance_id}_{section['title']}",
                 provider=self.lookup_key,
                 icon=determine_recommendation_icon(section["title"]),
             )
