@@ -12,6 +12,8 @@ from time import time
 
 import ytmusicapi
 
+from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
+
 
 async def get_artist(
     prov_artist_id: str, headers: dict[str, str], language: str = "en"
@@ -365,3 +367,19 @@ async def get_home(
         return ytm.get_home(limit=limit)
 
     return await asyncio.to_thread(_get_home)
+
+def determine_recommendation_icon(name: str) -> str:
+    """Determine the icon for a recommendation based on its name."""
+    query = name.lower()
+
+    if "listen again" in query:
+        return YTMRecommendationIcons.LISTEN_AGAIN
+    if "continue" in query:
+        return YTMRecommendationIcons.CONTINUE_WATCHING
+    if "your mix" in query:
+        return YTMRecommendationIcons.YOUR_MIX
+    if "new" in query:
+        return YTMRecommendationIcons.NEW_RELEASES
+    if "recommended" in query:
+        return YTMRecommendationIcons.RECOMMENDED
+    return YTMRecommendationIcons.DEFAULT

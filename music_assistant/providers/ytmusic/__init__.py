@@ -56,6 +56,7 @@ from music_assistant.models.music_provider import MusicProvider
 from .helpers import (
     add_remove_playlist_tracks,
     convert_to_netscape,
+    determine_recommendation_icon,
     get_album,
     get_artist,
     get_home,
@@ -600,11 +601,16 @@ class YoutubeMusicProvider(MusicProvider):
                 name=section["title"],
                 item_id=f'{self.instance_id}_{section["title"]}',
                 provider=self.lookup_key,
+                icon=determine_recommendation_icon(section["title"]),
             )
             for recommended_item in section.get("contents", []):
                 if recommended_item.get("videoId"):
                     # Probably a track
-                    folder.items.append(self._parse_track(recommended_item))
+                    try:
+                        track = self._parse_track(recommended_item)
+                        folder.items.append(track)
+                    except InvalidDataError:
+                        self.logger.debug("Invalid track in recommendations: %s", recommended_item)
                 elif recommended_item.get("playlistId"):
                     # Probably a playlist
                     recommended_item["id"] = recommended_item["playlistId"]
