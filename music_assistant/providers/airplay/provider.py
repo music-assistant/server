@@ -188,8 +188,8 @@ class AirPlayProvider(PlayerProvider):
         """Handle MDNS service state callback."""
         if not info:
             return
-        if "@" in name:
-            raw_id, display_name = name.split(".")[0].split("@", 1)
+        if "@" in info.name:
+            raw_id, display_name = info.name.split(".")[0].split("@", 1)
         elif deviceid := info.decoded_properties.get("deviceid"):
             raw_id = deviceid.replace(":", "")
             display_name = info.name.split(".")[0]
