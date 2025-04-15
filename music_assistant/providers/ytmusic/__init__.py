@@ -51,6 +51,7 @@ from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -592,6 +593,7 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.audio_format.sample_rate = int(stream_format.get("asr"))
         return stream_details
 
+    @use_cache(3600)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get available recommendations."""
         recommendations = await get_home(self._headers, self.language, user=self._yt_user)
