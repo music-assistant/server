@@ -22,7 +22,7 @@ Optional is an icon.svg file that will be used as the icon for the provider in t
 but we also support that you specify a material design icon in the manifest.json file.
 
 IMPORTANT NOTE:
-We strongly recommend developing on either MacOS or Linux and start your development
+We strongly recommend developing on either macOS or Linux and start your development
 environment by running the setup.sh scripts in the scripts folder of the repository.
 This will create a virtual environment and install all dependencies needed for development.
 See also our general DEVELOPMENT.md guide in the repository for more information.
@@ -323,7 +323,7 @@ class MyDemoPlayerprovider(PlayerProvider):
         # all songs in the playback queue into a single stream and send that to the player.
         # In that case the URI (and metadata) received here is that of the 'flow mode' stream.
 
-        # Examples of player providers that use flow mode for playback by default are Airplay,
+        # Examples of player providers that use flow mode for playback by default are AirPlay,
         # SnapCast and Fully Kiosk.
 
         # Examples of player providers that optionally use 'flow mode' are Google Cast and

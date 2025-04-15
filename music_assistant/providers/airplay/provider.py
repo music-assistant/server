@@ -1,4 +1,4 @@
-"""Airplay Player provider for Music Assistant."""
+"""AirPlay Player provider for Music Assistant."""
 
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ PLAYER_CONFIG_ENTRIES = (
         type=ConfigEntryType.BOOLEAN,
         default_value=False,
         label="Ignore volume reports sent by the device itself",
-        description="The Airplay protocol allows devices to report their own volume level. \n"
+        description="The AirPlay protocol allows devices to report their own volume level. \n"
         "For some devices this is not reliable and can cause unexpected volume changes. \n"
         "Enable this option to ignore these reports.",
         category="airplay",
@@ -128,22 +128,22 @@ BROKEN_RAOP_WARN = ConfigEntry(
     type=ConfigEntryType.ALERT,
     default_value=None,
     required=False,
-    label="This player is known to have broken Airplay 1 (RAOP) support. "
+    label="This player is known to have broken AirPlay 1 (RAOP) support. "
     "Playback may fail or simply be silent. There is no workaround for this issue at the moment.",
 )
 
 
-# TODO: Airplay provider
+# TODO: AirPlay provider
 # - Implement authentication for Apple TV
 # - Implement volume control for Apple devices using pyatv
 # - Implement metadata for Apple Apple devices using pyatv
 # - Use pyatv for communicating with original Apple devices (and use cliraop for actual streaming)
-# - Implement Airplay 2 support
+# - Implement AirPlay 2 support
 # - Implement late joining to existing stream (instead of restarting it)
 
 
-class AirplayProvider(PlayerProvider):
-    """Player provider for Airplay based players."""
+class AirPlayProvider(PlayerProvider):
+    """Player provider for AirPlay based players."""
 
     cliraop_bin: str | None
     _players: dict[str, AirPlayPlayer]
@@ -478,7 +478,7 @@ class AirplayProvider(PlayerProvider):
         address = get_primary_ip_address(info)
         if address is None:
             return
-        self.logger.debug("Discovered Airplay device %s on %s", display_name, address)
+        self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
 
         # prefer airplay mdns info as it has more details
         # fallback to raop info if airplay info is not available
@@ -506,7 +506,7 @@ class AirplayProvider(PlayerProvider):
         # append airplay to the default display name for generic (non-apple) devices
         # this makes it easier for users to distinguish between airplay and non-airplay devices
         if manufacturer.lower() != "apple" and "airplay" not in display_name.lower():
-            display_name += " (Airplay)"
+            display_name += " (AirPlay)"
 
         self._players[player_id] = AirPlayPlayer(self, player_id, info, address)
         if not (volume := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_VOLUME)):

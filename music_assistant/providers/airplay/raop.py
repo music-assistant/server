@@ -1,4 +1,4 @@
-"""Logic for RAOP (AirPlay 1) audio streaming to Airplay devices."""
+"""Logic for RAOP (AirPlay 1) audio streaming to AirPlay devices."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
     from .player import AirPlayPlayer
-    from .provider import AirplayProvider
+    from .provider import AirPlayProvider
 
 
 class RaopStreamSession:
@@ -43,7 +43,7 @@ class RaopStreamSession:
 
     def __init__(
         self,
-        airplay_provider: AirplayProvider,
+        airplay_provider: AirPlayProvider,
         sync_clients: list[AirPlayPlayer],
         input_format: AudioFormat,
         audio_source: AsyncGenerator[bytes, None],
@@ -169,7 +169,7 @@ class RaopStreamSession:
 
 class RaopStream:
     """
-    RAOP (Airplay 1) Audio Streamer.
+    RAOP (AirPlay 1) Audio Streamer.
 
     Python is not suitable for realtime audio streaming so we do the actual streaming
     of (RAOP) audio using a small executable written in C based on libraop to do

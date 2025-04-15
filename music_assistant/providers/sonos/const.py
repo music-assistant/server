@@ -52,7 +52,7 @@ PLAYER_SOURCE_MAP = {
     ),
     SOURCE_AIRPLAY: PlayerSource(
         id=SOURCE_AIRPLAY,
-        name="Airplay",
+        name="AirPlay",
         passive=True,
         can_play_pause=True,
         can_next_previous=True,

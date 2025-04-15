@@ -173,17 +173,17 @@ class SonosPlayerProvider(PlayerProvider):
             ConfigEntry(
                 key=CONF_AIRPLAY_MODE,
                 type=ConfigEntryType.BOOLEAN,
-                label="Enable Airplay mode",
-                description="Almost all newer Sonos speakers have Airplay support. "
-                "If you have the Airplay provider enabled in Music Assistant, "
-                "your Sonos speaker will also be detected as a Airplay speaker, meaning "
-                "you can group them with other Airplay speakers.\n\n"
+                label="Enable AirPlay mode",
+                description="Almost all newer Sonos speakers have AirPlay support. "
+                "If you have the AirPlay provider enabled in Music Assistant, "
+                "your Sonos speaker will also be detected as a AirPlay speaker, meaning "
+                "you can group them with other AirPlay speakers.\n\n"
                 "By default, Music Assistant uses the Sonos protocol for playback but with this "
-                "feature enabled, it will use the Airplay protocol instead by redirecting "
-                "the playback related commands to the linked Airplay player in Music Assistant, "
-                "allowing you to mix and match Sonos speakers with Airplay speakers. \n\n"
-                "NOTE: You need to have the Airplay provider enabled as well as "
-                "the Airplay version of this player.",
+                "feature enabled, it will use the AirPlay protocol instead by redirecting "
+                "the playback related commands to the linked AirPlay player in Music Assistant, "
+                "allowing you to mix and match Sonos speakers with AirPlay speakers. \n\n"
+                "NOTE: You need to have the AirPlay provider enabled as well as "
+                "the AirPlay version of this player.",
                 required=False,
                 default_value=False,
                 depends_on="airplay_detected",
@@ -256,7 +256,7 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player = self.sonos_players[target_player]
         if airplay_player := sonos_player.get_linked_airplay_player(False):
             # if airplay mode is enabled, we could possibly receive child player id's that are
-            # not Sonos players, but Airplay players. We redirect those.
+            # not Sonos players, but AirPlay players. We redirect those.
             airplay_child_ids = [x for x in child_player_ids if x.startswith("ap")]
             child_player_ids = [x for x in child_player_ids if x not in airplay_child_ids]
             if airplay_child_ids:
