@@ -57,9 +57,10 @@ class FFMpeg(AsyncProcess):
         self.input_format = input_format
         self.collect_log_history = collect_log_history
         self.log_history: deque[str] = deque(maxlen=100)
-        self._stdin_task: asyncio.Task | None = None
-        self._logger_task: asyncio.Task | None = None
+        self._stdin_task: asyncio.Task[None] | None = None
+        self._logger_task: asyncio.Task[None] | None = None
         self._input_codec_parsed = False
+        stdin: bool | int
         if audio_input == "-" or isinstance(audio_input, AsyncGenerator):
             stdin = True
         else:
@@ -161,8 +162,8 @@ class FFMpeg(AsyncProcess):
 
     async def _feed_stdin(self) -> None:
         """Feed stdin with audio chunks from an AsyncGenerator."""
-        if TYPE_CHECKING:
-            self.audio_input: AsyncGenerator[bytes, None]
+        assert not isinstance(self.audio_input, str | int)
+
         generator_exhausted = False
         cancelled = False
         try:

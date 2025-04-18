@@ -93,7 +93,7 @@ class StreamCache:
         self.streamdetails = streamdetails
         self.logger = LOGGER.getChild("cache")
         self._cache_file: str | None = None
-        self._fetch_task: asyncio.Task | None = None
+        self._fetch_task: asyncio.Task[None] | None = None
         self._subscribers: int = 0
         self._first_part_received = asyncio.Event()
         self._all_data_written = asyncio.Event()
