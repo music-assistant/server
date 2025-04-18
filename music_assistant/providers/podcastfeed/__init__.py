@@ -23,18 +23,11 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import InvalidProviderURI, MediaNotFoundError
-from music_assistant_models.media_items import (
-    AudioFormat,
-    Podcast,
-    PodcastEpisode,
-)
+from music_assistant_models.media_items import AudioFormat, Podcast, PodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.compare import create_safe_string
-from music_assistant.helpers.podcast_parsers import (
-    parse_podcast,
-    parse_podcast_episode,
-)
+from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -158,7 +151,11 @@ class PodcastMusicprovider(MusicProvider):
         """List all episodes for the podcast."""
         if prov_podcast_id != self.podcast_id:
             raise Exception(f"Podcast id not in provider: {prov_podcast_id}")
-        for idx, episode in enumerate(self.parsed_podcast["episodes"]):
+        # sort episodes by published date
+        episodes: list[dict[str, Any]] = self.parsed_podcast["episodes"]
+        if episodes and episodes[0].get("published", 0) != 0:
+            episodes.sort(key=lambda x: x.get("published", 0))
+        for idx, episode in enumerate(episodes):
             yield await self._parse_episode(episode, idx)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:

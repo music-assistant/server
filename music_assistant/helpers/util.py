@@ -221,23 +221,35 @@ def clean_stream_title(line: str) -> str:
     return line
 
 
-async def get_ip() -> str:
-    """Get primary IP-address for this host."""
+async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str]:
+    """Return all IP-adresses of all network interfaces."""
 
-    def _get_ip() -> str:
-        """Get primary IP-address for this host."""
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            # doesn't even have to be reachable
-            sock.connect(("10.255.255.255", 1))
-            _ip = str(sock.getsockname()[0])
-        except Exception:
-            _ip = "127.0.0.1"
-        finally:
-            sock.close()
-        return _ip
+    def call() -> set[str]:
+        result: list[tuple[int, str]] = []
+        adapters = ifaddr.get_adapters()
+        for adapter in adapters:
+            for ip in adapter.ips:
+                if ip.is_IPv6 and not include_ipv6:
+                    continue
+                if ip.ip.startswith(("127", "169.254")):
+                    # filter out IPv4 loopback/APIPA address
+                    continue
+                if ip.ip.startswith(("::1", "::ffff:", "fe80")):
+                    # filter out IPv6 loopback/link-local address
+                    continue
+                if ip.ip.startswith(("192.", "10.")):
+                    score = 2
+                elif ip.ip.startswith("172."):
+                    # we rank the 172 range a bit lower as its most
+                    # often used as the private docker network
+                    score = 1
+                else:
+                    score = 0
+                result.append((score, ip.ip))
+        result.sort(key=lambda x: x[0], reverse=True)
+        return tuple(ip[1] for ip in result)
 
-    return await asyncio.to_thread(_get_ip)
+    return await asyncio.to_thread(call)
 
 
 async def is_port_in_use(port: int) -> bool:
@@ -276,10 +288,8 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
-async def get_ip_pton(ip_string: str | None = None) -> bytes:
-    """Return socket pton for local ip."""
-    if ip_string is None:
-        ip_string = await get_ip()
+async def get_ip_pton(ip_string: str) -> bytes:
+    """Return socket pton for a local ip."""
     try:
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET, ip_string)
     except OSError:
@@ -389,24 +399,6 @@ async def get_package_version(pkg_name: str) -> str | None:
         return await asyncio.to_thread(pkg_version, pkg_name)
     except PackageNotFoundError:
         return None
-
-
-async def get_ips(include_ipv6: bool = False, ignore_loopback: bool = True) -> set[str]:
-    """Return all IP-adresses of all network interfaces."""
-
-    def call() -> set[str]:
-        result: set[str] = set()
-        adapters = ifaddr.get_adapters()
-        for adapter in adapters:
-            for ip in adapter.ips:
-                if ip.is_IPv6 and not include_ipv6:
-                    continue
-                if ip.ip == "127.0.0.1" and ignore_loopback:
-                    continue
-                result.add(ip.ip)
-        return result
-
-    return await asyncio.to_thread(call)
 
 
 async def is_hass_supervisor() -> bool:

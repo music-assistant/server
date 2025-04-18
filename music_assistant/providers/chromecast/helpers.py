@@ -107,10 +107,12 @@ def get_multizone_info(services: list[ServiceInfo], zconf: Zeroconf, timeout=30)
 
         if "multizone" in status and "groups" in status["multizone"]:
             for group in status["multizone"]["groups"]:
+                if "multichannel_group" not in group:
+                    continue
                 if group["multichannel_group"] and (udn := group.get("uuid")):
                     uuid = UUID(udn.replace("-", ""))
                     multichannel_groups.add(uuid)
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError):
         pass
     return (dynamic_groups, multichannel_groups)
 

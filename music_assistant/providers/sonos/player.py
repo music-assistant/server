@@ -29,8 +29,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
-from music_assistant.constants import CONF_CROSSFADE
-
 from .const import (
     CONF_AIRPLAY_MODE,
     PLAYBACK_STATE_MAP,
@@ -233,6 +231,16 @@ class SonosPlayer:
             self.logger.debug("Redirecting PAUSE command to linked airplay player.")
             if player_provider := self.mass.get_provider(airplay.provider):
                 await player_provider.cmd_pause(airplay.player_id)
+            return
+        active_source = self.mass_player.active_source
+        if self.mass.player_queues.get(active_source):
+            # Sonos seems to be bugged when playing our queue tracks and we send pause,
+            # it can't resume the current track and simply aborts/skips it
+            # so we stop the player instead.
+            # https://github.com/music-assistant/support/issues/3758
+            # TODO: revisit this later once we implemented support for range requests
+            # as I have the feeling the pause issue is related to seek support (=range requests)
+            await self.cmd_stop()
             return
         if not self.client.player.group.playback_actions.can_pause:
             await self.cmd_stop()
@@ -520,22 +528,17 @@ class SonosPlayer:
         queue = self.mass.player_queues.get(queue_id)
         if not queue or queue.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
             return
-        crossfade = await self.mass.config.get_player_config_value(queue.queue_id, CONF_CROSSFADE)
         repeat_single_enabled = queue.repeat_mode == RepeatMode.ONE
         repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL
         play_modes = self.client.player.group.play_modes
         if (
-            play_modes.crossfade != crossfade
-            or play_modes.repeat != repeat_all_enabled
+            play_modes.repeat != repeat_all_enabled
             or play_modes.repeat_one != repeat_single_enabled
-            or play_modes.shuffle != queue.shuffle_enabled
         ):
             try:
                 await self.client.player.group.set_play_modes(
-                    crossfade=crossfade,
                     repeat=repeat_all_enabled,
                     repeat_one=repeat_single_enabled,
-                    shuffle=queue.shuffle_enabled,
                 )
             except FailedCommand as err:
                 if "groupCoordinatorChanged" not in str(err):

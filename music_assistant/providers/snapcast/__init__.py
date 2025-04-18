@@ -446,7 +446,10 @@ class SnapCastProvider(PlayerProvider):
 
     async def remove_player(self, player_id: str) -> None:
         """Remove the client from the snapserver when it is deleted."""
-        await self._snapserver.delete_client(self._get_snapclient_id(player_id))
+        try:
+            await self._snapserver.delete_client(self._get_snapclient_id(player_id))
+        except TypeError as err:
+            self.logger.warning("Unable to remove snapclient %s: %s", player_id, str(err))
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -457,30 +460,20 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         player = self.mass.players.get(player_id, raise_unavailable=False)
+
+        await self._get_snapgroup(player_id).set_stream("default")
+        await self._delete_current_snapstream(self._get_snapstream(player_id))
+
         if stream_task := self._stream_tasks.pop(player_id, None):
             if not stream_task.done():
                 stream_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await stream_task
-
         player.state = PlayerState.IDLE
         player.current_media = None
         player.active_source = None
         self._set_childs_state(player_id)
         self.mass.players.update(player_id)
-
-        # assign default/empty stream to the player
-        # this removed the player/group specific MA stream which was dynamically created
-        # and assigns the default stream to the player
-        # we do this delayed so we can reuse the stream if a new play command is issued
-        async def clear_stream():
-            with suppress(KeyError):
-                await self._get_snapgroup(player_id).set_stream("default")
-                await self._delete_current_snapstream(self._get_snapstream(player_id))
-
-        self.mass.call_later(
-            30, self.mass.create_task, clear_stream, task_id=f"snapcast_clear_stream_{player_id}"
-        )
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send MUTE command to given player."""
@@ -540,7 +533,7 @@ class SnapCastProvider(PlayerProvider):
                     await stream_task
 
         # get stream or create new one
-        stream = await self._get_or_create_stream(player_id, media.queue_id)
+        stream = await self._get_or_create_stream(player_id, media.queue_id or player_id)
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
@@ -595,6 +588,7 @@ class SnapCastProvider(PlayerProvider):
                 stream_path = stream.path
             if not stream.path:
                 stream_path = "tcp://" + stream._stream["uri"]["host"]
+            stream_path = stream_path.replace("0.0.0.0", self._snapcast_server_host)
 
             self.logger.debug("Start streaming to %s", stream_path)
             async with FFMpeg(
@@ -614,6 +608,7 @@ class SnapCastProvider(PlayerProvider):
                 self.mass.players.update(player_id)
                 self._set_childs_state(player_id)
                 await ffmpeg_proc.wait()
+
             self.logger.debug("Finished streaming to %s", stream_path)
             # we need to wait a bit for the stream status to become idle
             # to ensure that all snapclients have consumed the audio

@@ -32,7 +32,7 @@ from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps
-from music_assistant.helpers.util import get_ip, get_ips
+from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
@@ -78,7 +78,8 @@ class WebserverController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        default_publish_ip = await get_ip()
+        ip_addresses = await get_ip_addresses()
+        default_publish_ip = ip_addresses[0]
         if self.mass.running_as_hass_addon:
             return (
                 ConfigEntry(
@@ -101,7 +102,6 @@ class WebserverController(CoreController):
 
         # HA supervisor not present: user is responsible for securing the webserver
         # we give the tools to do so by presenting config options
-        all_ips = await get_ips()
         default_base_url = f"http://{default_publish_ip}:{DEFAULT_SERVER_PORT}"
         return (
             ConfigEntry(
@@ -124,7 +124,7 @@ class WebserverController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *all_ips}],
+                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
                 label="Bind to IP/interface",
                 description="Start the (web)server on this specific interface. \n"
                 "Use 0.0.0.0 to bind to all interfaces. \n"
@@ -165,7 +165,8 @@ class WebserverController(CoreController):
         # add jsonrpc api
         routes.append(("POST", "/api", self._handle_jsonrpc_api_command))
         # start the webserver
-        default_publish_ip = await get_ip()
+        all_ip_addresses = await get_ip_addresses()
+        default_publish_ip = all_ip_addresses[0]
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor the webserver is secured by HA ingress
             # we only start the webserver on the internal docker network and ingress connects
@@ -179,7 +180,7 @@ class WebserverController(CoreController):
             else:
                 # use internal ("172.30.32.) IP
                 self.publish_ip = bind_ip = next(
-                    (x for x in await get_ips() if x.startswith("172.30.32.")), default_publish_ip
+                    (x for x in all_ip_addresses if x.startswith("172.30.32.")), default_publish_ip
                 )
             base_url = f"http://{self.publish_ip}:{self.publish_port}"
         else:

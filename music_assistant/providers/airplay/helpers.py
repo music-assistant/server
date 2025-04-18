@@ -1,4 +1,4 @@
-"""Various helpers/utilities for the Airplay provider."""
+"""Various helpers/utilities for the AirPlay provider."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 def convert_airplay_volume(value: float) -> int:
-    """Remap Airplay Volume to 0..100 scale."""
+    """Remap AirPlay Volume to 0..100 scale."""
     airplay_min = -30
     airplay_max = 0
     normal_min = 0
@@ -65,7 +65,7 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:
         model = "Apple TV"
         manufacturer = "Apple"
 
-    return (manufacturer or "Airplay", model)
+    return (manufacturer or "AirPlay", model)
 
 
 def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str | None:

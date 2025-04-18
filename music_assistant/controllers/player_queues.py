@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     ContentType,
     EventType,
     MediaType,
+    PlayerFeature,
     PlayerState,
     ProviderFeature,
     QueueOption,
@@ -384,7 +385,8 @@ class PlayerQueuesController(CoreController):
         # this makes sure that playback has priority over other requests that may be
         # happening in the background
         BYPASS_THROTTLER.set(True)
-        queue = self._queues[queue_id]
+        if not (queue := self.get(queue_id)):
+            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # always fetch the underlying player so we can raise early if its not available
         queue_player = self.mass.players.get(queue_id, True)
         if queue_player.announcement_in_progress:
@@ -601,7 +603,8 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         if (queue := self.get(queue_id)) and queue.active:
-            queue.resume_pos = queue.corrected_elapsed_time
+            if queue.state == PlayerState.PLAYING:
+                queue.resume_pos = queue.corrected_elapsed_time
         # forward the actual command to the player provider
         if player_provider := self.mass.players.get_player_provider(queue.queue_id):
             await player_provider.cmd_stop(queue_id)
@@ -633,9 +636,39 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the playerqueue to handle the command.
         """
         if queue := self._queues.get(queue_id):
-            queue.resume_pos = queue.corrected_elapsed_time
+            if queue.state == PlayerState.PLAYING:
+                queue.resume_pos = queue.corrected_elapsed_time
         # forward the actual command to the player controller
-        await self.mass.players.cmd_pause(queue_id)
+        queue_player = self.mass.players.get(queue_id)
+        if not (player_provider := self.mass.players.get_player_provider(queue.queue_id)):
+            return  # guard
+
+        if PlayerFeature.PAUSE not in queue_player.supported_features:
+            # if player does not support pause, we need to send stop
+            await player_provider.cmd_stop(queue_player.player_id)
+            return
+        await player_provider.cmd_pause(queue_player.player_id)
+
+        async def _watch_pause() -> None:
+            count = 0
+            # wait for pause
+            while count < 5 and queue_player.state == PlayerState.PLAYING:
+                count += 1
+                await asyncio.sleep(1)
+            # wait for unpause
+            if queue_player.state != PlayerState.PAUSED:
+                return
+            count = 0
+            while count < 30 and queue_player.state == PlayerState.PAUSED:
+                count += 1
+                await asyncio.sleep(1)
+            # if player is still paused when the limit is reached, send stop
+            if queue_player.state == PlayerState.PAUSED:
+                await player_provider.cmd_stop(queue_player.player_id)
+
+        # we auto stop a player from paused when its paused for 30 seconds
+        if not queue_player.announcement_in_progress:
+            self.mass.create_task(_watch_pause())
 
     @api_command("player_queues/play_pause")
     async def play_pause(self, queue_id: str) -> None:
@@ -730,6 +763,7 @@ class PlayerQueuesController(CoreController):
             # resume requested while already playing,
             # use current position as resume position
             resume_pos = queue.corrected_elapsed_time
+            fade_in = False
         else:
             resume_pos = queue.resume_pos or queue.elapsed_time
 
@@ -742,9 +776,13 @@ class PlayerQueuesController(CoreController):
             resume_pos = 0
 
         if resume_item is not None:
-            resume_pos = resume_pos if resume_pos > 10 else 0
             queue_player = self.mass.players.get(queue_id)
-            if fade_in is None and queue_player.state == PlayerState.IDLE:
+            if (
+                fade_in is None
+                and queue_player.state == PlayerState.IDLE
+                and (time.time() - queue.elapsed_time_last_updated) > 60
+            ):
+                # enable fade in effect if the player is idle for a while
                 fade_in = resume_pos > 0
             if resume_item.media_type == MediaType.RADIO:
                 # we're not able to skip in online radio so this is pointless
@@ -1022,12 +1060,13 @@ class PlayerQueuesController(CoreController):
         BYPASS_THROTTLER.set(True)
 
         self.logger.debug(
-            "loading (next) item for queue %s...",
+            "(pre)loading (next) item for queue %s...",
             queue.display_name,
         )
 
-        # work out if we are playing an album and if we should prefer album loudness
-        playing_album_tracks = (
+        # work out if we are playing an album and if we should prefer album
+        # loudness
+        next_track_from_same_album = (
             next_index is not None
             and (next_item := self.get_item(queue_id, next_index))
             and (
@@ -1040,6 +1079,22 @@ class PlayerQueuesController(CoreController):
                 and queue_item.media_item.album.item_id == next_item.media_item.album.item_id
             )
         )
+        current_index = self.index_by_id(queue_id, queue_item.queue_item_id)
+        previous_track_from_same_album = (
+            (previous_index := max(current_index - 1, 0))
+            and (previous_index > 0)
+            and (previous_item := self.get_item(queue_id, previous_index))
+            and (
+                queue_item.media_item
+                and hasattr(queue_item.media_item, "album")
+                and queue_item.media_item.album
+                and previous_item.media_item
+                and hasattr(previous_item.media_item, "album")
+                and previous_item.media_item.album
+                and queue_item.media_item.album.item_id == previous_item.media_item.album.item_id
+            )
+        )
+        playing_album_tracks = next_track_from_same_album or previous_track_from_same_album
         if queue_item.media_item and queue_item.media_item.media_type == MediaType.TRACK:
             album = queue_item.media_item.album
             # prefer the full library media item so we have all metadata and provider(quality) info
@@ -1100,9 +1155,6 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = self.index_by_id(queue_id, item_id)
         self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
         self.signal_update(queue_id)
-        # enqueue the item on the player as soon as one is loaded
-        if next_item := self.get_next_item(queue_id, item_id):
-            self._enqueue_next_item(queue_id, next_item)
         # preload next streamdetails
         self._preload_next_item(queue_id, item_id)
 
@@ -1143,12 +1195,18 @@ class PlayerQueuesController(CoreController):
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
         self._queue_items[queue_id] = queue_items
-        self._queues[queue_id].items = len(self._queue_items[queue_id])
+        queue = self._queues[queue_id]
+        queue.items = len(self._queue_items[queue_id])
         # to track if the queue items changed we set a timestamp
         # this is a simple way to detect changes in the list of items
         # without having to compare the entire list
-        self._queues[queue_id].items_last_updated = time.time()
+        queue.items_last_updated = time.time()
         self.signal_update(queue_id, True)
+        if queue.state == PlayerState.PLAYING:
+            # if the queue is playing,
+            # ensure to (re)queue the next track because it might have changed
+            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
+                self._enqueue_next_item(queue_id, next_item)
 
     # Helper methods
 
@@ -1435,7 +1493,7 @@ class PlayerQueuesController(CoreController):
             if (next_index := self._get_next_index(queue_id, cur_index)) is None:
                 break
             next_item = self.get_item(queue_id, next_index)
-            if next_item.media_item and not next_item.media_item.available:
+            if not next_item.available:
                 # ensure that we skip unavailable items (set by load_next track logic)
                 continue
             return next_item
@@ -1457,7 +1515,7 @@ class PlayerQueuesController(CoreController):
         )
 
     def _enqueue_next_item(self, queue_id: str, next_item: QueueItem | None) -> None:
-        """Enqueue/precache the next item on the player."""
+        """Enqueue the next item on the player."""
         if not next_item:
             # no next item, nothing to do...
             return
@@ -1481,29 +1539,23 @@ class PlayerQueuesController(CoreController):
                 )
 
         task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.create_task(
-            _enqueue_next_item_on_player(next_item), task_id=task_id, abort_existing=True
-        )
+        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
-        Preload the next item in the queue.
+        Preload the streamdetails for the next item in the queue/buffer.
 
         This basically ensures the item is playable and fetches the stream details.
         If caching is enabled, this will also start filling the stream cache.
         If an error occurs, the item will be skipped and the next item will be loaded.
         """
 
-        async def _preload_streamdetails() -> None:
+        async def _preload_streamdetails(item_id_in_buffer: str) -> None:
             try:
                 next_item = await self.preload_next_queue_item(queue_id, item_id_in_buffer)
+                self._enqueue_next_item(queue_id, next_item)
             except QueueEmpty:
                 return
-            # always send enqueue next (even though we may have already sent that)
-            # because it could have been changed and also because some players
-            # sometimes miss the enqueue_next call when its sent too short after
-            # the play_media call, so consider this a safety net.
-            self._enqueue_next_item(queue_id, next_item)
 
         if not (current_item := self.get_item(queue_id, item_id_in_buffer)):
             # this should not happen, but guard anyways
@@ -1520,7 +1572,7 @@ class PlayerQueuesController(CoreController):
             return
 
         task_id = f"preload_next_item_{queue_id}"
-        self.mass.call_later(30, _preload_streamdetails, task_id=task_id)
+        self.mass.call_later(0.5, _preload_streamdetails, item_id_in_buffer, task_id=task_id)
 
     async def _resolve_media_items(
         self, media_item: MediaItemTypeOrItemMapping, start_item: str | None = None

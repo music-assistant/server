@@ -12,6 +12,8 @@ from time import time
 
 import ytmusicapi
 
+from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
+
 
 async def get_artist(
     prov_artist_id: str, headers: dict[str, str], language: str = "en"
@@ -353,3 +355,32 @@ def convert_to_netscape(raw_cookie_str: str, domain: str) -> str:
     for morsel in cookie.values():
         netscape_cookie += f"{domain}\tTRUE\t/\tTRUE\t0\t{morsel.key}\t{morsel.value}\n"
     return netscape_cookie
+
+
+async def get_home(
+    headers: dict[str, str], language: str = "en", user: str | None = None, limit: int = 3
+) -> dict[str, str]:
+    """Get the recommendations from the home page."""
+
+    def _get_home():
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
+        return ytm.get_home(limit=limit)
+
+    return await asyncio.to_thread(_get_home)
+
+
+def determine_recommendation_icon(name: str) -> str:
+    """Determine the icon for a recommendation based on its name."""
+    query = name.lower()
+
+    if "listen again" in query:
+        return YTMRecommendationIcons.LISTEN_AGAIN
+    if "continue" in query:
+        return YTMRecommendationIcons.CONTINUE_WATCHING
+    if "your mix" in query:
+        return YTMRecommendationIcons.YOUR_MIX
+    if "new" in query:
+        return YTMRecommendationIcons.NEW_RELEASES
+    if "recommended" in query:
+        return YTMRecommendationIcons.RECOMMENDED
+    return YTMRecommendationIcons.DEFAULT

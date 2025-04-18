@@ -213,15 +213,19 @@ class GPodderClient:
             return None
         return SubscriptionsGet.from_json(response)
 
-    async def get_progresses(
+    async def get_episode_actions(
         self, since: int = 0
-    ) -> tuple[list[EpisodeActionPlay | EpisodeActionNew], int | None]:
-        """Get progresses. Timestamp is second return value.
+    ) -> tuple[list[EpisodeActionPlay | EpisodeActionNew | EpisodeActionDelete], int | None]:
+        """Get progresses or deletions. Timestamp is second return value.
 
         gpodder net may filter by podcast
         https://gpoddernet.readthedocs.io/en/latest/api/reference/events.html
         -> we do not use this for now, since nextcloud implementation is not
         capable of it. Also, implementation in drop-in replacements varies.
+
+        Play holds progress information.
+        New is a marked unplayed.
+        Delete is used if the user deletes a previously downloaded episode.
         """
         params: dict[str, str | int] = {"since": since}
         if self.is_nextcloud:
@@ -239,7 +243,7 @@ class GPodderClient:
         actions = [
             x
             for x in actions_response.actions
-            if isinstance(x, EpisodeActionPlay | EpisodeActionNew)
+            if isinstance(x, EpisodeActionPlay | EpisodeActionNew | EpisodeActionDelete)
         ]
 
         with suppress(ValueError):

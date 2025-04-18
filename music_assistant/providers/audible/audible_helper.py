@@ -10,6 +10,8 @@ import logging
 import os
 import re
 from collections.abc import AsyncGenerator
+from contextlib import suppress
+from datetime import datetime
 from os import PathLike
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -74,7 +76,7 @@ class AudibleHelper:
     ) -> tuple[Audiobook | None, int]:
         """Process a single audiobook item from the library."""
         content_type = audiobook_data.get("content_delivery_type", "")
-        if content_type in ("PodcastParent", "NonAudio"):
+        if content_type not in ("SinglePartBook",):
             self.logger.debug(
                 "Skipping non-audiobook item: %s (%s)",
                 audiobook_data.get("title", "Unknown"),
@@ -527,7 +529,9 @@ class AudibleHelper:
             str(audiobook_data.get("extended_product_description", ""))
         )
         book.metadata.languages = UniqueList([audiobook_data.get("language") or ""])
-        book.metadata.release_date = audiobook_data.get("release_date")
+        if release_date := audiobook_data.get("release_date"):
+            with suppress(ValueError):
+                book.metadata.release_date = datetime.fromisoformat(release_date)
 
         # Set review if available
         reviews = audiobook_data.get("editorial_reviews", [])

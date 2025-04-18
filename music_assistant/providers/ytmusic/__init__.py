@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator
+from contextlib import suppress
+from datetime import datetime
 from io import StringIO
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
@@ -39,6 +41,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
 )
@@ -48,13 +51,16 @@ from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
     add_remove_playlist_tracks,
     convert_to_netscape,
+    determine_recommendation_icon,
     get_album,
     get_artist,
+    get_home,
     get_library_albums,
     get_library_artists,
     get_library_playlists,
@@ -121,6 +127,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 
@@ -586,6 +593,45 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.audio_format.sample_rate = int(stream_format.get("asr"))
         return stream_details
 
+    @use_cache(3600)
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get available recommendations."""
+        recommendations = await get_home(self._headers, self.language, user=self._yt_user)
+        folders = []
+        for section in recommendations:
+            folder = RecommendationFolder(
+                name=section["title"],
+                item_id=f"{self.instance_id}_{section['title']}",
+                provider=self.lookup_key,
+                icon=determine_recommendation_icon(section["title"]),
+            )
+            for recommended_item in section.get("contents", []):
+                if recommended_item.get("videoId"):
+                    # Probably a track
+                    try:
+                        track = self._parse_track(recommended_item)
+                        folder.items.append(track)
+                    except InvalidDataError:
+                        self.logger.debug("Invalid track in recommendations: %s", recommended_item)
+                elif recommended_item.get("playlistId"):
+                    # Probably a playlist
+                    recommended_item["id"] = recommended_item["playlistId"]
+                    del recommended_item["playlistId"]
+                    folder.items.append(self._parse_playlist(recommended_item))
+                elif recommended_item.get("browseId"):
+                    # Probably an album
+                    folder.items.append(self._parse_album(recommended_item))
+                elif recommended_item.get("subscribers"):
+                    # Probably artist
+                    folder.items.append(self._parse_album(recommended_item))
+                else:
+                    self.logger.warning(
+                        "Unknown item type in recommendation folder: %s", recommended_item
+                    )
+                    continue
+            folders.append(folder)
+        return folders
+
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):
         """Post data to the given endpoint."""
         url = f"{YTM_BASE_URL}{endpoint}"
@@ -866,7 +912,8 @@ class YoutubeMusicProvider(MusicProvider):
         if thumbnails := episode_obj.get("thumbnails"):
             episode.metadata.images = self._parse_thumbnails(thumbnails)
         if release_date := episode_obj.get("date"):
-            episode.metadata.release_date = release_date
+            with suppress(ValueError):
+                episode.metadata.release_date = datetime.fromisoformat(release_date)
         return episode
 
     async def _get_stream_format(self, item_id: str) -> dict[str, Any]:
