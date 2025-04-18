@@ -137,7 +137,7 @@ exclude = [
   # '^music_assistant/helpers/json.py',
   # '^music_assistant/helpers/logging.py',
   # '^music_assistant/helpers/playlists.py',
-  '^music_assistant/helpers/process.py',
+  # '^music_assistant/helpers/process.py',
   '^music_assistant/helpers/scrobbler.py',
   '^music_assistant/helpers/tags.py',
   '^music_assistant/helpers/throttle_retry.py',
