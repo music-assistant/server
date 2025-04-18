@@ -133,7 +133,7 @@ exclude = [
   # '^music_assistant/helpers/didl_lite.py',
   # '^music_assistant/helpers/dsp.py',
   # '^music_assistant/helpers/ffmpeg.py',
-  '^music_assistant/helpers/images.py',
+  # '^music_assistant/helpers/images.py',
   '^music_assistant/helpers/json.py',
   '^music_assistant/helpers/logging.py',
   '^music_assistant/helpers/playlists.py',
