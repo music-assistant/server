@@ -36,22 +36,38 @@ def compare_media_item(
 ) -> bool | None:
     """Compare two media items and return True if they match."""
     if base_item.media_type == MediaType.ARTIST and compare_item.media_type == MediaType.ARTIST:
+        assert isinstance(base_item, Artist | ItemMapping)  # for type checking
+        assert isinstance(compare_item, Artist | ItemMapping)  # for type checking
         return compare_artist(base_item, compare_item, strict)
     if base_item.media_type == MediaType.ALBUM and compare_item.media_type == MediaType.ALBUM:
+        assert isinstance(base_item, Album | ItemMapping)  # for type checking
+        assert isinstance(compare_item, Album | ItemMapping)  # for type checking
         return compare_album(base_item, compare_item, strict)
     if base_item.media_type == MediaType.TRACK and compare_item.media_type == MediaType.TRACK:
+        assert isinstance(base_item, Track)  # for type checking
+        assert isinstance(compare_item, Track)  # for type checking
         return compare_track(base_item, compare_item, strict)
     if base_item.media_type == MediaType.PLAYLIST and compare_item.media_type == MediaType.PLAYLIST:
+        assert isinstance(base_item, Playlist | ItemMapping)  # for type checking
+        assert isinstance(compare_item, Playlist | ItemMapping)  # for type checking
         return compare_playlist(base_item, compare_item, strict)
     if base_item.media_type == MediaType.RADIO and compare_item.media_type == MediaType.RADIO:
+        assert isinstance(base_item, Radio | ItemMapping)  # for type checking
+        assert isinstance(compare_item, Radio | ItemMapping)  # for type checking
         return compare_radio(base_item, compare_item, strict)
     if (
         base_item.media_type == MediaType.AUDIOBOOK
         and compare_item.media_type == MediaType.AUDIOBOOK
     ):
+        assert isinstance(base_item, Audiobook | ItemMapping)  # for type checking
+        assert isinstance(compare_item, Audiobook | ItemMapping)  # for type checking
         return compare_audiobook(base_item, compare_item, strict)
     if base_item.media_type == MediaType.PODCAST and compare_item.media_type == MediaType.PODCAST:
+        assert isinstance(base_item, Podcast | ItemMapping)  # for type checking
+        assert isinstance(compare_item, Podcast | ItemMapping)  # for type checking
         return compare_podcast(base_item, compare_item, strict)
+    assert isinstance(base_item, ItemMapping)  # for type checking
+    assert isinstance(compare_item, ItemMapping)  # for type checking
     return compare_item_mapping(base_item, compare_item, strict)
 
 
@@ -61,8 +77,6 @@ def compare_artist(
     strict: bool = True,
 ) -> bool | None:
     """Compare two artist items and return True if they match."""
-    if base_item is None or compare_item is None:
-        return False
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
@@ -78,13 +92,11 @@ def compare_artist(
 
 
 def compare_album(
-    base_item: Album | ItemMapping | None,
-    compare_item: Album | ItemMapping | None,
+    base_item: Album | ItemMapping,
+    compare_item: Album | ItemMapping,
     strict: bool = True,
 ) -> bool | None:
     """Compare two album items and return True if they match."""
-    if base_item is None or compare_item is None:
-        return False
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
@@ -125,14 +137,12 @@ def compare_album(
 
 
 def compare_track(
-    base_item: Track | None,
-    compare_item: Track | None,
+    base_item: Track,
+    compare_item: Track,
     strict: bool = True,
     track_albums: list[Album] | None = None,
 ) -> bool:
     """Compare two track items and return True if they match."""
-    if base_item is None or compare_item is None:
-        return False
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
@@ -243,8 +253,6 @@ def compare_playlist(
     strict: bool = True,
 ) -> bool | None:
     """Compare two Playlist items and return True if they match."""
-    if base_item is None or compare_item is None:
-        return False
     # require (exact) name match
     if not compare_strings(base_item.name, compare_item.name, strict=strict):
         return False
@@ -262,8 +270,6 @@ def compare_radio(
     strict: bool = True,
 ) -> bool | None:
     """Compare two Radio items and return True if they match."""
-    if base_item is None or compare_item is None:
-        return False
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
@@ -275,13 +281,11 @@ def compare_radio(
 
 
 def compare_audiobook(
-    base_item: Audiobook | ItemMapping | None,
-    compare_item: Audiobook | ItemMapping | None,
+    base_item: Audiobook | ItemMapping,
+    compare_item: Audiobook | ItemMapping,
     strict: bool = True,
 ) -> bool | None:
     """Compare two Audiobook items and return True if they match."""
-    if base_item is None or compare_item is None:
-        return False
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
@@ -324,13 +328,11 @@ def compare_audiobook(
 
 
 def compare_podcast(
-    base_item: Podcast | ItemMapping | None,
-    compare_item: Podcast | ItemMapping | None,
+    base_item: Podcast | ItemMapping,
+    compare_item: Podcast | ItemMapping,
     strict: bool = True,
 ) -> bool | None:
     """Compare two Podcast items and return True if they match."""
-    if base_item is None or compare_item is None:
-        return False
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
@@ -371,15 +373,17 @@ def compare_item_mapping(
     strict: bool = True,
 ) -> bool | None:
     """Compare two ItemMapping items and return True if they match."""
-    if base_item is None or compare_item is None:
-        return False
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
     # return early on (un)matched external id
-    external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
-    if external_id_match is not None:
-        return external_id_match
+    # check all ExternalID, as ItemMapping is a minimized obj for all MediaItems
+    for ext_id in ExternalID:
+        external_id_match = compare_external_ids(
+            base_item.external_ids, compare_item.external_ids, ext_id
+        )
+        if external_id_match is not None:
+            return external_id_match
     # compare version
     if not compare_version(base_item.version, compare_item.version):
         return False
@@ -440,6 +444,7 @@ def compare_item_ids(
     compare_prov_ids = getattr(compare_item, "provider_mappings", None)
 
     if base_prov_ids is not None:
+        assert isinstance(base_item, MediaItem)  # for type checking
         for prov_l in base_item.provider_mappings:
             if (
                 prov_l.provider_domain == compare_item.provider
@@ -448,11 +453,14 @@ def compare_item_ids(
                 return True
 
     if compare_prov_ids is not None:
+        assert isinstance(compare_item, MediaItem)  # for type checking
         for prov_r in compare_item.provider_mappings:
             if prov_r.provider_domain == base_item.provider and prov_r.item_id == base_item.item_id:
                 return True
 
     if base_prov_ids is not None and compare_prov_ids is not None:
+        assert isinstance(base_item, MediaItem)  # for type checking
+        assert isinstance(compare_item, MediaItem)  # for type checking
         for prov_l in base_item.provider_mappings:
             for prov_r in compare_item.provider_mappings:
                 if prov_l.provider_domain != prov_r.provider_domain:
