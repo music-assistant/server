@@ -45,6 +45,7 @@ python-fullykiosk==0.0.14
 python-slugify==8.0.4
 pywidevine==1.8.0
 radios==0.3.2
+setuptools
 shortuuid==1.0.13
 snapcast==2.3.6
 soco==0.30.9
