@@ -1,0 +1,13 @@
+{
+  "type": "music",
+  "domain": "musiccast",
+  "name": "MusicCast",
+  "description": "MusicCast for Music Assistant",
+  "requirements": [
+    "aiomusiccast==0.14.8"
+  ],
+  "codeowners": [
+    "@fmunkes"
+  ],
+  "documentation": "https://music-assistant.io/player-support/musiccast"
+}
