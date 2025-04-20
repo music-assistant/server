@@ -16,6 +16,20 @@ PLAYER_CONFIG_ENTRIES = (
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
 )
 
+# switch to these non netusb sources when leaving a group
+CONF_PLAYER_SWITCH_SOURCE_NON_NET = "main_switch_source"
+CONF_PLAYER_TURN_OFF_ON_LEAVE = "turn_off_on_leave"
+MAIN_SWITCH_SOURCE_NON_NET = "audio1"
+ZONE2_SWITCH_SOURCE_NON_NET = "audio2"
+ZONE3_SWITCH_SOURCE_NON_NET = "audio3"
+ZONE4_SWITCH_SOURCE_NON_NET = "audio4"
+ZONE_SWITCH_SOURCE_NON_NET = {
+    "main": MAIN_SWITCH_SOURCE_NON_NET,
+    "zone2": ZONE2_SWITCH_SOURCE_NON_NET,
+    "zone3": ZONE3_SWITCH_SOURCE_NON_NET,
+    "zone4": ZONE4_SWITCH_SOURCE_NON_NET,
+}
+
 
 CONF_NETWORK_SCAN = "network_scan"
 

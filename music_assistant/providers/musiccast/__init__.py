@@ -33,11 +33,14 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     ATTR_MAIN_SYNC,
     CONF_NETWORK_SCAN,
+    CONF_PLAYER_SWITCH_SOURCE_NON_NET,
+    CONF_PLAYER_TURN_OFF_ON_LEAVE,
     MC_CONTROL_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
     PLAYER_CONFIG_ENTRIES,
     POLL_INTERVAL,
     ZONE_SPLITTER,
+    ZONE_SWITCH_SOURCE_NON_NET,
 )
 from .musiccast import (
     MusicCastController,
@@ -161,7 +164,29 @@ class MusicCast(PlayerProvider):
     ) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        return base_entries + PLAYER_CONFIG_ENTRIES
+
+        zone_entries: tuple[ConfigEntry, ...] = ()
+        if zone_player := self._get_zone_player(player_id):
+            if len(zone_player.physical_device.zone_devices) > 1:
+                zone_entries = (
+                    ConfigEntry(
+                        key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
+                        type=ConfigEntryType.STRING,
+                        label="Switch to this non-net source on group leave.",
+                        default_value=ZONE_SWITCH_SOURCE_NON_NET[zone_player.zone_name],
+                        description="Switch to this non-net source on group leave. "
+                        " This must be the source_id.",
+                    ),
+                    ConfigEntry(
+                        key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
+                        type=ConfigEntryType.BOOLEAN,
+                        label="Turn off zone after group is left.",
+                        default_value=True,
+                        description="Turn off zone after group is left.",
+                    ),
+                )
+
+        return base_entries + zone_entries + PLAYER_CONFIG_ENTRIES
 
     def _get_zone_player(self, player_id: str) -> MusicCastZoneDevice | None:
         udn, zone = player_id.split(ZONE_SPLITTER)
@@ -184,14 +209,16 @@ class MusicCast(PlayerProvider):
 
     async def run_cmd(self, player_id: str, fun: Callable[..., Any], *args: Any) -> None:
         """Run cmd if possible."""
-        try:
-            await fun(*args)
-        except MusicCastConnectionException:
-            await self._set_player_unavailable(player_id)
-            self.logger.debug("Player became unavailable.")
-        except MusicCastGroupException:
-            # can happen, user shall try again.
-            ...
+        async with self.lock:
+            # not entirely sure if I need the lock.
+            try:
+                await fun(*args)
+            except MusicCastConnectionException:
+                await self._set_player_unavailable(player_id)
+                self.logger.debug("Player became unavailable.")
+            except MusicCastGroupException:
+                # can happen, user shall try again.
+                ...
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -250,17 +277,36 @@ class MusicCast(PlayerProvider):
         """Handle UNGROUP command for given player."""
         if zone_player := self._get_zone_player(player_id):
             if zone_player.zone_name.startswith("zone"):
-                # We are are zone. Check, if our main is the server
+                # We are are zone. Check, if our main is the server.
+                # This case can only happen, if the zone is synced to main.
                 main_is_server = False
                 for dev in zone_player.physical_device.zone_devices.values():
                     main_is_server = dev.is_netusb
                     if main_is_server:
                         break
                 if main_is_server:
-                    await self.run_cmd(player_id, zone_player.select_source, "phono")
-                    await self.run_cmd(player_id, zone_player.turn_off)
+                    await self._handle_zone_grouping(zone_player)
                     return
             await self.run_cmd(player_id, zone_player.unjoin_player)
+
+    async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
+        player_id = zone_player.ma_player_id
+        assert player_id is not None  # for TYPE_CHECKING
+        _source = str(
+            await self.mass.config.get_player_config_value(
+                player_id, CONF_PLAYER_SWITCH_SOURCE_NON_NET
+            )
+        )
+        await self.run_cmd(player_id, zone_player.select_source, _source)
+        _turn_off = bool(
+            str(
+                await self.mass.config.get_player_config_value(
+                    player_id, CONF_PLAYER_TURN_OFF_ON_LEAVE
+                )
+            )
+        )
+        if _turn_off:
+            await self.run_cmd(player_id, zone_player.turn_off)
 
     async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
         """Create temporary sync group by joining given players to target player."""
@@ -304,6 +350,17 @@ class MusicCast(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         if zone_player := self._get_zone_player(player_id):
+            if len(zone_player.physical_device.zone_devices) > 1:
+                # zone handling
+                # only a single zone may have netusb capability
+                for zone_name, dev in zone_player.physical_device.zone_devices.items():
+                    if zone_name == zone_player.zone_name:
+                        continue
+                    if dev.is_netusb:
+                        await self._handle_zone_grouping(dev)
+                        # a little delay
+                        await asyncio.sleep(1)
+
             await self.run_cmd(player_id, zone_player.play_url, media.uri)
 
     async def poll_player(self, player_id: str) -> None:
