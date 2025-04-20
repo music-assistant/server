@@ -30,7 +30,6 @@ from music_assistant.providers.sonos.helpers import get_primary_ip_address
 
 from .constants import (
     ATTR_MAIN_SYNC,
-    CONF_NETWORK_SCAN,
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
     DEVICE_INFO_ENDPOINT,
@@ -84,16 +83,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_NETWORK_SCAN,
-            type=ConfigEntryType.BOOLEAN,
-            label="Allow network scan for discovery",
-            default_value=False,
-            description="Enable network scan for discovery of players. \n"
-            "Can be used if (some of) your players are not automatically discovered.",
-        ),
-    )
+    return ()
 
 
 @dataclass(kw_only=True)

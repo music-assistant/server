@@ -35,8 +35,6 @@ ZONE_SWITCH_SOURCE_NON_NET = {
 }
 
 
-CONF_NETWORK_SCAN = "network_scan"
-
 POLL_INTERVAL = 30
 ZONE_SPLITTER = "___"  # must be url ok
 
