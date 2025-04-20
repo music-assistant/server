@@ -9,6 +9,7 @@ from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from aiomusiccast.const import MC_LINK
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
@@ -30,6 +31,7 @@ from music_assistant.constants import (
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    ATTR_MAIN_SYNC,
     CONF_NETWORK_SCAN,
     MC_CONTROL_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
@@ -247,6 +249,17 @@ class MusicCast(PlayerProvider):
     async def cmd_ungroup(self, player_id: str) -> None:
         """Handle UNGROUP command for given player."""
         if zone_player := self._get_zone_player(player_id):
+            if zone_player.zone_name.startswith("zone"):
+                # We are are zone. Check, if our main is the server
+                main_is_server = False
+                for dev in zone_player.physical_device.zone_devices.values():
+                    main_is_server = dev.is_netusb
+                    if main_is_server:
+                        break
+                if main_is_server:
+                    await self.run_cmd(player_id, zone_player.select_source, "phono")
+                    await self.run_cmd(player_id, zone_player.turn_off)
+                    return
             await self.run_cmd(player_id, zone_player.unjoin_player)
 
     async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
@@ -255,13 +268,24 @@ class MusicCast(PlayerProvider):
         server = self._get_zone_player(target_player)
         if server is None:
             return
-        children = []
+        children: list[MusicCastZoneDevice] = []
+        children_zones: list[MusicCastZoneDevice] = []
         for child_id in child_player_ids:
             if child := self._get_zone_player(child_id):
-                children.append(child)
+                if server.physical_device == child.physical_device:
+                    # child must be a zone, as we exclude main to zone
+                    # in sync to when setting up player attributes
+                    children_zones.append(child)
+                else:
+                    children.append(child)
+
+        for child in children_zones:
+            assert child.ma_player_id is not None  # for type checking
+            if child.state == MusicCastPlayerState.OFF:
+                await self.run_cmd(child.ma_player_id, child.turn_on)
+            await self.select_source(child.ma_player_id, ATTR_MAIN_SYNC)
         if not children:
             return
-
         await self.run_cmd(target_player, server.join_players, children)
 
     async def cmd_ungroup_member(self, player_id: str, target_player: str) -> None:
@@ -477,6 +501,7 @@ class MusicCast(PlayerProvider):
         self.musiccast_players[udn] = musiccast_player
 
     def _update_player_attributes(self, player: Player, device: MusicCastZoneDevice) -> None:
+        # ruff: noqa: PLR0915
         zone_data = device.zone_data
         if zone_data is None:
             return
@@ -524,9 +549,30 @@ class MusicCast(PlayerProvider):
         else:
             player.active_source = device.source_id
 
-        # grouping - should be last for return
-        # officially they need netusb, let's ignore this for now
-        player.can_group_with = {self.instance_id}  # we can group with all musiccast devices
+        # grouping
+        # A zone cannot be synced to another zone or main of the same device.
+        # Additionally, a zone can only be synced, if main is currently not using any netusb
+        # function.
+        # For a Zone which will be synced to main, grouping emits a "main_sync" instead
+        # of a mc link.
+        can_group_with_zone_devices: list[MusicCastZoneDevice] = []
+        if device.zone_name.startswith("zone"):
+            main_uses_netusb = False
+            for dev in device.physical_device.zone_devices.values():
+                if dev.zone_name.startswith("main"):
+                    main_uses_netusb = dev.is_netusb
+                    break
+            if not main_uses_netusb:
+                for _dev in device.controller.all_zone_devices:
+                    if _dev.physical_device == device.physical_device:
+                        continue
+                    can_group_with_zone_devices.append(_dev)
+        else:
+            can_group_with_zone_devices = device.controller.all_zone_devices
+
+        player.can_group_with = {
+            x.ma_player_id for x in can_group_with_zone_devices if x.ma_player_id is not None
+        }
 
         if len(device.musiccast_group) == 1:
             if device.musiccast_group[0] == device:
@@ -534,25 +580,29 @@ class MusicCast(PlayerProvider):
                 player.group_childs = UniqueList([])
                 player.synced_to = None
                 player.active_group = None
-                return
 
-        if not device.is_client and not device.is_server:
+        elif not device.is_client and not device.is_server:
             player.group_childs = UniqueList([])
             player.synced_to = None
             player.active_group = None
-            return
 
-        if device.is_client:
+        elif device.is_client:
             player.group_childs = UniqueList([])
             player.synced_to = device.group_server.ma_player_id
             player.active_group = device.group_server.ma_player_id
 
-        if device.is_server:
-            player.group_childs = UniqueList(
-                [x.ma_player_id for x in device.musiccast_group if x.ma_player_id is not None]
-            )
-            player.synced_to = None
-            player.active_group = None
+        elif device.is_server:
+            if device.source_id == MC_LINK:
+                # sometimes is_server can be true, but we are not.
+                player.group_childs = UniqueList([])
+                player.synced_to = device.group_server.ma_player_id
+                player.active_group = device.group_server.ma_player_id
+            else:
+                player.group_childs = UniqueList(
+                    [x.ma_player_id for x in device.musiccast_group if x.ma_player_id is not None]
+                )
+                player.synced_to = None
+                player.active_group = None
 
     def update_callback(self, mc_physical_device: MusicCastPhysicalDevice) -> None:
         """Update callback."""

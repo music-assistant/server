@@ -58,6 +58,7 @@ class MusicCastZoneDevice:
         self.device = physical_device.device
         self.zone_data = self.device.data.zones.get(self.zone_name)
         self.udn = physical_device.udn
+        self.physical_device = physical_device
 
     @property
     def ma_player_id(self) -> str | None:
