@@ -41,6 +41,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemType,
+    MediaItemTypeOrItemMapping,
     Playlist,
     ProviderMapping,
     RecommendationFolder,
@@ -1021,102 +1022,24 @@ class TidalProvider(MusicProvider):
 
         results: list[RecommendationFolder] = []
 
+        # Pages to fetch
+        pages = ["pages/home", "pages/for_you"]
+
+        # Dictionary to track items by module title to combine duplicates
+        combined_modules: dict[str, list[Playlist | Album | Track | Artist]] = {}
+        module_content_types: dict[str, MediaType] = {}
+        module_page_names: dict[str, str] = {}
+
         try:
-            # Get page content
-            home_parser = await self.get_page_content("pages/home")
+            # Process pages and collect modules
+            await self._process_recommendation_pages(
+                pages, combined_modules, module_content_types, module_page_names
+            )
 
-            # Helper function to determine icon based on content type
-            def get_icon_for_type(media_type: MediaType) -> str:
-                if media_type == MediaType.PLAYLIST:
-                    return "mdi-playlist-music"
-                elif media_type == MediaType.ALBUM:
-                    return "mdi-album"
-                elif media_type == MediaType.TRACK:
-                    return "mdi-file-music"
-                elif media_type == MediaType.ARTIST:
-                    return "mdi-account-music"
-                return "mdi-motion-play"  # Default for mixed content
-
-            # Collection for all "Because you listened to" items
-            because_items = []
-            because_modules = set()
-
-            # Process all modules in a single pass
-            for module_info in home_parser._module_map:
-                try:
-                    module_title = module_info.get("title", "Unknown")
-
-                    # Skip modules without proper titles
-                    if not module_title or module_title == "Unknown":
-                        continue
-
-                    # Check if it's a "because you listened to" module
-                    pre_title = module_info.get("raw_data", {}).get("preTitle")
-                    is_because_module = pre_title and "because you listened to" in pre_title.lower()
-
-                    # Get module items
-                    module_items, content_type = home_parser.get_module_items(module_info)
-
-                    # Skip empty modules
-                    if not module_items:
-                        continue
-
-                    # Create folder description and icon
-                    subtitle = f"Tidal {content_type.name.lower()} collection"
-                    icon = get_icon_for_type(content_type)
-
-                    if is_because_module:
-                        # Add items to collective "Because you listened to" list
-                        because_items.extend(module_items)
-                        because_modules.add(module_title)
-                    else:
-                        # Create regular recommendation folder
-                        item_id = "".join(
-                            c
-                            for c in module_title.lower().replace(" ", "_").replace("-", "_")
-                            if c.isalnum() or c == "_"
-                        )
-
-                        folder = RecommendationFolder(
-                            item_id=item_id,
-                            name=module_title,
-                            provider=self.lookup_key,
-                            items=UniqueList(module_items),
-                            subtitle=subtitle,
-                            translation_key=item_id,
-                            icon=icon,
-                        )
-                        results.append(folder)
-
-                except (KeyError, ValueError, TypeError, AttributeError) as err:
-                    self.logger.warning(
-                        "Error processing module %s: %s",
-                        module_info.get("title", "Unknown"),
-                        err,
-                    )
-
-            # Create a single folder for all "Because you listened to" items if we have any
-            if because_items:
-                sources_summary = " - ".join(sorted(because_modules))
-                folder_subtitle = f"Recommendations based on: {sources_summary}"
-
-                because_folder = RecommendationFolder(
-                    item_id="because_you_listened_to",
-                    name=f"Because You Listened To: {sources_summary}",
-                    provider=self.lookup_key,
-                    items=UniqueList(because_items),
-                    subtitle=folder_subtitle,
-                    translation_key="because_you_listened_to",
-                    icon="mdi-headphones-box",
-                )
-                # Add as first item in results
-                results.insert(0, because_folder)
-
-                self.logger.debug(
-                    "Created 'Because You Listened To' folder with %d items from %d modules",
-                    len(because_items),
-                    len(because_modules),
-                )
+            # Create recommendation folders from combined modules
+            results = self._create_recommendation_folders(
+                combined_modules, module_content_types, module_page_names
+            )
 
             self.logger.debug("Created %d recommendation folders from Tidal", len(results))
 
@@ -1143,6 +1066,130 @@ class TidalProvider(MusicProvider):
         ) as err:
             # More specific network errors
             self.logger.warning("Network error in Tidal recommendations: %s", err)
+
+        return results
+
+    async def _process_recommendation_pages(
+        self,
+        pages: list[str],
+        combined_modules: dict[str, list[Playlist | Album | Track | Artist]],
+        module_content_types: dict[str, MediaType],
+        module_page_names: dict[str, str],
+    ) -> None:
+        """Process recommendation pages and collect modules."""
+        for page_path in pages:
+            # Get page content
+            page_parser = await self.get_page_content(page_path)
+            page_name = page_path.split("/")[-1].replace("_", " ").title()
+
+            # Process all modules in a single pass
+            await self._process_page_modules(
+                page_parser, page_name, combined_modules, module_content_types, module_page_names
+            )
+
+    async def _process_page_modules(
+        self,
+        page_parser: TidalPageParser,
+        page_name: str,
+        combined_modules: dict[str, list[Playlist | Album | Track | Artist]],
+        module_content_types: dict[str, MediaType],
+        module_page_names: dict[str, str],
+    ) -> None:
+        """Process all modules from a single page."""
+        for module_info in page_parser._module_map:
+            try:
+                module_title = module_info.get("title", "Unknown")
+
+                # Skip modules without proper titles
+                if not module_title or module_title == "Unknown":
+                    continue
+
+                # Get module items
+                module_items, content_type = page_parser.get_module_items(module_info)
+
+                # Skip empty modules
+                if not module_items:
+                    continue
+
+                # For all modules, collect items based on title
+                if module_title not in combined_modules:
+                    combined_modules[module_title] = []
+                    module_content_types[module_title] = content_type
+                    module_page_names[module_title] = page_name
+                else:
+                    # If we already have this module title, update the content type
+                    # if this module has more items than we already collected
+                    current_items_count = len(combined_modules[module_title])
+                    if len(module_items) > current_items_count:
+                        module_content_types[module_title] = content_type
+
+                # Add items to the combined collection
+                combined_modules[module_title].extend(module_items)
+
+            except (KeyError, ValueError, TypeError, AttributeError) as err:
+                self.logger.warning(
+                    "Error processing module %s from %s: %s",
+                    module_info.get("title", "Unknown"),
+                    page_name,
+                    err,
+                )
+
+    def _create_recommendation_folders(
+        self,
+        combined_modules: dict[str, list[Playlist | Album | Track | Artist]],
+        module_content_types: dict[str, MediaType],
+        module_page_names: dict[str, str],
+    ) -> list[RecommendationFolder]:
+        """Create recommendation folders from combined modules."""
+        results: list[RecommendationFolder] = []
+
+        # Helper function to determine icon based on content type
+        def get_icon_for_type(media_type: MediaType) -> str:
+            if media_type == MediaType.PLAYLIST:
+                return "mdi-playlist-music"
+            elif media_type == MediaType.ALBUM:
+                return "mdi-album"
+            elif media_type == MediaType.TRACK:
+                return "mdi-file-music"
+            elif media_type == MediaType.ARTIST:
+                return "mdi-account-music"
+            return "mdi-motion-play"  # Default for mixed content
+
+        for module_title, items in combined_modules.items():
+            # Use unique items list to prevent duplicates
+            unique_items = UniqueList(items)
+
+            # Create a sanitized unique ID
+            item_id = "".join(
+                c
+                for c in module_title.lower().replace(" ", "_").replace("-", "_")
+                if c.isalnum() or c == "_"
+            )
+
+            # Get content type and page source
+            content_type = module_content_types.get(module_title, MediaType.PLAYLIST)
+            page_name = module_page_names.get(module_title, "Tidal")
+
+            # Create folder with combined items
+            folder = RecommendationFolder(
+                item_id=item_id,
+                name=module_title,
+                provider=self.lookup_key,
+                items=UniqueList[MediaItemTypeOrItemMapping](unique_items),
+                subtitle=f"From {page_name} • {len(unique_items)} items",
+                translation_key=item_id,
+                icon=get_icon_for_type(content_type),
+            )
+            results.append(folder)
+
+            # Log a message if we combined multiple sources
+            if len(unique_items) < len(items):
+                self.logger.debug(
+                    "Combined %d items into %d unique items for '%s'",
+                    len(items),
+                    len(unique_items),
+                    module_title,
+                )
 
         return results
 
