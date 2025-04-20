@@ -10,5 +10,6 @@
   "codeowners": [
     "@fmunkes"
   ],
-  "documentation": "https://music-assistant.io/player-support/musiccast"
+  "documentation": "https://music-assistant.io/player-support/musiccast",
+  "multi_instance": false
 }

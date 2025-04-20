@@ -562,6 +562,7 @@ class MusicCast(PlayerProvider):
         )
         player.volume_muted = zone_data.mute
 
+        # STATE
         # we can only use one zone at a time for server playback
         player.elapsed_time = None
         player.elapsed_time_last_updated = None
@@ -576,6 +577,7 @@ class MusicCast(PlayerProvider):
             case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
                 player.state = PlayerState.IDLE
 
+        # SOURCES
         player.source_list = UniqueList([])
         for source_id, source_name in device.source_mapping.items():
             control = source_id in MC_CONTROL_SOURCE_IDS
@@ -591,6 +593,7 @@ class MusicCast(PlayerProvider):
                 )
             )
 
+        # QUEUE
         # queue = self.mass.player_queues.get_active_queue(player.player_id)
         # if device.is_controlled_by_mass and queue is not None:
         # be optimistic
@@ -599,7 +602,7 @@ class MusicCast(PlayerProvider):
         else:
             player.active_source = device.source_id
 
-        # grouping
+        # GROUPING
         # A zone cannot be synced to another zone or main of the same device.
         # Additionally, a zone can only be synced, if main is currently not using any netusb
         # function.
@@ -652,7 +655,11 @@ class MusicCast(PlayerProvider):
                 player.active_group = None
 
     def update_callback(self, mc_physical_device: MusicCastPhysicalDevice) -> None:
-        """Update callback."""
+        """Update callback.
+
+        This is called if there are new UDP updates. Unfortunately, aiomusiccast
+        only allows a sync callback.
+        """
         mc_player: MusicCastPlayer | None = None
         for mc_player in self.musiccast_players.values():
             if mc_player.physical_device == mc_physical_device:
