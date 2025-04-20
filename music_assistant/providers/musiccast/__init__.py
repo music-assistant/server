@@ -307,8 +307,10 @@ class MusicCast(PlayerProvider):
                     continue
 
                 zone_device = mc_player.physical_device.zone_devices.get(zone_name)
-                assert zone_device is not None
-                self._update_player_attributes(player, zone_device)
+                if zone_device is None:
+                    player.available = False
+                else:
+                    self._update_player_attributes(player, zone_device)
                 await self.mass.players.register_or_update(player)
 
     # The discovery methods are copied over from the DLNAPlayerProvider and adjusted for MusicCast.
@@ -453,17 +455,20 @@ class MusicCast(PlayerProvider):
             )
 
         main_device = physical_device.zone_devices.get("main")
-        assert main_device is not None
-        assert main_device.zone_data is not None
-        assert main_device.zone_data.name is not None
+        if (
+            main_device is None
+            or main_device.zone_data is None
+            or main_device.zone_data.name is None
+        ):
+            return
         musiccast_player = MusicCastPlayer(
             udn=udn,
             physical_device=physical_device,
         )
 
         for zone_name, zone_device in physical_device.zone_devices.items():
-            assert zone_device.zone_data is not None
-            assert zone_device.zone_data.name is not None
+            if zone_device.zone_data is None or zone_device.zone_data.name is None:
+                continue
             player = get_player(zone_name, zone_device.zone_data.name)
             setattr(musiccast_player, f"player_{zone_device.zone_name}", player)
             self._update_player_attributes(player, zone_device)
@@ -473,7 +478,8 @@ class MusicCast(PlayerProvider):
 
     def _update_player_attributes(self, player: Player, device: MusicCastZoneDevice) -> None:
         zone_data = device.zone_data
-        assert zone_data is not None
+        if zone_data is None:
+            return
 
         player.name = zone_data.name or "UNKNOWN NAME"
         player.powered = zone_data.power == "on"
@@ -554,7 +560,7 @@ class MusicCast(PlayerProvider):
         for mc_player in self.musiccast_players.values():
             if mc_player.physical_device == mc_physical_device:
                 break
-        assert mc_player is not None
+        assert mc_player is not None  # for type checking
         if mc_player.player_main is None:
             return
         main_player_id = mc_player.player_main.player_id
