@@ -147,7 +147,7 @@ class MusicCast(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Async init."""
-        self.mc_controller = MusicCastController()
+        self.mc_controller = MusicCastController(logger=self.logger)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -204,21 +204,18 @@ class MusicCast(PlayerProvider):
         if player is None:
             return
         player.available = False
-        async with self.lock:
-            await self.mass.players.register_or_update(player)
+        await self.mass.players.register_or_update(player)
 
     async def run_cmd(self, player_id: str, fun: Callable[..., Any], *args: Any) -> None:
         """Run cmd if possible."""
-        async with self.lock:
-            # not entirely sure if I need the lock.
-            try:
-                await fun(*args)
-            except MusicCastConnectionException:
-                await self._set_player_unavailable(player_id)
-                self.logger.debug("Player became unavailable.")
-            except MusicCastGroupException:
-                # can happen, user shall try again.
-                ...
+        try:
+            await fun(*args)
+        except MusicCastConnectionException:
+            await self._set_player_unavailable(player_id)
+            self.logger.debug("Player became unavailable.")
+        except MusicCastGroupException:
+            # can happen, user shall try again.
+            ...
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -314,7 +311,7 @@ class MusicCast(PlayerProvider):
         server = self._get_zone_player(target_player)
         if server is None:
             return
-        children: list[MusicCastZoneDevice] = []
+        children: set[MusicCastZoneDevice] = set()
         children_zones: list[MusicCastZoneDevice] = []
         for child_id in child_player_ids:
             if child := self._get_zone_player(child_id):
@@ -323,7 +320,7 @@ class MusicCast(PlayerProvider):
                     # in sync to when setting up player attributes
                     children_zones.append(child)
                 else:
-                    children.append(child)
+                    children.add(child)
 
         for child in children_zones:
             assert child.ma_player_id is not None  # for type checking
@@ -332,7 +329,8 @@ class MusicCast(PlayerProvider):
             await self.select_source(child.ma_player_id, ATTR_MAIN_SYNC)
         if not children:
             return
-        await self.run_cmd(target_player, server.join_players, children)
+
+        await self.run_cmd(target_player, server.join_players, list(children))
 
     async def cmd_ungroup_member(self, player_id: str, target_player: str) -> None:
         """Handle UNGROUP command for given player."""
@@ -359,40 +357,39 @@ class MusicCast(PlayerProvider):
                     if dev.is_netusb:
                         await self._handle_zone_grouping(dev)
                         # a little delay
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(3)
 
             await self.run_cmd(player_id, zone_player.play_url, media.uri)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates, only main zone is polled."""
         # we only poll for main, as we get zones alongside
-        async with self.lock:
-            udn, _ = player_id.split(ZONE_SPLITTER)
-            mc_player = self.musiccast_players.get(udn)
-            if mc_player is None:
-                return
+        udn, _ = player_id.split(ZONE_SPLITTER)
+        mc_player = self.musiccast_players.get(udn)
+        if mc_player is None:
+            return
 
-            players_available = True
-            try:
-                await mc_player.physical_device.fetch()
-            except (MusicCastConnectionException, MusicCastGroupException):
-                players_available = False
+        players_available = True
+        try:
+            await mc_player.physical_device.fetch()
+        except (MusicCastConnectionException, MusicCastGroupException):
+            players_available = False
 
-            for zone_name in ["main", "zone2", "zone3", "zone4"]:
-                player = mc_player.get_player(zone_name)
-                if player is None:
-                    continue
-                if not players_available:
-                    player.available = False
-                    await self.mass.players.register_or_update(player)
-                    continue
-
-                zone_device = mc_player.physical_device.zone_devices.get(zone_name)
-                if zone_device is None:
-                    player.available = False
-                else:
-                    self._update_player_attributes(player, zone_device)
+        for zone_name in ["main", "zone2", "zone3", "zone4"]:
+            player = mc_player.get_player(zone_name)
+            if player is None:
+                continue
+            if not players_available:
+                player.available = False
                 await self.mass.players.register_or_update(player)
+                continue
+
+            zone_device = mc_player.physical_device.zone_devices.get(zone_name)
+            if zone_device is None:
+                player.available = False
+            else:
+                self._update_player_attributes(player, zone_device)
+            await self.mass.players.register_or_update(player)
 
     # The discovery methods are copied over from the DLNAPlayerProvider and adjusted for MusicCast.
 
@@ -630,7 +627,9 @@ class MusicCast(PlayerProvider):
             can_group_with_zone_devices = device.controller.all_zone_devices
 
         player.can_group_with = {
-            x.ma_player_id for x in can_group_with_zone_devices if x.ma_player_id is not None
+            x.ma_player_id
+            for x in can_group_with_zone_devices
+            if x.ma_player_id is not None and not x.is_server
         }
 
         if len(device.musiccast_group) == 1:

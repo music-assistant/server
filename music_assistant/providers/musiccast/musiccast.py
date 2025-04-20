@@ -5,7 +5,8 @@ https://github.com/home-assistant/core/tree/dev/homeassistant/components/yamaha_
 and only adapted for MA.
 """
 
-from collections.abc import Callable, Coroutine
+import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from enum import Enum, auto
 from random import getrandbits
@@ -59,6 +60,13 @@ class MusicCastZoneDevice:
         self.zone_data = self.device.data.zones.get(self.zone_name)
         self.udn = physical_device.udn
         self.physical_device = physical_device
+
+        self.physical_device.register_group_update_callback(self._group_update)
+
+    async def _group_update(self) -> None:
+        for entity in self.controller.all_server_devices:
+            if self.device.group_reduce_by_source:
+                await entity._check_client_list()
 
     @property
     def ma_player_id(self) -> str | None:
@@ -154,7 +162,7 @@ class MusicCastZoneDevice:
         """Return media player entities of the other zones of this device."""
         return [
             entity
-            for entity in self.controller.all_zone_devices
+            for entity in self.physical_device.zone_devices.values()
             if entity != self and isinstance(entity, MusicCastZoneDevice)
         ]
 
@@ -350,6 +358,8 @@ class MusicCastZoneDevice:
                 self.controller.distribution_num,
             )
 
+        await self._group_update()
+
     async def unjoin_player(self) -> None:
         """Leave the group.
 
@@ -357,9 +367,9 @@ class MusicCastZoneDevice:
         """
         if self.is_server:
             await self._server_close_group()
-
         else:
-            await self._client_leave_group(force=True)
+            # this is not as in HA
+            await self._client_leave_group(True)
 
     # Internal client functions
 
@@ -511,7 +521,7 @@ class MusicCastPhysicalDevice:
 
         self.device.register_callback(_cb)
 
-    def register_group_update_callback(self, fun: Coroutine[None, None, None]) -> None:
+    def register_group_update_callback(self, fun: Callable[[], Awaitable[None]]) -> None:
         """Register an async group update callback."""
         self.device.register_group_update_callback(fun)
 
@@ -527,9 +537,10 @@ class MusicCastController:
     Holds information of full known MC network.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, logger: logging.Logger) -> None:
         """Init."""
         self.physical_devices: list[MusicCastPhysicalDevice] = []
+        self.logger = logger
 
     @property
     def distribution_num(self) -> int:
