@@ -889,7 +889,9 @@ class TidalProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         try:
-            api_result = await self._get_data(f"albums/{prov_album_id}/tracks")
+            api_result = await self._get_data(
+                f"albums/{prov_album_id}/tracks", params={"limit": 250}
+            )
             album_tracks = self._extract_data(api_result)
             return [self._parse_track(track_obj) for track_obj in album_tracks.get("items", [])]
         except ResourceTemporarilyUnavailable:
@@ -900,7 +902,9 @@ class TidalProvider(MusicProvider):
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         try:
-            api_result = await self._get_data(f"artists/{prov_artist_id}/albums")
+            api_result = await self._get_data(
+                f"artists/{prov_artist_id}/albums", params={"limit": 250}
+            )
             artist_albums = self._extract_data(api_result)
             return [self._parse_album(album_obj) for album_obj in artist_albums.get("items", [])]
         except ResourceTemporarilyUnavailable:
