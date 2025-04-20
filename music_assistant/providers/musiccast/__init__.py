@@ -600,9 +600,11 @@ class MusicCast(PlayerProvider):
                 )
             )
 
-        queue = self.mass.player_queues.get_active_queue(player.player_id)
-        if device.is_controlled_by_mass and queue is not None:
-            player.active_source = queue.queue_id
+        # queue = self.mass.player_queues.get_active_queue(player.player_id)
+        # if device.is_controlled_by_mass and queue is not None:
+        # be optimistic
+        if device.source_id == "server":  #  and queue is not None:
+            player.active_source = None  # queue.queue_id
         else:
             player.active_source = device.source_id
 
