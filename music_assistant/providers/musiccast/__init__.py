@@ -1,54 +1,47 @@
-"""
-DEMO/TEMPLATE Player Provider for Music Assistant.
-
-This is an empty player provider with no actual implementation.
-Its meant to get started developing a new player provider for Music Assistant.
-
-Use it as a reference to discover what methods exists and what they should return.
-Also it is good to look at existing player providers to get a better understanding,
-due to the fact that providers may be flexible and support different features and/or
-ways to discover players on the network.
-
-In general, the actual device communication should reside in a separate library.
-You can then reference your library in the manifest in the requirements section,
-which is a list of (versioned!) python modules (pip syntax) that should be installed
-when the provider is selected by the user.
-
-To add a new player provider to Music Assistant, you need to create a new folder
-in the providers folder with the name of your provider (e.g. 'my_player_provider').
-In that folder you should create (at least) a __init__.py file and a manifest.json file.
-
-Optional is an icon.svg file that will be used as the icon for the provider in the UI,
-but we also support that you specify a material design icon in the manifest.json file.
-
-IMPORTANT NOTE:
-We strongly recommend developing on either macOS or Linux and start your development
-environment by running the setup.sh scripts in the scripts folder of the repository.
-This will create a virtual environment and install all dependencies needed for development.
-See also our general DEVELOPMENT.md guide in the repository for more information.
-
-"""
+"""MusicCast for MusicAssistant."""
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
+from ipaddress import IPv4Address
+from random import getrandbits
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
-from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderFeature
+from aiomusiccast.musiccast_device import MusicCastDevice
+from async_upnp_client.search import async_search
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    PlayerFeature,
+    PlayerState,
+    PlayerType,
+    ProviderFeature,
+)
+from music_assistant_models.media_items import UniqueList
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
-from zeroconf import ServiceStateChange
 
-from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
+from music_assistant.constants import (
+    CONF_PLAYERS,
+)
 from music_assistant.models.player_provider import PlayerProvider
 
+from .constants import CONF_NETWORK_SCAN, PLAYER_CONFIG_ENTRIES, POLL_INTERVAL, ZONE_SPLITTER
+from .musiccast import (
+    MusicCastController,
+    MusicCastPhysicalDevice,
+    MusicCastPlayerState,
+    MusicCastZoneDevice,
+)
+
 if TYPE_CHECKING:
+    from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import (
-        ConfigEntry,
         ConfigValueType,
-        PlayerConfig,
         ProviderConfig,
     )
     from music_assistant_models.provider import ProviderManifest
-    from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -58,10 +51,18 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    # setup is called when the user wants to setup a new provider instance.
-    # you are free to do any preflight checks here and but you must return
-    #  an instance of the provider.
     return MusicCast(mass, manifest, config)
+
+
+def random_uuid_hex() -> str:
+    """Generate a random UUID hex.
+
+    This uuid should not be used for cryptographically secure
+    operations.
+
+    taken from here: https://github.com/home-assistant/core/blob/dev/homeassistant/util/uuid.py
+    """
+    return f"{getrandbits(32 * 4):032x}"
 
 
 async def get_config_entries(
@@ -78,31 +79,63 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    # Config Entries are used to configure the Player Provider if needed.
-    # See the models of ConfigEntry and ConfigValueType for more information what is supported.
-    # The ConfigEntry is a dataclass that represents a single configuration entry.
-    # The ConfigValueType is an Enum that represents the type of value that
-    # can be stored in a ConfigEntry.
-    # If your provider does not need any configuration, you can return an empty tuple.
-    return ()
+    return (
+        ConfigEntry(
+            key=CONF_NETWORK_SCAN,
+            type=ConfigEntryType.BOOLEAN,
+            label="Allow network scan for discovery",
+            default_value=False,
+            description="Enable network scan for discovery of players. \n"
+            "Can be used if (some of) your players are not automatically discovered.",
+        ),
+    )
+
+
+@dataclass(kw_only=True)
+class MusicCastPlayer:
+    """MusicCastPlayer."""
+
+    udn: str  # = player_id
+    player_main: Player | None = None  # mass player
+    player_zone2: Player | None = None  # mass player
+    # I can only test up to zone 2
+    player_zone3: Player | None = None  # mass player
+    player_zone4: Player | None = None  # mass player
+
+    physical_device: MusicCastPhysicalDevice
+
+    def get_player(self, zone: str) -> Player | None:
+        """Get Player by zone name."""
+        match zone:
+            case "main":
+                return self.player_main
+            case "zone2":
+                return self.player_zone2
+            case "zone3":
+                return self.player_zone3
+            case "zone4":
+                return self.player_zone4
+        raise RuntimeError(f"Zone {zone} is unknown.")
+
+    def get_all_players(self) -> list[Player]:
+        """Get all players."""
+        assert self.player_main is not None  # we always have main
+        players = [self.player_main]
+        if self.player_zone2 is not None:
+            players.append(self.player_zone2)
+        if self.player_zone3 is not None:
+            players.append(self.player_zone3)
+        if self.player_zone4 is not None:
+            players.append(self.player_zone4)
+        return players
 
 
 class MusicCast(PlayerProvider):
-    """
-    Example/demo Player provider.
+    """MusicCast."""
 
-    Note that this is always subclassed from PlayerProvider,
-    which in turn is a subclass of the generic Provider model.
-
-    The base implementation already takes care of some convenience methods,
-    such as the mass object and the logger. Take a look at the base class
-    for more information on what is available.
-
-    Just like with any other subclass, make sure that if you override
-    any of the default methods (such as __init__), you call the super() method.
-    In most cases its not needed to override any of the builtin methods and you only
-    implement the abc methods with your actual implementation.
-    """
+    _discovery_running: bool = False
+    musiccast_players: dict[str, MusicCastPlayer] = {}
+    lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -113,279 +146,347 @@ class MusicCast(PlayerProvider):
         # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
         return {ProviderFeature.SYNC_PLAYERS}
 
+    async def handle_async_init(self) -> None:
+        """Async init."""
+        self.mc_controller = MusicCastController()
+
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called after the provider has been fully loaded into Music Assistant.
-        # you can use this for instance to trigger custom (non-mdns) discovery of players
-        # or any other logic that needs to run after the provider is fully loaded.
+        await super().loaded_in_mass()
 
     async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
+        """Call on unload."""
+        for mc_player in self.musiccast_players.values():
+            mc_player.physical_device.remove()
 
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        is_removed will be set to True when the provider is removed from the configuration.
-        """
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called when the provider is unloaded from Music Assistant.
-        # this means also when the provider is getting reloaded
-
-    async def on_mdns_service_state_change(
-        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
-    ) -> None:
-        """Handle MDNS service state callback."""
-        # MANDATORY IF YOU WANT TO USE MDNS DISCOVERY
-        # OPTIONAL if you dont use mdns for discovery of players
-        # If you specify a mdns service type in the manifest.json, this method will be called
-        # automatically on mdns changes for the specified service type.
-
-        # If no mdns service type is specified, this method is omitted and you
-        # can completely remove it from your provider implementation.
-
-        if not info:
-            return
-
-        # NOTE: If you do not use mdns for discovery of players on the network,
-        # you must implement your own discovery mechanism and logic to add new players
-        # and update them on state changes when needed.
-        # Below is a bit of example implementation but we advise to look at existing
-        # player providers for more inspiration.
-        name = name.split("@", 1)[1] if "@" in name else name
-        player_id = info.decoded_properties["uuid"]  # this is just an example!
-
-        if not player_id:
-            return
-
-        # handle removed player
-        if state_change == ServiceStateChange.Removed:
-            # check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get(player_id):
-                # the player has become unavailable
-                self.logger.debug("Player offline: %s", mass_player.display_name)
-                mass_player.available = False
-                self.mass.players.update(player_id)
-            return
-        # handle update for existing device
-        # (state change is either updated or added)
-        # check if we have an existing player in the player manager
-        # note that you can use this point to update the player connection info
-        # if that changed (e.g. ip address)
-        if mass_player := self.mass.players.get(player_id):
-            # existing player found in the player manager,
-            # this is an existing player that has been updated/reconnected
-            # or simply a re-announcement on mdns.
-            cur_address = get_primary_ip_address_from_zeroconf(info)
-            if cur_address and cur_address != mass_player.device_info.ip_address:
-                self.logger.debug(
-                    "Address updated to %s for player %s", cur_address, mass_player.display_name
-                )
-                mass_player.device_info = DeviceInfo(
-                    model=mass_player.device_info.model,
-                    manufacturer=mass_player.device_info.manufacturer,
-                    ip_address=str(cur_address),
-                )
-            if not mass_player.available:
-                # if the player was marked offline and you now receive an mdns update
-                # it means the player is back online and we should try to connect to it
-                self.logger.debug("Player back online: %s", mass_player.display_name)
-                # you can try to connect to the player here if needed
-                mass_player.available = True
-            # inform the player manager of any changes to the player object
-            # note that you would normally call this from some other callback from
-            # the player's native api/library which informs you of changes in the player state.
-            # as a last resort you can also choose to let the player manager
-            # poll the player for state changes
-            self.mass.players.update(player_id)
-            return
-        # handle new player
-        self.logger.debug("Discovered device %s on %s", name, cur_address)
-        # your own connection logic will probably be implemented here where
-        # you connect to the player etc. using your device/provider specific library.
-
-        # Instantiate the MA Player object and register it with the player manager
-        mass_player = Player(
-            player_id=player_id,
-            provider=self.instance_id,
-            type=PlayerType.PLAYER,
-            name=name,
-            available=True,
-            powered=False,
-            device_info=DeviceInfo(
-                model="Model XYX",
-                manufacturer="Super Brand",
-                ip_address=cur_address,
-            ),
-            # set the supported features for this player only with
-            # the ones the player actually supports
-            supported_features={
-                PlayerFeature.POWER,  # if the player can be turned on/off
-                PlayerFeature.VOLUME_SET,
-                PlayerFeature.VOLUME_MUTE,
-                PlayerFeature.PLAY_ANNOUNCEMENT,  # see play_announcement method
-            },
-        )
-        # register the player with the player manager
-        await self.mass.players.register(mass_player)
-
-        # once the player is registered, you can either instruct the player manager to
-        # poll the player for state changes or you can implement your own logic to
-        # listen for state changes from the player and update the player object accordingly.
-        # in any case, you need to call the update method on the player manager:
-        self.mass.players.update(player_id)
-
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(
+        self,
+        player_id: str,
+    ) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        # OPTIONAL
-        # this method is optional and should be implemented if you need player specific
-        # configuration entries. If you do not need player specific configuration entries,
-        # you can leave this method out completely to accept the default implementation.
-        # Please note that you need to call the super() method to get the default entries.
-        return await super().get_player_config_entries(player_id)
+        base_entries = await super().get_player_config_entries(player_id)
+        return base_entries + PLAYER_CONFIG_ENTRIES
 
-    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-        # OPTIONAL
-        # this will be called whenever a player config changes
-        # you can use this to react to changes in player configuration
-        # but this is completely optional and you can leave it out if not needed.
+    def _get_zone_player(self, player_id: str) -> MusicCastZoneDevice | None:
+        udn, zone = player_id.split(ZONE_SPLITTER)
+        mc_player = self.musiccast_players.get(udn)
+        if mc_player is None:
+            return None
+        return mc_player.physical_device.zone_devices.get(zone)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
-        # MANDATORY
-        # this method is mandatory and should be implemented.
-        # this method should send a stop command to the given player.
+        if zone_player := self._get_zone_player(player_id):
+            await zone_player.stop()
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
-        # MANDATORY
-        # this method is mandatory and should be implemented.
-        # this method should send a play command to the given player.
+        if zone_player := self._get_zone_player(player_id):
+            await zone_player.play()
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
-        # OPTIONAL - required only if you specified PlayerFeature.PAUSE
-        # this method should send a pause command to the given player.
+        if zone_player := self._get_zone_player(player_id):
+            await zone_player.pause()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        # OPTIONAL - required only if you specified PlayerFeature.VOLUME_SET
-        # this method should send a volume set command to the given player.
+        if zone_player := self._get_zone_player(player_id):
+            await zone_player.volume_set(volume_level)
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
-        # OPTIONAL - required only if you specified PlayerFeature.VOLUME_MUTE
-        # this method should send a volume mute command to the given player.
+        if zone_player := self._get_zone_player(player_id):
+            await zone_player.volume_mute(muted)
 
-    async def cmd_seek(self, player_id: str, position: int) -> None:
-        """Handle SEEK command for given queue.
+    async def cmd_power(self, player_id: str, powered: bool) -> None:
+        """Send POWER command to given player."""
+        if zone_player := self._get_zone_player(player_id):
+            if powered:
+                await zone_player.turn_on()
+            else:
+                await zone_player.turn_off()
 
-        - player_id: player_id of the player to handle the command.
-        - position: position in seconds to seek to in the current playing item.
-        """
-        # OPTIONAL - required only if you specified PlayerFeature.SEEK
-        # this method should handle the seek command for the given player.
-        # the position is the position in seconds to seek to in the current playing item.
+    async def cmd_group(self, player_id: str, target_player: str) -> None:
+        """Handle GROUP command for given player."""
+        await self.cmd_group_many(target_player=target_player, child_player_ids=[player_id])
+
+    async def cmd_ungroup(self, player_id: str) -> None:
+        """Handle UNGROUP command for given player."""
+        if zone_player := self._get_zone_player(player_id):
+            await zone_player.unjoin_player()
+
+    async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
+        """Create temporary sync group by joining given players to target player."""
+        udn, zone_server = target_player.split(ZONE_SPLITTER)
+        server = self._get_zone_player(target_player)
+        if server is None:
+            return
+        children = []
+        for child_id in child_player_ids:
+            if child := self._get_zone_player(child_id):
+                children.append(child)
+        if not children:
+            return
+
+        await server.join_players(children)
+
+    async def cmd_ungroup_member(self, player_id: str, target_player: str) -> None:
+        """Handle UNGROUP command for given player."""
+        await self.cmd_ungroup(player_id)
 
     async def play_media(
         self,
         player_id: str,
         media: PlayerMedia,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Players controller to start playing a mediaitem on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - media: Details of the item that needs to be played on the player.
-        """
-        # MANDATORY
-        # this method is mandatory and should be implemented.
-        # this method should handle the play_media command for the given player.
-        # It will be called when media needs to be played on the player.
-        # The media object contains all the details needed to play the item.
-
-        # In 99% of the cases this will be called by the Queue controller to play
-        # a single item from the queue on the player and the uri within the media
-        # object will then contain the URL to play that single queue item.
-
-        # If your player provider does not support enqueuing of items,
-        # the queue controller will simply call this play_media method for
-        # each item in the queue to play them one by one.
-
-        # In order to support true gapless and/or enqueuing, we offer the option of
-        # 'flow_mode' playback. In that case the queue controller will stitch together
-        # all songs in the playback queue into a single stream and send that to the player.
-        # In that case the URI (and metadata) received here is that of the 'flow mode' stream.
-
-        # Examples of player providers that use flow mode for playback by default are AirPlay,
-        # SnapCast and Fully Kiosk.
-
-        # Examples of player providers that optionally use 'flow mode' are Google Cast and
-        # Home Assistant. They provide a config entry to enable flow mode playback.
-
-        # Examples of player providers that natively support enqueuing of items are Sonos,
-        # Slimproto and Google Cast.
-
-    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
-        """
-        Handle enqueuing of the next (queue) item on the player.
-
-        Called when player reports it started buffering a queue item
-        and when the queue items updated.
-
-        A PlayerProvider implementation is in itself responsible for handling this
-        so that the queue items keep playing until its empty or the player stopped.
-
-        This will NOT be called if the end of the queue is reached (and repeat disabled).
-        This will NOT be called if the player is using flow mode to playback the queue.
-        """
-        # this method should handle the enqueuing of the next queue item on the player.
-
-    async def cmd_group(self, player_id: str, target_player: str) -> None:
-        """Handle GROUP command for given player.
-
-        Join/add the given player(id) to the given (master) player/sync group.
-
-            - player_id: player_id of the player to handle the command.
-            - target_player: player_id of the syncgroup master or group player.
-        """
-        # OPTIONAL - required only if you specified ProviderFeature.SYNC_PLAYERS
-        # this method should handle the sync command for the given player.
-        # you should join the given player to the target_player/syncgroup.
-
-    async def cmd_ungroup(self, player_id: str) -> None:
-        """Handle UNGROUP command for given player.
-
-        Remove the given player from any (sync)groups it currently is grouped to.
-
-            - player_id: player_id of the player to handle the command.
-        """
-        # OPTIONAL - required only if you specified ProviderFeature.SYNC_PLAYERS
-        # this method should handle the ungroup command for the given player.
-        # you should unjoin the given player from the target_player/syncgroup.
-
-    async def play_announcement(
-        self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
-    ) -> None:
-        """Handle (provider native) playback of an announcement on given player."""
-        # OPTIONAL - required only if you specified PlayerFeature.PLAY_ANNOUNCEMENT
-        # This method should handle the playback of an announcement on the given player.
-        # The announcement object contains all the details needed to play the announcement.
-        # The volume_level is optional and can be used to set the volume level for the announcement.
-        # If you do not use the announcement playerfeature, the default behavior is to play the
-        # announcement as a regular media item using the play_media method and the MA player manager
-        # will take care of setting the volume level for the announcement and resuming etc.
+        """Handle PLAY MEDIA on given player."""
+        if zone_player := self._get_zone_player(player_id):
+            await zone_player.play_url(url=media.uri)
 
     async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates."""
-        # OPTIONAL
-        # This method is optional and should be implemented if you specified 'needs_poll'
-        # on the Player object. This method should poll the player for state changes
-        # and update the player object in the player manager if needed.
-        # This method will be called at the interval specified in the poll_interval attribute.
+        """Poll player for state updates, only main zone is polled."""
+        # we only poll for main, as we get zones alongside
+        async with self.lock:
+            udn, _ = player_id.split(ZONE_SPLITTER)
+            mc_player = self.musiccast_players.get(udn)
+            if mc_player is None:
+                return
+            await mc_player.physical_device.fetch()
+
+            for zone_name in ["main", "zone2", "zone3", "zone4"]:
+                player = mc_player.get_player(zone_name)
+                if player is None:
+                    continue
+                zone_device = mc_player.physical_device.zone_devices.get(zone_name)
+                assert zone_device is not None
+                self._update_player_attributes(player, zone_device)
+                await self.mass.players.register_or_update(player)
+
+    # The discovery methods are copied over from the DLNAPlayerProvider and adjusted for MusicCast.
+
+    async def discover_players(self, use_multicast: bool = False) -> None:
+        """Discover MusicCast players on the network.
+
+        Method is called once when provider is loaded.
+        """
+        if self._discovery_running:
+            return
+        try:
+            self._discovery_running = True
+            self.logger.debug("MusicCast discovery started...")
+            allow_network_scan = self.config.get_value(CONF_NETWORK_SCAN)
+            discovered_devices: set[str] = set()
+
+            async def on_response(discovery_info: CaseInsensitiveDict) -> None:
+                """Process discovered device from ssdp search."""
+                ssdp_st: str = discovery_info.get("st", discovery_info.get("nt"))
+                if not ssdp_st:
+                    return
+
+                if "MediaRenderer" not in ssdp_st:
+                    # we're only interested in MediaRenderer devices
+                    return
+
+                ssdp_usn: str = discovery_info["usn"]
+                ssdp_udn: str | None = discovery_info.get("_udn")
+                if not ssdp_udn and ssdp_usn.startswith("uuid:"):
+                    ssdp_udn = ssdp_usn.split("::")[0]
+
+                assert ssdp_udn is not None  # for type checking
+
+                if ssdp_udn in discovered_devices:
+                    # already processed this device
+                    return
+                if "rincon" in ssdp_udn.lower():
+                    # ignore Sonos devices
+                    return
+
+                discovered_devices.add(ssdp_udn)
+
+                await self._device_discovered(ssdp_udn, discovery_info["location"])
+
+            # we iterate between using a regular and multicast search (if enabled)
+            if allow_network_scan and use_multicast:
+                await async_search(on_response, target=(str(IPv4Address("255.255.255.255")), 1900))
+            else:
+                await async_search(on_response)
+
+        finally:
+            self._discovery_running = False
+
+        def reschedule() -> None:
+            self.mass.create_task(self.discover_players(use_multicast=not use_multicast))
+
+        # reschedule self once finished
+        self.mass.loop.call_later(300, reschedule)
+
+    async def _device_discovered(self, udn: str, description_url: str) -> None:
+        """Handle discovered MusicCast player."""
+        # verify that this is a MusicCast player
+        check: bool = await MusicCastDevice.check_yamaha_ssdp(
+            description_url, self.mass.http_session
+        )
+        if not check:
+            return
+
+        async with self.lock:
+            ip = urlparse(description_url).netloc.split(":")[0]
+            if musiccast_player := self.musiccast_players.get(udn):
+                # existing player
+                if musiccast_player.player_main is None:
+                    return
+                if (
+                    musiccast_player.physical_device.device.device.upnp_description
+                    == description_url
+                    and musiccast_player.player_main.available
+                ):
+                    # nothing to do, device is already connected
+                    return
+                # update description url to newly discovered one
+                musiccast_player.physical_device = MusicCastPhysicalDevice(
+                    device=MusicCastDevice(
+                        client=self.mass.http_session, ip=ip, upnp_description=description_url
+                    ),
+                    controller=self.mc_controller,
+                    udn=udn,
+                )
+            else:
+                # new player detected
+                conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
+                enabled = self.mass.config.get(conf_key, True)
+                # ignore disabled players
+                if not enabled:
+                    self.logger.debug("Ignoring disabled player: %s", udn)
+                    return
+                physical_device = MusicCastPhysicalDevice(
+                    device=MusicCastDevice(
+                        client=self.mass.http_session, ip=ip, upnp_description=description_url
+                    ),
+                    controller=self.mc_controller,
+                    udn=udn,
+                )
+                await physical_device.async_init()  # fetch + polling
+                physical_device.register_callback(self.update_callback)
+                await self._register_player(physical_device, udn)
+
+    async def _register_player(self, physical_device: MusicCastPhysicalDevice, udn: str) -> None:
+        """Register player including zones."""
+        device_info = DeviceInfo(
+            manufacturer="Yamaha",
+            model=physical_device.device.data.model_name or "unknown model",
+            software_version=physical_device.device.data.system_version or "unknown version",
+        )
+
+        def get_player(zone_name: str, player_name: str) -> Player:
+            # player features
+            supported_features: set[PlayerFeature] = {
+                PlayerFeature.GAPLESS_PLAYBACK,
+                PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
+                PlayerFeature.PAUSE,
+                PlayerFeature.SET_MEMBERS,
+                PlayerFeature.NEXT_PREVIOUS,
+                PlayerFeature.POWER,
+            }
+
+            return Player(
+                player_id=f"{udn}{ZONE_SPLITTER}{zone_name}",
+                provider=self.instance_id,
+                type=PlayerType.PLAYER,
+                name=player_name,
+                available=True,
+                device_info=device_info,
+                needs_poll=zone_name == "main",
+                poll_interval=POLL_INTERVAL,  # default
+                supported_features=supported_features,
+            )
+
+        main_device = physical_device.zone_devices.get("main")
+        assert main_device is not None
+        assert main_device.zone_data is not None
+        assert main_device.zone_data.name is not None
+        musiccast_player = MusicCastPlayer(
+            udn=udn,
+            physical_device=physical_device,
+        )
+
+        for zone_name, zone_device in physical_device.zone_devices.items():
+            assert zone_device.zone_data is not None
+            assert zone_device.zone_data.name is not None
+            player = get_player(zone_name, zone_device.zone_data.name)
+            setattr(musiccast_player, f"player_{zone_device.zone_name}", player)
+            self._update_player_attributes(player, zone_device)
+            await self.mass.players.register_or_update(player)
+
+        self.musiccast_players[udn] = musiccast_player
+
+    def _update_player_attributes(self, player: Player, device: MusicCastZoneDevice) -> None:
+        zone_data = device.zone_data
+        assert zone_data is not None
+
+        player.name = zone_data.name or "UNKNOWN NAME"
+        player.powered = zone_data.power == "on"
+
+        player.volume_level = int(
+            zone_data.current_volume / (zone_data.max_volume - zone_data.min_volume) * 100
+        )
+        player.volume_muted = zone_data.mute
+
+        # we can only use one zone at a time for server playback
+        player.elapsed_time = None
+        player.elapsed_time_last_updated = None
+
+        match device.state:
+            case MusicCastPlayerState.PAUSED:
+                player.state = PlayerState.PAUSED
+            case MusicCastPlayerState.PLAYING:
+                player.state = PlayerState.PLAYING
+                player.elapsed_time = device.media_position
+                player.elapsed_time_last_updated = device.media_position_updated_at
+            case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
+                player.state = PlayerState.IDLE
+
+        # grouping
+        # officially they need netusb, let's ignore this for now
+        player.can_group_with = {self.instance_id}  # we can group with all musiccast devices
+
+        if len(device.musiccast_group) == 1:
+            if device.musiccast_group[0] == device:
+                # we are in a group with ourselves.
+                player.group_childs = UniqueList([])
+                player.synced_to = None
+                player.active_group = None
+                return
+
+        if not device.is_client and not device.is_server:
+            player.group_childs = UniqueList([])
+            player.synced_to = None
+            player.active_group = None
+            return
+
+        if device.is_client:
+            player.group_childs = UniqueList([])
+            player.synced_to = device.group_server.ma_player_id
+            player.active_group = device.group_server.ma_player_id
+
+        if device.is_server:
+            player.group_childs = UniqueList(
+                [x.ma_player_id for x in device.musiccast_group if x.ma_player_id is not None]
+            )
+
+            # and x.state not in [MusicCastPlayerState.OFF, MusicCastPlayerState.IDLE]
+            player.synced_to = None
+            player.active_group = None
+
+    def update_callback(self, mc_physical_device: MusicCastPhysicalDevice) -> None:
+        """Update callback."""
+        mc_player: MusicCastPlayer | None = None
+        for mc_player in self.musiccast_players.values():
+            if mc_player.physical_device == mc_physical_device:
+                break
+        assert mc_player is not None
+        if mc_player.player_main is None:
+            return
+        main_player_id = mc_player.player_main.player_id
+        asyncio.create_task(self.poll_player(main_player_id))

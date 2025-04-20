@@ -10,8 +10,5 @@
   "codeowners": [
     "@fmunkes"
   ],
-  "mdns_discovery": [
-    "_http._tcp.local."
-  ],
   "documentation": "https://music-assistant.io/player-support/musiccast"
 }
