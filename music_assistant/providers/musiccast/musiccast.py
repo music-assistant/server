@@ -14,13 +14,14 @@ from typing import cast
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 
-from .constants import ZONE_SPLITTER
-
-NULL_GROUP = "00000000000000000000000000000000"
-DEFAULT_ZONE = "main"
-ATTR_MC_LINK = "mc_link"
-ATTR_MAIN_SYNC = "main_sync"
-ATTR_MC_LINK_SOURCES = [ATTR_MC_LINK, ATTR_MAIN_SYNC]
+from .constants import (
+    ATTR_MAIN_SYNC,
+    ATTR_MC_LINK,
+    DEFAULT_ZONE,
+    NULL_GROUP,
+    PLAY_TITLE,
+    ZONE_SPLITTER,
+)
 
 
 def random_uuid_hex() -> str:
@@ -67,16 +68,56 @@ class MusicCastZoneDevice:
 
     @property
     def source_id(self) -> str:
-        """ID of the current input source."""
+        """ID of the current input source.
+
+        Internal source name.
+        """
         zone = self.device.data.zones.get(self.zone_name)
         assert zone is not None
         assert isinstance(zone.input, str)
         return zone.input
 
     @property
+    def reverse_source_mapping(self) -> dict[str, str]:
+        """Return a mapping from the source label to the source name."""
+        return {v: k for k, v in self.source_mapping.items()}
+
+    @property
+    def source(self) -> str:
+        """Name of the current input source."""
+        return self.source_mapping.get(self.source_id, "UNKNOWN SOURCE")
+
+    @property
+    def source_mapping(self) -> dict[str, str]:
+        """Return a mapping of the actual source names to their labels configured in the App."""
+        assert self.zone_data is not None  # for type checking
+        ret = {}
+        for inp in self.zone_data.input_list:
+            label = self.device.data.input_names.get(inp, "")
+            if inp != label and (
+                label in self.zone_data.input_list
+                or list(self.device.data.input_names.values()).count(label) > 1
+            ):
+                label += f" ({inp})"
+            if label == "":
+                label = inp
+            ret[inp] = label
+        return ret
+
+    @property
     def is_netusb(self) -> bool:
         """Controlled by network if true."""
         return cast("bool", self.device.data.netusb_input == self.source_id)
+
+    @property
+    def is_tuner(self) -> bool:
+        """Tuner if true."""
+        return self.source_id == "tuner"
+
+    @property
+    def is_controlled_by_mass(self) -> bool:
+        """Controlled by mass if true."""
+        return self.source_id == "server" and self.media_title == PLAY_TITLE
 
     @property
     def media_position(self) -> int | None:
@@ -194,6 +235,16 @@ class MusicCastZoneDevice:
                 return entity
         return self
 
+    @property
+    def media_title(self) -> str | None:
+        """Return the title of current playing media."""
+        if self.is_netusb:
+            return cast("str", self.device.data.netusb_track)
+        if self.is_tuner:
+            return cast("str", self.device.tuner_media_title)
+
+        return None
+
     async def turn_on(self) -> None:
         """Turn on."""
         await self.device.turn_on(self.zone_name)
@@ -225,13 +276,27 @@ class MusicCastZoneDevice:
         if self.is_netusb:
             await self.device.netusb_stop()
 
+    async def previous_track(self) -> None:
+        """Send previous track command."""
+        if self.is_netusb:
+            await self.device.netusb_previous_track()
+        elif self.is_tuner:
+            await self.device.tuner_previous_station()
+
+    async def next_track(self) -> None:
+        """Send next track command."""
+        if self.is_netusb:
+            await self.device.netusb_next_track()
+        elif self.is_tuner:
+            await self.device.tuner_next_station()
+
     async def play_url(self, url: str) -> None:
         """Play http url."""
-        await self.device.play_url_media(self.zone_name, media_url=url, title="Music Assistant")
+        await self.device.play_url_media(self.zone_name, media_url=url, title=PLAY_TITLE)
 
-    async def select_source(self, source: str) -> None:
+    async def select_source(self, source_id: str) -> None:
         """Select input source. Internal source name."""
-        await self.device.select_source(self.zone_name, source)
+        await self.device.select_source(self.zone_name, source_id)
 
     def is_part_of_group(self, group_server: "MusicCastZoneDevice") -> bool:
         """Return True if the given server is the server of self's group."""
@@ -262,6 +327,7 @@ class MusicCastZoneDevice:
             await self._client_leave_group(True)
         # Use existing group id if we are server, generate a new one else.
         group_id = self.device.data.group_id if self.is_server else random_uuid_hex().upper()
+        assert group_id is not None  # for type checking
 
         ip_addresses = set()
         # First let the clients join

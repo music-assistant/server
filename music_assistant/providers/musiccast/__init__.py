@@ -22,14 +22,21 @@ from music_assistant_models.enums import (
     ProviderFeature,
 )
 from music_assistant_models.media_items import UniqueList
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant_models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
     CONF_PLAYERS,
 )
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_NETWORK_SCAN, PLAYER_CONFIG_ENTRIES, POLL_INTERVAL, ZONE_SPLITTER
+from .constants import (
+    CONF_NETWORK_SCAN,
+    MC_CONTROL_SOURCE_IDS,
+    MC_PASSIVE_SOURCE_IDS,
+    PLAYER_CONFIG_ENTRIES,
+    POLL_INTERVAL,
+    ZONE_SPLITTER,
+)
 from .musiccast import (
     MusicCastController,
     MusicCastPhysicalDevice,
@@ -199,6 +206,22 @@ class MusicCast(PlayerProvider):
         if zone_player := self._get_zone_player(player_id):
             await self.run_cmd(player_id, zone_player.pause)
 
+    async def cmd_next(self, player_id: str) -> None:
+        """Send NEXT.
+
+        Only used for external source.
+        """
+        if zone_player := self._get_zone_player(player_id):
+            await self.run_cmd(player_id, zone_player.next_track)
+
+    async def cmd_previous(self, player_id: str) -> None:
+        """Send PREVIOUS.
+
+        Only used for external source.
+        """
+        if zone_player := self._get_zone_player(player_id):
+            await self.run_cmd(player_id, zone_player.previous_track)
+
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         if zone_player := self._get_zone_player(player_id):
@@ -244,6 +267,11 @@ class MusicCast(PlayerProvider):
     async def cmd_ungroup_member(self, player_id: str, target_player: str) -> None:
         """Handle UNGROUP command for given player."""
         await self.cmd_ungroup(player_id)
+
+    async def select_source(self, player_id: str, source: str) -> None:
+        """Handle SELECT SOURCE command on given player."""
+        if zone_player := self._get_zone_player(player_id):
+            await self.run_cmd(player_id, zone_player.select_source, source)
 
     async def play_media(
         self,
@@ -400,14 +428,16 @@ class MusicCast(PlayerProvider):
 
         def get_player(zone_name: str, player_name: str) -> Player:
             # player features
+            # mc supports gapless if the playback is controlled by the
+            # receiver, but we need queue flow mode for the provider
             supported_features: set[PlayerFeature] = {
-                PlayerFeature.GAPLESS_PLAYBACK,
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
                 PlayerFeature.PAUSE,
-                PlayerFeature.SET_MEMBERS,
-                PlayerFeature.NEXT_PREVIOUS,
                 PlayerFeature.POWER,
+                PlayerFeature.SELECT_SOURCE,
+                PlayerFeature.SET_MEMBERS,
+                PlayerFeature.NEXT_PREVIOUS,  # only used for external source
             }
 
             return Player(
@@ -467,7 +497,28 @@ class MusicCast(PlayerProvider):
             case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
                 player.state = PlayerState.IDLE
 
-        # grouping
+        player.source_list = UniqueList([])
+        for source_id, source_name in device.source_mapping.items():
+            control = source_id in MC_CONTROL_SOURCE_IDS
+            passive = source_id in MC_PASSIVE_SOURCE_IDS
+            player.source_list.append(
+                PlayerSource(
+                    id=source_id,
+                    name=source_name,
+                    passive=passive,
+                    can_play_pause=control,
+                    can_seek=False,
+                    can_next_previous=control,
+                )
+            )
+
+        queue = self.mass.player_queues.get_active_queue(player.player_id)
+        if device.is_controlled_by_mass and queue is not None:
+            player.active_source = queue.queue_id
+        else:
+            player.active_source = device.source_id
+
+        # grouping - should be last for return
         # officially they need netusb, let's ignore this for now
         player.can_group_with = {self.instance_id}  # we can group with all musiccast devices
 
