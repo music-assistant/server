@@ -2,7 +2,13 @@
 
 This is largely taken from the MusicCast integration in HomeAssistant,
 https://github.com/home-assistant/core/tree/dev/homeassistant/components/yamaha_musiccast
-and only adapted for MA.
+and then adapted for MA.
+
+We have
+
+MusicCastController - only once, holds state information of MC network
+    MusicCastPhysicalDevice - AV Receiver, Boxes
+        MusicCastZoneDevice - Player entity, which can be controlled.
 """
 
 import logging
@@ -482,7 +488,10 @@ class MusicCastPhysicalDevice:
     """
 
     def __init__(
-        self, device: MusicCastDevice, controller: "MusicCastController", udn: str | None = None
+        self,
+        device: MusicCastDevice,
+        controller: "MusicCastController",
+        device_id: str | None = None,
     ):
         """Init."""
         self.device = device
@@ -491,7 +500,7 @@ class MusicCastPhysicalDevice:
         self.controller.physical_devices.append(self)
 
         # this is used within MA
-        self.udn = udn
+        self.udn = device_id
 
     async def async_init(self) -> None:
         """Async init."""

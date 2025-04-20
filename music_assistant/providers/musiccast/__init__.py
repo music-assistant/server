@@ -5,15 +5,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
 
 from aiomusiccast.const import MC_LINK
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
-from async_upnp_client.search import async_search
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -29,12 +26,16 @@ from music_assistant.constants import (
     CONF_PLAYERS,
 )
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.sonos.helpers import get_primary_ip_address
 
 from .constants import (
     ATTR_MAIN_SYNC,
     CONF_NETWORK_SCAN,
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
+    DEVICE_INFO_ENDPOINT,
+    DEVICE_UPNP_ENDPOINT,
+    DEVICE_UPNP_PORT,
     MC_CONTROL_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
     PLAYER_CONFIG_ENTRIES,
@@ -50,12 +51,13 @@ from .musiccast import (
 )
 
 if TYPE_CHECKING:
-    from async_upnp_client.utils import CaseInsensitiveDict
     from music_assistant_models.config_entries import (
         ConfigValueType,
         ProviderConfig,
     )
     from music_assistant_models.provider import ProviderManifest
+    from zeroconf import ServiceStateChange
+    from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -274,18 +276,19 @@ class MusicCast(PlayerProvider):
         """Handle UNGROUP command for given player."""
         if zone_player := self._get_zone_player(player_id):
             if zone_player.zone_name.startswith("zone"):
-                # We are are zone. Check, if our main is the server.
-                # This case can only happen, if the zone is synced to main.
-                main_is_server = False
-                for dev in zone_player.physical_device.zone_devices.values():
-                    main_is_server = dev.is_netusb
-                    if main_is_server:
-                        break
+                # We are are zone.
+                # We do not leave an MC group, but just change our source.
                 await self._handle_zone_grouping(zone_player)
                 return
             await self.run_cmd(player_id, zone_player.unjoin_player)
 
     async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
+        """Handle zone grouping.
+
+        If a device has multiple zones, only a single zone can be net controlled.
+        If another zone wants to join the group, the current net zone has to switch
+        its input to a non-net one and optionally turn off.
+        """
         player_id = zone_player.ma_player_id
         assert player_id is not None  # for TYPE_CHECKING
         _source = str(
@@ -312,8 +315,10 @@ class MusicCast(PlayerProvider):
         for child_id in child_player_ids:
             if child := self._get_zone_player(child_id):
                 if server.physical_device == child.physical_device:
-                    # child must be a zone, as we exclude main to zone
-                    # in sync to when setting up player attributes
+                    # If the zone joins a server, and the server is part of
+                    # of the same device, we use main_sync as input
+                    # We can only end up here if server is main, as we exclude
+                    # joining otherwise in player attributes.
                     children_zones.append(child)
                 else:
                     children.add(child)
@@ -385,65 +390,35 @@ class MusicCast(PlayerProvider):
                 self._update_player_attributes(player, zone_device)
             await self.mass.players.register_or_update(player)
 
-    # The discovery methods are copied over from the DLNAPlayerProvider and adjusted for MusicCast.
-
-    async def discover_players(self, use_multicast: bool = False) -> None:
-        """Discover MusicCast players on the network.
-
-        Method is called once when provider is loaded.
-        """
-        if self._discovery_running:
+    async def on_mdns_service_state_change(
+        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+    ) -> None:
+        """Discovery via mdns."""
+        if info is None:
             return
-        try:
-            self._discovery_running = True
-            self.logger.debug("MusicCast discovery started...")
-            allow_network_scan = self.config.get_value(CONF_NETWORK_SCAN)
-            discovered_devices: set[str] = set()
+        device_ip = get_primary_ip_address(info)
+        if device_ip is None:
+            return
+        device_info = await self.mass.http_session.get(f"http://{device_ip}/{DEVICE_INFO_ENDPOINT}")
+        if device_info.status == 404:
+            return
+        device_info_json = await device_info.json()
+        device_id = device_info_json.get("device_id")
+        if device_id is None:
+            return
+        description_url = f"http://{device_ip}:{DEVICE_UPNP_PORT}/{DEVICE_UPNP_ENDPOINT}"
 
-            async def on_response(discovery_info: CaseInsensitiveDict) -> None:
-                """Process discovered device from ssdp search."""
-                ssdp_st: str = discovery_info.get("st", discovery_info.get("nt"))
-                if not ssdp_st:
-                    return
+        _check = await self.mass.http_session.get(description_url)
+        if _check.status == 404:
+            self.logger.debug("Missing description url for Yamaha device at %s", device_ip)
+            return
+        await self._device_discovered(
+            device_id=device_id, device_ip=device_ip, description_url=description_url
+        )
 
-                if "MediaRenderer" not in ssdp_st:
-                    # we're only interested in MediaRenderer devices
-                    return
-
-                ssdp_usn: str = discovery_info["usn"]
-                ssdp_udn: str | None = discovery_info.get("_udn")
-                if not ssdp_udn and ssdp_usn.startswith("uuid:"):
-                    ssdp_udn = ssdp_usn.split("::")[0]
-
-                assert ssdp_udn is not None  # for type checking
-
-                if ssdp_udn in discovered_devices:
-                    # already processed this device
-                    return
-                if "rincon" in ssdp_udn.lower():
-                    # ignore Sonos devices
-                    return
-
-                discovered_devices.add(ssdp_udn)
-
-                await self._device_discovered(ssdp_udn, discovery_info["location"])
-
-            # we iterate between using a regular and multicast search (if enabled)
-            if allow_network_scan and use_multicast:
-                await async_search(on_response, target=(str(IPv4Address("255.255.255.255")), 1900))
-            else:
-                await async_search(on_response)
-
-        finally:
-            self._discovery_running = False
-
-        def reschedule() -> None:
-            self.mass.create_task(self.discover_players(use_multicast=not use_multicast))
-
-        # reschedule self once finished
-        self.mass.loop.call_later(300, reschedule)
-
-    async def _device_discovered(self, udn: str, description_url: str) -> None:
+    async def _device_discovered(
+        self, device_id: str, device_ip: str, description_url: str
+    ) -> None:
         """Handle discovered MusicCast player."""
         # verify that this is a MusicCast player
         check: bool = await MusicCastDevice.check_yamaha_ssdp(
@@ -453,8 +428,7 @@ class MusicCast(PlayerProvider):
             return
 
         async with self.lock:
-            ip = urlparse(description_url).netloc.split(":")[0]
-            if musiccast_player := self.musiccast_players.get(udn):
+            if musiccast_player := self.musiccast_players.get(device_id):
                 # existing player
                 if musiccast_player.player_main is None:
                     return
@@ -468,29 +442,33 @@ class MusicCast(PlayerProvider):
                 # update description url to newly discovered one
                 musiccast_player.physical_device = MusicCastPhysicalDevice(
                     device=MusicCastDevice(
-                        client=self.mass.http_session, ip=ip, upnp_description=description_url
+                        client=self.mass.http_session,
+                        ip=device_ip,
+                        upnp_description=description_url,
                     ),
                     controller=self.mc_controller,
-                    udn=udn,
+                    device_id=device_id,
                 )
             else:
                 # new player detected
-                conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
+                conf_key = f"{CONF_PLAYERS}/{device_id}/enabled"
                 enabled = self.mass.config.get(conf_key, True)
                 # ignore disabled players
                 if not enabled:
-                    self.logger.debug("Ignoring disabled player: %s", udn)
+                    self.logger.debug("Ignoring disabled player: %s", device_id)
                     return
                 physical_device = MusicCastPhysicalDevice(
                     device=MusicCastDevice(
-                        client=self.mass.http_session, ip=ip, upnp_description=description_url
+                        client=self.mass.http_session,
+                        ip=device_ip,
+                        upnp_description=description_url,
                     ),
                     controller=self.mc_controller,
-                    udn=udn,
+                    device_id=device_id,
                 )
                 await physical_device.async_init()  # fetch + polling
                 physical_device.register_callback(self.update_callback)
-                await self._register_player(physical_device, udn)
+                await self._register_player(physical_device, device_id)
 
     async def _register_player(self, physical_device: MusicCastPhysicalDevice, udn: str) -> None:
         """Register player including zones."""

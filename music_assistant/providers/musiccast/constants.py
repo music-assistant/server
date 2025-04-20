@@ -16,6 +16,10 @@ PLAYER_CONFIG_ENTRIES = (
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
 )
 
+DEVICE_INFO_ENDPOINT = "YamahaExtendedControl/v1/system/getDeviceInfo"
+DEVICE_UPNP_ENDPOINT = "MediaRenderer/desc.xml"
+DEVICE_UPNP_PORT = 49154
+
 # switch to these non netusb sources when leaving a group
 CONF_PLAYER_SWITCH_SOURCE_NON_NET = "main_switch_source"
 CONF_PLAYER_TURN_OFF_ON_LEAVE = "turn_off_on_leave"
