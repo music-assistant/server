@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from ipaddress import IPv4Address
-from random import getrandbits
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
+from aiomusiccast.pyamaha import MusicCastConnectionException
 from async_upnp_client.search import async_search
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -52,17 +54,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return MusicCast(mass, manifest, config)
-
-
-def random_uuid_hex() -> str:
-    """Generate a random UUID hex.
-
-    This uuid should not be used for cryptographically secure
-    operations.
-
-    taken from here: https://github.com/home-assistant/core/blob/dev/homeassistant/util/uuid.py
-    """
-    return f"{getrandbits(32 * 4):032x}"
 
 
 async def get_config_entries(
@@ -140,10 +131,6 @@ class MusicCast(PlayerProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        # MANDATORY
-        # you should return a set of provider-level features
-        # here that your player provider supports or an empty set if none.
-        # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
         return {ProviderFeature.SYNC_PLAYERS}
 
     async def handle_async_init(self) -> None:
@@ -174,38 +161,61 @@ class MusicCast(PlayerProvider):
             return None
         return mc_player.physical_device.zone_devices.get(zone)
 
+    async def _set_player_unavailable(self, player_id: str) -> None:
+        udn, zone = player_id.split(ZONE_SPLITTER)
+        mc_player = self.musiccast_players.get(udn)
+        if mc_player is None:
+            return
+        player = mc_player.get_player(zone)
+        if player is None:
+            return
+        player.available = False
+        async with self.lock:
+            await self.mass.players.register_or_update(player)
+
+    async def run_cmd(self, player_id: str, fun: Callable[..., Any], *args: Any) -> None:
+        """Run cmd if possible."""
+        try:
+            await fun(*args)
+        except MusicCastConnectionException:
+            await self._set_player_unavailable(player_id)
+            self.logger.debug("Player became unavailable.")
+        except MusicCastGroupException:
+            # can happen, user shall try again.
+            ...
+
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await zone_player.stop()
+            await self.run_cmd(player_id, zone_player.stop)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await zone_player.play()
+            await self.run_cmd(player_id, zone_player.play)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await zone_player.pause()
+            await self.run_cmd(player_id, zone_player.pause)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await zone_player.volume_set(volume_level)
+            await self.run_cmd(player_id, zone_player.volume_set, volume_level)
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await zone_player.volume_mute(muted)
+            await self.run_cmd(player_id, zone_player.volume_mute, muted)
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
         if zone_player := self._get_zone_player(player_id):
             if powered:
-                await zone_player.turn_on()
+                await self.run_cmd(player_id, zone_player.turn_on)
             else:
-                await zone_player.turn_off()
+                await self.run_cmd(player_id, zone_player.turn_off)
 
     async def cmd_group(self, player_id: str, target_player: str) -> None:
         """Handle GROUP command for given player."""
@@ -214,7 +224,7 @@ class MusicCast(PlayerProvider):
     async def cmd_ungroup(self, player_id: str) -> None:
         """Handle UNGROUP command for given player."""
         if zone_player := self._get_zone_player(player_id):
-            await zone_player.unjoin_player()
+            await self.run_cmd(player_id, zone_player.unjoin_player)
 
     async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
         """Create temporary sync group by joining given players to target player."""
@@ -229,7 +239,7 @@ class MusicCast(PlayerProvider):
         if not children:
             return
 
-        await server.join_players(children)
+        await self.run_cmd(target_player, server.join_players, children)
 
     async def cmd_ungroup_member(self, player_id: str, target_player: str) -> None:
         """Handle UNGROUP command for given player."""
@@ -242,7 +252,7 @@ class MusicCast(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         if zone_player := self._get_zone_player(player_id):
-            await zone_player.play_url(url=media.uri)
+            await self.run_cmd(player_id, zone_player.play_url, media.uri)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates, only main zone is polled."""
@@ -252,12 +262,22 @@ class MusicCast(PlayerProvider):
             mc_player = self.musiccast_players.get(udn)
             if mc_player is None:
                 return
-            await mc_player.physical_device.fetch()
+
+            players_available = True
+            try:
+                await mc_player.physical_device.fetch()
+            except (MusicCastConnectionException, MusicCastGroupException):
+                players_available = False
 
             for zone_name in ["main", "zone2", "zone3", "zone4"]:
                 player = mc_player.get_player(zone_name)
                 if player is None:
                     continue
+                if not players_available:
+                    player.available = False
+                    await self.mass.players.register_or_update(player)
+                    continue
+
                 zone_device = mc_player.physical_device.zone_devices.get(zone_name)
                 assert zone_device is not None
                 self._update_player_attributes(player, zone_device)
@@ -474,8 +494,6 @@ class MusicCast(PlayerProvider):
             player.group_childs = UniqueList(
                 [x.ma_player_id for x in device.musiccast_group if x.ma_player_id is not None]
             )
-
-            # and x.state not in [MusicCastPlayerState.OFF, MusicCastPlayerState.IDLE]
             player.synced_to = None
             player.active_group = None
 
@@ -489,4 +507,4 @@ class MusicCast(PlayerProvider):
         if mc_player.player_main is None:
             return
         main_player_id = mc_player.player_main.player_id
-        asyncio.create_task(self.poll_player(main_player_id))
+        self.mass.loop.create_task(self.poll_player(main_player_id))
