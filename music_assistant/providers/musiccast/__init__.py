@@ -281,9 +281,8 @@ class MusicCast(PlayerProvider):
                     main_is_server = dev.is_netusb
                     if main_is_server:
                         break
-                if main_is_server:
-                    await self._handle_zone_grouping(zone_player)
-                    return
+                await self._handle_zone_grouping(zone_player)
+                return
             await self.run_cmd(player_id, zone_player.unjoin_player)
 
     async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
@@ -296,13 +295,10 @@ class MusicCast(PlayerProvider):
         )
         await self.run_cmd(player_id, zone_player.select_source, _source)
         _turn_off = bool(
-            str(
-                await self.mass.config.get_player_config_value(
-                    player_id, CONF_PLAYER_TURN_OFF_ON_LEAVE
-                )
-            )
+            await self.mass.config.get_player_config_value(player_id, CONF_PLAYER_TURN_OFF_ON_LEAVE)
         )
         if _turn_off:
+            await asyncio.sleep(2)
             await self.run_cmd(player_id, zone_player.turn_off)
 
     async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
@@ -356,8 +352,6 @@ class MusicCast(PlayerProvider):
                         continue
                     if dev.is_netusb:
                         await self._handle_zone_grouping(dev)
-                        # a little delay
-                        await asyncio.sleep(3)
 
             await self.run_cmd(player_id, zone_player.play_url, media.uri)
 
@@ -613,24 +607,19 @@ class MusicCast(PlayerProvider):
         # of a mc link.
         can_group_with_zone_devices: list[MusicCastZoneDevice] = []
         if device.zone_name.startswith("zone"):
-            main_uses_netusb = False
-            for dev in device.physical_device.zone_devices.values():
-                if dev.zone_name.startswith("main"):
-                    main_uses_netusb = dev.is_netusb
-                    break
-            if not main_uses_netusb:
-                for _dev in device.controller.all_zone_devices:
-                    if _dev.physical_device == device.physical_device:
-                        continue
-                    can_group_with_zone_devices.append(_dev)
+            main_device = device.physical_device.zone_devices.get("main")
+            assert main_device is not None
+            if main_device.is_netusb:
+                # main devices is using networking functionality, so we
+                # can only sync to main (technically main_sync, not mc_sync)
+                can_group_with_zone_devices.append(main_device)
+            else:
+                can_group_with_zone_devices = self.mc_controller.all_zone_devices
+            player.can_group_with = {
+                x.ma_player_id for x in can_group_with_zone_devices if x.ma_player_id is not None
+            }
         else:
-            can_group_with_zone_devices = device.controller.all_zone_devices
-
-        player.can_group_with = {
-            x.ma_player_id
-            for x in can_group_with_zone_devices
-            if x.ma_player_id is not None and not x.is_server
-        }
+            player.can_group_with = {self.instance_id}
 
         if len(device.musiccast_group) == 1:
             if device.musiccast_group[0] == device:
