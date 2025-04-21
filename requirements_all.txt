@@ -31,7 +31,7 @@ music-assistant-frontend==2.14.9
 music-assistant-models==1.1.45
 mutagen==1.47.0
 orjson==3.10.16
-pillow==11.1.0
+pillow==11.2.1
 pkce==1.0.3
 plexapi==4.16.1
 podcastparser==0.6.10
