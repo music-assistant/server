@@ -72,7 +72,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Server Path",
             required=False,
-            description="Path to append to base URL for Soubsonic server, this is likely "
+            description="Path to append to the base URL for the Subsonic server, this is likely "
             "empty unless you are path routing on a proxy",
         ),
         ConfigEntry(
