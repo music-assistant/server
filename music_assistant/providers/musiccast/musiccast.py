@@ -260,6 +260,28 @@ class MusicCastZoneDevice:
 
         return None
 
+    @property
+    def media_image_url(self) -> str | None:
+        """Return the image url of current playing media."""
+        if self.is_client and self.group_server != self:
+            return cast("str", self.group_server.device.media_image_url)
+        return cast("str", self.device.media_image_url) if self.is_netusb else None
+
+    @property
+    def media_artist(self) -> str | None:
+        """Return the artist of current playing media (Music track only)."""
+        if self.is_netusb:
+            return cast("str", self.device.data.netusb_artist)
+        if self.is_tuner:
+            return cast("str", self.device.tuner_media_artist)
+
+        return None
+
+    @property
+    def media_album_name(self) -> str | None:
+        """Return the album of current playing media (Music track only)."""
+        return cast("str", self.device.data.netusb_album) if self.is_netusb else None
+
     async def turn_on(self) -> None:
         """Turn on."""
         await self.device.turn_on(self.zone_name)
