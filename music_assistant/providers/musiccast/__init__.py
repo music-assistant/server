@@ -448,7 +448,13 @@ class MusicCast(PlayerProvider):
                 ),
                 controller=self.mc_controller,
             )
-            await physical_device.async_init()  # fetch + polling
+            success = await physical_device.async_init()  # fetch + polling
+            if not success:
+                self.logger.debug(
+                    "Had trouble setting up device at %s. Will be retried on next discovery.",
+                    device_ip,
+                )
+                return
             physical_device.register_callback(self._non_async_udp_callback)
             await self._register_player(physical_device, device_id)
 

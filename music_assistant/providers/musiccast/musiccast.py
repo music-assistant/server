@@ -19,7 +19,7 @@ from enum import Enum, auto
 from random import getrandbits
 from typing import cast
 
-from aiomusiccast.exceptions import MusicCastGroupException
+from aiomusiccast.exceptions import MusicCastConnectionException, MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 
 from .constants import (
@@ -514,9 +514,15 @@ class MusicCastPhysicalDevice:
         self.controller = controller
         self.controller.physical_devices.append(self)
 
-    async def async_init(self) -> None:
-        """Async init."""
-        await self.device.fetch()  # initial fetch, after every 60s in HA
+    async def async_init(self) -> bool:
+        """Async init.
+
+        Returns true if initial fetch was successful.
+        """
+        try:
+            await self.fetch()
+        except (MusicCastConnectionException, MusicCastGroupException):
+            return False
 
         self.device.build_capabilities()
 
@@ -525,6 +531,8 @@ class MusicCastPhysicalDevice:
 
         for zone_name in self.device.data.zones:
             self.zone_devices[zone_name] = MusicCastZoneDevice(zone_name, self)
+
+        return True
 
     async def enable_polling(self) -> None:
         """Enable udp polling."""
