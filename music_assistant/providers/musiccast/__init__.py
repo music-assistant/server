@@ -576,21 +576,31 @@ class MusicCast(PlayerProvider):
         # function.
         # For a Zone which will be synced to main, grouping emits a "main_sync" instead
         # of a mc link.
-        can_group_with_zone_devices: list[MusicCastZoneDevice] = []
-        if device.zone_name.startswith("zone"):
-            main_device = device.physical_device.zone_devices.get("main")
-            assert main_device is not None
-            if main_device.is_netusb:
-                # main devices is using networking functionality, so we
-                # can only sync to main (technically main_sync, not mc_sync)
-                can_group_with_zone_devices.append(main_device)
-            else:
-                can_group_with_zone_devices = self.mc_controller.all_zone_devices
-            player.can_group_with = {
-                x.ma_player_id for x in can_group_with_zone_devices if x.ma_player_id is not None
-            }
-        else:
-            player.can_group_with = {self.instance_id}
+
+        # TODO: Revisit this - it produces the expected output, but the ui
+        # does not update correctly
+        can_group_with = set(self.mc_controller.all_zone_devices)
+        if len(device.physical_device.zone_devices) > 1:
+            # receiver with zones
+            _main_zone = device.physical_device.zone_devices.get("main")
+            if _main_zone is None:
+                return
+            _other_zones = set(_main_zone.other_zones)
+
+            if device == _main_zone:
+                # a main zone cannot join another zone, but a zone can join
+                # main, see below.
+                can_group_with.difference_update(_other_zones)
+            elif device in _other_zones:
+                # can_group_with.difference_update(_other_zones.difference({device}))
+                # enforce a zone to be either the server, or sync to main of
+                # same device. makes life much easier.
+                can_group_with = {device, _main_zone}
+
+        # player.can_group_with = {
+        #     x.ma_player_id for x in can_group_with if x.ma_player_id is not None
+        # }
+        player.can_group_with = {self.instance_id}
 
         if len(device.musiccast_group) == 1:
             if device.musiccast_group[0] == device:
