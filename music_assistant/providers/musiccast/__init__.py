@@ -1,4 +1,12 @@
-"""MusicCast for MusicAssistant."""
+"""MusicCast for MusicAssistant.
+
+The devices do support gapless, however, only if the device itself is accessing
+e.g. an upnp server. What the provider uses, is accessing an http stream (same
+as playing from your phone to the MC device). This is not gapless, the MC App
+checks roughly every 1s for playing information.
+
+Thus we enforce queue flow mode.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +15,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-# from aiomusiccast.const import MC_LINK
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
@@ -22,25 +29,22 @@ from music_assistant_models.enums import (
 from music_assistant_models.media_items import UniqueList
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 
-from music_assistant.constants import (
-    CONF_PLAYERS,
-)
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sonos.helpers import get_primary_ip_address
 
 from .constants import (
-    ATTR_MAIN_SYNC,
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
-    DEVICE_INFO_ENDPOINT,
-    DEVICE_UPNP_ENDPOINT,
-    DEVICE_UPNP_PORT,
     MC_CONTROL_SOURCE_IDS,
+    MC_DEVICE_INFO_ENDPOINT,
+    MC_DEVICE_UPNP_ENDPOINT,
+    MC_DEVICE_UPNP_PORT,
     MC_PASSIVE_SOURCE_IDS,
+    MC_POLL_INTERVAL,
+    MC_SOURCE_MAIN_SYNC,
     PLAYER_CONFIG_ENTRIES,
-    POLL_INTERVAL,
-    ZONE_SPLITTER,
-    ZONE_SWITCH_SOURCE_NON_NET,
+    PLAYER_MAP_ZONE_SWITCH,
+    PLAYER_ZONE_SPLITTER,
 )
 from .musiccast import (
     MusicCastController,
@@ -88,9 +92,12 @@ async def get_config_entries(
 
 @dataclass(kw_only=True)
 class MusicCastPlayer:
-    """MusicCastPlayer."""
+    """MusicCastPlayer.
 
-    udn: str  # = player_id
+    Helper class to store MA player alongside physical device.
+    """
+
+    device_id: str  # device_id without ZONE_SPLITTER zone
     player_main: Player | None = None  # mass player
     player_zone2: Player | None = None  # mass player
     # I can only test up to zone 2
@@ -128,9 +135,7 @@ class MusicCastPlayer:
 class MusicCast(PlayerProvider):
     """MusicCast."""
 
-    _discovery_running: bool = False
     musiccast_players: dict[str, MusicCastPlayer] = {}
-    lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -165,7 +170,7 @@ class MusicCast(PlayerProvider):
                         key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
                         type=ConfigEntryType.STRING,
                         label="Switch to this non-net source on group leave.",
-                        default_value=ZONE_SWITCH_SOURCE_NON_NET[zone_player.zone_name],
+                        default_value=PLAYER_MAP_ZONE_SWITCH[zone_player.zone_name],
                         description="Switch to this non-net source on group leave. "
                         " This must be the source_id.",
                     ),
@@ -181,25 +186,30 @@ class MusicCast(PlayerProvider):
         return base_entries + zone_entries + PLAYER_CONFIG_ENTRIES
 
     def _get_zone_player(self, player_id: str) -> MusicCastZoneDevice | None:
-        udn, zone = player_id.split(ZONE_SPLITTER)
-        mc_player = self.musiccast_players.get(udn)
+        """Get music cast zone entity based on player id."""
+        device_id, zone = player_id.split(PLAYER_ZONE_SPLITTER)
+        mc_player = self.musiccast_players.get(device_id)
         if mc_player is None:
             return None
         return mc_player.physical_device.zone_devices.get(zone)
 
     async def _set_player_unavailable(self, player_id: str) -> None:
-        udn, zone = player_id.split(ZONE_SPLITTER)
-        mc_player = self.musiccast_players.get(udn)
+        """Set a player unavailable, and remove it from the MC group.
+
+        Update all clients.
+        """
+        device_id, _ = player_id.split(PLAYER_ZONE_SPLITTER)
+        mc_player = self.musiccast_players.get(device_id)
         if mc_player is None:
             return
-        player = mc_player.get_player(zone)
-        if player is None:
-            return
-        player.available = False
-        await self.mass.players.register_or_update(player)
+        mc_player.physical_device.remove()
+        for player in mc_player.get_all_players():
+            # disable zones as well.
+            player.available = False
+            await self.mass.players.register_or_update(player)
 
-    async def run_cmd(self, player_id: str, fun: Callable[..., Any], *args: Any) -> None:
-        """Run cmd if possible."""
+    async def _cmd_run(self, player_id: str, fun: Callable[..., Any], *args: Any) -> None:
+        """Help function for all player cmds."""
         try:
             await fun(*args)
         except MusicCastConnectionException:
@@ -209,20 +219,25 @@ class MusicCast(PlayerProvider):
             # can happen, user shall try again.
             ...
 
+    def _get_player_id_from_mc_zone_player(self, zone_player: MusicCastZoneDevice) -> str:
+        device_id = zone_player.physical_device.device.data.device_id
+        assert device_id is not None
+        return f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_player.zone_name}"
+
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await self.run_cmd(player_id, zone_player.stop)
+            await self._cmd_run(player_id, zone_player.stop)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await self.run_cmd(player_id, zone_player.play)
+            await self._cmd_run(player_id, zone_player.play)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await self.run_cmd(player_id, zone_player.pause)
+            await self._cmd_run(player_id, zone_player.pause)
 
     async def cmd_next(self, player_id: str) -> None:
         """Send NEXT.
@@ -230,7 +245,7 @@ class MusicCast(PlayerProvider):
         Only used for external source.
         """
         if zone_player := self._get_zone_player(player_id):
-            await self.run_cmd(player_id, zone_player.next_track)
+            await self._cmd_run(player_id, zone_player.next_track)
 
     async def cmd_previous(self, player_id: str) -> None:
         """Send PREVIOUS.
@@ -238,25 +253,25 @@ class MusicCast(PlayerProvider):
         Only used for external source.
         """
         if zone_player := self._get_zone_player(player_id):
-            await self.run_cmd(player_id, zone_player.previous_track)
+            await self._cmd_run(player_id, zone_player.previous_track)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await self.run_cmd(player_id, zone_player.volume_set, volume_level)
+            await self._cmd_run(player_id, zone_player.volume_set, volume_level)
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await self.run_cmd(player_id, zone_player.volume_mute, muted)
+            await self._cmd_run(player_id, zone_player.volume_mute, muted)
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
         if zone_player := self._get_zone_player(player_id):
             if powered:
-                await self.run_cmd(player_id, zone_player.turn_on)
+                await self._cmd_run(player_id, zone_player.turn_on)
             else:
-                await self.run_cmd(player_id, zone_player.turn_off)
+                await self._cmd_run(player_id, zone_player.turn_off)
 
     async def cmd_group(self, player_id: str, target_player: str) -> None:
         """Handle GROUP command for given player."""
@@ -270,7 +285,7 @@ class MusicCast(PlayerProvider):
                 # We do not leave an MC group, but just change our source.
                 await self._handle_zone_grouping(zone_player)
                 return
-            await self.run_cmd(player_id, zone_player.unjoin_player)
+            await self._cmd_run(player_id, zone_player.unjoin_player)
 
     async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
         """Handle zone grouping.
@@ -279,24 +294,24 @@ class MusicCast(PlayerProvider):
         If another zone wants to join the group, the current net zone has to switch
         its input to a non-net one and optionally turn off.
         """
-        player_id = zone_player.ma_player_id
+        player_id = self._get_player_id_from_mc_zone_player(zone_player)
         assert player_id is not None  # for TYPE_CHECKING
         _source = str(
             await self.mass.config.get_player_config_value(
                 player_id, CONF_PLAYER_SWITCH_SOURCE_NON_NET
             )
         )
-        await self.run_cmd(player_id, zone_player.select_source, _source)
+        await self._cmd_run(player_id, zone_player.select_source, _source)
         _turn_off = bool(
             await self.mass.config.get_player_config_value(player_id, CONF_PLAYER_TURN_OFF_ON_LEAVE)
         )
         if _turn_off:
             await asyncio.sleep(2)
-            await self.run_cmd(player_id, zone_player.turn_off)
+            await self._cmd_run(player_id, zone_player.turn_off)
 
     async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
         """Create temporary sync group by joining given players to target player."""
-        udn, zone_server = target_player.split(ZONE_SPLITTER)
+        device_id, zone_server = target_player.split(PLAYER_ZONE_SPLITTER)
         server = self._get_zone_player(target_player)
         if server is None:
             return
@@ -314,14 +329,14 @@ class MusicCast(PlayerProvider):
                     children.add(child)
 
         for child in children_zones:
-            assert child.ma_player_id is not None  # for type checking
+            child_player_id = self._get_player_id_from_mc_zone_player(child)
             if child.state == MusicCastPlayerState.OFF:
-                await self.run_cmd(child.ma_player_id, child.turn_on)
-            await self.select_source(child.ma_player_id, ATTR_MAIN_SYNC)
+                await self._cmd_run(child_player_id, child.turn_on)
+            await self.select_source(child_player_id, MC_SOURCE_MAIN_SYNC)
         if not children:
             return
 
-        await self.run_cmd(target_player, server.join_players, list(children))
+        await self._cmd_run(target_player, server.join_players, list(children))
 
     async def cmd_ungroup_member(self, player_id: str, target_player: str) -> None:
         """Handle UNGROUP command for given player."""
@@ -330,7 +345,7 @@ class MusicCast(PlayerProvider):
     async def select_source(self, player_id: str, source: str) -> None:
         """Handle SELECT SOURCE command on given player."""
         if zone_player := self._get_zone_player(player_id):
-            await self.run_cmd(player_id, zone_player.select_source, source)
+            await self._cmd_run(player_id, zone_player.select_source, source)
 
     async def play_media(
         self,
@@ -348,36 +363,29 @@ class MusicCast(PlayerProvider):
                     if dev.is_netusb:
                         await self._handle_zone_grouping(dev)
 
-            await self.run_cmd(player_id, zone_player.play_url, media.uri)
+            await self._cmd_run(player_id, zone_player.play_url, media.uri)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates, only main zone is polled."""
         # we only poll for main, as we get zones alongside
-        udn, _ = player_id.split(ZONE_SPLITTER)
-        mc_player = self.musiccast_players.get(udn)
+        device_id, _ = player_id.split(PLAYER_ZONE_SPLITTER)
+        mc_player = self.musiccast_players.get(device_id)
         if mc_player is None:
             return
 
-        players_available = True
         try:
             await mc_player.physical_device.fetch()
         except (MusicCastConnectionException, MusicCastGroupException):
-            players_available = False
+            await self._set_player_unavailable(player_id)
+            return
 
-        for zone_name in ["main", "zone2", "zone3", "zone4"]:
-            player = mc_player.get_player(zone_name)
-            if player is None:
-                continue
-            if not players_available:
-                player.available = False
-                await self.mass.players.register_or_update(player)
-                continue
-
-            zone_device = mc_player.physical_device.zone_devices.get(zone_name)
+        for player in mc_player.get_all_players():
+            _, zone = player.player_id.split(PLAYER_ZONE_SPLITTER)
+            zone_device = mc_player.physical_device.zone_devices.get(zone)
             if zone_device is None:
-                player.available = False
-            else:
-                self._update_player_attributes(player, zone_device)
+                continue
+            self._update_player_attributes(player, zone_device)
+            player.available = True
             await self.mass.players.register_or_update(player)
 
     async def on_mdns_service_state_change(
@@ -389,14 +397,16 @@ class MusicCast(PlayerProvider):
         device_ip = get_primary_ip_address(info)
         if device_ip is None:
             return
-        device_info = await self.mass.http_session.get(f"http://{device_ip}/{DEVICE_INFO_ENDPOINT}")
+        device_info = await self.mass.http_session.get(
+            f"http://{device_ip}/{MC_DEVICE_INFO_ENDPOINT}"
+        )
         if device_info.status == 404:
             return
         device_info_json = await device_info.json()
         device_id = device_info_json.get("device_id")
         if device_id is None:
             return
-        description_url = f"http://{device_ip}:{DEVICE_UPNP_PORT}/{DEVICE_UPNP_ENDPOINT}"
+        description_url = f"http://{device_ip}:{MC_DEVICE_UPNP_PORT}/{MC_DEVICE_UPNP_ENDPOINT}"
 
         _check = await self.mass.http_session.get(description_url)
         if _check.status == 404:
@@ -417,50 +427,34 @@ class MusicCast(PlayerProvider):
         if not check:
             return
 
-        async with self.lock:
-            if musiccast_player := self.musiccast_players.get(device_id):
-                # existing player
-                if musiccast_player.player_main is None:
-                    return
-                if (
-                    musiccast_player.physical_device.device.device.upnp_description
-                    == description_url
-                    and musiccast_player.player_main.available
-                ):
-                    # nothing to do, device is already connected
-                    return
-                # update description url to newly discovered one
-                musiccast_player.physical_device = MusicCastPhysicalDevice(
-                    device=MusicCastDevice(
-                        client=self.mass.http_session,
-                        ip=device_ip,
-                        upnp_description=description_url,
-                    ),
-                    controller=self.mc_controller,
-                    device_id=device_id,
-                )
-            else:
-                # new player detected
-                conf_key = f"{CONF_PLAYERS}/{device_id}/enabled"
-                enabled = self.mass.config.get(conf_key, True)
-                # ignore disabled players
-                if not enabled:
-                    self.logger.debug("Ignoring disabled player: %s", device_id)
-                    return
-                physical_device = MusicCastPhysicalDevice(
-                    device=MusicCastDevice(
-                        client=self.mass.http_session,
-                        ip=device_ip,
-                        upnp_description=description_url,
-                    ),
-                    controller=self.mc_controller,
-                    device_id=device_id,
-                )
-                await physical_device.async_init()  # fetch + polling
-                physical_device.register_callback(self.update_callback)
-                await self._register_player(physical_device, device_id)
+        mc_player_known = self.musiccast_players.get(device_id)
+        if (
+            mc_player_known is not None
+            and mc_player_known.player_main is not None
+            and (
+                mc_player_known.physical_device.device.device.upnp_description == description_url
+                and mc_player_known.player_main.available
+            )
+        ):
+            # nothing to do, device is already connected
+            return
+        else:
+            # new or updated player detected
+            physical_device = MusicCastPhysicalDevice(
+                device=MusicCastDevice(
+                    client=self.mass.http_session,
+                    ip=device_ip,
+                    upnp_description=description_url,
+                ),
+                controller=self.mc_controller,
+            )
+            await physical_device.async_init()  # fetch + polling
+            physical_device.register_callback(self._non_async_udp_callback)
+            await self._register_player(physical_device, device_id)
 
-    async def _register_player(self, physical_device: MusicCastPhysicalDevice, udn: str) -> None:
+    async def _register_player(
+        self, physical_device: MusicCastPhysicalDevice, device_id: str
+    ) -> None:
         """Register player including zones."""
         device_info = DeviceInfo(
             manufacturer="Yamaha",
@@ -483,14 +477,14 @@ class MusicCast(PlayerProvider):
             }
 
             return Player(
-                player_id=f"{udn}{ZONE_SPLITTER}{zone_name}",
+                player_id=f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_name}",
                 provider=self.instance_id,
                 type=PlayerType.PLAYER,
                 name=player_name,
                 available=True,
                 device_info=device_info,
                 needs_poll=zone_name == "main",
-                poll_interval=POLL_INTERVAL,  # default
+                poll_interval=MC_POLL_INTERVAL,  # default
                 supported_features=supported_features,
             )
 
@@ -502,7 +496,7 @@ class MusicCast(PlayerProvider):
         ):
             return
         musiccast_player = MusicCastPlayer(
-            udn=udn,
+            device_id=device_id,
             physical_device=physical_device,
         )
 
@@ -514,7 +508,7 @@ class MusicCast(PlayerProvider):
             self._update_player_attributes(player, zone_device)
             await self.mass.players.register_or_update(player)
 
-        self.musiccast_players[udn] = musiccast_player
+        self.musiccast_players[device_id] = musiccast_player
 
     def _update_player_attributes(self, player: Player, device: MusicCastZoneDevice) -> None:
         # ruff: noqa: PLR0915
@@ -551,6 +545,7 @@ class MusicCast(PlayerProvider):
             control = source_id in MC_CONTROL_SOURCE_IDS
             passive = source_id in MC_PASSIVE_SOURCE_IDS
             player.source_list.append(
+                # UI bug? I can't control my sources...
                 PlayerSource(
                     id=source_id,
                     name=source_name,
@@ -615,28 +610,23 @@ class MusicCast(PlayerProvider):
             player.active_group = None
 
         elif device.is_client:
+            _synced_to_id = self._get_player_id_from_mc_zone_player(device.group_server)
             player.group_childs = UniqueList([])
-            player.synced_to = device.group_server.ma_player_id
-            player.active_group = device.group_server.ma_player_id
+            player.synced_to = _synced_to_id
+            player.active_group = _synced_to_id
 
         elif device.is_server:
-            # if device.source_id == MC_LINK:
-            #     # sometimes is_server can be true, but we are not.
-            #     player.group_childs = UniqueList([])
-            #     player.synced_to = device.group_server.ma_player_id
-            #     player.active_group = device.group_server.ma_player_id
-            # else:
             player.group_childs = UniqueList(
-                [x.ma_player_id for x in device.musiccast_group if x.ma_player_id is not None]
+                [self._get_player_id_from_mc_zone_player(x) for x in device.musiccast_group]
             )
             player.synced_to = None
             player.active_group = None
 
-    def update_callback(self, mc_physical_device: MusicCastPhysicalDevice) -> None:
+    def _non_async_udp_callback(self, mc_physical_device: MusicCastPhysicalDevice) -> None:
         """Update callback.
 
         This is called if there are new UDP updates. Unfortunately, aiomusiccast
-        only allows a sync callback.
+        only allows a sync callback, so we schedule an async task.
         """
         mc_player: MusicCastPlayer | None = None
         for mc_player in self.musiccast_players.values():

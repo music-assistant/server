@@ -13,6 +13,7 @@ MusicCastController - only once, holds state information of MC network
 
 import logging
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import datetime
 from enum import Enum, auto
 from random import getrandbits
@@ -22,12 +23,11 @@ from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 
 from .constants import (
-    ATTR_MAIN_SYNC,
-    ATTR_MC_LINK,
-    DEFAULT_ZONE,
-    NULL_GROUP,
-    PLAY_TITLE,
-    ZONE_SPLITTER,
+    MC_DEFAULT_ZONE,
+    MC_NULL_GROUP,
+    MC_PLAY_TITLE,
+    MC_SOURCE_MAIN_SYNC,
+    MC_SOURCE_MC_LINK,
 )
 
 
@@ -64,7 +64,6 @@ class MusicCastZoneDevice:
         self.controller = physical_device.controller
         self.device = physical_device.device
         self.zone_data = self.device.data.zones.get(self.zone_name)
-        self.udn = physical_device.udn
         self.physical_device = physical_device
 
         self.physical_device.register_group_update_callback(self._group_update)
@@ -73,13 +72,6 @@ class MusicCastZoneDevice:
         for entity in self.controller.all_server_devices:
             if self.device.group_reduce_by_source:
                 await entity._check_client_list()
-
-    @property
-    def ma_player_id(self) -> str | None:
-        """Return MA player id of this zone."""
-        if self.udn is not None:
-            return f"{self.udn}{ZONE_SPLITTER}{self.zone_name}"
-        return None
 
     @property
     def source_id(self) -> str:
@@ -132,7 +124,7 @@ class MusicCastZoneDevice:
     @property
     def is_controlled_by_mass(self) -> bool:
         """Controlled by mass if true."""
-        return self.source_id == "server" and self.media_title == PLAY_TITLE
+        return self.source_id == "server" and self.media_title == MC_PLAY_TITLE
 
     @property
     def media_position(self) -> int | None:
@@ -159,7 +151,7 @@ class MusicCastZoneDevice:
         return cast(
             "bool",
             self.device.data.group_role == "server"
-            and self.device.data.group_id != NULL_GROUP
+            and self.device.data.group_id != MC_NULL_GROUP
             and self.zone_name == self.device.data.group_server_zone,
         )
 
@@ -191,8 +183,10 @@ class MusicCastZoneDevice:
         If the media player is not part of a group, False is returned.
         """
         return self.is_network_server or (
-            self.zone_name == DEFAULT_ZONE
-            and len([entity for entity in self.other_zones if entity.source_id == ATTR_MAIN_SYNC])
+            self.zone_name == MC_DEFAULT_ZONE
+            and len(
+                [entity for entity in self.other_zones if entity.source_id == MC_SOURCE_MAIN_SYNC]
+            )
             > 0
         )
 
@@ -201,8 +195,8 @@ class MusicCastZoneDevice:
         """Return True if the current entity is a network client and not just a main sync entity."""
         return (
             self.device.data.group_role == "client"
-            and self.device.data.group_id != NULL_GROUP
-            and self.source_id == ATTR_MC_LINK
+            and self.device.data.group_id != MC_NULL_GROUP
+            and self.source_id == MC_SOURCE_MC_LINK
         )
 
     @property
@@ -211,7 +205,7 @@ class MusicCastZoneDevice:
 
         If the media player is not part of a group, False is returned.
         """
-        return self.is_network_client or self.source_id == ATTR_MAIN_SYNC
+        return self.is_network_client or self.source_id == MC_SOURCE_MAIN_SYNC
 
     @property
     def musiccast_zone_entity(self) -> "MusicCastZoneDevice":
@@ -329,7 +323,7 @@ class MusicCastZoneDevice:
 
     async def play_url(self, url: str) -> None:
         """Play http url."""
-        await self.device.play_url_media(self.zone_name, media_url=url, title=PLAY_TITLE)
+        await self.device.play_url_media(self.zone_name, media_url=url, title=MC_PLAY_TITLE)
 
     async def select_source(self, source_id: str) -> None:
         """Select input source. Internal source name."""
@@ -342,9 +336,9 @@ class MusicCastZoneDevice:
                 self.device.ip in group_server.device.data.group_client_list
                 and self.device.data.group_id == group_server.device.data.group_id
                 and self.device.ip != group_server.device.ip
-                and self.source_id == ATTR_MC_LINK
+                and self.source_id == MC_SOURCE_MC_LINK
             )
-            or (self.device.ip == group_server.device.ip and self.source_id == ATTR_MAIN_SYNC)
+            or (self.device.ip == group_server.device.ip and self.source_id == MC_SOURCE_MAIN_SYNC)
         )
 
     async def join_players(self, group_members: list["MusicCastZoneDevice"]) -> None:
@@ -414,8 +408,8 @@ class MusicCastZoneDevice:
         if self.state == MusicCastPlayerState.OFF:
             await self.turn_on()
         if self.device.ip == server.device.ip:
-            if server.zone_name == DEFAULT_ZONE:
-                await self.select_source(ATTR_MAIN_SYNC)
+            if server.zone_name == MC_DEFAULT_ZONE:
+                await self.select_source(MC_SOURCE_MAIN_SYNC)
                 return False
 
             # It is not possible to join a group hosted by zone2 from main zone.
@@ -452,8 +446,8 @@ class MusicCastZoneDevice:
         Should only be called for clients.
         """
         if not force and (
-            self.source_id == ATTR_MAIN_SYNC
-            or [entity for entity in self.other_zones if entity.source_id == ATTR_MC_LINK]
+            self.source_id == MC_SOURCE_MAIN_SYNC
+            or [entity for entity in self.other_zones if entity.source_id == MC_SOURCE_MC_LINK]
         ):
             await self.device.zone_unjoin(self.zone_name)
         else:
@@ -513,16 +507,12 @@ class MusicCastPhysicalDevice:
         self,
         device: MusicCastDevice,
         controller: "MusicCastController",
-        device_id: str | None = None,
     ):
         """Init."""
         self.device = device
         self.zone_devices: dict[str, MusicCastZoneDevice] = {}  # zone_name: device
         self.controller = controller
         self.controller.physical_devices.append(self)
-
-        # this is used within MA
-        self.udn = device_id
 
     async def async_init(self) -> None:
         """Async init."""
@@ -531,10 +521,18 @@ class MusicCastPhysicalDevice:
         self.device.build_capabilities()
 
         # enable udp polling
-        await self.device.device.enable_polling()
+        await self.enable_polling()
 
         for zone_name in self.device.data.zones:
             self.zone_devices[zone_name] = MusicCastZoneDevice(zone_name, self)
+
+    async def enable_polling(self) -> None:
+        """Enable udp polling."""
+        await self.device.device.enable_polling()
+
+    def disable_polling(self) -> None:
+        """Disable udp polling."""
+        self.device.device.disable_polling()
 
     async def fetch(self) -> None:
         """Fetch device information.
@@ -558,8 +556,12 @@ class MusicCastPhysicalDevice:
 
     def remove(self) -> None:
         """Remove physical device."""
-        self.device.device.disable_polling()
-        self.controller.physical_devices.remove(self)
+        with suppress(AttributeError):
+            # might already be closed
+            self.device.device.disable_polling()
+        with suppress(ValueError):
+            # might already be closed
+            self.controller.physical_devices.remove(self)
 
 
 class MusicCastController:
