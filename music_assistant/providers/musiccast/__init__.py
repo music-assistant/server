@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from aiomusiccast.const import MC_LINK
+# from aiomusiccast.const import MC_LINK
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
@@ -620,17 +620,17 @@ class MusicCast(PlayerProvider):
             player.active_group = device.group_server.ma_player_id
 
         elif device.is_server:
-            if device.source_id == MC_LINK:
-                # sometimes is_server can be true, but we are not.
-                player.group_childs = UniqueList([])
-                player.synced_to = device.group_server.ma_player_id
-                player.active_group = device.group_server.ma_player_id
-            else:
-                player.group_childs = UniqueList(
-                    [x.ma_player_id for x in device.musiccast_group if x.ma_player_id is not None]
-                )
-                player.synced_to = None
-                player.active_group = None
+            # if device.source_id == MC_LINK:
+            #     # sometimes is_server can be true, but we are not.
+            #     player.group_childs = UniqueList([])
+            #     player.synced_to = device.group_server.ma_player_id
+            #     player.active_group = device.group_server.ma_player_id
+            # else:
+            player.group_childs = UniqueList(
+                [x.ma_player_id for x in device.musiccast_group if x.ma_player_id is not None]
+            )
+            player.synced_to = None
+            player.active_group = None
 
     def update_callback(self, mc_physical_device: MusicCastPhysicalDevice) -> None:
         """Update callback.
