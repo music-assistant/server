@@ -11,6 +11,7 @@ Thus we enforce queue flow mode.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.media_items import UniqueList
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.sonos.helpers import get_primary_ip_address
 
@@ -145,6 +147,12 @@ class MusicCast(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Async init."""
         self.mc_controller = MusicCastController(logger=self.logger)
+        # aiomusiccast logs all fetch requests after udp message as debug.
+        # same approach as in upnp
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("aiomusiccast").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("aiomusiccast").setLevel(self.logger.level + 10)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
