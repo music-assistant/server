@@ -11,7 +11,7 @@ import os
 import re
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from os import PathLike
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -531,7 +531,7 @@ class AudibleHelper:
         book.metadata.languages = UniqueList([audiobook_data.get("language") or ""])
         if release_date := audiobook_data.get("release_date"):
             with suppress(ValueError):
-                book.metadata.release_date = datetime.fromisoformat(release_date)
+                datetime.strptime(release_date, "%Y-%m-%d").astimezone(UTC)
 
         # Set review if available
         reviews = audiobook_data.get("editorial_reviews", [])

@@ -70,15 +70,185 @@ class TidalPageParser:
         module_data = module_info.get("raw_data", {})
         module_type = module_data.get("type", "")
 
-        # Extract items based on module type
-        if module_type == "HIGHLIGHT_MODULE":
-            self._process_highlight_module(module_data, result, type_counts)
-        elif module_type == "MIXED_TYPES_LIST" or "pagedList" in module_data:
-            self._process_paged_list(module_data, module_type, result, type_counts)
+        self.logger.debug(
+            "Processing module type: %s, title: %s",
+            module_type,
+            module_data.get("title", "Unknown"),
+        )
+
+        # Process module based on type
+        self._process_module_by_type(module_data, module_type, result, type_counts)
 
         # Determine the primary content type based on counts
         primary_type = self._determine_primary_type(type_counts)
+
+        self._log_module_results(module_data, result, type_counts)
+
         return result, primary_type
+
+    def _process_module_by_type(
+        self,
+        module_data: dict[str, Any],
+        module_type: str,
+        result: list[Playlist | Album | Track | Artist],
+        type_counts: dict[MediaType, int],
+    ) -> None:
+        """Process module content based on module type."""
+        # Extract paged list if present (most modules have this)
+        paged_list = module_data.get("pagedList", {})
+        items = paged_list.get("items", [])
+
+        # Different module types have different content structures
+        if module_type == "PLAYLIST_LIST":
+            self._process_playlist_list(items, result, type_counts)
+        elif module_type == "TRACK_LIST":
+            self._process_track_list(items, result, type_counts)
+        elif module_type == "ALBUM_LIST":
+            self._process_album_list(items, result, type_counts)
+        elif module_type == "ARTIST_LIST":
+            self._process_artist_list(items, result, type_counts)
+        elif module_type == "MIX_LIST":
+            self._process_mix_list(items, result, type_counts)
+        elif module_type == "HIGHLIGHT_MODULE":
+            self._process_highlight_module(module_data, result, type_counts)
+        else:
+            # Generic fallback for other module types
+            self._process_generic_items(items, result, type_counts)
+
+    def _process_playlist_list(
+        self,
+        items: list[dict[str, Any]],
+        result: list[Playlist | Album | Track | Artist],
+        type_counts: dict[MediaType, int],
+    ) -> None:
+        """Process items from a PLAYLIST_LIST module."""
+        for item in items:
+            if isinstance(item, dict):
+                # Check if item appears to be a mix
+                is_mix = "mixId" in item or "mixType" in item
+
+                try:
+                    playlist = self.provider._parse_playlist(item, is_mix=is_mix)
+                    result.append(playlist)
+                    type_counts[MediaType.PLAYLIST] += 1
+                except (KeyError, ValueError, TypeError) as err:
+                    self.logger.warning("Error parsing playlist: %s", err)
+            else:
+                # Skip non-dict items
+                pass
+
+    def _process_track_list(
+        self,
+        items: list[dict[str, Any]],
+        result: list[Playlist | Album | Track | Artist],
+        type_counts: dict[MediaType, int],
+    ) -> None:
+        """Process items from a TRACK_LIST module."""
+        for item in items:
+            if isinstance(item, dict):
+                try:
+                    track = self.provider._parse_track(item)
+                    result.append(track)
+                    type_counts[MediaType.TRACK] += 1
+                except (KeyError, ValueError, TypeError) as err:
+                    self.logger.warning("Error parsing track: %s", err)
+            else:
+                # Skip non-dict items
+                pass
+
+    def _process_album_list(
+        self,
+        items: list[dict[str, Any]],
+        result: list[Playlist | Album | Track | Artist],
+        type_counts: dict[MediaType, int],
+    ) -> None:
+        """Process items from an ALBUM_LIST module."""
+        for item in items:
+            if isinstance(item, dict):
+                try:
+                    album = self.provider._parse_album(item)
+                    result.append(album)
+                    type_counts[MediaType.ALBUM] += 1
+                except (KeyError, ValueError, TypeError) as err:
+                    self.logger.warning("Error parsing album: %s", err)
+            else:
+                # Skip non-dict items
+                pass
+
+    def _process_artist_list(
+        self,
+        items: list[dict[str, Any]],
+        result: list[Playlist | Album | Track | Artist],
+        type_counts: dict[MediaType, int],
+    ) -> None:
+        """Process items from an ARTIST_LIST module."""
+        for item in items:
+            if isinstance(item, dict):
+                try:
+                    artist = self.provider._parse_artist(item)
+                    result.append(artist)
+                    type_counts[MediaType.ARTIST] += 1
+                except (KeyError, ValueError, TypeError) as err:
+                    self.logger.warning("Error parsing artist: %s", err)
+            else:
+                # Skip non-dict items
+                pass
+
+    def _process_mix_list(
+        self,
+        items: list[dict[str, Any]],
+        result: list[Playlist | Album | Track | Artist],
+        type_counts: dict[MediaType, int],
+    ) -> None:
+        """Process items from a MIX_LIST module."""
+        for item in items:
+            if isinstance(item, dict):
+                try:
+                    mix = self.provider._parse_playlist(item, is_mix=True)
+                    result.append(mix)
+                    type_counts[MediaType.PLAYLIST] += 1
+                except (KeyError, ValueError, TypeError) as err:
+                    self.logger.warning("Error parsing mix: %s", err)
+            else:
+                # Skip non-dict items
+                pass
+
+    def _process_generic_items(
+        self,
+        items: list[dict[str, Any]],
+        result: list[Playlist | Album | Track | Artist],
+        type_counts: dict[MediaType, int],
+    ) -> None:
+        """Process items with generic type detection."""
+        for item in items:
+            if isinstance(item, dict):
+                # Try to determine item type from structure
+                try:
+                    parsed_item = self._parse_item(item, type_counts)
+                    if parsed_item:
+                        result.append(parsed_item)
+                except (KeyError, ValueError, TypeError) as err:
+                    self.logger.warning("Error parsing generic item: %s", err)
+            else:
+                # Skip non-dict items
+                pass
+
+    def _log_module_results(
+        self,
+        module_data: dict[str, Any],
+        result: list[Playlist | Album | Track | Artist],
+        type_counts: dict[MediaType, int],
+    ) -> None:
+        """Log detailed module processing results."""
+        self.logger.debug(
+            "Module '%s' processed: %d items (%d playlists, %d albums, %d tracks, %d artists)",
+            module_data.get("title", "Unknown"),
+            len(result),
+            type_counts[MediaType.PLAYLIST],
+            type_counts[MediaType.ALBUM],
+            type_counts[MediaType.TRACK],
+            type_counts[MediaType.ARTIST],
+        )
 
     def _determine_primary_type(self, type_counts: dict[MediaType, int]) -> MediaType:
         """Determine the primary media type based on item counts."""
@@ -138,22 +308,33 @@ class TidalPageParser:
         type_counts: dict[MediaType, int],
         item_type: str = "",
     ) -> Playlist | Album | Track | Artist | None:
-        """Parse a single item from Tidal data into a media item."""
+        """Parse a single item from Tidal data into a media item.
+
+        Args:
+            item: Dictionary containing item data
+            type_counts: Dictionary to track counts by media type
+            item_type: Optional item type hint
+
+        Returns:
+            Parsed media item or None if parsing failed
+        """
         # Handle nested item structure
-        if isinstance(item, dict) and "type" in item and "item" in item:
+        if not item_type and isinstance(item, dict) and "type" in item and "item" in item:
             item_type = item["type"]
             item = item["item"]
 
         # If no explicit type, try to infer from structure
         if not item_type:
-            if "mixType" in item or item.get("subTitle"):
+            if "mixId" in item or "mixType" in item:
                 item_type = "MIX"
             elif "uuid" in item:
                 item_type = "PLAYLIST"
-            elif "id" in item and "duration" in item:
+            elif "id" in item and "duration" in item and "album" in item:
                 item_type = "TRACK"
-            elif "id" in item and "artist" in item and "numberOfTracks" in item:
+            elif "id" in item and "numberOfTracks" in item and "artists" in item:
                 item_type = "ALBUM"
+            elif "id" in item and "picture" in item and "name" in item and "album" not in item:
+                item_type = "ARTIST"
 
         # Parse based on detected type
         try:
@@ -179,18 +360,32 @@ class TidalPageParser:
                 media_item = self.provider._parse_artist(item)
                 type_counts[MediaType.ARTIST] += 1
                 return media_item
-            return None
+            else:
+                # Last resort - try to infer from structure for unlabeled items
+                if "uuid" in item:
+                    media_item = self.provider._parse_playlist(item)
+                    type_counts[MediaType.PLAYLIST] += 1
+                    return media_item
+                elif "id" in item and "title" in item and "duration" in item:
+                    media_item = self.provider._parse_track(item)
+                    type_counts[MediaType.TRACK] += 1
+                    return media_item
+                elif "id" in item and "title" in item and "numberOfTracks" in item:
+                    media_item = self.provider._parse_album(item)
+                    type_counts[MediaType.ALBUM] += 1
+                    return media_item
+
+                self.logger.warning("Unknown item type, could not parse: %s", item)
+                return None
+
         except (KeyError, ValueError, TypeError) as err:
-            # Data structure errors
-            self.logger.debug("Error parsing item data structure: %s", err)
+            self.logger.debug("Error parsing %s item: %s", item_type, err)
             return None
         except AttributeError as err:
-            # Missing attribute errors
-            self.logger.debug("Missing attribute in item: %s", err)
+            self.logger.debug("Attribute error parsing %s item: %s", item_type, err)
             return None
         except (json.JSONDecodeError, UnicodeError) as err:
-            # JSON/text encoding issues
-            self.logger.debug("Error decoding item content: %s", err)
+            self.logger.debug("JSON/Unicode error parsing %s item: %s", item_type, err)
             return None
 
     @classmethod

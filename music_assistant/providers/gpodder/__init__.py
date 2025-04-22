@@ -224,9 +224,9 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MAX_NUM_EPISODES,
             type=ConfigEntryType.INTEGER,
-            label="Maximum amount of episodes (0 for unlimited)",
+            label="Maximum number of episodes (0 for unlimited)",
             required=False,
-            description="Maximum amount of episodes to sync per feed. Use 0 for unlimited",
+            description="Maximum number of episodes to sync per feed. Use 0 for unlimited",
             default_value=0,
             value=values.get(CONF_MAX_NUM_EPISODES),
         ),
