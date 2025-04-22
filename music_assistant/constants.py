@@ -575,12 +575,12 @@ CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
     ],
     depends_on=CONF_FLOW_MODE,
     default_value="disabled",
-    label="Try to ingest metadata into stream (ICY)",
+    label="Try to inject metadata into stream (ICY)",
     category="advanced",
-    description="Try to ingest metadata into the stream (ICY) to show track info on the player, "
-    "even when flow mode is enabled.\n\nThis is called ICY metadata and its what is also used by "
-    "online radio station to inform you what is playing. \n\nBe aware that not all players support "
-    "this correctly. If you experience issues with playback, try to disable this setting.",
+    description="Try to inject metadata into the stream (ICY) to show track info on the player, "
+    "even when flow mode is enabled.\n\nThis is called ICY metadata and is what is used by "
+    "online radio stations to show you what is playing. \n\nBe aware that not all players support "
+    "this correctly. If you experience issues with playback, try disabling this setting.",
 )
 
 CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN = ConfigEntry.from_dict(
