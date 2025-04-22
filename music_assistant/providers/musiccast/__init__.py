@@ -29,6 +29,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.media_items import UniqueList
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
+from zeroconf import ServiceStateChange
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
@@ -61,7 +62,6 @@ if TYPE_CHECKING:
         ProviderConfig,
     )
     from music_assistant_models.provider import ProviderManifest
-    from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -400,6 +400,9 @@ class MusicCast(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Discovery via mdns."""
+        if state_change == ServiceStateChange.Removed:
+            # Wait for connection to fail, same as sonos.
+            return
         if info is None:
             return
         device_ip = get_primary_ip_address(info)
