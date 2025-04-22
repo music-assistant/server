@@ -1,18 +1,19 @@
 """Constants."""
 
 from music_assistant.constants import (
-    CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE_ENFORCED,  # see comment in init py
-    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
 
 # Constants for players
+# both the http profile and icy didn't matter for me testing it.
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-    CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+    CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
 )
@@ -50,7 +51,7 @@ MC_SOURCE_MAIN_SYNC = "main_sync"
 MC_LINK_SOURCES = [MC_SOURCE_MC_LINK, MC_SOURCE_MAIN_SYNC]
 
 MC_PASSIVE_SOURCE_IDS = [MC_SOURCE_MC_LINK]
-MC_CONTROL_SOURCE_IDS = [
+MC_NETUSB_SOURCE_IDS = [
     "napster",
     "spotify",
     "qobuz",
@@ -63,4 +64,15 @@ MC_CONTROL_SOURCE_IDS = [
     "server",
     "net_radio",
     "bluetooth",
+    # these were in aiomusiccast/musiccast_media_content.py:
+    "pandora",
+    "rhapsody",
+    "siriusxm",
+    "juke",
+    "radiko",
 ]
+MC_CONTROL_SOURCE_IDS = MC_NETUSB_SOURCE_IDS
+MC_CONTROL_SOURCE_IDS.append(
+    # tuner can be controlled, will change the station
+    "tuner",
+)

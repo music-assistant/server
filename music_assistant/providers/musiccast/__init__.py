@@ -42,9 +42,11 @@ from .constants import (
     MC_DEVICE_INFO_ENDPOINT,
     MC_DEVICE_UPNP_ENDPOINT,
     MC_DEVICE_UPNP_PORT,
+    MC_NETUSB_SOURCE_IDS,
     MC_PASSIVE_SOURCE_IDS,
     MC_POLL_INTERVAL,
     MC_SOURCE_MAIN_SYNC,
+    MC_SOURCE_MC_LINK,
     PLAYER_CONFIG_ENTRIES,
     PLAYER_MAP_ZONE_SWITCH,
     PLAYER_ZONE_SPLITTER,
@@ -105,6 +107,9 @@ class MusicCastPlayer:
     # I can only test up to zone 2
     player_zone3: Player | None = None  # mass player
     player_zone4: Player | None = None  # mass player
+
+    # log allowed sources for a device with multiple sources once. see "_handle_zone_grouping"
+    _log_allowed_sources: bool = True
 
     physical_device: MusicCastPhysicalDevice
 
@@ -186,7 +191,7 @@ class MusicCast(PlayerProvider):
                         key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
                         type=ConfigEntryType.BOOLEAN,
                         label="Turn off zone after group is left.",
-                        default_value=True,
+                        default_value=False,
                         description="Turn off zone after group is left.",
                     ),
                 )
@@ -295,6 +300,14 @@ class MusicCast(PlayerProvider):
                 return
             await self._cmd_run(player_id, zone_player.unjoin_player)
 
+    def _get_allowed_sources_zone_switch(self, zone_player: MusicCastZoneDevice) -> set[str]:
+        """Return non net sources for a zone player."""
+        assert zone_player.zone_data is not None, "zone data missing"
+        _input_sources: set[str] = set(zone_player.zone_data.input_list)
+        _net_sources = set(MC_NETUSB_SOURCE_IDS)
+        _net_sources.add(MC_SOURCE_MC_LINK)  # mc grouping source
+        return _input_sources.difference(_net_sources)
+
     async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
         """Handle zone grouping.
 
@@ -309,6 +322,19 @@ class MusicCast(PlayerProvider):
                 player_id, CONF_PLAYER_SWITCH_SOURCE_NON_NET
             )
         )
+        # verify that this source actually exists and is non net
+        _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
+        if _source not in _allowed_sources:
+            mass_player = self.mass.players.get(player_id)
+            assert mass_player is not None
+            msg = (
+                f"The switch source you specified for {mass_player.name} is not allowed. "
+                f"The source must be any of: {', '.join(sorted(_allowed_sources))} "
+                "Will use the first available source."
+            )
+            self.logger.error(msg)
+            _source = _allowed_sources.pop()
+
         await self._cmd_run(player_id, zone_player.select_source, _source)
         _turn_off = bool(
             await self.mass.config.get_player_config_value(player_id, CONF_PLAYER_TURN_OFF_ON_LEAVE)
@@ -524,6 +550,19 @@ class MusicCast(PlayerProvider):
             setattr(musiccast_player, f"player_{zone_device.zone_name}", player)
             self._update_player_attributes(player, zone_device)
             await self.mass.players.register_or_update(player)
+
+        if musiccast_player.player_zone2 is not None and musiccast_player._log_allowed_sources:
+            musiccast_player._log_allowed_sources = False
+            player_main = musiccast_player.player_main
+            assert player_main is not None
+            main_zone_device = musiccast_player.physical_device.zone_devices.get("main")
+            assert main_zone_device is not None
+            _allowed_sources = self._get_allowed_sources_zone_switch(main_zone_device)
+            self.logger.info(
+                f"The player {player_main.name} has multiple zones. "
+                "Please use the player config to configure a non-net source  for grouping. "
+                f"Allowed values are: {', '.join(_allowed_sources)}. See docs."
+            )
 
         self.musiccast_players[device_id] = musiccast_player
 
