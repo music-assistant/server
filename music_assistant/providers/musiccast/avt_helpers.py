@@ -1,4 +1,7 @@
-"""Helpers to make an UPnP request."""
+"""Helpers to make an UPnP request.
+
+didl_lite helpers of MA didn't help, unfortunately...
+"""
 
 import html
 import time
