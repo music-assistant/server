@@ -33,6 +33,11 @@ from zeroconf import ServiceStateChange
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.musiccast.avt_helpers import (
+    AVTRequestMetadata,
+    avt_play,
+    avt_set_url,
+)
 from music_assistant.providers.sonos.helpers import get_primary_ip_address
 
 from .constants import (
@@ -396,8 +401,17 @@ class MusicCast(PlayerProvider):
                         continue
                     if dev.is_netusb:
                         await self._handle_zone_grouping(dev)
+            metadata = AVTRequestMetadata(
+                media_url=media.uri,
+                title=media.title or "",
+                artist=media.artist or "",
+                album=media.album or "",
+                album_art_url=media.image_url or "",
+            )
+            await avt_set_url(self.mass.http_session, metadata, zone_player.physical_device)
+            await avt_play(self.mass.http_session, zone_player.physical_device)
 
-            await self._cmd_run(player_id, zone_player.play_url, media.uri)
+            # await self._cmd_run(player_id, zone_player.play_url, media.uri)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates, only main zone is polled."""

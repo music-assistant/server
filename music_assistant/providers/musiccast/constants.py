@@ -2,6 +2,9 @@
 
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
+    # CONF_ENTRY_FLOW_MODE,
+    # without enforce we get an UnsupportedFeaturedException for enqueueing,
+    # although we don't claim supporting it...
     CONF_ENTRY_FLOW_MODE_ENFORCED,  # see comment in init py
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_OUTPUT_CODEC,
@@ -42,6 +45,8 @@ MC_PLAY_TITLE = "Music Assistant"  # what we send as media title to mc device
 
 MC_DEVICE_INFO_ENDPOINT = "YamahaExtendedControl/v1/system/getDeviceInfo"
 MC_DEVICE_UPNP_ENDPOINT = "MediaRenderer/desc.xml"
+# if this is not a constant, we'll have to do some xml parsing
+MC_DEVICE_UPNP_CTRL_ENDPOINT = "AVTransport/ctrl"
 MC_DEVICE_UPNP_PORT = 49154
 MC_NULL_GROUP = "00000000000000000000000000000000"
 MC_DEFAULT_ZONE = "main"
