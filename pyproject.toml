@@ -27,7 +27,7 @@ dependencies = [
   "music-assistant-models==1.1.45",
   "mutagen==1.47.0",
   "orjson==3.10.16",
-  "pillow==11.1.0",
+  "pillow==11.2.1",
   "podcastparser==0.6.10",
   "python-slugify==8.0.4",
   "unidecode==1.3.8",
