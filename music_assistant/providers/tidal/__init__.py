@@ -102,10 +102,18 @@ T = TypeVar("T")
 
 
 class TidalQualityEnum(StrEnum):
-    """Enum for Tidal Quality."""
+    """Enum for Tidal Quality with title, identifier, and value."""
 
-    HIGH_LOSSLESS = "LOSSLESS"  # "High - 16bit, 44.1kHz"
-    HI_RES = "HI_RES_LOSSLESS"  # "Max - Up to 24bit, 192kHz"
+    HIGH_LOSSLESS = "LOSSLESS"  # Identifier = HIGH_LOSSLESS, Value = "LOSSLESS"
+    HI_RES = "HI_RES_LOSSLESS"  # Identifier = HI_RES, Value = "HI_RES_LOSSLESS"
+
+    @classmethod
+    def get_options(cls) -> list[tuple[str, str]]:
+        """Return a list of (title, identifier, value) tuples for UI presentation."""
+        return [
+            ("High Lossless (16-bit, 44.1kHz)", cls.HIGH_LOSSLESS.value),
+            ("Hi-Res (Up to 24-bit, 192kHz)", cls.HI_RES.value),
+        ]
 
 
 async def setup(
@@ -180,13 +188,13 @@ async def get_config_entries(
             ConfigEntry(
                 key=CONF_QUALITY,
                 type=ConfigEntryType.STRING,
-                label=CONF_QUALITY,
-                required=True,
-                hidden=True,
-                value=cast("str", values.get(CONF_QUALITY) or TidalQualityEnum.HI_RES.value),
-                default_value=cast(
-                    "str", values.get(CONF_QUALITY) or TidalQualityEnum.HI_RES.value
-                ),
+                label="Quality setting for Tidal:",
+                description="HIGH_LOSSLESS = 16bit 44.1kHz, HI_RES = Up to 24bit 192kHz",
+                options=[
+                    ConfigValueOption(option[0], option[1])
+                    for option in TidalQualityEnum.get_options()
+                ],
+                default_value=TidalQualityEnum.HI_RES.value,
             ),
         )
     else:
@@ -197,9 +205,11 @@ async def get_config_entries(
                 label="Quality setting for Tidal:",
                 required=True,
                 description="HIGH_LOSSLESS = 16bit 44.1kHz, HI_RES = Up to 24bit 192kHz",
-                options=[ConfigValueOption(x.value, x.name) for x in TidalQualityEnum],
+                options=[
+                    ConfigValueOption(option[0], option[1])
+                    for option in TidalQualityEnum.get_options()
+                ],
                 default_value=TidalQualityEnum.HI_RES.value,
-                value=cast("str", values.get(CONF_QUALITY)) if values else None,
             ),
             ConfigEntry(
                 key=LABEL_START_PKCE_LOGIN,
