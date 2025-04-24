@@ -8,7 +8,6 @@ import json
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import datetime
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from aiohttp import ClientConnectionError, ClientResponse
@@ -101,21 +100,6 @@ DEFAULT_LIMIT = 50
 T = TypeVar("T")
 
 
-class TidalQualityEnum(StrEnum):
-    """Enum for Tidal Quality with title, identifier, and value."""
-
-    HIGH_LOSSLESS = "LOSSLESS"  # Identifier = HIGH_LOSSLESS, Value = "LOSSLESS"
-    HI_RES = "HI_RES_LOSSLESS"  # Identifier = HI_RES, Value = "HI_RES_LOSSLESS"
-
-    @classmethod
-    def get_options(cls) -> list[tuple[str, str]]:
-        """Return a list of (title, identifier, value) tuples for UI presentation."""
-        return [
-            ("High Lossless (16-bit, 44.1kHz)", cls.HIGH_LOSSLESS.value),
-            ("Hi-Res (Up to 24-bit, 192kHz)", cls.HI_RES.value),
-        ]
-
-
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -189,12 +173,12 @@ async def get_config_entries(
                 key=CONF_QUALITY,
                 type=ConfigEntryType.STRING,
                 label="Quality setting for Tidal:",
-                description="HIGH_LOSSLESS = 16bit 44.1kHz, HI_RES = Up to 24bit 192kHz",
+                description="High = 16bit 44.1kHz\n\nMax = Up to 24bit 192kHz",
                 options=[
-                    ConfigValueOption(option[0], option[1])
-                    for option in TidalQualityEnum.get_options()
+                    ConfigValueOption("High", "LOSSLESS"),
+                    ConfigValueOption("Max", "HI_RES_LOSSLESS"),
                 ],
-                default_value=TidalQualityEnum.HI_RES.value,
+                default_value="HI_RES_LOSSLESS",
             ),
         )
     else:
@@ -204,12 +188,12 @@ async def get_config_entries(
                 type=ConfigEntryType.STRING,
                 label="Quality setting for Tidal:",
                 required=True,
-                description="HIGH_LOSSLESS = 16bit 44.1kHz, HI_RES = Up to 24bit 192kHz",
+                description="High = 16bit 44.1kHz\n\nMax = Up to 24bit 192kHz",
                 options=[
-                    ConfigValueOption(option[0], option[1])
-                    for option in TidalQualityEnum.get_options()
+                    ConfigValueOption("High", "LOSSLESS"),
+                    ConfigValueOption("Max", "HI_RES_LOSSLESS"),
                 ],
-                default_value=TidalQualityEnum.HI_RES.value,
+                default_value="HI_RES_LOSSLESS",
             ),
             ConfigEntry(
                 key=LABEL_START_PKCE_LOGIN,
