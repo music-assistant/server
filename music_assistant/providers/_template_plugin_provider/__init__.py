@@ -25,7 +25,7 @@ Optional is an icon.svg file that will be used as the icon for the provider in t
 but we also support that you specify a material design icon in the manifest.json file.
 
 IMPORTANT NOTE:
-We strongly recommend developing on either MacOS or Linux and start your development
+We strongly recommend developing on either macOS or Linux and start your development
 environment by running the setup.sh scripts in the scripts folder of the repository.
 This will create a virtual environment and install all dependencies needed for development.
 See also our general DEVELOPMENT.md guide in the repository for more information.
