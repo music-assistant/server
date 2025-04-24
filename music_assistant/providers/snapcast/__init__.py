@@ -670,8 +670,6 @@ class SnapCastProvider(PlayerProvider):
         mass_queue = self.mass.player_queues.get(queue_id)
         safe_name = create_safe_string(mass_queue.display_name, replace_space=True)
         stream_name = f"{MASS_STREAM_POSTFIX} - {safe_name}"
-        # cancel any existing clear stream task
-        self.mass.cancel_timer(f"snapcast_clear_stream_{player_id}")
 
         # prefer to reuse existing stream if possible
         for stream in self._snapserver.streams:
