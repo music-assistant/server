@@ -27,10 +27,10 @@ from zeroconf import ServiceStateChange
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.musiccast.avt_helpers import (
-    AVTRequestMetadata,
     avt_get_media_info,
     avt_play,
     avt_set_url,
+    search_didl_queueitemid,
     search_xml,
 )
 from music_assistant.providers.sonos.helpers import get_primary_ip_address
@@ -148,7 +148,7 @@ class UpnpUpdateHelper:
 
     last_poll: float  # time.time
     controlled_by_mass: bool
-    current_item_url: str | None
+    current_queue_item_id: str | None
 
 
 class MusicCast(PlayerProvider):
@@ -421,14 +421,9 @@ class MusicCast(PlayerProvider):
                         continue
                     if dev.is_netusb:
                         await self._handle_zone_grouping(dev)
-            metadata = AVTRequestMetadata(
-                media_url=media.uri,
-                title=media.title or "",
-                artist=media.artist or "",
-                album=media.album or "",
-                album_art_url=media.image_url or "",
+            await avt_set_url(
+                self.mass.http_session, zone_player.physical_device, player_media=media
             )
-            await avt_set_url(self.mass.http_session, metadata, zone_player.physical_device)
             await avt_play(self.mass.http_session, zone_player.physical_device)
 
             if ma_player := self._get_ma_player(player_id):
@@ -440,15 +435,11 @@ class MusicCast(PlayerProvider):
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Enqueue next."""
         if zone_player := self._get_zone_player(player_id):
-            metadata = AVTRequestMetadata(
-                media_url=media.uri,
-                title=media.title or "",
-                artist=media.artist or "",
-                album=media.album or "",
-                album_art_url=media.image_url or "",
-            )
             await avt_set_url(
-                self.mass.http_session, metadata, zone_player.physical_device, enqueue=True
+                self.mass.http_session,
+                zone_player.physical_device,
+                player_media=media,
+                enqueue=True,
             )
 
     async def poll_player(self, player_id: str, fetch: bool = True) -> None:
@@ -567,6 +558,8 @@ class MusicCast(PlayerProvider):
 
         def get_player(zone_name: str, player_name: str) -> Player:
             # player features
+            # TODO: There is seek in the upnp desc
+            # http://{ip}:49154/AVTransport/desc.xml
             supported_features: set[PlayerFeature] = {
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
@@ -682,11 +675,14 @@ class MusicCast(PlayerProvider):
                 self.mass.http_session, device.physical_device
             )
             _player_current_url = search_xml(_xml_media_info, "CurrentURI")
+            _queue_item_id = search_didl_queueitemid(_xml_media_info)
 
             update_helper = UpnpUpdateHelper(
                 last_poll=now,
-                controlled_by_mass=player.player_id in _player_current_url,
-                current_item_url=_player_current_url or None,
+                controlled_by_mass=player.player_id in _player_current_url
+                if _player_current_url is not None
+                else False,
+                current_queue_item_id=_queue_item_id,
             )
 
             self.upnp_update_helper[player.player_id] = update_helper
@@ -695,28 +691,23 @@ class MusicCast(PlayerProvider):
         if (
             queue is not None
             and queue.session_id is not None
-            and update_helper.current_item_url is not None
+            and update_helper.current_queue_item_id is not None
+            and update_helper.controlled_by_mass
         ):
-            current_url: str | None = None
-            next_url: str | None = None
             if queue.current_item is not None:
-                current_url = await self.mass.streams.resolve_stream_url(
-                    queue.session_id,
-                    queue.current_item,
-                    flow_mode=queue.flow_mode,
-                    player_id=player.player_id,
-                )
-                if update_helper.current_item_url == current_url:
+                if update_helper.current_queue_item_id == queue.current_item.queue_item_id:
                     player.current_media = queue.current_item  # type: ignore[assignment]
-            elif queue.next_item is not None:
-                next_url = await self.mass.streams.resolve_stream_url(
-                    queue.session_id,
-                    queue.next_item,
-                    flow_mode=queue.flow_mode,
-                    player_id=player.player_id,
-                )
-                if update_helper.current_item_url == next_url:
+            if queue.next_item is not None:
+                if update_helper.current_queue_item_id == queue.next_item.queue_item_id:
                     player.current_media = queue.next_item  # type: ignore[assignment]
+        else:
+            player.current_media = PlayerMedia(
+                uri=f"{player.player_id}_{device.source_id}",
+                title=device.media_title,
+                artist=device.media_artist,
+                album=device.media_album_name,
+                image_url=device.media_image_url,
+            )
 
         # SOURCE
         if device.source_id == "server" and update_helper.controlled_by_mass:
@@ -731,8 +722,8 @@ class MusicCast(PlayerProvider):
         # For a Zone which will be synced to main, grouping emits a "main_sync" instead
         # of a mc link.
 
-        # TODO: Revisit this - it produces the expected output, but the ui
-        # does not update correctly
+        # TODO: Revisit this - it produces the expected output (?), but the ui
+        # does not update correctly?
         can_group_with = set(self.mc_controller.all_zone_devices)
         if len(device.physical_device.zone_devices) > 1:
             # receiver with zones

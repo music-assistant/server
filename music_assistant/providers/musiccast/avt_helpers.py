@@ -3,13 +3,12 @@
 didl_lite helpers of MA didn't help, unfortunately...
 """
 
-import html
-import time
-from dataclasses import dataclass
 from enum import Enum, auto
 
 import aiohttp
+from music_assistant_models.player import PlayerMedia
 
+from music_assistant.helpers.didl_lite import create_didl_metadata_str
 from music_assistant.providers.musiccast.constants import (
     MC_DEVICE_UPNP_CTRL_ENDPOINT,
     MC_DEVICE_UPNP_PORT,
@@ -30,20 +29,9 @@ class AVTRequest(Enum):
     PREVIOUS = auto()
 
 
-@dataclass(kw_only=True)
-class AVTRequestMetadata:
-    """AVTRequestMetadata."""
-
-    media_url: str
-    title: str = ""
-    artist: str = ""
-    album: str = ""
-    album_art_url: str = ""
-    duration_seconds: int | None = None
-
-
 def get_request_data(
-    request: AVTRequest, request_metadata: AVTRequestMetadata | None = None
+    request: AVTRequest,
+    player_media: PlayerMedia | None = None,
 ) -> tuple[str, str, dict[str, str]]:
     """Give xml, soap_action, headers, in this order.
 
@@ -83,33 +71,13 @@ def get_request_data(
             )
             soap_action = "urn:schemas-upnp-org:service:AVTransport:1#Previous"
         case AVTRequest.SET_URL | AVTRequest.SET_NEXT_URL:
-            assert request_metadata is not None
-            duration = ""
-            if request_metadata.duration_seconds is not None:
-                time_str = time.strftime(
-                    "%H:%M:%S.000", time.gmtime(request_metadata.duration_seconds)
-                )
-                duration = f' duration="{time_str}"'
-            metadata = (
-                '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
-                # ruff: noqa: E501 (line too long)
-                "<item>"
-                #  size="39949484" duration="00:05:48.000"
-                f'<res protocolInfo="http-get:*:audio/flac:*"{duration}>'
-                f"{request_metadata.media_url}</res>"
-                f"<dc:title>{request_metadata.title}</dc:title>"
-                f"<upnp:artist>{request_metadata.artist}</upnp:artist>"
-                f"<upnp:album>{request_metadata.album}</upnp:album>"
-                f"<upnp:albumArtURI>{request_metadata.album_art_url}</upnp:albumArtURI>"
-                "</item>"
-                "</DIDL-Lite>"
-            )
-            metadata = html.escape(metadata)
+            assert player_media is not None
+            metadata = create_didl_metadata_str(player_media)
             if request == AVTRequest.SET_URL:
                 body = (
                     r'<u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
                     r"<InstanceID>0</InstanceID>"
-                    f"<CurrentURI>{request_metadata.media_url}</CurrentURI>"
+                    f"<CurrentURI>{player_media.uri}</CurrentURI>"
                     "<CurrentURIMetaData>"
                     f"{metadata}"
                     "</CurrentURIMetaData>"
@@ -119,8 +87,9 @@ def get_request_data(
             else:
                 body = (
                     r'<u:SetNextAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+                    # ruff: noqa: E501
                     r"<InstanceID>0</InstanceID>"
-                    f"<NextURI>{request_metadata.media_url}</NextURI>"
+                    f"<NextURI>{player_media.uri}</NextURI>"
                     "<NextURIMetaData>"
                     f"{metadata}"
                     "</NextURIMetaData>"
@@ -195,7 +164,7 @@ async def avt_get_media_info(
     """Get Media Info."""
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action, headers = get_request_data(AVTRequest.GET_MEDIA_INFO)
-    response = await client.request("POST", ctrl_url, headers=headers, data=xml)
+    response = await client.post(ctrl_url, headers=headers, data=xml)
     response_text = await response.read()
     return response_text.decode()
 
@@ -214,8 +183,8 @@ async def avt_get_transport_info(
 
 async def avt_set_url(
     client: aiohttp.ClientSession,
-    metadata: AVTRequestMetadata,
     physical_device: MusicCastPhysicalDevice,
+    player_media: PlayerMedia,
     enqueue: bool = False,
 ) -> None:
     """Set Url.
@@ -225,17 +194,30 @@ async def avt_set_url(
     ctrl_url = get_upnp_ctrl_url(physical_device)
     if enqueue:
         xml, soap_action, headers = get_request_data(
-            AVTRequest.SET_NEXT_URL, request_metadata=metadata
+            AVTRequest.SET_NEXT_URL, player_media=player_media
         )
     else:
-        xml, soap_action, headers = get_request_data(AVTRequest.SET_URL, request_metadata=metadata)
+        xml, soap_action, headers = get_request_data(AVTRequest.SET_URL, player_media=player_media)
     await client.post(ctrl_url, headers=headers, data=xml)
 
 
-def search_xml(xml: str, tag: str) -> str:
+def search_xml(xml: str, tag: str) -> str | None:
     """Search single line xml for these tags."""
     start_str = f"<{tag}>"
     end_str = f"</{tag}>"
     start_int = xml.find(start_str)
     end_int = xml.find(end_str)
+    if start_int == -1 or end_int == -1:
+        return None
+    return xml[start_int + len(start_str) : end_int]
+
+
+def search_didl_queueitemid(xml: str) -> str | None:
+    """Search single line xml for these tags."""
+    start_str = r"&lt;dc:queueItemId&gt;"
+    end_str = r"&lt;/dc:queueItemId&gt;"
+    start_int = xml.find(start_str)
+    end_int = xml.find(end_str)
+    if start_int == -1 or end_int == -1:
+        return None
     return xml[start_int + len(start_str) : end_int]
