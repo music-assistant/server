@@ -2,10 +2,7 @@
 
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
-    # CONF_ENTRY_FLOW_MODE,
-    # without enforce we get an UnsupportedFeaturedException for enqueueing,
-    # although we don't claim supporting it...
-    CONF_ENTRY_FLOW_MODE_ENFORCED,  # see comment in init py
+    CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
@@ -17,7 +14,7 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ENABLE_ICY_METADATA,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
+    CONF_ENTRY_FLOW_MODE,
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
 )
 # player id is {device_id}{ZONE_SPLITTER}{zone_name}
@@ -40,8 +37,8 @@ PLAYER_MAP_ZONE_SWITCH = {
 
 
 # MusicCast constants
-MC_POLL_INTERVAL = 30
-MC_PLAY_TITLE = "Music Assistant"  # what we send as media title to mc device
+MC_POLL_INTERVAL = 10
+MC_PLAY_TITLE = "Music Assistant"
 
 MC_DEVICE_INFO_ENDPOINT = "YamahaExtendedControl/v1/system/getDeviceInfo"
 MC_DEVICE_UPNP_ENDPOINT = "MediaRenderer/desc.xml"

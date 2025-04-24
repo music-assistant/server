@@ -23,7 +23,11 @@ class AVTRequest(Enum):
     PLAY = auto()
     STOP = auto()
     SET_URL = auto()
+    SET_NEXT_URL = auto()
     GET_TRANSPORT_INFO = auto()
+    GET_MEDIA_INFO = auto()
+    NEXT = auto()
+    PREVIOUS = auto()
 
 
 @dataclass(kw_only=True)
@@ -64,7 +68,21 @@ def get_request_data(
                 r"</u:Play>"
             )
             soap_action = "urn:schemas-upnp-org:service:AVTransport:1#Play"
-        case AVTRequest.SET_URL:
+        case AVTRequest.NEXT:
+            body = (
+                r'<u:Next xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+                r"<InstanceID>0</InstanceID>"
+                r"</u:Next>"
+            )
+            soap_action = "urn:schemas-upnp-org:service:AVTransport:1#Next"
+        case AVTRequest.PREVIOUS:
+            body = (
+                r'<u:Previous xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+                r"<InstanceID>0</InstanceID>"
+                r"</u:Previous>"
+            )
+            soap_action = "urn:schemas-upnp-org:service:AVTransport:1#Previous"
+        case AVTRequest.SET_URL | AVTRequest.SET_NEXT_URL:
             assert request_metadata is not None
             duration = ""
             if request_metadata.duration_seconds is not None:
@@ -87,16 +105,28 @@ def get_request_data(
                 "</DIDL-Lite>"
             )
             metadata = html.escape(metadata)
-            body = (
-                r'<u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
-                r"<InstanceID>0</InstanceID>"
-                f"<CurrentURI>{request_metadata.media_url}</CurrentURI>"
-                "<CurrentURIMetaData>"
-                f"{metadata}"
-                "</CurrentURIMetaData>"
-                r"</u:SetAVTransportURI>"
-            )
-            soap_action = "urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"
+            if request == AVTRequest.SET_URL:
+                body = (
+                    r'<u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+                    r"<InstanceID>0</InstanceID>"
+                    f"<CurrentURI>{request_metadata.media_url}</CurrentURI>"
+                    "<CurrentURIMetaData>"
+                    f"{metadata}"
+                    "</CurrentURIMetaData>"
+                    r"</u:SetAVTransportURI>"
+                )
+                soap_action = "urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI"
+            else:
+                body = (
+                    r'<u:SetNextAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+                    r"<InstanceID>0</InstanceID>"
+                    f"<NextURI>{request_metadata.media_url}</NextURI>"
+                    "<NextURIMetaData>"
+                    f"{metadata}"
+                    "</NextURIMetaData>"
+                    r"</u:SetNextAVTransportURI>"
+                )
+                soap_action = "urn:schemas-upnp-org:service:AVTransport:1#SetNextAVTransportURI"
         case AVTRequest.GET_TRANSPORT_INFO:
             body = (
                 r'<u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
@@ -104,6 +134,13 @@ def get_request_data(
                 "</u:GetTransportInfo>"
             )
             soap_action = "urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo"
+        case AVTRequest.GET_MEDIA_INFO:
+            body = (
+                r'<u:GetMediaInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+                "<InstanceID>0</InstanceID>"
+                "</u:GetMediaInfo>"
+            )
+            soap_action = "urn:schemas-upnp-org:service:AVTransport:1#GetMediaInfo"
 
     assert body is not None
     assert soap_action is not None
@@ -138,7 +175,7 @@ async def avt_play(
     """Play."""
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action, headers = get_request_data(AVTRequest.PLAY)
-    await client.request("POST", ctrl_url, headers=headers, data=xml)
+    await client.post(ctrl_url, headers=headers, data=xml)
 
 
 async def avt_stop(
@@ -148,18 +185,57 @@ async def avt_stop(
     """Play."""
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action, headers = get_request_data(AVTRequest.STOP)
-    await client.request("POST", ctrl_url, headers=headers, data=xml)
+    await client.post(ctrl_url, headers=headers, data=xml)
+
+
+async def avt_get_media_info(
+    client: aiohttp.ClientSession,
+    physical_device: MusicCastPhysicalDevice,
+) -> str:
+    """Get Media Info."""
+    ctrl_url = get_upnp_ctrl_url(physical_device)
+    xml, soap_action, headers = get_request_data(AVTRequest.GET_MEDIA_INFO)
+    response = await client.request("POST", ctrl_url, headers=headers, data=xml)
+    response_text = await response.read()
+    return response_text.decode()
+
+
+async def avt_get_transport_info(
+    client: aiohttp.ClientSession,
+    physical_device: MusicCastPhysicalDevice,
+) -> str:
+    """Get Media Info."""
+    ctrl_url = get_upnp_ctrl_url(physical_device)
+    xml, soap_action, headers = get_request_data(AVTRequest.GET_TRANSPORT_INFO)
+    response = await client.post(ctrl_url, headers=headers, data=xml)
+    response_text = await response.read()
+    return response_text.decode()
 
 
 async def avt_set_url(
     client: aiohttp.ClientSession,
     metadata: AVTRequestMetadata,
     physical_device: MusicCastPhysicalDevice,
+    enqueue: bool = False,
 ) -> None:
     """Set Url.
 
     If device is playing, this will just continue with new media.
     """
     ctrl_url = get_upnp_ctrl_url(physical_device)
-    xml, soap_action, headers = get_request_data(AVTRequest.SET_URL, request_metadata=metadata)
-    await client.request("POST", ctrl_url, headers=headers, data=xml)
+    if enqueue:
+        xml, soap_action, headers = get_request_data(
+            AVTRequest.SET_NEXT_URL, request_metadata=metadata
+        )
+    else:
+        xml, soap_action, headers = get_request_data(AVTRequest.SET_URL, request_metadata=metadata)
+    await client.post(ctrl_url, headers=headers, data=xml)
+
+
+def search_xml(xml: str, tag: str) -> str:
+    """Search single line xml for these tags."""
+    start_str = f"<{tag}>"
+    end_str = f"</{tag}>"
+    start_int = xml.find(start_str)
+    end_int = xml.find(end_str)
+    return xml[start_int + len(start_str) : end_int]

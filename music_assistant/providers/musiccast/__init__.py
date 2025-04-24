@@ -1,17 +1,10 @@
-"""MusicCast for MusicAssistant.
-
-The devices do support gapless, however, only if the device itself is accessing
-e.g. an upnp server. What the provider uses, is accessing an http stream (same
-as playing from your phone to the MC device). This is not gapless, the MC App
-checks roughly every 1s for playing information.
-
-Thus we enforce queue flow mode.
-"""
+"""MusicCast for MusicAssistant."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -35,8 +28,10 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.musiccast.avt_helpers import (
     AVTRequestMetadata,
+    avt_get_media_info,
     avt_play,
     avt_set_url,
+    search_xml,
 )
 from music_assistant.providers.sonos.helpers import get_primary_ip_address
 
@@ -144,10 +139,29 @@ class MusicCastPlayer:
         return players
 
 
+@dataclass(kw_only=True)
+class UpnpUpdateHelper:
+    """UpnpUpdateHelper.
+
+    See _update_player_attributes.
+    """
+
+    last_poll: float  # time.time
+    controlled_by_mass: bool
+    current_item_url: str | None
+
+
 class MusicCast(PlayerProvider):
     """MusicCast."""
 
     musiccast_players: dict[str, MusicCastPlayer] = {}
+
+    # poll upnp playback information, but not too often. see "_update_player_attributes"
+    # player_id: UpnpUpdateHelper
+    upnp_update_helper: dict[str, UpnpUpdateHelper] = {}
+
+    # str here is the device id, NOT the player_id
+    update_player_locks: dict[str, asyncio.Lock] = {}
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -423,7 +437,21 @@ class MusicCast(PlayerProvider):
 
             # await self._cmd_run(player_id, zone_player.play_url, media.uri)
 
-    async def poll_player(self, player_id: str) -> None:
+    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
+        """Enqueue next."""
+        if zone_player := self._get_zone_player(player_id):
+            metadata = AVTRequestMetadata(
+                media_url=media.uri,
+                title=media.title or "",
+                artist=media.artist or "",
+                album=media.album or "",
+                album_art_url=media.image_url or "",
+            )
+            await avt_set_url(
+                self.mass.http_session, metadata, zone_player.physical_device, enqueue=True
+            )
+
+    async def poll_player(self, player_id: str, fetch: bool = True) -> None:
         """Poll player for state updates, only main zone is polled."""
         # we only poll for main, as we get zones alongside
         device_id, _ = player_id.split(PLAYER_ZONE_SPLITTER)
@@ -431,20 +459,27 @@ class MusicCast(PlayerProvider):
         if mc_player is None:
             return
 
-        try:
-            await mc_player.physical_device.fetch()
-        except (MusicCastConnectionException, MusicCastGroupException):
-            await self._set_player_unavailable(player_id)
+        lock = self.update_player_locks.get(device_id)
+        assert lock is not None  # for type checking
+        if lock.locked():
+            # we are called roughly every 1s when playing on udp callback, so just discard.
             return
+        async with lock:
+            if fetch:  # non udp "explicit polling case"
+                try:
+                    await mc_player.physical_device.fetch()
+                except (MusicCastConnectionException, MusicCastGroupException):
+                    await self._set_player_unavailable(player_id)
+                    return
 
-        for player in mc_player.get_all_players():
-            _, zone = player.player_id.split(PLAYER_ZONE_SPLITTER)
-            zone_device = mc_player.physical_device.zone_devices.get(zone)
-            if zone_device is None:
-                continue
-            self._update_player_attributes(player, zone_device)
-            player.available = True
-            await self.mass.players.register_or_update(player)
+            for player in mc_player.get_all_players():
+                _, zone = player.player_id.split(PLAYER_ZONE_SPLITTER)
+                zone_device = mc_player.physical_device.zone_devices.get(zone)
+                if zone_device is None:
+                    continue
+                await self._update_player_attributes(player, zone_device)
+                player.available = True
+                await self.mass.players.register_or_update(player)
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -509,6 +544,7 @@ class MusicCast(PlayerProvider):
                 ),
                 controller=self.mc_controller,
             )
+            self.update_player_locks[device_id] = asyncio.Lock()
             success = await physical_device.async_init()  # fetch + polling
             if not success:
                 self.logger.debug(
@@ -524,15 +560,13 @@ class MusicCast(PlayerProvider):
     ) -> None:
         """Register player including zones."""
         device_info = DeviceInfo(
-            manufacturer="Yamaha",
+            manufacturer="Yamaha Corporation",
             model=physical_device.device.data.model_name or "unknown model",
             software_version=physical_device.device.data.system_version or "unknown version",
         )
 
         def get_player(zone_name: str, player_name: str) -> Player:
             # player features
-            # mc supports gapless if the playback is controlled by the
-            # receiver, but we need queue flow mode for the provider
             supported_features: set[PlayerFeature] = {
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
@@ -540,8 +574,9 @@ class MusicCast(PlayerProvider):
                 PlayerFeature.POWER,
                 PlayerFeature.SELECT_SOURCE,
                 PlayerFeature.SET_MEMBERS,
-                PlayerFeature.NEXT_PREVIOUS,  # only used for external source
+                PlayerFeature.NEXT_PREVIOUS,
                 PlayerFeature.ENQUEUE,
+                PlayerFeature.GAPLESS_PLAYBACK,
             }
 
             return Player(
@@ -552,7 +587,7 @@ class MusicCast(PlayerProvider):
                 available=True,
                 device_info=device_info,
                 needs_poll=zone_name == "main",
-                poll_interval=MC_POLL_INTERVAL,  # default
+                poll_interval=MC_POLL_INTERVAL,
                 supported_features=supported_features,
             )
 
@@ -573,7 +608,7 @@ class MusicCast(PlayerProvider):
                 continue
             player = get_player(zone_name, zone_device.zone_data.name)
             setattr(musiccast_player, f"player_{zone_device.zone_name}", player)
-            self._update_player_attributes(player, zone_device)
+            await self._update_player_attributes(player, zone_device)
             await self.mass.players.register_or_update(player)
 
         if musiccast_player.player_zone2 is not None and musiccast_player._log_allowed_sources:
@@ -591,7 +626,7 @@ class MusicCast(PlayerProvider):
 
         self.musiccast_players[device_id] = musiccast_player
 
-    def _update_player_attributes(self, player: Player, device: MusicCastZoneDevice) -> None:
+    async def _update_player_attributes(self, player: Player, device: MusicCastZoneDevice) -> None:
         # ruff: noqa: PLR0915
         zone_data = device.zone_data
         if zone_data is None:
@@ -637,12 +672,55 @@ class MusicCast(PlayerProvider):
                 )
             )
 
-        # QUEUE
-        # queue = self.mass.player_queues.get_active_queue(player.player_id)
-        # if device.is_controlled_by_mass and queue is not None:
-        # be optimistic
-        if device.source_id == "server":  #  and queue is not None:
-            player.active_source = None  # queue.queue_id
+        # UPDATE PLAYBACK INFORMATION
+        update_helper = self.upnp_update_helper.get(player.player_id)
+        now = time.time()
+        if update_helper is None or now - update_helper.last_poll > 5:
+            # Let's not do this too often
+            # verify, that we are playing
+            _xml_media_info = await avt_get_media_info(
+                self.mass.http_session, device.physical_device
+            )
+            _player_current_url = search_xml(_xml_media_info, "CurrentURI")
+
+            update_helper = UpnpUpdateHelper(
+                last_poll=now,
+                controlled_by_mass=player.player_id in _player_current_url,
+                current_item_url=_player_current_url or None,
+            )
+
+            self.upnp_update_helper[player.player_id] = update_helper
+
+        queue = self.mass.player_queues.get_active_queue(player.player_id)
+        if (
+            queue is not None
+            and queue.session_id is not None
+            and update_helper.current_item_url is not None
+        ):
+            current_url: str | None = None
+            next_url: str | None = None
+            if queue.current_item is not None:
+                current_url = await self.mass.streams.resolve_stream_url(
+                    queue.session_id,
+                    queue.current_item,
+                    flow_mode=queue.flow_mode,
+                    player_id=player.player_id,
+                )
+                if update_helper.current_item_url == current_url:
+                    player.current_media = queue.current_item  # type: ignore[assignment]
+            elif queue.next_item is not None:
+                next_url = await self.mass.streams.resolve_stream_url(
+                    queue.session_id,
+                    queue.next_item,
+                    flow_mode=queue.flow_mode,
+                    player_id=player.player_id,
+                )
+                if update_helper.current_item_url == next_url:
+                    player.current_media = queue.next_item  # type: ignore[assignment]
+
+        # SOURCE
+        if device.source_id == "server" and update_helper.controlled_by_mass:
+            player.active_source = queue.queue_id if queue is not None else None
         else:
             player.active_source = device.source_id
 
@@ -717,4 +795,5 @@ class MusicCast(PlayerProvider):
         if mc_player.player_main is None:
             return
         main_player_id = mc_player.player_main.player_id
-        self.mass.loop.create_task(self.poll_player(main_player_id))
+        # disable another fetch, these attributes were set via UDP
+        self.mass.loop.create_task(self.poll_player(main_player_id, False))
