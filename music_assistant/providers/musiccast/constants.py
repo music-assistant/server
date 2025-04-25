@@ -1,4 +1,4 @@
-"""Constants."""
+"""Constants for the MusicCast provider."""
 
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
