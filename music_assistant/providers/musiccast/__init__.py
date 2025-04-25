@@ -766,7 +766,7 @@ class MusicCast(PlayerProvider):
             player.active_group = _synced_to_id
 
         elif device.is_server:
-            player.group_childs = UniqueList(
+            player.group_childs.set(
                 [self._get_player_id_from_mc_zone_player(x) for x in device.musiccast_group]
             )
             player.synced_to = None
