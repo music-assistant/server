@@ -5,7 +5,7 @@ from enum import Enum, auto
 import aiohttp
 from music_assistant_models.player import PlayerMedia
 
-from music_assistant.helpers.didl_lite import create_didl_metadata_str
+from music_assistant.helpers.upnp import create_didl_metadata_str
 from music_assistant.providers.musiccast.constants import (
     MC_DEVICE_UPNP_CTRL_ENDPOINT,
     MC_DEVICE_UPNP_PORT,

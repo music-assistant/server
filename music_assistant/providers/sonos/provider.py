@@ -30,8 +30,8 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
-from music_assistant.helpers.didl_lite import create_didl_metadata_str
 from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.upnp import create_didl_metadata_str
 from music_assistant.models.player_provider import PlayerProvider
 
 from .const import CONF_AIRPLAY_MODE
