@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from aiohttp.client_exceptions import ServerDisconnectedError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
@@ -460,6 +461,8 @@ class MusicCast(PlayerProvider):
                 except (MusicCastConnectionException, MusicCastGroupException):
                     await self._set_player_unavailable(player_id)
                     return
+                except ServerDisconnectedError:
+                    return
 
             for player in mc_player.get_all_players():
                 _, zone = player.player_id.split(PLAYER_ZONE_SPLITTER)
@@ -668,9 +671,12 @@ class MusicCast(PlayerProvider):
         if update_helper is None or now - update_helper.last_poll > 5:
             # Let's not do this too often
             # verify, that we are playing
-            _xml_media_info = await avt_get_media_info(
-                self.mass.http_session, device.physical_device
-            )
+            try:
+                _xml_media_info = await avt_get_media_info(
+                    self.mass.http_session, device.physical_device
+                )
+            except ServerDisconnectedError:
+                return
             _player_current_url = search_xml(_xml_media_info, "CurrentURI")
             _queue_item_id = search_didl_queueitemid(_xml_media_info)
 
