@@ -652,7 +652,6 @@ class MusicCast(PlayerProvider):
             control = source_id in MC_CONTROL_SOURCE_IDS
             passive = source_id in MC_PASSIVE_SOURCE_IDS
             player.source_list.append(
-                # UI bug? I can't control my sources...
                 PlayerSource(
                     id=source_id,
                     name=source_name,
@@ -735,14 +734,13 @@ class MusicCast(PlayerProvider):
                 # main, see below.
                 can_group_with.difference_update(_other_zones)
             elif device in _other_zones:
-                # can_group_with.difference_update(_other_zones.difference({device}))
                 # enforce a zone to be either the server, or sync to main of
                 # same device. makes life much easier.
                 can_group_with = {device, _main_zone}
 
-        # player.can_group_with = {
-        #     x.ma_player_id for x in can_group_with if x.ma_player_id is not None
-        # }
+        # player.can_group_with = (
+        #         {self._get_player_id_from_mc_zone_player(x) for x in can_group_with}
+        #         )
         player.can_group_with = {self.instance_id}
 
         if len(device.musiccast_group) == 1:
