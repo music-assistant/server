@@ -1,7 +1,4 @@
-"""Helpers to make an UPnP request.
-
-didl_lite helpers of MA didn't help, unfortunately...
-"""
+"""Helpers to make an UPnP request."""
 
 from enum import Enum, auto
 

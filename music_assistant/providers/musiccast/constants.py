@@ -2,7 +2,7 @@
 
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
@@ -14,7 +14,7 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_ENABLE_ICY_METADATA,
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     create_sample_rates_config_entry(max_sample_rate=192000, max_bit_depth=24),
 )
 # player id is {device_id}{ZONE_SPLITTER}{zone_name}

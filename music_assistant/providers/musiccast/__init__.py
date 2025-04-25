@@ -430,8 +430,6 @@ class MusicCast(PlayerProvider):
                 ma_player.current_media = media
                 await self.mass.players.register_or_update(ma_player)
 
-            # await self._cmd_run(player_id, zone_player.play_url, media.uri)
-
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Enqueue next."""
         if zone_player := self._get_zone_player(player_id):
