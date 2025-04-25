@@ -755,7 +755,7 @@ class MusicCast(PlayerProvider):
                 player.active_group = None
 
         elif not device.is_client and not device.is_server:
-            player.group_childs = UniqueList([])
+            player.group_childs.clear()
             player.synced_to = None
             player.active_group = None
 
