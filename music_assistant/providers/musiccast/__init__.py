@@ -750,7 +750,7 @@ class MusicCast(PlayerProvider):
         if len(device.musiccast_group) == 1:
             if device.musiccast_group[0] == device:
                 # we are in a group with ourselves.
-                player.group_childs = UniqueList([])
+                player.group_childs.clear()
                 player.synced_to = None
                 player.active_group = None
 
