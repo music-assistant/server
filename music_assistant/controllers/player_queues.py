@@ -1549,11 +1549,22 @@ class PlayerQueuesController(CoreController):
         If caching is enabled, this will also start filling the stream cache.
         If an error occurs, the item will be skipped and the next item will be loaded.
         """
+        queue = self._queues[queue_id]
 
         async def _preload_streamdetails(item_id_in_buffer: str) -> None:
             try:
-                next_item = await self.preload_next_queue_item(queue_id, item_id_in_buffer)
-                self._enqueue_next_item(queue_id, next_item)
+                # wait for the item that was loaded in the buffer is the actually playing item
+                # this prevents a race condition when we preload the next item too soon
+                # while the player is actually preloading the previously enqueued item.
+                retries = 120
+                while retries > 0:
+                    if queue.current_item.queue_item_id == item_id_in_buffer:
+                        break
+                    retries -= 1
+                    await asyncio.sleep(1)
+
+                if next_item := await self.preload_next_queue_item(queue_id, item_id_in_buffer):
+                    self._enqueue_next_item(queue_id, next_item)
             except QueueEmpty:
                 return
 
@@ -1563,16 +1574,11 @@ class PlayerQueuesController(CoreController):
         if current_item.media_type == MediaType.RADIO or not current_item.duration:
             # radio items or no duration, nothing to do
             return
-        if not (next_item := self.get_next_item(queue_id, item_id_in_buffer)):
-            return  # nothing to do
-        if next_item.available and next_item.streamdetails:
-            # streamdetails already loaded, nothing to do
-            return
-        if not next_item.duration or next_item.duration <= 10:
-            return
 
         task_id = f"preload_next_item_{queue_id}"
-        self.mass.call_later(0.5, _preload_streamdetails, item_id_in_buffer, task_id=task_id)
+        self.mass.create_task(
+            _preload_streamdetails, item_id_in_buffer, task_id=task_id, abort_existing=True
+        )
 
     async def _resolve_media_items(
         self, media_item: MediaItemTypeOrItemMapping, start_item: str | None = None
