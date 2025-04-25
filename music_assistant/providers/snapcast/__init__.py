@@ -663,6 +663,10 @@ class SnapCastProvider(PlayerProvider):
 
         # stream the audio, wait for it to finish (play_announcement should return after the
         # announcement is over to avoid simultaneous announcements).
+        #
+        # Note: -probesize 8096 is needed to start playing the pre-announce before the TTS
+        #       data arrive (they arrive late, see get_announcement_stream).
+        #
         stream_path = self._get_stream_path(stream)
         self.logger.debug("Start announcement streaming to %s", stream_path)
         async with FFMpeg(
@@ -673,7 +677,7 @@ class SnapCastProvider(PlayerProvider):
                 self.mass, player_id, input_format, DEFAULT_SNAPCAST_FORMAT
             ),
             audio_output=stream_path,
-            extra_input_args=["-y", "-re"],
+            extra_input_args=["-y", "-re", "-probesize", "8096"],
         ) as ffmpeg_proc:
             await ffmpeg_proc.wait()
 
