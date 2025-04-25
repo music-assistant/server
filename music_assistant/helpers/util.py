@@ -237,9 +237,11 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str]:
                 if ip.ip.startswith(("::1", "::ffff:", "fe80")):
                     # filter out IPv6 loopback/link-local address
                     continue
-                if ip.ip.startswith(("192.", "10.")):
+                if ip.ip.startswith(("192.168.",)):
+                    # we rank the 192.168 range a bit higher as its most
+                    # often used as the private network subnet
                     score = 2
-                elif ip.ip.startswith("172."):
+                elif ip.ip.startswith(("172.", "10.", "192.")):
                     # we rank the 172 range a bit lower as its most
                     # often used as the private docker network
                     score = 1
