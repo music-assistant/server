@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -179,7 +179,6 @@ class MusicCast(PlayerProvider):
         else:
             logging.getLogger("aiomusiccast").setLevel(self.logger.level + 10)
 
-
     async def unload(self, is_removed: bool = False) -> None:
         """Call on unload."""
         for mc_player in self.musiccast_players.values():
@@ -243,7 +242,9 @@ class MusicCast(PlayerProvider):
             player.available = False
             await self.mass.players.register_or_update(player)
 
-    async def _cmd_run(self, player_id: str, fun: Callable[..., Any], *args: Any) -> None:
+    async def _cmd_run(
+        self, player_id: str, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any
+    ) -> None:
         """Help function for all player cmds."""
         try:
             await fun(*args)
