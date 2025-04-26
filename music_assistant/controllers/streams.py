@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -127,11 +126,6 @@ class StreamsController(CoreController):
         )
         self.manifest.icon = "cast-audio"
         self.announcements: dict[str, str] = {}
-        # TEMP: remove old cache dir
-        # remove after 2.5.0b15 or b16
-        prev_cache_dir = os.path.join(self.mass.cache_path, ".audio")
-        if os.path.isdir(prev_cache_dir):
-            shutil.rmtree(prev_cache_dir)
         # prefer /tmp/.audio as audio cache dir
         self._audio_cache_dir = os.path.join("/tmp/.audio")  # noqa: S108
         self.allow_cache_default = "auto"

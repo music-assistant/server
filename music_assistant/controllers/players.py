@@ -126,12 +126,6 @@ class PlayerController(CoreController):
         self._poll_task: asyncio.Task | None = None
         self._player_throttlers: dict[str, Throttler] = {}
         self._announce_locks: dict[str, asyncio.Lock] = {}
-        # TEMP 2024-11-20: register some aliases for renamed commands
-        # remove after a few releases
-        self.mass.register_api_command("players/cmd/sync", self.cmd_group)
-        self.mass.register_api_command("players/cmd/unsync", self.cmd_ungroup)
-        self.mass.register_api_command("players/cmd/sync_many", self.cmd_group_many)
-        self.mass.register_api_command("players/cmd/unsync_many", self.cmd_ungroup_many)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
