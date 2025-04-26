@@ -377,7 +377,6 @@ class SonosPlayerProvider(PlayerProvider):
             announcement.uri,
             sonos_player.mass_player.display_name,
         )
-        volume_level = self.mass.players.get_announcement_volume(player_id, volume_level)
         await sonos_player.client.player.play_audio_clip(
             announcement.uri, volume_level, name="Announcement"
         )
