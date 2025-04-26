@@ -379,12 +379,19 @@ class MusicCast(PlayerProvider):
         children_zones: list[MusicCastZoneDevice] = []
         for child_id in child_player_ids:
             if child := self._get_zone_player(child_id):
-                if server.physical_device == child.physical_device:
-                    # If the zone joins a server, and the server is part of
+                _other_zone_mc: MusicCastZoneDevice | None = None
+                for x in child.other_zones:
+                    if x.is_netusb:
+                        _other_zone_mc = x
+                if _other_zone_mc and _other_zone_mc != child:
                     # of the same device, we use main_sync as input
-                    # We can only end up here if server is main, as we exclude
-                    # joining otherwise in player attributes.
-                    children_zones.append(child)
+                    if _other_zone_mc.zone_name == "main":
+                        children_zones.append(child)
+                    else:
+                        self.logger.warning(
+                            "It is impossible to join as a normal zone to another zone of the same "
+                            "device. Only joining to main is possible. Please refer to the docs."
+                        )
                 else:
                     children.add(child)
 
@@ -723,30 +730,7 @@ class MusicCast(PlayerProvider):
         # Additionally, a zone can only be synced, if main is currently not using any netusb
         # function.
         # For a Zone which will be synced to main, grouping emits a "main_sync" instead
-        # of a mc link.
-
-        # TODO: Revisit this - it produces the expected output (?), but the ui
-        # does not update correctly?
-        can_group_with = set(self.mc_controller.all_zone_devices)
-        if len(device.physical_device.zone_devices) > 1:
-            # receiver with zones
-            _main_zone = device.physical_device.zone_devices.get("main")
-            if _main_zone is None:
-                return
-            _other_zones = set(_main_zone.other_zones)
-
-            if device == _main_zone:
-                # a main zone cannot join another zone, but a zone can join
-                # main, see below.
-                can_group_with.difference_update(_other_zones)
-            elif device in _other_zones:
-                # enforce a zone to be either the server, or sync to main of
-                # same device. makes life much easier.
-                can_group_with = {device, _main_zone}
-
-        # player.can_group_with = (
-        #         {self._get_player_id_from_mc_zone_player(x) for x in can_group_with}
-        #         )
+        # of a mc link. The other way round, we log a warning.
         player.can_group_with = {self.instance_id}
 
         if len(device.musiccast_group) == 1:
