@@ -221,12 +221,6 @@ class MusicCast(PlayerProvider):
             return None
         return mc_player.physical_device.zone_devices.get(zone)
 
-    def _get_ma_player(self, player_id: str) -> Player | None:
-        for player in self.players:
-            if player.player_id == player_id:
-                return player
-        return None
-
     async def _set_player_unavailable(self, player_id: str) -> None:
         """Set a player unavailable, and remove it from the MC group.
 
@@ -431,7 +425,7 @@ class MusicCast(PlayerProvider):
             )
             await avt_play(self.mass.http_session, zone_player.physical_device)
 
-            if ma_player := self._get_ma_player(player_id):
+            if ma_player := self.mass.players.get(player_id):
                 ma_player.current_media = media
                 await self.mass.players.register_or_update(ma_player)
 
