@@ -191,7 +191,6 @@ class MusicCast(PlayerProvider):
     ) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-
         zone_entries: tuple[ConfigEntry, ...] = ()
         if zone_player := self._get_zone_player(player_id):
             if len(zone_player.physical_device.zone_devices) > 1:
