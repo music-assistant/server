@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "nugs",
+  "name": "Nugs.net",
+  "description": "Nugs.net support for Music Assistant: Live Music provider.",
+  "codeowners": ["@brian10048"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/nugs/",
+  "multi_instance": true
+}

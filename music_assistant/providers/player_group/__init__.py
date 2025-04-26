@@ -172,36 +172,7 @@ class PlayerGroupProvider(PlayerProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
-        # temp: migrate old config entries
-        # remove this after MA 2.4 release
-        for player_config in await self.mass.config.get_player_configs(include_values=True):
-            # migrate provider set to domain to instance_id
-            if player_config.provider == self.manifest.domain:
-                self.mass.config.set_raw_player_config_value(
-                    player_config.player_id, "provider", self.instance_id
-                )
-                player_config.provider = self.instance_id
-            # migrate old syncgroup/UGP players to this provider
-            if player_config.values.get(CONF_GROUP_TYPE) is not None:
-                # already migrated
-                continue
-            if player_config.player_id.startswith(SYNCGROUP_PREFIX):
-                self.mass.config.set_raw_player_config_value(
-                    player_config.player_id, CONF_GROUP_TYPE, player_config.provider
-                )
-                player_config.provider = self.instance_id
-                self.mass.config.set_raw_player_config_value(
-                    player_config.player_id, "provider", self.instance_id
-                )
-            elif player_config.player_id.startswith(UNIVERSAL_PREFIX):
-                self.mass.config.set_raw_player_config_value(
-                    player_config.player_id, CONF_GROUP_TYPE, "universal"
-                )
-                player_config.provider = self.instance_id
-                self.mass.config.set_raw_player_config_value(
-                    player_config.player_id, "provider", self.instance_id
-                )
-
+        # register all existing group players
         await self._register_all_players()
         # listen for player added events so we can catch late joiners
         # (because a group depends on its childs to be available)

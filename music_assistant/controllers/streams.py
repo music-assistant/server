@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -127,11 +126,6 @@ class StreamsController(CoreController):
         )
         self.manifest.icon = "cast-audio"
         self.announcements: dict[str, str] = {}
-        # TEMP: remove old cache dir
-        # remove after 2.5.0b15 or b16
-        prev_cache_dir = os.path.join(self.mass.cache_path, ".audio")
-        if os.path.isdir(prev_cache_dir):
-            shutil.rmtree(prev_cache_dir)
         # prefer /tmp/.audio as audio cache dir
         self._audio_cache_dir = os.path.join("/tmp/.audio")  # noqa: S108
         self.allow_cache_default = "auto"
@@ -919,25 +913,39 @@ class StreamsController(CoreController):
         use_pre_announce: bool = False,
     ) -> AsyncGenerator[bytes, None]:
         """Get the special announcement stream."""
+        filter_params = ["loudnorm=I=-10:LRA=11:TP=-2"]
+
+        if use_pre_announce:
+            # Note: TTS URLs might take a while to load cause the actual data are often generated
+            # asynchronously by the TTS provider. If we ask ffmpeg to mix the pre-announce, it will
+            # wait until it reads the TTS data, so the whole stream will be delayed. It is much
+            # faster to first play the pre-announce using a separate ffmpeg stream, and only
+            # afterwards play the TTS itself.
+            #
+            # For this to be effective the player itself needs to be able to start playback fast.
+            # If the returned stream is used as input to ffmpeg we should pass -probesize 8096.
+            #
+            # Finally we also need to make sure we don't make other blocking requests to the TTS
+            # data, eg to get the duration (async_parse_tags).
+            #
+            async for chunk in get_ffmpeg_stream(
+                audio_input=ANNOUNCE_ALERT_FILE,
+                input_format=AudioFormat(content_type=ContentType.try_parse(ANNOUNCE_ALERT_FILE)),
+                output_format=output_format,
+                filter_params=filter_params,
+            ):
+                yield chunk
+
         # work out output format/details
         fmt = announcement_url.rsplit(".")[-1]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
-        extra_args = []
-        filter_params = ["loudnorm=I=-10:LRA=11:TP=-2"]
-        if use_pre_announce:
-            extra_args += [
-                "-i",
-                ANNOUNCE_ALERT_FILE,
-                "-filter_complex",
-                "[1:a][0:a]concat=n=2:v=0:a=1,loudnorm=I=-10:LRA=11:TP=-1.5",
-            ]
-            filter_params = []
+        extra_input_args = ["-probesize", "8096"]  # start the stream before reading all TTS input
         async for chunk in get_ffmpeg_stream(
             audio_input=announcement_url,
             input_format=audio_format,
             output_format=output_format,
-            extra_args=extra_args,
             filter_params=filter_params,
+            extra_input_args=extra_input_args,
         ):
             yield chunk
 

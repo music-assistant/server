@@ -678,7 +678,7 @@ async def _is_cache_allowed(mass: MusicAssistant, streamdetails: StreamDetails) 
     allow_cache = mass.config.get_raw_core_config_value(
         "streams",
         CONF_ALLOW_AUDIO_CACHE,
-        mass.streams.allow_cache_default,  # type: ignore[has-type]
+        mass.streams.allow_cache_default,
     )
     if allow_cache == "disabled":
         return False

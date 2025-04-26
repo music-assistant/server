@@ -35,7 +35,7 @@ jobs:
             fi
           fi
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5.5.0
+        uses: actions/setup-python@v5.6.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install build
@@ -113,7 +113,7 @@ jobs:
           echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
       - name: Build and Push release
-        uses: docker/build-push-action@v6.15.0
+        uses: docker/build-push-action@v6.16.0
         if: ${{ github.event.release.prerelease == false }}
         with:
           context: .
@@ -130,7 +130,7 @@ jobs:
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
             BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_STABLE }}
       - name: Build and Push pre-release
-        uses: docker/build-push-action@v6.15.0
+        uses: docker/build-push-action@v6.16.0
         if: ${{ github.event.release.prerelease == true }}
         with:
           context: .

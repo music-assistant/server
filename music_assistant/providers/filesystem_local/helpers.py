@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from music_assistant.helpers.compare import compare_strings
 
-IGNORE_DIRS = ("recycle", "Recently-Snaphot")
+IGNORE_DIRS = ("recycle", "Recently-Snaphot", "#recycle", "System Volume Information", "lost+found")
 
 
 @dataclass

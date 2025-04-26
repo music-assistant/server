@@ -679,13 +679,6 @@ class MusicAssistant:
         # run async setup
         await provider.handle_async_init()
 
-        # TEMP workaround
-        # cleanup wrong name config value (set to provider name)
-        # remove after 2.4 release
-        if conf.name == prov_manifest.name:
-            self.config.set_raw_provider_config_value(provider.instance_id, "name", None)
-            provider.config.name = None
-
         # if we reach this point, the provider loaded successfully
         self._providers[provider.instance_id] = provider
         LOGGER.info(
