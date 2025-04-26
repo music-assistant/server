@@ -427,8 +427,11 @@ class StreamsController(CoreController):
         crossfade = await self.mass.config.get_player_config_value(queue.queue_id, CONF_CROSSFADE)
         if crossfade and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features:
             # crossfade is not supported on this player due to missing gapless playback
-            self.logger.warning("Crossfade disabled: gapless playback not supported on player")
-            return False
+            self.logger.warning(
+                "Crossfade disabled: Player %s does not support gapless playback",
+                queue_player.display_name,
+            )
+            crossfade = False
 
         if crossfade:
             # crossfade is enabled, use special crossfaded single item stream
