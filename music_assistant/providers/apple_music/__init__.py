@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiofiles
 from aiohttp.client_exceptions import ClientError
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
@@ -21,6 +22,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     MediaNotFoundError,
+    LoginFailed,
     MusicAssistantError,
     ResourceTemporarilyUnavailable,
 )
@@ -41,12 +43,13 @@ from music_assistant_models.streamdetails import StreamDetails
 from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
 
-from music_assistant.constants import CONF_PASSWORD
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.helpers.auth import AuthenticationHelper
+from music_assistant_models.enums import EventType
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -76,6 +79,9 @@ DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
 
+CONF_DEVELOPER_TOKEN = "music_developer_token"
+CONF_MUSIC_USER_TOKEN = "music_user_token"
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -97,21 +103,143 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+
+    # Check if we have a developer token otherwise display a config field for an override
+    default_developer_token_valid = False
+    async with (
+        mass.http_session.get(f"https://api.music.apple.com/v1/test",
+            headers={"Authorization": f"Bearer {DEVELOPER_TOKEN}"},
+            ssl=True, timeout=10) as response,
+    ):
+        if response.status == 200:
+            values[CONF_DEVELOPER_TOKEN] = f"{DEVELOPER_TOKEN}"
+            default_developer_token_valid = True
+
+    # Action is to launch MusicKit flow
+    if action == "CONF_ACTION_AUTH":
+        # TODO: check the developer token is valid othwerwise user is going to have bad experience
+        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+            mass.webserver.register_dynamic_route(f"/apple_music_auth/", serve_musickit_auth_page)
+            url = f"/apple_music_auth/?redirect={auth_helper.callback_url}&token={values[CONF_DEVELOPER_TOKEN]}"
+            try:
+                values[CONF_MUSIC_USER_TOKEN] = (await auth_helper.authenticate(url))["music-user-token"]
+            except Exception as error:
+                # TODO: No logger instance available here
+                ("Authentication Helper failed: %s", error)
+            mass.webserver.unregister_dynamic_route(f"/apple_music_auth/")
+
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_PASSWORD,
+            key=CONF_DEVELOPER_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Music user token",
+            label="MusicKit Token",
+            hidden=default_developer_token_valid,
             required=True,
+            value=values.get(CONF_DEVELOPER_TOKEN) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_MUSIC_USER_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Music User Token",
+            required=True,
+            action="CONF_ACTION_AUTH",
+            description="You need to authenticate on Apple Music.",
+            action_label="Authenticate with Apple Music",
+            value=values.get(CONF_MUSIC_USER_TOKEN) if values else None,
         ),
     )
+
+
+async def serve_musickit_auth_page(request: web.Request) -> web.Response:
+    # params = dict(request.query)
+    return_html = """
+<html>
+<head>
+    <script src="https://js-cdn.music.apple.com/musickit/v1/musickit.js" data-web-components async></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant MusicKit Redirect</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+        }
+        .container {
+            text-align: center;
+            background-color: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        .debug {
+            display: none;
+            align-self: flex-end;
+            text-align: center;
+            border-radius: 8px;
+            background-color: lightgray;
+            padding: 2rem;
+        }
+    </style>
+    <script>
+        const paramsString = window.location.search;
+        const searchParams = new URLSearchParams(paramsString);
+        const developer_token = searchParams.get("token");
+        const return_url = searchParams.get("redirect");
+
+        setTimeout(()=>{document.getElementById('close_button').style.visibility = "visible"}, 7500);
+        document.addEventListener('musickitloaded', function() {
+            // MusicKit global is now defined
+            MusicKit.configure({
+                developerToken: developer_token,
+                app: {
+                name: 'MusicAssistant',
+                build: '2025.1.1',
+                }
+            })
+            let music = MusicKit.getInstance();
+            music.authorize().then(function(token) {
+                document.getElementById('close_button').style.visibility = "visible";
+                window.location.href = return_url + "?music-user-token=" + encodeURIComponent(token);
+            }).catch (e => {
+                document.getElementById('musickit_error').innerHTML = 'Error:' + e;
+                console.log ('Error:' + e );
+                document.getElementById('message').innerHTML = "An unknown error occurred";
+                document.getElementById('close_button').style.visibility = "visible";
+            });
+        });
+    </script>
+</head>
+<body onload="document.getElementById('dev_token').innerHTML = developer_token;document.getElementById('return_url').innerHTML = return_url;">
+<div class="container">
+<p><img src="https://www.music-assistant.io/assets/icon.png" width="200" height="200"></p>
+<h1><span id="message">Apple Authentication window should open</span></h1>
+<p>If the Apple Music authentication window does not open, please check the MusicKit token and try again.</p>
+<button id="close_button" onclick="window.location.href = return_url" style="visibility: hidden;">Close</button>
+</div>
+<div class="debug">
+<p>token: <span id="dev_token"></span></p>
+<p>return_url: <span id="return_url"></span></p>
+<p><span id="musickit_error"></span></p>
+</div>
+<footer>
+</footer>
+</body>
+</html>
+"""
+    return web.Response(body=return_html, headers={"content-type": "text/html"})
 
 
 class AppleMusicProvider(MusicProvider):
     """Implementation of an Apple Music MusicProvider."""
 
     _music_user_token: str | None = None
+    _music_developer_token: str | None = None
     _storefront: str | None = None
     _decrypt_client_id: bytes | None = None
     _decrypt_private_key: bytes | None = None
@@ -121,7 +249,8 @@ class AppleMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._music_user_token = self.config.get_value(CONF_PASSWORD)
+        self._music_user_token = self.config.get_value(CONF_MUSIC_USER_TOKEN)
+        self._music_developer_token = self.config.get_value(CONF_DEVELOPER_TOKEN)
         self._storefront = await self._get_user_storefront()
         async with aiofiles.open(
             os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
@@ -644,7 +773,7 @@ class AppleMusicProvider(MusicProvider):
     async def _get_data(self, endpoint, **kwargs) -> dict[str, Any]:
         """Get data from api."""
         url = f"https://api.music.apple.com/v1/{endpoint}"
-        headers = {"Authorization": f"Bearer {DEVELOPER_TOKEN}"}
+        headers = {"Authorization": f"Bearer {self._music_developer_token}"}
         headers["Music-User-Token"] = self._music_user_token
         async with (
             self.mass.http_session.get(
@@ -687,7 +816,7 @@ class AppleMusicProvider(MusicProvider):
     async def _post_data(self, endpoint, data=None, **kwargs) -> str:
         """Post data on api."""
         url = f"https://api.music.apple.com/v1/{endpoint}"
-        headers = {"Authorization": f"Bearer {DEVELOPER_TOKEN}"}
+        headers = {"Authorization": f"Bearer {self._music_developer_token}"}
         headers["Music-User-Token"] = self._music_user_token
         async with (
             self.mass.http_session.post(
@@ -759,7 +888,7 @@ class AppleMusicProvider(MusicProvider):
     def _get_decryption_headers(self):
         """Get headers for decryption requests."""
         return {
-            "authorization": f"Bearer {DEVELOPER_TOKEN}",
+            "authorization": f"Bearer {self._music_developer_token}",
             "media-user-token": self._music_user_token,
             "connection": "keep-alive",
             "accept": "application/json",
