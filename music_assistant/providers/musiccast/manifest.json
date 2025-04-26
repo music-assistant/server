@@ -5,7 +5,7 @@
   "description": "MusicCast for Music Assistant",
   "requirements": [
     "aiomusiccast==0.14.8",
-    "setuptools"
+    "setuptools>=1.0.0"
   ],
   "codeowners": [
     "@fmunkes"
