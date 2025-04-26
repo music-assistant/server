@@ -179,9 +179,6 @@ class MusicCast(PlayerProvider):
         else:
             logging.getLogger("aiomusiccast").setLevel(self.logger.level + 10)
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await super().loaded_in_mass()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Call on unload."""
