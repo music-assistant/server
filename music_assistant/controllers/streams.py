@@ -934,9 +934,9 @@ class StreamsController(CoreController):
             # For this to be effective the player itself needs to be able to start playback fast.
             # If the returned stream is used as input to ffmpeg we should pass -probesize 8096.
             #
-            # Finally we also need to make sure we don't make other blocking requests to the TTS
-            # data, eg to get the duration (async_parse_tags).
-            #
+            # Finally, if the output_format is non-PCM, raw concatenation can be problematic.
+            # So far players seem to tolerate this, but it might break some player in the future.
+
             async for chunk in get_ffmpeg_stream(
                 audio_input=ANNOUNCE_ALERT_FILE,
                 input_format=AudioFormat(content_type=ContentType.try_parse(ANNOUNCE_ALERT_FILE)),
