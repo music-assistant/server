@@ -98,18 +98,18 @@ class MusicCastZoneDevice:
     def source_mapping(self) -> dict[str, str]:
         """Return a mapping of the actual source names to their labels configured in the App."""
         assert self.zone_data is not None  # for type checking
-        ret = {}
-        for inp in self.zone_data.input_list:
-            label = self.device.data.input_names.get(inp, "")
-            if inp != label and (
+        result = {}
+        for input_ in self.zone_data.input_list:
+            label = self.device.data.input_names.get(input_, "")
+            if input_ != label and (
                 label in self.zone_data.input_list
                 or list(self.device.data.input_names.values()).count(label) > 1
             ):
-                label += f" ({inp})"
+                label += f" ({input_})"
             if label == "":
-                label = inp
-            ret[inp] = label
-        return ret
+                label = input_
+            result[input_] = label
+        return result
 
     @property
     def is_netusb(self) -> bool:
