@@ -150,6 +150,7 @@ class UpnpUpdateHelper:
     last_poll: float  # time.time
     controlled_by_mass: bool
     current_queue_item_id: str | None
+    current_uri: str | None
 
 
 class MusicCast(PlayerProvider):
@@ -684,25 +685,21 @@ class MusicCast(PlayerProvider):
                 if _player_current_url is not None
                 else False,
                 current_queue_item_id=_queue_item_id,
+                current_uri=_player_current_url,
             )
 
             self.upnp_update_helper[player.player_id] = update_helper
 
-        queue = self.mass.player_queues.get_active_queue(player.player_id)
         if (
-            queue is not None
-            and queue.session_id is not None
-            and update_helper.current_queue_item_id is not None
+            update_helper.current_queue_item_id is not None
+            and update_helper.current_uri is not None
             and update_helper.controlled_by_mass
         ):
-            if queue.current_item is not None:
-                if update_helper.current_queue_item_id == queue.current_item.queue_item_id:
-                    player.current_media = queue.current_item  # type: ignore[assignment]
-            if queue.next_item is not None:
-                if update_helper.current_queue_item_id == queue.next_item.queue_item_id:
-                    player.current_media = queue.next_item  # type: ignore[assignment]
+            player.set_current_media(
+                uri=update_helper.current_uri, queue_item_id=update_helper.current_queue_item_id
+            )
         else:
-            player.current_media = PlayerMedia(
+            player.set_current_media(
                 uri=f"{player.player_id}_{device.source_id}",
                 title=device.media_title,
                 artist=device.media_artist,
@@ -711,10 +708,21 @@ class MusicCast(PlayerProvider):
             )
 
         # SOURCE
-        if device.source_id == "server" and update_helper.controlled_by_mass:
-            player.active_source = queue.queue_id if queue is not None else None
-        else:
-            player.active_source = device.source_id
+        # fallback
+        player.active_source = device.source_id
+        if device.is_server and update_helper.controlled_by_mass:
+            if queue := self.mass.player_queues.get_active_queue(player.player_id):
+                player.active_source = queue.queue_id
+        elif device.is_client:
+            _server_id = self._get_player_id_from_mc_zone_player(device.group_server)
+            _server_update_helper = self.upnp_update_helper.get(_server_id)
+            _server_queue = self.mass.player_queues.get_active_queue(_server_id)
+            if (
+                _server_update_helper is not None
+                and _server_queue is not None
+                and _server_update_helper.controlled_by_mass
+            ):
+                player.active_source = _server_queue.queue_id
 
         # GROUPING
         # A zone cannot be synced to another zone or main of the same device.
