@@ -5,7 +5,10 @@ from music_assistant_models.player import PlayerMedia
 
 from music_assistant.helpers.upnp import (
     get_xml_soap_media_info,
+    get_xml_soap_next,
+    get_xml_soap_pause,
     get_xml_soap_play,
+    get_xml_soap_previous,
     get_xml_soap_set_next_url,
     get_xml_soap_set_url,
     get_xml_soap_stop,
@@ -52,6 +55,39 @@ async def avt_stop(
     """Play."""
     ctrl_url = get_upnp_ctrl_url(physical_device)
     xml, soap_action = get_xml_soap_stop()
+    headers = get_headers(xml, soap_action)
+    await client.post(ctrl_url, headers=headers, data=xml)
+
+
+async def avt_pause(
+    client: aiohttp.ClientSession,
+    physical_device: MusicCastPhysicalDevice,
+) -> None:
+    """Play."""
+    ctrl_url = get_upnp_ctrl_url(physical_device)
+    xml, soap_action = get_xml_soap_pause()
+    headers = get_headers(xml, soap_action)
+    await client.post(ctrl_url, headers=headers, data=xml)
+
+
+async def avt_next(
+    client: aiohttp.ClientSession,
+    physical_device: MusicCastPhysicalDevice,
+) -> None:
+    """Play."""
+    ctrl_url = get_upnp_ctrl_url(physical_device)
+    xml, soap_action = get_xml_soap_next()
+    headers = get_headers(xml, soap_action)
+    await client.post(ctrl_url, headers=headers, data=xml)
+
+
+async def avt_previous(
+    client: aiohttp.ClientSession,
+    physical_device: MusicCastPhysicalDevice,
+) -> None:
+    """Play."""
+    ctrl_url = get_upnp_ctrl_url(physical_device)
+    xml, soap_action = get_xml_soap_previous()
     headers = get_headers(xml, soap_action)
     await client.post(ctrl_url, headers=headers, data=xml)
 

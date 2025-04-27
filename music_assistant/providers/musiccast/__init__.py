@@ -29,8 +29,12 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.musiccast.avt_helpers import (
     avt_get_media_info,
+    avt_next,
+    avt_pause,
     avt_play,
+    avt_previous,
     avt_set_url,
+    avt_stop,
     search_didl_queueitemid,
     search_xml,
 )
@@ -258,33 +262,47 @@ class MusicCast(PlayerProvider):
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await self._cmd_run(player_id, zone_player.stop)
+            upnp_update_helper = self.upnp_update_helper.get(player_id)
+            if upnp_update_helper is not None and upnp_update_helper.controlled_by_mass:
+                await avt_stop(self.mass.http_session, zone_player.physical_device)
+            else:
+                await self._cmd_run(player_id, zone_player.stop)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await self._cmd_run(player_id, zone_player.play)
+            upnp_update_helper = self.upnp_update_helper.get(player_id)
+            if upnp_update_helper is not None and upnp_update_helper.controlled_by_mass:
+                await avt_play(self.mass.http_session, zone_player.physical_device)
+            else:
+                await self._cmd_run(player_id, zone_player.play)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         if zone_player := self._get_zone_player(player_id):
-            await self._cmd_run(player_id, zone_player.pause)
+            upnp_update_helper = self.upnp_update_helper.get(player_id)
+            if upnp_update_helper is not None and upnp_update_helper.controlled_by_mass:
+                await avt_pause(self.mass.http_session, zone_player.physical_device)
+            else:
+                await self._cmd_run(player_id, zone_player.pause)
 
     async def cmd_next(self, player_id: str) -> None:
-        """Send NEXT.
-
-        Only used for external source.
-        """
+        """Send NEXT."""
         if zone_player := self._get_zone_player(player_id):
-            await self._cmd_run(player_id, zone_player.next_track)
+            upnp_update_helper = self.upnp_update_helper.get(player_id)
+            if upnp_update_helper is not None and upnp_update_helper.controlled_by_mass:
+                await avt_next(self.mass.http_session, zone_player.physical_device)
+            else:
+                await self._cmd_run(player_id, zone_player.next_track)
 
     async def cmd_previous(self, player_id: str) -> None:
-        """Send PREVIOUS.
-
-        Only used for external source.
-        """
+        """Send PREVIOUS."""
         if zone_player := self._get_zone_player(player_id):
-            await self._cmd_run(player_id, zone_player.previous_track)
+            upnp_update_helper = self.upnp_update_helper.get(player_id)
+            if upnp_update_helper is not None and upnp_update_helper.controlled_by_mass:
+                await avt_previous(self.mass.http_session, zone_player.physical_device)
+            else:
+                await self._cmd_run(player_id, zone_player.previous_track)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -664,9 +682,10 @@ class MusicCast(PlayerProvider):
                 )
             )
 
-        # UPDATE PLAYBACK INFORMATION
+        # UPDATE UPNP HELPER
         update_helper = self.upnp_update_helper.get(player.player_id)
         now = time.time()
+        queue = self.mass.player_queues.get_active_queue(player.player_id)
         if update_helper is None or now - update_helper.last_poll > 5:
             # Let's not do this too often
             # verify, that we are playing
@@ -679,17 +698,42 @@ class MusicCast(PlayerProvider):
             _player_current_url = search_xml(_xml_media_info, "CurrentURI")
             _queue_item_id = search_didl_queueitemid(_xml_media_info)
 
+            # controlled by mass is only True, if we are directly controlled
+            # i.e. we are not a group member.
+            # the device's source id is server, if controlled by upnp, but also, if the internal
+            # dlna function of the device are used. As a fallback, we then
+            # use the item's title. This can only fail, if our current and next item
+            # has the same name as the external.
+            controlled_by_mass = False
+            if (
+                queue is not None
+                and queue.current_item is not None
+                and queue.current_item.media_item is not None
+                and _player_current_url is not None
+            ):
+                _item_ids = [queue.current_item.queue_item_id]
+                _names = [queue.current_item.media_item.name]
+                if queue.next_item is not None and queue.next_item.media_item is not None:
+                    _item_ids.append(queue.next_item.queue_item_id)
+                    _names.append(queue.next_item.media_item.name)
+                controlled_by_mass = (
+                    player.player_id in _player_current_url
+                    and _queue_item_id in _item_ids
+                    and device.source_id == "server"
+                    # this last one might fail in the rare case, that the external controller
+                    # is using the same title and its part of current/ next of our queue
+                    and device.media_title in _names
+                )
             update_helper = UpnpUpdateHelper(
                 last_poll=now,
-                controlled_by_mass=player.player_id in _player_current_url
-                if _player_current_url is not None
-                else False,
+                controlled_by_mass=controlled_by_mass,
                 current_queue_item_id=_queue_item_id,
                 current_uri=_player_current_url,
             )
 
             self.upnp_update_helper[player.player_id] = update_helper
 
+        # UPDATE PLAYBACK INFORMATION
         if (
             update_helper.current_queue_item_id is not None
             and update_helper.current_uri is not None
@@ -698,6 +742,28 @@ class MusicCast(PlayerProvider):
             player.set_current_media(
                 uri=update_helper.current_uri, queue_item_id=update_helper.current_queue_item_id
             )
+        elif device.is_client:
+            _server = device.group_server
+            _server_id = self._get_player_id_from_mc_zone_player(_server)
+            _server_update_helper = self.upnp_update_helper.get(_server_id)
+            if (
+                _server_update_helper is not None
+                and _server_update_helper.current_queue_item_id is not None
+                and _server_update_helper.current_uri is not None
+                and _server_update_helper.controlled_by_mass
+            ):
+                player.set_current_media(
+                    uri=_server_update_helper.current_uri,
+                    queue_item_id=_server_update_helper.current_queue_item_id,
+                )
+            else:
+                player.set_current_media(
+                    uri=f"{_server_id}_{_server.source_id}",
+                    title=_server.media_title,
+                    artist=_server.media_artist,
+                    album=_server.media_album_name,
+                    image_url=_server.media_image_url,
+                )
         else:
             player.set_current_media(
                 uri=f"{player.player_id}_{device.source_id}",
@@ -708,11 +774,10 @@ class MusicCast(PlayerProvider):
             )
 
         # SOURCE
-        # fallback
-        player.active_source = device.source_id
-        if device.is_server and update_helper.controlled_by_mass:
-            if queue := self.mass.player_queues.get_active_queue(player.player_id):
-                player.active_source = queue.queue_id
+        player.active_source = device.source_id  # fallback
+        if update_helper.controlled_by_mass and queue is not None:
+            # controlled by ma means directly controlled, not group member
+            player.active_source = queue.queue_id
         elif device.is_client:
             _server_id = self._get_player_id_from_mc_zone_player(device.group_server)
             _server_update_helper = self.upnp_update_helper.get(_server_id)

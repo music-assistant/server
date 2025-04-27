@@ -55,6 +55,12 @@ def get_xml_soap_stop() -> tuple[str, str]:
     return _get_xml(_get_body(command)), _get_soap_action(command)
 
 
+def get_xml_soap_pause() -> tuple[str, str]:
+    """Get UPnP xml and soap for Pause."""
+    command = "Pause"
+    return _get_xml(_get_body(command)), _get_soap_action(command)
+
+
 def get_xml_soap_next() -> tuple[str, str]:
     """Get UPnP xml and soap for Next."""
     command = "Next"
