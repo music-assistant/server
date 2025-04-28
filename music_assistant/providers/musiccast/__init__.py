@@ -667,7 +667,6 @@ class MusicCast(PlayerProvider):
                 player.state = PlayerState.IDLE
 
         # SOURCES
-        player.source_list = UniqueList([])
         for source_id, source_name in device.source_mapping.items():
             control = source_id in MC_CONTROL_SOURCE_IDS
             passive = source_id in MC_PASSIVE_SOURCE_IDS
