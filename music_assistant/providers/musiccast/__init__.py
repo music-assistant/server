@@ -21,7 +21,6 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
 )
-from music_assistant_models.media_items import UniqueList
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from zeroconf import ServiceStateChange
 
@@ -671,7 +670,7 @@ class MusicCast(PlayerProvider):
         for source_id, source_name in device.source_mapping.items():
             control = source_id in MC_CONTROL_SOURCE_IDS
             passive = source_id in MC_PASSIVE_SOURCE_IDS
-           source_list.append(
+            source_list.append(
                 PlayerSource(
                     id=source_id,
                     name=source_name,
@@ -705,7 +704,11 @@ class MusicCast(PlayerProvider):
             # use the item's title. This can only fail, if our current and next item
             # has the same name as the external.
             controlled_by_mass = False
-           controlled_by_mass = player.player_id in _player_current_url and self.mass.streams.base_url in _player_current_url
+            if _player_current_url is not None:
+                controlled_by_mass = (
+                    player.player_id in _player_current_url
+                    and self.mass.streams.base_url in _player_current_url
+                )
             update_helper = UpnpUpdateHelper(
                 last_poll=now,
                 controlled_by_mass=controlled_by_mass,
@@ -756,11 +759,8 @@ class MusicCast(PlayerProvider):
             )
 
         # SOURCE
-        
         if device.is_client and not update_helper.controlled_by_mass:
-            player.active_source = device.source_id  # fallback
-            _server_id = self._get_player_id_from_mc_zone_player(device.group_server)
-            _server_update_helper = self.upnp_update_helper.get(_server_id)
+            player.active_source = device.source_id
 
         # GROUPING
         # A zone cannot be synced to another zone or main of the same device.
