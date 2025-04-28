@@ -49,7 +49,7 @@ snapcast==2.3.6
 soco==0.30.9
 soundcloudpy==0.1.2
 sxm==0.2.8
-unidecode==1.3.8
+unidecode==1.4.0
 websocket-client==1.8.0
 xmltodict==0.14.2
 yt-dlp==2025.3.31
