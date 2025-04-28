@@ -34,7 +34,6 @@ from music_assistant.providers.musiccast.avt_helpers import (
     avt_previous,
     avt_set_url,
     avt_stop,
-    search_didl_queueitemid,
     search_xml,
 )
 from music_assistant.providers.sonos.helpers import get_primary_ip_address
@@ -152,7 +151,6 @@ class UpnpUpdateHelper:
 
     last_poll: float  # time.time
     controlled_by_mass: bool
-    current_queue_item_id: str | None
     current_uri: str | None
 
 
@@ -453,7 +451,6 @@ class MusicCast(PlayerProvider):
                 self.upnp_update_helper[player_id] = UpnpUpdateHelper(
                     last_poll=time.time(),
                     controlled_by_mass=True,
-                    current_queue_item_id=media.queue_item_id,
                     current_uri=media.uri,
                 )
 
@@ -707,7 +704,6 @@ class MusicCast(PlayerProvider):
             except ServerDisconnectedError:
                 return
             _player_current_url = search_xml(_xml_media_info, "CurrentURI")
-            _queue_item_id = search_didl_queueitemid(_xml_media_info)
 
             # controlled by mass is only True, if we are directly controlled
             # i.e. we are not a group member.
@@ -726,7 +722,6 @@ class MusicCast(PlayerProvider):
             update_helper = UpnpUpdateHelper(
                 last_poll=now,
                 controlled_by_mass=controlled_by_mass,
-                current_queue_item_id=_queue_item_id,
                 current_uri=_player_current_url,
             )
 
@@ -737,27 +732,19 @@ class MusicCast(PlayerProvider):
         # player.current_media tells queue controller what is playing
         # and player.set_current_media is the helper function
         # do not access the queue controller to gain playback information here
-        if (
-            update_helper.current_queue_item_id is not None
-            and update_helper.current_uri is not None
-            and update_helper.controlled_by_mass
-        ):
-            player.set_current_media(
-                uri=update_helper.current_uri, queue_item_id=update_helper.current_queue_item_id
-            )
+        if update_helper.current_uri is not None and update_helper.controlled_by_mass:
+            player.set_current_media(uri=update_helper.current_uri)
         elif device.is_client:
             _server = device.group_server
             _server_id = self._get_player_id_from_mc_zone_player(_server)
             _server_update_helper = self.upnp_update_helper.get(_server_id)
             if (
                 _server_update_helper is not None
-                and _server_update_helper.current_queue_item_id is not None
                 and _server_update_helper.current_uri is not None
                 and _server_update_helper.controlled_by_mass
             ):
                 player.set_current_media(
                     uri=_server_update_helper.current_uri,
-                    queue_item_id=_server_update_helper.current_queue_item_id,
                 )
             else:
                 player.set_current_media(

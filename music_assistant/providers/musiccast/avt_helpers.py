@@ -146,14 +146,3 @@ def search_xml(xml: str, tag: str) -> str | None:
     if start_int == -1 or end_int == -1:
         return None
     return xml[start_int + len(start_str) : end_int]
-
-
-def search_didl_queueitemid(xml: str) -> str | None:
-    """Search single line xml for these tags."""
-    start_str = r"&lt;dc:queueItemId&gt;"
-    end_str = r"&lt;/dc:queueItemId&gt;"
-    start_int = xml.find(start_str)
-    end_int = xml.find(end_str)
-    if start_int == -1 or end_int == -1:
-        return None
-    return xml[start_int + len(start_str) : end_int]
