@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import re
+import pathlib
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
@@ -105,13 +106,13 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
 
-    def validate_token(token):
+    def validate_user_token(token):
         if not isinstance(token, str):
             return False
         valid = re.findall(r'[a-zA-Z0-9=/+]{32,}==$', token)
         return bool(valid)
 
-    # Check if we have a developer token otherwise display a config field for an override
+    # Check if we have a valid app token (first with quick regex and then API check) otherwise display a config field for an override
     default_app_token_valid = False
     async with (
         mass.http_session.get(f"https://api.music.apple.com/v1/test",
@@ -127,95 +128,30 @@ async def get_config_entries(
     if action == "CONF_ACTION_AUTH":
         # TODO: check the developer token is valid othwerwise user is going to have bad experience
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+            flow_base_url = f"/apple_music_auth/{values["session_id"]}/"
+            flow_timeout = 600
             async def serve_musickit_auth_page(request: web.Request) -> web.Response:
-                params = dict(request.query)
-                return_html = """<html>
-<head>
-    <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" data-web-components async></script>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Music Assistant MusicKit Redirect</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #f0f0f0;
-        }
-        .container {
-            text-align: center;
-            background-color: white;
-            padding: 2rem;
-            border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
-        }
-    </style>
-    <script>
-        const app_token = '"""+values[CONF_MUSIC_APP_TOKEN]+"""';
-        const return_url = '"""+auth_helper.callback_url+""""';
-        const mkLoaded = false;
-        console.log('App token:', app_token);
-        console.log('Return URL:', return_url);
+                auth_html_path = pathlib.Path(__file__).parent.resolve().joinpath("musickit_auth/musickit_wrapper.html")
+                return web.FileResponse(auth_html_path, headers={"content-type": "text/html"})
+            async def serve_musickit_auth_css(request: web.Request) -> web.Response:
+                auth_css_path = pathlib.Path(__file__).parent.resolve().joinpath("musickit_auth/musickit_wrapper.css")
+                return web.FileResponse(auth_css_path, headers={"content-type": "text/css"})
+            async def serve_musickit_glue(request: web.Request) -> web.Response:
+                return_html = f"const app_token='{values[CONF_MUSIC_APP_TOKEN]}';const user_token='{values[CONF_MUSIC_USER_TOKEN]}';const return_url='{auth_helper.callback_url}';const flow_timeout={flow_timeout - 10};const mass_buid='2025.1.1'"
+                return web.Response(body=return_html, headers={"content-type": "text/javascript"})
 
-        setTimeout(()=>{document.getElementById('close_button').style.visibility = "visible"}, 7500);
-        // Check for existing MusicKit saved data
-
-        function mkAuthourise() {
-            // MusicKit global is now defined
-            MusicKit.configure({
-                developerToken: app_token,
-                app: {
-                    name: 'MusicAssistant',
-                    build: '2025.1.1',
-                }
-            }).then(() => {
-                let music = MusicKit.getInstance();
-                music.authorize().then(function(token) {
-                    document.getElementById('close_button').style.visibility = "visible";
-                    window.location.href = return_url + "?music-user-token=" + encodeURIComponent(token);
-                })
-            }).catch (e => {
-                console.log ('Error:' + e );
-                document.getElementById('message').innerHTML = "An unknown error occurred";
-                document.getElementById('close_button').style.visibility = "visible";
-            }))
-            return null;
-        }
-
-        document.addEventListener('musickitloaded', function() {
-            mkLoaded = True;
-            document.getElementById('auth_button').disabled = false;
-        });
-    </script>
-</head>
-<body>
-<div class="container">
-<p><img src="https://www.music-assistant.io/assets/icon.png" width="200" height="200"></p>
-<h1><span id="message">Apple Authentication window should open</span></h1>
-<p>If the Apple Music authentication window does not open, please check the MusicKit token and try again.</p>
-<p><button id="auth_button" onclick="mkAuthourise();" disabled style="visibility: visible;">Authorise</button></p
-<p><button id="close_button" onclick="window.location.href = return_url;" style="visibility: hidden;">Close</button></p
-<p>App-token: <strong>"""+values[CONF_MUSIC_APP_TOKEN]+"""</strong></p>
-<p>return-url: <strong>"""+auth_helper.callback_url+"""</strong></p>
-</div>
-</body>
-</html>
-"""
-                return web.Response(body=return_html, headers={"content-type": "text/html"})
-
-            url = f"/apple_music_auth/{values["session_id"]}/"
-            mass.webserver.register_dynamic_route(url, serve_musickit_auth_page)
+            mass.webserver.register_dynamic_route(flow_base_url + "index.html", serve_musickit_auth_page)
+            mass.webserver.register_dynamic_route(flow_base_url + "index.css", serve_musickit_auth_css)
+            mass.webserver.register_dynamic_route(flow_base_url + "index.js", serve_musickit_glue)
             try:
-                # mass.signal_event(EventType.AUTH_SESSION, values["session_id"], url)
-                values[CONF_MUSIC_USER_TOKEN] = (await auth_helper.authenticate(url))["music-user-token"]
+                values[CONF_MUSIC_USER_TOKEN] = (await auth_helper.authenticate(flow_base_url + "index.html", flow_timeout))["music-user-token"]
             except Exception as error:
                 # TODO: No logger instance available here
                 ("Authentication Helper failed: %s", error)
             finally:
-                mass.webserver.unregister_dynamic_route(url)
+                mass.webserver.unregister_dynamic_route(flow_base_url + "index.html")
+                mass.webserver.unregister_dynamic_route(flow_base_url + "index.css")
+                mass.webserver.unregister_dynamic_route(flow_base_url + "index.js")
 
     # ruff: noqa: ARG001
     return (
