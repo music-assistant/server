@@ -35,7 +35,6 @@ from music_assistant.providers.musiccast.avt_helpers import (
     avt_set_url,
     avt_stop,
     search_didl_queueitemid,
-    search_didl_title,
     search_xml,
 )
 from music_assistant.providers.sonos.helpers import get_primary_ip_address
@@ -723,11 +722,6 @@ class MusicCast(PlayerProvider):
                     and self.mass.streams.base_url in _player_current_url
                     and device.source_id == "server"
                 )
-
-                if _upnp_title := search_didl_title(_xml_media_info):
-                    # we ignore the edge case, where the internal server function plays the exact
-                    # same title as currently enqueued by MA
-                    controlled_by_mass = controlled_by_mass and _upnp_title == device.media_title
 
             update_helper = UpnpUpdateHelper(
                 last_poll=now,
