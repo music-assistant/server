@@ -187,10 +187,13 @@ class AirPlayProvider(PlayerProvider):
     ) -> None:
         """Handle MDNS service state callback."""
         if not info:
-            if state_change != ServiceStateChange.Removed:
-                return
-            if "@" in name:
+            # When info are not provided for the service
+            if state_change == ServiceStateChange.Removed and "@" in name:
+                # Service name is enough to mark the player as unavailable on 'Removed' notification
                 raw_id, display_name = name.split(".")[0].split("@", 1)
+            else:
+                # If we are not in a 'Removed' state, we need info to be filled to update correctly the player so we cannot continue
+                return
         else:
             if "@" in info.name:
                 raw_id, display_name = info.name.split(".")[0].split("@", 1)
