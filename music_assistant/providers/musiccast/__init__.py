@@ -756,11 +756,9 @@ class MusicCast(PlayerProvider):
             )
 
         # SOURCE
-        player.active_source = device.source_id  # fallback
-        if update_helper.controlled_by_mass and queue is not None:
-            # controlled by ma means directly controlled, not group member
-            player.active_source = queue.queue_id
-        elif device.is_client:
+        
+        if device.is_client and not update_helper.controlled_by_mass:
+            player.active_source = device.source_id  # fallback
             _server_id = self._get_player_id_from_mc_zone_player(device.group_server)
             _server_update_helper = self.upnp_update_helper.get(_server_id)
             _server_queue = self.mass.player_queues.get_active_queue(_server_id)
