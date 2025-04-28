@@ -671,7 +671,7 @@ class MusicCast(PlayerProvider):
         for source_id, source_name in device.source_mapping.items():
             control = source_id in MC_CONTROL_SOURCE_IDS
             passive = source_id in MC_PASSIVE_SOURCE_IDS
-            player.source_list.append(
+           source_list.append(
                 PlayerSource(
                     id=source_id,
                     name=source_name,
