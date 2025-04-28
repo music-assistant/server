@@ -126,7 +126,8 @@ async def get_config_entries(
             except Exception as error:
                 # TODO: No logger instance available here
                 ("Authentication Helper failed: %s", error)
-            mass.webserver.unregister_dynamic_route(f"/apple_music_auth/")
+            finally:
+                mass.webserver.unregister_dynamic_route(f"/apple_music_auth/")
 
     # ruff: noqa: ARG001
     return (
