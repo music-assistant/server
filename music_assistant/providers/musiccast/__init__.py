@@ -35,6 +35,7 @@ from music_assistant.providers.musiccast.avt_helpers import (
     avt_set_url,
     avt_stop,
     search_didl_queueitemid,
+    search_didl_title,
     search_xml,
 )
 from music_assistant.providers.sonos.helpers import get_primary_ip_address
@@ -438,14 +439,28 @@ class MusicCast(PlayerProvider):
                         continue
                     if dev.is_netusb:
                         await self._handle_zone_grouping(dev)
-            await avt_set_url(
-                self.mass.http_session, zone_player.physical_device, player_media=media
-            )
-            await avt_play(self.mass.http_session, zone_player.physical_device)
+            device_id, _ = player_id.split(PLAYER_ZONE_SPLITTER)
+            lock = self.update_player_locks.get(device_id)
+            assert lock is not None  # for type checking
+            async with lock:
+                # just in case
+                if zone_player.source_id != "server":
+                    await self.select_source(player_id, "server")
+                await avt_set_url(
+                    self.mass.http_session, zone_player.physical_device, player_media=media
+                )
+                await avt_play(self.mass.http_session, zone_player.physical_device)
 
-            if ma_player := self.mass.players.get(player_id):
-                ma_player.current_media = media
-                await self.mass.players.register_or_update(ma_player)
+                self.upnp_update_helper[player_id] = UpnpUpdateHelper(
+                    last_poll=time.time(),
+                    controlled_by_mass=True,
+                    current_queue_item_id=media.queue_item_id,
+                    current_uri=media.uri,
+                )
+
+                if ma_player := self.mass.players.get(player_id):
+                    ma_player.current_media = media
+                    await self.mass.players.register_or_update(ma_player)
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Enqueue next."""
@@ -651,19 +666,16 @@ class MusicCast(PlayerProvider):
         player.volume_muted = zone_data.mute
 
         # STATE
-        # we can only use one zone at a time for server playback
-        player.elapsed_time = None
-        player.elapsed_time_last_updated = None
 
         match device.state:
             case MusicCastPlayerState.PAUSED:
                 player.state = PlayerState.PAUSED
             case MusicCastPlayerState.PLAYING:
                 player.state = PlayerState.PLAYING
-                player.elapsed_time = device.media_position
-                player.elapsed_time_last_updated = device.media_position_updated_at
             case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
                 player.state = PlayerState.IDLE
+        player.elapsed_time = device.media_position
+        player.elapsed_time_last_updated = device.media_position_updated_at
 
         # SOURCES
         source_list: list[PlayerSource] = []
@@ -687,7 +699,8 @@ class MusicCast(PlayerProvider):
         now = time.time()
         if update_helper is None or now - update_helper.last_poll > 5:
             # Let's not do this too often
-            # verify, that we are playing
+            # Note: The devices always return the last UPnP xmls, even if
+            # currently another source/ playback method is used
             try:
                 _xml_media_info = await avt_get_media_info(
                     self.mass.http_session, device.physical_device
@@ -708,7 +721,14 @@ class MusicCast(PlayerProvider):
                 controlled_by_mass = (
                     player.player_id in _player_current_url
                     and self.mass.streams.base_url in _player_current_url
+                    and device.source_id == "server"
                 )
+
+                if _upnp_title := search_didl_title(_xml_media_info):
+                    # we ignore the edge case, where the internal server function plays the exact
+                    # same title as currently enqueued by MA
+                    controlled_by_mass = controlled_by_mass and _upnp_title == device.media_title
+
             update_helper = UpnpUpdateHelper(
                 last_poll=now,
                 controlled_by_mass=controlled_by_mass,
@@ -719,6 +739,10 @@ class MusicCast(PlayerProvider):
             self.upnp_update_helper[player.player_id] = update_helper
 
         # UPDATE PLAYBACK INFORMATION
+        # Note to self:
+        # player.current_media tells queue controller what is playing
+        # and player.set_current_media is the helper function
+        # do not access the queue controller to gain playback information here
         if (
             update_helper.current_queue_item_id is not None
             and update_helper.current_uri is not None
@@ -759,8 +783,16 @@ class MusicCast(PlayerProvider):
             )
 
         # SOURCE
-        if device.is_client and not update_helper.controlled_by_mass:
+        player.active_source = None  # means the player controller will figure it out
+        if not device.is_client and not update_helper.controlled_by_mass:
             player.active_source = device.source_id
+        elif device.is_client:
+            _server = device.group_server
+            _server_id = self._get_player_id_from_mc_zone_player(_server)
+            if _server_update_helper := self.upnp_update_helper.get(_server_id):
+                player.active_source = (
+                    device.source_id if not _server_update_helper.controlled_by_mass else None
+                )
 
         # GROUPING
         # A zone cannot be synced to another zone or main of the same device.
