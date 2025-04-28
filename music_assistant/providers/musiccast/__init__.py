@@ -681,6 +681,7 @@ class MusicCast(PlayerProvider):
                     can_next_previous=control,
                 )
             )
+        player.source_list.set(source_list)
 
         # UPDATE UPNP HELPER
         update_helper = self.upnp_update_helper.get(player.player_id)
