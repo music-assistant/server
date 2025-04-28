@@ -686,7 +686,6 @@ class MusicCast(PlayerProvider):
         # UPDATE UPNP HELPER
         update_helper = self.upnp_update_helper.get(player.player_id)
         now = time.time()
-        queue = self.mass.player_queues.get_active_queue(player.player_id)
         if update_helper is None or now - update_helper.last_poll > 5:
             # Let's not do this too often
             # verify, that we are playing
