@@ -705,25 +705,7 @@ class MusicCast(PlayerProvider):
             # use the item's title. This can only fail, if our current and next item
             # has the same name as the external.
             controlled_by_mass = False
-            if (
-                queue is not None
-                and queue.current_item is not None
-                and queue.current_item.media_item is not None
-                and _player_current_url is not None
-            ):
-                _item_ids = [queue.current_item.queue_item_id]
-                _names = [queue.current_item.media_item.name]
-                if queue.next_item is not None and queue.next_item.media_item is not None:
-                    _item_ids.append(queue.next_item.queue_item_id)
-                    _names.append(queue.next_item.media_item.name)
-                controlled_by_mass = (
-                    player.player_id in _player_current_url
-                    and _queue_item_id in _item_ids
-                    and device.source_id == "server"
-                    # this last one might fail in the rare case, that the external controller
-                    # is using the same title and its part of current/ next of our queue
-                    and device.media_title in _names
-                )
+           controlled_by_mass = player.player_id in _player_current_url and self.mass.streams.base_url in _player_current_url
             update_helper = UpnpUpdateHelper(
                 last_poll=now,
                 controlled_by_mass=controlled_by_mass,
