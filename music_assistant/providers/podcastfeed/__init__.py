@@ -141,7 +141,8 @@ class PodcastMusicprovider(MusicProvider):
         """Get (full) podcast episode details by id."""
         for idx, episode in enumerate(self.parsed_podcast["episodes"]):
             if prov_episode_id == episode["guid"]:
-                return await self._parse_episode(episode, idx)
+                if mass_episode := self._parse_episode(episode, idx):
+                    return mass_episode
         raise MediaNotFoundError("Episode not found")
 
     async def get_podcast_episodes(
@@ -156,7 +157,8 @@ class PodcastMusicprovider(MusicProvider):
         if episodes and episodes[0].get("published", 0) != 0:
             episodes.sort(key=lambda x: x.get("published", 0))
         for idx, episode in enumerate(episodes):
-            yield await self._parse_episode(episode, idx)
+            if mass_episode := self._parse_episode(episode, idx):
+                yield mass_episode
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
@@ -189,9 +191,9 @@ class PodcastMusicprovider(MusicProvider):
             mass_item_id=self.podcast_id,
         )
 
-    async def _parse_episode(
+    def _parse_episode(
         self, episode_obj: dict[str, Any], fallback_position: int
-    ) -> PodcastEpisode:
+    ) -> PodcastEpisode | None:
         return parse_podcast_episode(
             episode=episode_obj,
             prov_podcast_id=self.podcast_id,
