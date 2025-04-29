@@ -223,10 +223,10 @@ class HomeAssistantPlayers(PlayerProvider):
                 codec = supported_format["format"]
                 if supported_format["sample_rate"] not in supported_sample_rates:
                     supported_sample_rates.append(supported_format["sample_rate"])
-                bit_depth = supported_format["sample_bytes"] * 8
+                bit_depth = (supported_format["sample_bytes"] or 2) * 8
                 if bit_depth not in supported_bit_depths:
                     supported_bit_depths.append(bit_depth)
-            if not supported_sample_rates:
+            if not supported_sample_rates or not supported_bit_depths:
                 # esphome device with no media pipeline configured
                 # simply use the default config of the media pipeline
                 supported_sample_rates = [48000]

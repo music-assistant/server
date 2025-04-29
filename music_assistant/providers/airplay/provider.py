@@ -353,10 +353,15 @@ class AirPlayProvider(PlayerProvider):
                 output_format=AIRPLAY_PCM_FORMAT,
             )
 
-        # if an existing stream session is running, replace it with the new stream
+        # if an existing stream session is running, we could replace it with the new stream
         if airplay_player.raop_stream and airplay_player.raop_stream.running:
-            await airplay_player.raop_stream.session.replace_stream(audio_source)
-            return
+            # check if we need to replace the stream
+            if airplay_player.raop_stream.prevent_playback:
+                # player is in prevent playback mode, we need to stop the stream
+                await airplay_player.cmd_stop(False)
+            else:
+                await airplay_player.raop_stream.session.replace_stream(audio_source)
+                return
 
         # setup RaopStreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients(player_id)

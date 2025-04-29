@@ -228,7 +228,7 @@ class ITunesPodcastsProvider(MusicProvider):
         podcast_cover = podcast.get("cover_url")
         episodes = podcast.get("episodes", [])
         for cnt, episode in enumerate(episodes):
-            yield parse_podcast_episode(
+            if mass_episode := parse_podcast_episode(
                 episode=episode,
                 prov_podcast_id=prov_podcast_id,
                 episode_cnt=cnt,
@@ -236,30 +236,17 @@ class ITunesPodcastsProvider(MusicProvider):
                 domain=self.domain,
                 lookup_key=self.lookup_key,
                 instance_id=self.instance_id,
-            )
+            ):
+                yield mass_episode
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
-        prov_podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
-        podcast = await self._cache_get_podcast(prov_podcast_id)
-        podcast_cover = podcast.get("cover_url")
-        episodes = podcast.get("episodes", [])
-        for cnt, episode in enumerate(episodes):
-            episode_enclosures = episode.get("enclosures", [])
-            if len(episode_enclosures) < 1:
-                raise MediaNotFoundError
-            stream_url = episode_enclosures[0].get("url", None)
-            if guid_or_stream_url == episode.get("guid", stream_url):
-                return parse_podcast_episode(
-                    episode=episode,
-                    prov_podcast_id=prov_podcast_id,
-                    episode_cnt=cnt,
-                    podcast_cover=podcast_cover,
-                    domain=self.domain,
-                    lookup_key=self.lookup_key,
-                    instance_id=self.instance_id,
-                )
-
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        async for mass_episode in self.get_podcast_episodes(podcast_id):
+            _, _guid_or_stream_url = mass_episode.item_id.split(" ")
+            # this is enough, as internal
+            if guid_or_stream_url == _guid_or_stream_url:
+                return mass_episode
         raise MediaNotFoundError("Episode not found")
 
     async def recommendations(self) -> list[RecommendationFolder]:

@@ -726,6 +726,8 @@ class PlayerGroupProvider(PlayerProvider):
                 PlayerFeature.VOLUME_MUTE,
                 PlayerFeature.ENQUEUE,
                 PlayerFeature.MULTI_DEVICE_DSP,
+                PlayerFeature.GAPLESS_PLAYBACK,
+                PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
             ):
                 if all(feature in x.supported_features for x in player_provider.players):
                     player_features.add(feature)
