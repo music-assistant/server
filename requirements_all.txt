@@ -7,6 +7,7 @@ aiofiles==24.1.0
 aiohttp==3.11.18
 aiohttp-fast-zlib==0.2.3
 aiojellyfin==0.14.1
+aiomusiccast==0.14.8
 aiorun==2025.1.1
 aioslimproto==3.1.0
 aiosonos==0.1.9
@@ -44,6 +45,7 @@ python-fullykiosk==0.0.14
 python-slugify==8.0.4
 pywidevine==1.8.0
 radios==0.3.2
+setuptools>=1.0.0
 shortuuid==1.0.13
 snapcast==2.3.6
 soco==0.30.9

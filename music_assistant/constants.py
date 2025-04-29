@@ -587,6 +587,15 @@ CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN = ConfigEntry.from_dict(
     {**CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(), "hidden": True}
 )
 
+CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(),
+        "default_value": False,
+        "value": False,
+        "hidden": True,
+    }
+)
+
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
     key="preview_note",
     type=ConfigEntryType.ALERT,
