@@ -5,13 +5,13 @@ from __future__ import annotations
 import base64
 import json
 import os
-import re
 import pathlib
+import re
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
-from aiohttp.client_exceptions import ClientError
 from aiohttp import web
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
@@ -45,12 +45,11 @@ from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
 
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.helpers.auth import AuthenticationHelper
-from music_assistant_models.enums import EventType
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -108,13 +107,13 @@ async def get_config_entries(
     def validate_user_token(token):
         if not isinstance(token, str):
             return False
-        valid = re.findall(r'[a-zA-Z0-9=/+]{32,}==$', token)
+        valid = re.findall(r"[a-zA-Z0-9=/+]{32,}==$", token)
         return bool(valid)
 
     # Check for valid app token (1st with regex and then API check) otherwise display a config field
     default_app_token_valid = False
     async with (
-        mass.http_session.get(f"https://api.music.apple.com/v1/test",
+        mass.http_session.get("https://api.music.apple.com/v1/test",
             headers={"Authorization": f"Bearer {MUSIC_APP_TOKEN}"},
             ssl=True, timeout=10) as response,
     ):
@@ -138,10 +137,10 @@ async def get_config_entries(
                 return web.FileResponse(auth_css_path, headers={"content-type": "text/css"})
             async def serve_mk_glue(request: web.Request) -> web.Response:
                 return_html = f"const app_token='{values[CONF_MUSIC_APP_TOKEN]}';"
-                + f"const user_token='{values[CONF_MUSIC_USER_TOKEN]}';"
-                + f"const return_url='{auth_helper.callback_url}';"
-                + f"const flow_timeout={flow_timeout - 10};"
-                + f"const mass_buid='2025.1.1';"
+                return_html += f"const user_token='{values[CONF_MUSIC_USER_TOKEN]}';"
+                return_html += f"const return_url='{auth_helper.callback_url}';"
+                return_html += f"const flow_timeout={flow_timeout - 10};"
+                return_html += "const mass_buid='2025.1.1';"
                 return web.Response(body=return_html, headers={"content-type": "text/javascript"})
 
             mass.webserver.register_dynamic_route(flow_base_url + "index.html", serve_mk_auth_page)
@@ -152,7 +151,7 @@ async def get_config_entries(
                     + "index.html", flow_timeout))["music-user-token"]
             except Exception as error:
                 # TODO: No logger instance available here
-                error_to_log = ("Authentication Helper failed: %s", error)
+                mass.logger.error("Authentication Helper failed: %s", error)
             finally:
                 mass.webserver.unregister_dynamic_route(flow_base_url + "index.html")
                 mass.webserver.unregister_dynamic_route(flow_base_url + "index.css")
