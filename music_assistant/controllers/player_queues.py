@@ -1558,6 +1558,8 @@ class PlayerQueuesController(CoreController):
                 # while the player is actually preloading the previously enqueued item.
                 retries = 120
                 while retries > 0:
+                    if not queue.current_item:
+                        return  # guard
                     if queue.current_item.queue_item_id == item_id_in_buffer:
                         break
                     retries -= 1
