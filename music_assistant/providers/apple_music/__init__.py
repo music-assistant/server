@@ -124,7 +124,7 @@ async def get_config_entries(
 
     # Action is to launch MusicKit flow
     if action == "CONF_ACTION_AUTH":
-        # TODO: check the developer token is valid othwerwise user is going to have bad experience
+        # TODO: check the developer token is valid otherwise user is going to have bad experience
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
             flow_base_url = f"/apple_music_auth/{values["session_id"]}/"
             flow_timeout = 600
