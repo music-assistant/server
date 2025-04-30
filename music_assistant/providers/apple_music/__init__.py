@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    LoginFailed,
     MediaNotFoundError,
     MusicAssistantError,
     ResourceTemporarilyUnavailable,
@@ -113,45 +114,53 @@ async def get_config_entries(
     # Check for valid app token (1st with regex and then API check) otherwise display a config field
     default_app_token_valid = False
     async with (
-        mass.http_session.get("https://api.music.apple.com/v1/test",
+        mass.http_session.get(
+            "https://api.music.apple.com/v1/test",
             headers={"Authorization": f"Bearer {MUSIC_APP_TOKEN}"},
-            ssl=True, timeout=10) as response,
+            ssl=True,
+            timeout=10,
+        ) as response,
     ):
         if response.status == 200:
             values[CONF_MUSIC_APP_TOKEN] = f"{MUSIC_APP_TOKEN}"
             default_app_token_valid = True
 
-
     # Action is to launch MusicKit flow
     if action == "CONF_ACTION_AUTH":
         # TODO: check the developer token is valid otherwise user is going to have bad experience
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
-            flow_base_url = f"/apple_music_auth/{values["session_id"]}/"
+            flow_base_url = f"/apple_music_auth/{values['session_id']}/"
             flow_timeout = 600
             parent_file_path = pathlib.Path(__file__).parent.resolve()
+
             async def serve_mk_auth_page(request: web.Request) -> web.Response:
                 auth_html_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.html")
                 return web.FileResponse(auth_html_path, headers={"content-type": "text/html"})
+
             async def serve_mk_auth_css(request: web.Request) -> web.Response:
                 auth_css_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.css")
                 return web.FileResponse(auth_css_path, headers={"content-type": "text/css"})
+
             async def serve_mk_glue(request: web.Request) -> web.Response:
                 return_html = f"const app_token='{values[CONF_MUSIC_APP_TOKEN]}';"
                 return_html += f"const user_token='{values[CONF_MUSIC_USER_TOKEN]}';"
                 return_html += f"const return_url='{auth_helper.callback_url}';"
                 return_html += f"const flow_timeout={flow_timeout - 10};"
-                return_html += "const mass_buid='2025.1.1';"
+                return_html += f"const mass_buid='{mass.version}';"
                 return web.Response(body=return_html, headers={"content-type": "text/javascript"})
 
             mass.webserver.register_dynamic_route(flow_base_url + "index.html", serve_mk_auth_page)
             mass.webserver.register_dynamic_route(flow_base_url + "index.css", serve_mk_auth_css)
             mass.webserver.register_dynamic_route(flow_base_url + "index.js", serve_mk_glue)
             try:
-                values[CONF_MUSIC_USER_TOKEN] = (await auth_helper.authenticate(flow_base_url
-                    + "index.html", flow_timeout))["music-user-token"]
+                values[CONF_MUSIC_USER_TOKEN] = (
+                    await auth_helper.authenticate(flow_base_url + "index.html", flow_timeout)
+                )["music-user-token"]
+            except KeyError:
+                # no music-user-token URL param was found so user probably cancelled the auth
+                pass
             except Exception as error:
-                # TODO: No logger instance available here
-                mass.logger.error("Authentication Helper failed: %s", error)
+                raise LoginFailed(f"Failed to authenticate with Apple '{error}'.")
             finally:
                 mass.webserver.unregister_dynamic_route(flow_base_url + "index.html")
                 mass.webserver.unregister_dynamic_route(flow_base_url + "index.css")
@@ -178,8 +187,6 @@ async def get_config_entries(
             value=values.get(CONF_MUSIC_USER_TOKEN) if values else None,
         ),
     )
-
-
 
 
 class AppleMusicProvider(MusicProvider):
