@@ -194,14 +194,13 @@ class AirPlayProvider(PlayerProvider):
             else:
                 # If we are not in a 'Removed' state, we need info to be filled to update the player
                 return
+        elif "@" in info.name:
+            raw_id, display_name = info.name.split(".")[0].split("@", 1)
+        elif deviceid := info.decoded_properties.get("deviceid"):
+            raw_id = deviceid.replace(":", "")
+            display_name = info.name.split(".")[0]
         else:
-            if "@" in info.name:
-                raw_id, display_name = info.name.split(".")[0].split("@", 1)
-            elif deviceid := info.decoded_properties.get("deviceid"):
-                raw_id = deviceid.replace(":", "")
-                display_name = info.name.split(".")[0]
-            else:
-                return
+            return
         player_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
