@@ -71,6 +71,7 @@ def split_artists(
         " duet with ",
         " with ",
         " ft. ",
+        " vs. ",
         ", ",
         " + ",
     )
