@@ -421,8 +421,11 @@ class StreamsController(CoreController):
         crossfade = await self.mass.config.get_player_config_value(queue.queue_id, CONF_CROSSFADE)
         if crossfade and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features:
             # crossfade is not supported on this player due to missing gapless playback
-            self.logger.warning("Crossfade disabled: gapless playback not supported on player")
-            return False
+            self.logger.warning(
+                "Crossfade disabled: Player %s does not support gapless playback",
+                queue_player.display_name,
+            )
+            crossfade = False
 
         if crossfade:
             # crossfade is enabled, use special crossfaded single item stream
@@ -925,9 +928,9 @@ class StreamsController(CoreController):
             # For this to be effective the player itself needs to be able to start playback fast.
             # If the returned stream is used as input to ffmpeg we should pass -probesize 8096.
             #
-            # Finally we also need to make sure we don't make other blocking requests to the TTS
-            # data, eg to get the duration (async_parse_tags).
-            #
+            # Finally, if the output_format is non-PCM, raw concatenation can be problematic.
+            # So far players seem to tolerate this, but it might break some player in the future.
+
             async for chunk in get_ffmpeg_stream(
                 audio_input=ANNOUNCE_ALERT_FILE,
                 input_format=AudioFormat(content_type=ContentType.try_parse(ANNOUNCE_ALERT_FILE)),

@@ -89,8 +89,6 @@ class SonosPlayer:
         return (
             self.airplay_mode_enabled
             and self.client.player.is_coordinator
-            and (active_group := self.client.player.group)
-            and active_group.container_type == ContainerType.AIRPLAY
             and (airplay_player := self.get_linked_airplay_player(False))
             and airplay_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
         )

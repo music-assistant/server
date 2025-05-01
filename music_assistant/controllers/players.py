@@ -799,19 +799,23 @@ class PlayerController(CoreController):
             if child_player.synced_to and child_player.synced_to == target_player:
                 continue  # already synced to this target
 
-            if child_player.group_childs and child_player.state != PlayerState.IDLE:
-                # guard edge case: childplayer is already a sync leader on its own
-                raise PlayerCommandFailed(
-                    f"Player {child_player.name} is already synced with other players, "
-                    "you need to ungroup it first before you can join it to another player.",
-                )
-            if child_player.synced_to:
-                # player already synced to another player, ungroup first
-                self.logger.warning(
-                    "Player %s is already synced to another player, ungrouping first",
-                    child_player.name,
-                )
-                await self.cmd_ungroup(child_player.player_id)
+            # perform some sanity checks on the child player
+            # if we're not joining a group player
+            if parent_player.provider != "player_group":
+                if child_player.group_childs and child_player.state != PlayerState.IDLE:
+                    # guard edge case: childplayer is already a sync leader on its own
+                    raise PlayerCommandFailed(
+                        f"Player {child_player.name} is already synced with other players, "
+                        "you need to ungroup it first before you can join it to another player.",
+                    )
+                if child_player.synced_to:
+                    # player already synced to another player, ungroup first
+                    self.logger.warning(
+                        "Player %s is already synced to another player, ungrouping first",
+                        child_player.name,
+                    )
+                    await self.cmd_ungroup(child_player.player_id)
+
             # power on the player if needed
             if not child_player.powered and child_player.power_control != PLAYER_CONTROL_NONE:
                 await self.cmd_power(child_player.player_id, True, skip_update=True)

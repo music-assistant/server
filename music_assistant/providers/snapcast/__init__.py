@@ -650,9 +650,10 @@ class SnapCastProvider(PlayerProvider):
         # We go for the simplest solution: save the previous volume, change it, restore later
         # (with the downside that the change will be visible in the UI)
         player = self.mass.players.get(player_id)
-        orig_volume_level = player.volume_level
-        volume_level = self.mass.players.get_announcement_volume(player_id, volume_level)
-        await self.cmd_volume_set(player_id, volume_level)
+        orig_volume_level = player.volume_level  # Note: might be None
+
+        if volume_level is not None:
+            await self.cmd_volume_set(player_id, volume_level)
 
         input_format = DEFAULT_SNAPCAST_FORMAT
         audio_source = self.mass.streams.get_announcement_stream(
@@ -690,9 +691,9 @@ class SnapCastProvider(PlayerProvider):
         # delete the announcement stream
         await self._delete_stream(stream_name)
 
-        # restore volume, if it is still the same we set above
-        # (the user did not change it while the announcement was playing)
-        if player.volume_level == volume_level and orig_volume_level is not None:
+        # restore volume, if we changed it above and it's still the same we set
+        # (the user did not change it himself while the announcement was playing)
+        if player.volume_level == volume_level and None not in [volume_level, orig_volume_level]:
             await self.cmd_volume_set(player_id, orig_volume_level)
 
         # and restore the group to either the default or the music stream
