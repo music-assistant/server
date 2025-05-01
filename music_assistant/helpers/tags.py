@@ -65,7 +65,7 @@ def split_artists(
     # multiple artists in freeform, even featuring artists may be included in this
     # string. Try to parse the featuring artists and separate them.
     splitters = (
-        "featuring",
+        " featuring ",
         " feat. ",
         " feat ",
         "duet with",
