@@ -31,7 +31,10 @@ from music_assistant.constants import (
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.helpers.upnp import create_didl_metadata_str
+from music_assistant.helpers.upnp import (
+    get_xml_soap_set_next_url,
+    get_xml_soap_set_url,
+)
 from music_assistant.models.player_provider import PlayerProvider
 
 from .const import CONF_AIRPLAY_MODE
@@ -599,23 +602,12 @@ class SonosPlayerProvider(PlayerProvider):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA using the legacy upnp api."""
-        xml_data = f"""
-            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"
-                s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-                <s:Body>
-                    <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-                        <InstanceID>0</InstanceID>
-                        <CurrentURI>{media.uri}</CurrentURI>
-                        <CurrentURIMetaData>{create_didl_metadata_str(media)}</CurrentURIMetaData>
-                    </u:SetAVTransportURI>
-                </s:Body>
-            </s:Envelope>
-            """
+        xml_data, soap_action = get_xml_soap_set_url(media)
         player_ip = sonos_player.mass_player.device_info.ip_address
         async with self.mass.http_session.post(
             f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
             headers={
-                "SOAPACTION": "urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI",
+                "SOAPACTION": soap_action,
                 "Content-Type": "text/xml; charset=utf-8",
                 "Connection": "close",
             },
@@ -632,22 +624,12 @@ class SonosPlayerProvider(PlayerProvider):
         self, sonos_player: SonosPlayer, media: PlayerMedia
     ) -> None:
         """Handle enqueuing of the next queue item using the legacy unpnp api."""
-        xml_data = f"""
-            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-                <s:Body>
-                    <u:SetNextAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-                        <InstanceID>0</InstanceID>
-                        <NextURI>{media.uri}</NextURI>
-                        <NextURIMetaData>{create_didl_metadata_str(media)}</NextURIMetaData>
-                    </u:SetNextAVTransportURI>
-                </s:Body>
-            </s:Envelope>
-            """
+        xml_data, soap_action = get_xml_soap_set_next_url(media)
         player_ip = sonos_player.mass_player.device_info.ip_address
         async with self.mass.http_session.post(
             f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
             headers={
-                "SOAPACTION": "urn:schemas-upnp-org:service:AVTransport:1#SetNextAVTransportURI",
+                "SOAPACTION": soap_action,
                 "Content-Type": "text/xml; charset=utf-8",
                 "Connection": "close",
             },
