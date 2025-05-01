@@ -70,6 +70,8 @@ def split_artists(
         " feat ",
         " duet with ",
         " with ",
+        " ft. ",
+        " Ft. "
     )
     if allow_ampersand:
         splitters = (*splitters, " & ")
