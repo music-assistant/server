@@ -114,7 +114,7 @@ DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (
-    "https://github.com/home-assistant/brands/raw/master/custom_integrations/mass/icon%402x.png"
+    "https://github.com/home-assistant/brands/blob/master/core_integrations/music_assistant/icon%402x.png"
 )
 ENCRYPT_SUFFIX = "_encrypted_"
 CONFIGURABLE_CORE_CONTROLLERS = (
