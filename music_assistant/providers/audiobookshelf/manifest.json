@@ -7,7 +7,7 @@
     "@fmunkes"
   ],
   "requirements": [
-    "aioaudiobookshelf==0.1.6"
+    "aioaudiobookshelf==0.1.7"
   ],
   "documentation": "https://music-assistant.io/music-providers/audiobookshelf",
   "multi_instance": true
