@@ -68,8 +68,6 @@ def split_artists(
         " featuring ",
         " feat. ",
         " feat ",
-        "duet with",
-        "with",
         " duet with ",
         " with ",
     )
