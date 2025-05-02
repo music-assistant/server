@@ -597,23 +597,26 @@ class SpotifyProvider(MusicProvider):
             args += ["--start-position", str(int(seek_position))]
 
         # we retry twice in case librespot fails to start
-        for is_last_attempt in (False, True):
-            librespot_proc: AsyncProcess = AsyncProcess(
+        for attempt in (1, 2):
+            async with AsyncProcess(
                 args,
                 stdout=True,
                 stderr=None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False,
                 name="librespot",
-            )
-            try:
-                await librespot_proc.start()
-
+            ) as librespot_proc:
                 # get first chunk with timeout, to catch the issue where librespot is not starting
                 # which seems to happen from time to time (but rarely)
                 try:
-                    chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=5)
+                    chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=5 * attempt)
+                    if not chunk:
+                        raise AudioError
                     yield chunk
-                except TimeoutError:
-                    raise AudioError("No audio received from librespot within timeout")
+                except (TimeoutError, AudioError):
+                    err_mesg = "No audio received from librespot within timeout"
+                    if attempt == 2:
+                        raise AudioError(err_mesg)
+                    self.logger.warning("%s - will retry once", err_mesg)
+                    continue
 
                 # keep yielding chunks until librespot is done
                 async for chunk in librespot_proc.iter_chunked():
@@ -621,14 +624,6 @@ class SpotifyProvider(MusicProvider):
 
                 # if we reach this point, streaming succeeded and we can break the loop
                 break
-            except (asyncio.CancelledError, GeneratorExit):
-                raise
-            except Exception as e:
-                if is_last_attempt:
-                    raise
-                self.logger.error("Error streaming audio: %s - will retry once", str(e))
-            finally:
-                await librespot_proc.close()
 
     def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""

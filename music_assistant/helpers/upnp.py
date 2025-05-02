@@ -13,9 +13,102 @@ from music_assistant.constants import MASS_LOGO_ONLINE
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
 
+
 # ruff: noqa: E501
 
 
+# XML
+def _get_soap_action(command: str) -> str:
+    return f"urn:schemas-upnp-org:service:AVTransport:1#{command}"
+
+
+def _get_body(command: str, arguments: str = "") -> str:
+    return (
+        f'<u:{command} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+        r"<InstanceID>0</InstanceID>"
+        f"{arguments}"
+        f"</u:{command}>"
+    )
+
+
+def _get_xml(body: str) -> str:
+    return (
+        r'<?xml version="1.0"?>'
+        r'<s:Envelope s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/" xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">'
+        r"<s:Body>"
+        f"{body}"
+        r"</s:Body>"
+        r"</s:Envelope>"
+    )
+
+
+def get_xml_soap_play() -> tuple[str, str]:
+    """Get UPnP xml and soap for Play."""
+    command = "Play"
+    arguments = r"<Speed>1</Speed>"
+    return _get_xml(_get_body(command, arguments)), _get_soap_action(command)
+
+
+def get_xml_soap_stop() -> tuple[str, str]:
+    """Get UPnP xml and soap for Stop."""
+    command = "Stop"
+    return _get_xml(_get_body(command)), _get_soap_action(command)
+
+
+def get_xml_soap_pause() -> tuple[str, str]:
+    """Get UPnP xml and soap for Pause."""
+    command = "Pause"
+    return _get_xml(_get_body(command)), _get_soap_action(command)
+
+
+def get_xml_soap_next() -> tuple[str, str]:
+    """Get UPnP xml and soap for Next."""
+    command = "Next"
+    return _get_xml(_get_body(command)), _get_soap_action(command)
+
+
+def get_xml_soap_previous() -> tuple[str, str]:
+    """Get UPnP xml and soap for Previous."""
+    command = "Previous"
+    return _get_xml(_get_body(command)), _get_soap_action(command)
+
+
+def get_xml_soap_transport_info() -> tuple[str, str]:
+    """Get UPnP xml and soap for GetTransportInfo."""
+    command = "GetTransportInfo"
+    return _get_xml(_get_body(command)), _get_soap_action(command)
+
+
+def get_xml_soap_media_info() -> tuple[str, str]:
+    """Get UPnP xml and soap for GetMediaInfo."""
+    command = "GetMediaInfo"
+    return _get_xml(_get_body(command)), _get_soap_action(command)
+
+
+def get_xml_soap_set_url(player_media: PlayerMedia) -> tuple[str, str]:
+    """Get UPnP xml and soap for SetAVTransportURI."""
+    metadata = create_didl_metadata_str(player_media)
+    command = "SetAVTransportURI"
+    arguments = (
+        f"<CurrentURI>{player_media.uri}</CurrentURI>"
+        "<CurrentURIMetaData>"
+        f"{metadata}"
+        "</CurrentURIMetaData>"
+    )
+    return _get_xml(_get_body(command, arguments)), _get_soap_action(command)
+
+
+def get_xml_soap_set_next_url(player_media: PlayerMedia) -> tuple[str, str]:
+    """Get UPnP xml and soap for SetNextAVTransportURI."""
+    metadata = create_didl_metadata_str(player_media)
+    command = "SetNextAVTransportURI"
+    arguments = (
+        f"<NextURI>{player_media.uri}</NextURI><NextURIMetaData>{metadata}</NextURIMetaData>"
+    )
+    return _get_xml(_get_body(command, arguments)), _get_soap_action(command)
+
+
+# DIDL-LITE
 def create_didl_metadata(media: PlayerMedia) -> str:
     """Create DIDL metadata string from url and PlayerMedia."""
     ext = media.uri.split(".")[-1].split("?")[0]

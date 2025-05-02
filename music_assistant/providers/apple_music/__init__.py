@@ -5,9 +5,12 @@ from __future__ import annotations
 import base64
 import json
 import os
+import pathlib
+import re
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
+from aiohttp import web
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -20,6 +23,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    LoginFailed,
     MediaNotFoundError,
     MusicAssistantError,
     ResourceTemporarilyUnavailable,
@@ -41,8 +45,8 @@ from music_assistant_models.streamdetails import StreamDetails
 from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
 
-from music_assistant.constants import CONF_PASSWORD
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
@@ -70,11 +74,14 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,
 }
 
-DEVELOPER_TOKEN = app_var(8)
+MUSIC_APP_TOKEN = app_var(8)
 WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
+
+CONF_MUSIC_APP_TOKEN = "music_app_token"
+CONF_MUSIC_USER_TOKEN = "music_user_token"
 
 
 async def setup(
@@ -97,13 +104,87 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+
+    def validate_user_token(token):
+        if not isinstance(token, str):
+            return False
+        valid = re.findall(r"[a-zA-Z0-9=/+]{32,}==$", token)
+        return bool(valid)
+
+    # Check for valid app token (1st with regex and then API check) otherwise display a config field
+    default_app_token_valid = False
+    async with (
+        mass.http_session.get(
+            "https://api.music.apple.com/v1/test",
+            headers={"Authorization": f"Bearer {MUSIC_APP_TOKEN}"},
+            ssl=True,
+            timeout=10,
+        ) as response,
+    ):
+        if response.status == 200:
+            values[CONF_MUSIC_APP_TOKEN] = f"{MUSIC_APP_TOKEN}"
+            default_app_token_valid = True
+
+    # Action is to launch MusicKit flow
+    if action == "CONF_ACTION_AUTH":
+        # TODO: check the developer token is valid otherwise user is going to have bad experience
+        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+            flow_base_url = f"apple_music_auth/{values['session_id']}/"
+            flow_timeout = 600
+            parent_file_path = pathlib.Path(__file__).parent.resolve()
+
+            async def serve_mk_auth_page(request: web.Request) -> web.Response:
+                auth_html_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.html")
+                return web.FileResponse(auth_html_path, headers={"content-type": "text/html"})
+
+            async def serve_mk_auth_css(request: web.Request) -> web.Response:
+                auth_css_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.css")
+                return web.FileResponse(auth_css_path, headers={"content-type": "text/css"})
+
+            async def serve_mk_glue(request: web.Request) -> web.Response:
+                return_html = f"const app_token='{values[CONF_MUSIC_APP_TOKEN]}';"
+                return_html += f"const user_token='{values[CONF_MUSIC_USER_TOKEN]}';"
+                return_html += f"const return_url='{auth_helper.callback_url}';"
+                return_html += f"const flow_timeout={flow_timeout - 10};"
+                return_html += f"const mass_buid='{mass.version}';"
+                return web.Response(body=return_html, headers={"content-type": "text/javascript"})
+
+            mass.webserver.register_dynamic_route(f"/{flow_base_url}index.html", serve_mk_auth_page)
+            mass.webserver.register_dynamic_route(f"/{flow_base_url}index.css", serve_mk_auth_css)
+            mass.webserver.register_dynamic_route(f"/{flow_base_url}index.js", serve_mk_glue)
+            try:
+                values[CONF_MUSIC_USER_TOKEN] = (
+                    await auth_helper.authenticate(f"{flow_base_url}index.html", flow_timeout)
+                )["music-user-token"]
+            except KeyError:
+                # no music-user-token URL param was found so user probably cancelled the auth
+                pass
+            except Exception as error:
+                raise LoginFailed(f"Failed to authenticate with Apple '{error}'.")
+            finally:
+                mass.webserver.unregister_dynamic_route(f"/{flow_base_url}index.html")
+                mass.webserver.unregister_dynamic_route(f"/{flow_base_url}index.css")
+                mass.webserver.unregister_dynamic_route(f"/{flow_base_url}index.js")
+
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_PASSWORD,
+            key=CONF_MUSIC_APP_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Music user token",
+            label="MusicKit App Token",
+            hidden=default_app_token_valid,
             required=True,
+            value=values.get(CONF_MUSIC_APP_TOKEN) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_MUSIC_USER_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Music User Token",
+            required=True,
+            action="CONF_ACTION_AUTH",
+            description="You need to authenticate on Apple Music.",
+            action_label="Authenticate with Apple Music",
+            value=values.get(CONF_MUSIC_USER_TOKEN) if values else None,
         ),
     )
 
@@ -112,6 +193,7 @@ class AppleMusicProvider(MusicProvider):
     """Implementation of an Apple Music MusicProvider."""
 
     _music_user_token: str | None = None
+    _music_app_token: str | None = None
     _storefront: str | None = None
     _decrypt_client_id: bytes | None = None
     _decrypt_private_key: bytes | None = None
@@ -121,7 +203,8 @@ class AppleMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._music_user_token = self.config.get_value(CONF_PASSWORD)
+        self._music_user_token = self.config.get_value(CONF_MUSIC_USER_TOKEN)
+        self._music_app_token = self.config.get_value(CONF_MUSIC_APP_TOKEN)
         self._storefront = await self._get_user_storefront()
         async with aiofiles.open(
             os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
@@ -644,7 +727,7 @@ class AppleMusicProvider(MusicProvider):
     async def _get_data(self, endpoint, **kwargs) -> dict[str, Any]:
         """Get data from api."""
         url = f"https://api.music.apple.com/v1/{endpoint}"
-        headers = {"Authorization": f"Bearer {DEVELOPER_TOKEN}"}
+        headers = {"Authorization": f"Bearer {self._music_app_token}"}
         headers["Music-User-Token"] = self._music_user_token
         async with (
             self.mass.http_session.get(
@@ -687,7 +770,7 @@ class AppleMusicProvider(MusicProvider):
     async def _post_data(self, endpoint, data=None, **kwargs) -> str:
         """Post data on api."""
         url = f"https://api.music.apple.com/v1/{endpoint}"
-        headers = {"Authorization": f"Bearer {DEVELOPER_TOKEN}"}
+        headers = {"Authorization": f"Bearer {self._music_app_token}"}
         headers["Music-User-Token"] = self._music_user_token
         async with (
             self.mass.http_session.post(
@@ -759,7 +842,7 @@ class AppleMusicProvider(MusicProvider):
     def _get_decryption_headers(self):
         """Get headers for decryption requests."""
         return {
-            "authorization": f"Bearer {DEVELOPER_TOKEN}",
+            "authorization": f"Bearer {self._music_app_token}",
             "media-user-token": self._music_user_token,
             "connection": "keep-alive",
             "accept": "application/json",

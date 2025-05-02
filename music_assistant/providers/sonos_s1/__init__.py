@@ -38,7 +38,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
-from music_assistant.helpers.didl_lite import create_didl_metadata
+from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player_provider import PlayerProvider
 
 from .player import SonosPlayer

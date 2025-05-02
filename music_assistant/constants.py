@@ -114,7 +114,7 @@ DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (
-    "https://github.com/home-assistant/brands/raw/master/custom_integrations/mass/icon%402x.png"
+    "https://github.com/home-assistant/brands/blob/master/core_integrations/music_assistant/icon%402x.png"
 )
 ENCRYPT_SUFFIX = "_encrypted_"
 CONFIGURABLE_CORE_CONTROLLERS = (
@@ -585,6 +585,15 @@ CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
 
 CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN = ConfigEntry.from_dict(
     {**CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(), "hidden": True}
+)
+
+CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(),
+        "default_value": False,
+        "value": False,
+        "hidden": True,
+    }
 )
 
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
