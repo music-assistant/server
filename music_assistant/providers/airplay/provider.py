@@ -187,8 +187,14 @@ class AirPlayProvider(PlayerProvider):
     ) -> None:
         """Handle MDNS service state callback."""
         if not info:
-            return
-        if "@" in info.name:
+            # When info are not provided for the service
+            if state_change == ServiceStateChange.Removed and "@" in name:
+                # Service name is enough to mark the player as unavailable on 'Removed' notification
+                raw_id, display_name = name.split(".")[0].split("@", 1)
+            else:
+                # If we are not in a 'Removed' state, we need info to be filled to update the player
+                return
+        elif "@" in info.name:
             raw_id, display_name = info.name.split(".")[0].split("@", 1)
         elif deviceid := info.decoded_properties.get("deviceid"):
             raw_id = deviceid.replace(":", "")
@@ -207,6 +213,7 @@ class AirPlayProvider(PlayerProvider):
                 self.mass.players.update(player_id)
             return
         # handle update for existing device
+        assert info is not None  # type guard
         if airplay_player := self._players.get(player_id):
             if mass_player := self.mass.players.get(player_id):
                 cur_address = get_primary_ip_address(info)
