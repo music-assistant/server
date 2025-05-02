@@ -654,13 +654,9 @@ class AirPlayProvider(PlayerProvider):
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
                 if raop_stream := airplay_player.raop_stream:
-                    # ignore this if we just started playing to prevent false positives
-                    elapsed_time = (
-                        10 if mass_player.elapsed_time is None else mass_player.elapsed_time
+                    self.mass.create_task(
+                        airplay_player.raop_stream.session.remove_client(airplay_player)
                     )
-                    if elapsed_time > 10 and mass_player.state == PlayerState.PLAYING:
-                        raop_stream.prevent_playback = True
-                        self.mass.create_task(self.monitor_prevent_playback(player_id))
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 if raop_stream := airplay_player.raop_stream:
@@ -678,30 +674,3 @@ class AirPlayProvider(PlayerProvider):
             await writer.drain()
         finally:
             writer.close()
-
-    async def monitor_prevent_playback(self, player_id: str) -> None:
-        """Monitor the prevent playback state of an airplay player."""
-        count = 0
-        if not (airplay_player := self._players.get(player_id)):
-            return
-        if not airplay_player.raop_stream:
-            return
-        prev_active_remote_id = airplay_player.raop_stream.active_remote_id
-        while count < 40:
-            count += 1
-            if not (airplay_player := self._players.get(player_id)):
-                return
-            if not (raop_stream := airplay_player.raop_stream):
-                return
-            if raop_stream.active_remote_id != prev_active_remote_id:
-                # checksum
-                return
-            if not raop_stream.prevent_playback:
-                return
-            await asyncio.sleep(0.5)
-
-        if airplay_player.raop_stream and airplay_player.raop_stream.session:
-            airplay_player.logger.info(
-                "Player has been in prevent playback mode for too long, aborting playback.",
-            )
-            await airplay_player.raop_stream.session.remove_client(airplay_player)
