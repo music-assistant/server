@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import TracebackType
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,8 @@ from music_assistant_models.errors import LoginFailed
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+
+LOGGER = logging.getLogger(__name__)
 
 
 class AuthenticationHelper:
@@ -27,18 +30,17 @@ class AuthenticationHelper:
         """
         self.mass = mass
         self.session_id = session_id
+        self._cb_path = f"/callback/{self.session_id}"
         self._callback_response: asyncio.Queue[dict[str, str]] = asyncio.Queue(1)
 
     @property
     def callback_url(self) -> str:
         """Return the callback URL."""
-        return f"{self.mass.streams.base_url}/callback/{self.session_id}"
+        return f"{self.mass.webserver.base_url}{self._cb_path}"
 
     async def __aenter__(self) -> AuthenticationHelper:
         """Enter context manager."""
-        self.mass.streams.register_dynamic_route(
-            f"/callback/{self.session_id}", self._handle_callback, "GET"
-        )
+        self.mass.webserver.register_dynamic_route(self._cb_path, self._handle_callback, "GET")
         return self
 
     async def __aexit__(
@@ -48,11 +50,12 @@ class AuthenticationHelper:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Exit context manager."""
-        self.mass.streams.unregister_dynamic_route(f"/callback/{self.session_id}", "GET")
+        self.mass.webserver.unregister_dynamic_route(self._cb_path, "GET")
 
     async def authenticate(self, auth_url: str, timeout: int = 60) -> dict[str, str]:
         """Start the auth process and return any query params if received on the callback."""
         self.send_url(auth_url)
+        LOGGER.debug("Waiting for authentication callback on %s", self.callback_url)
         return await self.wait_for_callback(timeout)
 
     def send_url(self, auth_url: str) -> None:
@@ -72,6 +75,7 @@ class AuthenticationHelper:
         """Handle callback response."""
         params = dict(request.query)
         await self._callback_response.put(params)
+        LOGGER.debug("Received callback with params: %s", params)
         return_html = """
         <html>
         <body onload="window.close();">
