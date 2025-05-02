@@ -213,6 +213,7 @@ class AirPlayProvider(PlayerProvider):
                 self.mass.players.update(player_id)
             return
         # handle update for existing device
+        assert info is not None  # type guard
         if airplay_player := self._players.get(player_id):
             if mass_player := self.mass.players.get(player_id):
                 cur_address = get_primary_ip_address(info)
