@@ -16,6 +16,8 @@ from music_assistant_models.media_items import MediaItemMetadata, Track
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.metadata_provider import MetadataProvider
+from music_assistant.providers.filesystem_local import LocalFileSystemProvider
+from music_assistant.providers.filesystem_smb import SMBFileSystemProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -109,6 +111,16 @@ class LrclibProvider(MetadataProvider):
                 "Skipping lyrics lookup for %s: Already has synchronized lyrics", track.name
             )
             return None
+
+        # check, if the track comes from any filesystem provider, and might have stored
+        # local lyrics
+        if (filesystem_provider := self.mass.get_provider(track.provider)) and isinstance(
+            filesystem_provider, LocalFileSystemProvider | SMBFileSystemProvider
+        ):
+            if lrc_lyrics := await filesystem_provider._get_lrc_data(track):
+                metadata = MediaItemMetadata()
+                metadata.lrc_lyrics = lrc_lyrics
+                return metadata
 
         if not track.artists:
             self.logger.debug("Skipping lyrics lookup for %s: No artist information", track.name)
