@@ -971,6 +971,16 @@ class LocalFileSystemProvider(MusicProvider):
                     tags.track_album_loudness,
                 )
             )
+
+        # possible lrclib metadata
+        # synced lyrics are saved as "filename.lrc" by lrcget alongside
+        # the actual file location - just change the file extension
+        assert file_item.ext is not None  # for type checking
+        lrc_path = f"{file_item.absolute_path.removesuffix(file_item.ext)}lrc"
+        if await self.exists(lrc_path):
+            async with aiofiles.open(lrc_path) as lrc_file:
+                track.metadata.lrc_lyrics = await lrc_file.read()
+
         return track
 
     async def _parse_artist(
