@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ServerDisconnectedError
 from aiomusiccast.exceptions import MusicCastGroupException
@@ -656,9 +656,19 @@ class MusicCast(PlayerProvider):
         player.name = zone_data.name or "UNKNOWN NAME"
         player.powered = zone_data.power == "on"
 
-        player.volume_level = int(
-            zone_data.current_volume / (zone_data.max_volume - zone_data.min_volume) * 100
-        )
+        # NOTE: aiomusiccast does not type hint the volume variables, and they may
+        # be none, and not only integers
+        _current_volume = cast("int | None", zone_data.current_volume)
+        _max_volume = cast("int | None", zone_data.max_volume)
+        _min_volume = cast("int | None", zone_data.min_volume)
+        if _current_volume is None:
+            player.volume_level = None
+        else:
+            _min_volume = 0 if _min_volume is None else _min_volume
+            _max_volume = 100 if _max_volume is None else _max_volume
+            if _min_volume == _max_volume:
+                _max_volume += 1
+            player.volume_level = int(_current_volume / (_max_volume - _min_volume) * 100)
         player.volume_muted = zone_data.mute
 
         # STATE
