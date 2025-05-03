@@ -9,7 +9,10 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp.client_exceptions import ServerDisconnectedError
+from aiohttp.client_exceptions import (
+    ClientError,
+    ServerDisconnectedError,
+)
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
@@ -512,10 +515,16 @@ class MusicCast(PlayerProvider):
         device_ip = get_primary_ip_address(info)
         if device_ip is None:
             return
-        device_info = await self.mass.http_session.get(
-            f"http://{device_ip}/{MC_DEVICE_INFO_ENDPOINT}"
-        )
-        if device_info.status == 404:
+        try:
+            device_info = await self.mass.http_session.get(
+                f"http://{device_ip}/{MC_DEVICE_INFO_ENDPOINT}", raise_for_status=True
+            )
+        except ClientError:
+            # typical Errors are
+            # ClientResponseError -> raise_for_status
+            # ClientConnectorError -> unable to connect/ not existing/ timeout
+            # but we can use the base exception class, as we only check
+            # if the device is suitable
             return
         device_info_json = await device_info.json()
         device_id = device_info_json.get("device_id")
