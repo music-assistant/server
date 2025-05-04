@@ -972,9 +972,14 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             )
 
-        # lrc lyrics
-        if lrc_lyrics := await self._get_lrc_data(track):
-            track.metadata.lrc_lyrics = lrc_lyrics
+        # possible lrclib metadata
+        # synced lyrics are saved as "filename.lrc" by lrcget alongside
+        # the actual file location - just change the file extension
+        assert file_item.ext is not None  # for type checking
+        lrc_path = f"{file_item.absolute_path.removesuffix(file_item.ext)}lrc"
+        if await self.exists(lrc_path):
+            async with aiofiles.open(lrc_path) as lrc_file:
+                track.metadata.lrc_lyrics = await lrc_file.read()
 
         return track
 
@@ -1499,21 +1504,6 @@ class LocalFileSystemProvider(MusicProvider):
 
         await self.cache.set(folder, images, base_key=cache_base_key, expiration=120)
         return images
-
-    async def _get_lrc_data(self, track: Track) -> str | None:
-        # possible lrclib metadata
-        # synced lyrics are saved as "filename.lrc" by lrcget alongside
-        # the actual file location - just change the file extension
-        file_item = await self.resolve(track.item_id)
-        assert file_item.ext is not None  # for type checking
-        lrc_path = f"{file_item.absolute_path.removesuffix(file_item.ext)}lrc"
-        if await self.exists(lrc_path):
-            async with aiofiles.open(lrc_path) as lrc_file:
-                lrc_lyrics = await lrc_file.read()
-                if not isinstance(lrc_lyrics, str):
-                    return None
-                return lrc_lyrics
-        return None
 
     async def check_write_access(self) -> None:
         """Perform check if we have write access."""
