@@ -2084,6 +2084,7 @@ class PlayerQueuesController(CoreController):
             EventType.MEDIA_ITEM_PLAYED,
             object_id=item_to_report.media_item.uri,
             data=MediaItemPlaybackProgressReport(
+                item_id=item_to_report.media_item.item_id,
                 uri=item_to_report.media_item.uri,
                 media_type=item_to_report.media_item.media_type,
                 name=item_to_report.media_item.name,
@@ -2101,6 +2102,7 @@ class PlayerQueuesController(CoreController):
                     else None
                 ),
                 duration=duration,
+                provider=item_to_report.media_item.provider,
                 mbid=(getattr(item_to_report.media_item, "mbid", None)),
                 seconds_played=seconds_played,
                 fully_played=fully_played,

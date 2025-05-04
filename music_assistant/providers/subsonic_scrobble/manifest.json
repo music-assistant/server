@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "domain": "subsonic_scrobble",
+  "name": "Subsonic Scrobbler",
+  "description": "Report your music playback back to Subsonic server",
+  "codeowners": ["@clusters"],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": false,
+  "requirements": [
+    "py-opensonic==5.3.1"
+  ]
+}
