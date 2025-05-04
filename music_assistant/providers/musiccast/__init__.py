@@ -752,7 +752,7 @@ class MusicCast(PlayerProvider):
         # and player.set_current_media is the helper function
         # do not access the queue controller to gain playback information here
         if update_helper.current_uri is not None and update_helper.controlled_by_mass:
-            player.set_current_media(uri=update_helper.current_uri)
+            player.set_current_media(uri=update_helper.current_uri, clear_all=True)
         elif device.is_client:
             _server = device.group_server
             _server_id = self._get_player_id_from_mc_zone_player(_server)
