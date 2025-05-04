@@ -581,9 +581,11 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Item {prov_track_id} not found"
             raise MediaNotFoundError(msg) from e
         aid = sonic_song.album_id if sonic_song.album_id else sonic_song.parent
+        album: Album | None = None
         if not aid:
             self.logger.warning("Unable to find album id for track %s", sonic_song.id)
-        album: Album = await self.get_album(prov_album_id=aid)
+        else:
+            album = await self.get_album(prov_album_id=aid)
         return self._parse_track(sonic_song, album=album)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
