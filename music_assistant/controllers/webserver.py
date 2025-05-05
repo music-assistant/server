@@ -13,6 +13,7 @@ import os
 import urllib.parse
 from concurrent import futures
 from contextlib import suppress
+from contextvars import ContextVar
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
@@ -47,6 +48,7 @@ CONF_BASE_URL = "base_url"
 CONF_EXPOSE_SERVER = "expose_server"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
+_BASE_URL: ContextVar[str] = ContextVar("_BASE_URL", default="")
 
 
 class WebserverController(CoreController):
@@ -70,7 +72,7 @@ class WebserverController(CoreController):
     @property
     def base_url(self) -> str:
         """Return the base_url for the streamserver."""
-        return self._server.base_url
+        return _BASE_URL.get(self._server.base_url)
 
     async def get_config_entries(
         self,
@@ -273,6 +275,12 @@ class WebsocketClientHandler:
         self._handle_task: asyncio.Task | None = None
         self._writer_task: asyncio.Task | None = None
         self._logger = webserver.logger
+        # try to dynamically detect the base_url of a client if proxied or behind Ingress
+        self.base_url: str | None = None
+        if forward_host := request.headers.get("X-Forwarded-Host"):
+            ingress_path = request.headers.get("X-Ingress-Path", "")
+            forward_proto = request.headers.get("X-Forwarded-Proto", request.protocol)
+            self.base_url = f"{forward_proto}://{forward_host}{ingress_path}"
 
     async def disconnect(self) -> None:
         """Disconnect client."""
@@ -357,6 +365,8 @@ class WebsocketClientHandler:
     def _handle_command(self, msg: CommandMessage) -> None:
         """Handle an incoming command from the client."""
         self._logger.debug("Handling command %s", msg.command)
+        if self.base_url:
+            _BASE_URL.set(self.base_url)
 
         # work out handler for the given path/command
         handler = self.mass.command_handlers.get(msg.command)
