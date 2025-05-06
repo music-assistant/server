@@ -198,6 +198,8 @@ class MusicCast(PlayerProvider):
 
         if zone_player := self._get_zone_player(player_id):
             if len(zone_player.physical_device.zone_devices) > 1:
+                mass_player = self.mass.players.get(player_id)
+                assert mass_player is not None  # for type checking
                 source_options: list[ConfigValueOption] = []
                 allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
                 for (
@@ -206,22 +208,31 @@ class MusicCast(PlayerProvider):
                 ) in zone_player.source_mapping.items():
                     if source_id in allowed_sources:
                         source_options.append(ConfigValueOption(title=source_name, value=source_id))
-                zone_entries = (
-                    ConfigEntry(
-                        key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
-                        label="Switch to this non-net source on group leave.",
-                        type=ConfigEntryType.STRING,
-                        options=source_options,
-                        default_value=source_options[0].value,
-                    ),
-                    ConfigEntry(
-                        key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
-                        type=ConfigEntryType.BOOLEAN,
-                        label="Turn off zone after group is left.",
-                        default_value=False,
-                        description="Turn off zone after group is left.",
-                    ),
-                )
+                if len(source_options) == 0:
+                    # this should never happen
+                    self.logger.error(
+                        "The player %s has multiple zones, but lacks a non-net source to switch to."
+                        " Please report this on github or discord.",
+                        mass_player.display_name or mass_player.name,
+                    )
+                    zone_entries = ()
+                else:
+                    zone_entries = (
+                        ConfigEntry(
+                            key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
+                            label="Switch to this non-net source on group leave.",
+                            type=ConfigEntryType.STRING,
+                            options=source_options,
+                            default_value=source_options[0].value,
+                        ),
+                        ConfigEntry(
+                            key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
+                            type=ConfigEntryType.BOOLEAN,
+                            label="Turn off zone after group is left.",
+                            default_value=False,
+                            description="Turn off zone after group is left.",
+                        ),
+                    )
 
         return base_entries + zone_entries + PLAYER_CONFIG_ENTRIES
 
@@ -372,7 +383,9 @@ class MusicCast(PlayerProvider):
             mass_player = self.mass.players.get(player_id)
             assert mass_player is not None
             msg = (
-                f"The switch source you specified for {mass_player.name} is not allowed. "
+                "The switch source you specified for "
+                f"{mass_player.display_name or mass_player.name}"
+                " is not allowed. "
                 f"The source must be any of: {', '.join(sorted(_allowed_sources))} "
                 "Will use the first available source."
             )
@@ -654,8 +667,8 @@ class MusicCast(PlayerProvider):
             player_main = musiccast_player.player_main
             assert player_main is not None
             self.logger.info(
-                f"The player {player_main.name} has multiple zones. "
-                "Please use the player config to configure a non-net source  for grouping. "
+                f"The player {player_main.display_name or player_main.name} has multiple zones. "
+                "Please use the player config to configure a non-net source for grouping. "
             )
 
         self.musiccast_players[device_id] = musiccast_player
