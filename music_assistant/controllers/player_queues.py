@@ -33,6 +33,7 @@ from music_assistant_models.enums import (
     RepeatMode,
 )
 from music_assistant_models.errors import (
+    AudioError,
     InvalidCommand,
     InvalidDataError,
     MediaNotFoundError,
@@ -842,7 +843,7 @@ class PlayerQueuesController(CoreController):
                     queue.current_index = index
                     queue.current_item = queue_item
                     break
-                except MediaNotFoundError:
+                except (MediaNotFoundError, AudioError):
                     # the requested index can not be played.
                     self.logger.warning(
                         "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
@@ -1030,7 +1031,7 @@ class PlayerQueuesController(CoreController):
                 # we're all set, this is our next item
                 next_item = queue_item
                 break
-            except MediaNotFoundError:
+            except (MediaNotFoundError, AudioError):
                 # No stream details found, skip this QueueItem
                 self.logger.warning(
                     "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
