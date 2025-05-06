@@ -195,7 +195,6 @@ class MusicCast(PlayerProvider):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
         zone_entries: tuple[ConfigEntry, ...] = ()
-
         if zone_player := self._get_zone_player(player_id):
             if len(zone_player.physical_device.zone_devices) > 1:
                 mass_player = self.mass.players.get(player_id)
@@ -220,17 +219,19 @@ class MusicCast(PlayerProvider):
                     zone_entries = (
                         ConfigEntry(
                             key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
-                            label="Switch to this non-net source on group leave.",
+                            label="Switch to this non-net source when leaving a group.",
                             type=ConfigEntryType.STRING,
                             options=source_options,
                             default_value=source_options[0].value,
+                            description="The zone will switch to this source when leaving a  group."
+                            " It must be an input which doesn't require network connectivity.",
                         ),
                         ConfigEntry(
                             key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
                             type=ConfigEntryType.BOOLEAN,
-                            label="Turn off zone after group is left.",
+                            label="Turn off the zone when it leaves a group.",
                             default_value=False,
-                            description="Turn off zone after group is left.",
+                            description="Turn off the zone when it leaves a group.",
                         ),
                     )
 
