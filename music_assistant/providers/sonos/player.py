@@ -79,8 +79,8 @@ class SonosPlayer:
     @property
     def airplay_mode_enabled(self) -> bool:
         """Return if airplay mode is enabled for the player."""
-        return bool(
-            self.mass.config.get_raw_player_config_value(self.player_id, CONF_AIRPLAY_MODE, False)
+        return self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_AIRPLAY_MODE, False
         )
 
     @property
