@@ -5,7 +5,7 @@
   "description": "Support for snapcast server and clients.",
   "codeowners": ["@SantiagoSotoC"],
   "requirements": [
-    "snapcast==2.3.6",
+    "snapcast==2.3.7",
     "bidict==0.23.1",
     "websocket-client==1.8.0"
   ],

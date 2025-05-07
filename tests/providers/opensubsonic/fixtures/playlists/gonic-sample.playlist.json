@@ -1,0 +1,495 @@
+{
+    "id": "Mi8xNzQzNzg5NTk5MzM1LTE3NDM3ODk1OTkzMzUubTN1",
+    "name": "Guns N' Roses - Use Your Illusion",
+    "songCount": 16,
+    "coverArt": "al-2250",
+    "duration": 5268,
+    "created": "2025-04-04T18:40:41.760062653Z",
+    "changed": "2025-04-04T18:40:41.760062653Z",
+    "comment": "",
+    "owner": "user",
+    "public": true,
+    "entry": [
+        {
+            "id": "tr-16009",
+            "isDir": false,
+            "title": "Right Next Door to Hell",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 1,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 5938059,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 182,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/01 Right Next Door to Hell.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.574907642Z",
+            "type": "music",
+            "musicBrainzId": "471c43b3-9efb-4557-aef3-4ea8465b8390",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16010",
+            "isDir": false,
+            "title": "Dust N\\u2019 Bones",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 2,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 9655740,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 298,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/02 Dust N\\u2019 Bones.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.586200432Z",
+            "type": "music",
+            "musicBrainzId": "982fde94-99b8-4743-bb61-a5c008c024ca",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16011",
+            "isDir": false,
+            "title": "Live and Let Die",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 3,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 5992442,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 184,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/03 Live and Let Die.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.596262286Z",
+            "type": "music",
+            "musicBrainzId": "a13ba277-a7ed-44bb-9e42-598a5983e7f0",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16012",
+            "isDir": false,
+            "title": "Don\\u2019t Cry (original)",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 4,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 9222317,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 284,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/04 Don\\u2019t Cry (original).mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.613645878Z",
+            "type": "music",
+            "musicBrainzId": "3b6271d3-e0ad-408b-8886-d72de1ef783e",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16013",
+            "isDir": false,
+            "title": "Perfect Crime",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 5,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 4698806,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 143,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/05 Perfect Crime.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.622707628Z",
+            "type": "music",
+            "musicBrainzId": "aa4ae4e7-94df-4c08-b0a0-514c050554ba",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16018",
+            "isDir": false,
+            "title": "November Rain",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 10,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 17316320,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 537,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/10 November Rain.mp3",
+            "isVideo": false,
+            "averageRating": 5.0,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.669479868Z",
+            "type": "music",
+            "musicBrainzId": "0681520a-6499-4cb8-91aa-7df5dfafea2e",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16019",
+            "isDir": false,
+            "title": "The Garden",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 11,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 10420531,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 322,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/11 The Garden.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.67743051Z",
+            "type": "music",
+            "musicBrainzId": "c76a6a6e-1861-4e7c-8ded-4f3247804328",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16023",
+            "isDir": false,
+            "title": "Dead Horse",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 15,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 8349620,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 257,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/15 Dead Horse.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.716120687Z",
+            "type": "music",
+            "musicBrainzId": "51f73984-da17-48b2-b83d-ecd867b8325e",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16025",
+            "isDir": false,
+            "title": "Civil War",
+            "parent": "al-2251",
+            "album": "Use Your Illusion II",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 1,
+            "year": 1991,
+            "coverArt": "al-2251",
+            "size": 14891547,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 462,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion II/01 Civil War.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.747021832Z",
+            "type": "music",
+            "musicBrainzId": "24cbe6e3-50bb-487c-b477-eee77d268556",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16026",
+            "isDir": false,
+            "title": "14 Years",
+            "parent": "al-2251",
+            "album": "Use Your Illusion II",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 2,
+            "year": 1991,
+            "coverArt": "al-2251",
+            "size": 8461921,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 261,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion II/02 14 Years.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.756107511Z",
+            "type": "music",
+            "musicBrainzId": "a7263180-522d-4920-9c7f-b2a02671218d",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16027",
+            "isDir": false,
+            "title": "Yesterdays",
+            "parent": "al-2251",
+            "album": "Use Your Illusion II",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 3,
+            "year": 1991,
+            "coverArt": "al-2251",
+            "size": 6375055,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 196,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion II/03 Yesterdays.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.765576962Z",
+            "type": "music",
+            "musicBrainzId": "ed8ced59-66bb-4497-8ba9-d6bab7f1e950",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16028",
+            "isDir": false,
+            "title": "Knockin\\u2019 on Heaven\\u2019s Door",
+            "parent": "al-2251",
+            "album": "Use Your Illusion II",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 4,
+            "year": 1991,
+            "coverArt": "al-2251",
+            "size": 10851837,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 336,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion II/04 Knockin\\u2019 on Heaven\\u2019s Door.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.777119143Z",
+            "type": "music",
+            "musicBrainzId": "60e32de8-b6f7-4919-9f57-ba9c9974cf89",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16035",
+            "isDir": false,
+            "title": "Estranged",
+            "parent": "al-2251",
+            "album": "Use Your Illusion II",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 11,
+            "year": 1991,
+            "coverArt": "al-2251",
+            "size": 18152440,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 563,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion II/11 Estranged.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.847816462Z",
+            "type": "music",
+            "musicBrainzId": "85e01d1e-34b1-413a-8b20-bc4c0db56fb6",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16036",
+            "isDir": false,
+            "title": "You Could Be Mine",
+            "parent": "al-2251",
+            "album": "Use Your Illusion II",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 12,
+            "year": 1991,
+            "coverArt": "al-2251",
+            "size": 11096880,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 343,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion II/12 You Could Be Mine.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.857372733Z",
+            "type": "music",
+            "musicBrainzId": "795602a9-94f5-43f5-bb87-d058ac9428ec",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16037",
+            "isDir": false,
+            "title": "Don\\u2019t Cry (alternate lyrics)",
+            "parent": "al-2251",
+            "album": "Use Your Illusion II",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 13,
+            "year": 1991,
+            "coverArt": "al-2251",
+            "size": 9194959,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 284,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion II/13 Don\\u2019t Cry (alternate lyrics).mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.865879798Z",
+            "type": "music",
+            "musicBrainzId": "de5479b3-522f-450f-a4d3-6636f593e5e3",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        },
+        {
+            "id": "tr-16024",
+            "isDir": false,
+            "title": "Coma",
+            "parent": "al-2250",
+            "album": "Use Your Illusion I",
+            "artist": "Guns N\\u2019 Roses",
+            "track": 16,
+            "year": 1991,
+            "coverArt": "al-2250",
+            "size": 20014868,
+            "contentType": "audio/mpeg",
+            "suffix": "mp3",
+            "duration": 616,
+            "bitRate": 256,
+            "path": "Guns N\\u2019 Roses/Use Your Illusion I/16 Coma.mp3",
+            "isVideo": false,
+            "discNumber": 1,
+            "created": "2024-08-18T03:38:39.726021Z",
+            "type": "music",
+            "musicBrainzId": "2146c769-d454-435d-a924-7960f9272540",
+            "artists": [
+                {
+                    "id": "ar-280",
+                    "name": "Guns N\\u2019 Roses"
+                }
+            ],
+            "displayArtist": "",
+            "displayAlbumArtist": ""
+        }
+    ]
+}
