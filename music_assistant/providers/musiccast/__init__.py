@@ -7,13 +7,16 @@ import logging
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp.client_exceptions import ServerDisconnectedError
+from aiohttp.client_exceptions import (
+    ClientError,
+    ServerDisconnectedError,
+)
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     PlayerFeature,
@@ -51,7 +54,6 @@ from .constants import (
     MC_SOURCE_MAIN_SYNC,
     MC_SOURCE_MC_LINK,
     PLAYER_CONFIG_ENTRIES,
-    PLAYER_MAP_ZONE_SWITCH,
     PLAYER_ZONE_SPLITTER,
 )
 from .musiccast import (
@@ -195,23 +197,43 @@ class MusicCast(PlayerProvider):
         zone_entries: tuple[ConfigEntry, ...] = ()
         if zone_player := self._get_zone_player(player_id):
             if len(zone_player.physical_device.zone_devices) > 1:
-                zone_entries = (
-                    ConfigEntry(
-                        key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
-                        type=ConfigEntryType.STRING,
-                        label="Switch to this non-net source on group leave.",
-                        default_value=PLAYER_MAP_ZONE_SWITCH[zone_player.zone_name],
-                        description="Switch to this non-net source on group leave. "
-                        " This must be the source_id.",
-                    ),
-                    ConfigEntry(
-                        key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
-                        type=ConfigEntryType.BOOLEAN,
-                        label="Turn off zone after group is left.",
-                        default_value=False,
-                        description="Turn off zone after group is left.",
-                    ),
-                )
+                mass_player = self.mass.players.get(player_id)
+                assert mass_player is not None  # for type checking
+                source_options: list[ConfigValueOption] = []
+                allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
+                for (
+                    source_id,
+                    source_name,
+                ) in zone_player.source_mapping.items():
+                    if source_id in allowed_sources:
+                        source_options.append(ConfigValueOption(title=source_name, value=source_id))
+                if len(source_options) == 0:
+                    # this should never happen
+                    self.logger.error(
+                        "The player %s has multiple zones, but lacks a non-net source to switch to."
+                        " Please report this on github or discord.",
+                        mass_player.display_name or mass_player.name,
+                    )
+                    zone_entries = ()
+                else:
+                    zone_entries = (
+                        ConfigEntry(
+                            key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
+                            label="Switch to this non-net source when leaving a group.",
+                            type=ConfigEntryType.STRING,
+                            options=source_options,
+                            default_value=source_options[0].value,
+                            description="The zone will switch to this source when leaving a  group."
+                            " It must be an input which doesn't require network connectivity.",
+                        ),
+                        ConfigEntry(
+                            key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
+                            type=ConfigEntryType.BOOLEAN,
+                            label="Turn off the zone when it leaves a group.",
+                            default_value=False,
+                            description="Turn off the zone when it leaves a group.",
+                        ),
+                    )
 
         return base_entries + zone_entries + PLAYER_CONFIG_ENTRIES
 
@@ -339,6 +361,7 @@ class MusicCast(PlayerProvider):
         _input_sources: set[str] = set(zone_player.zone_data.input_list)
         _net_sources = set(MC_NETUSB_SOURCE_IDS)
         _net_sources.add(MC_SOURCE_MC_LINK)  # mc grouping source
+        _net_sources.add(MC_SOURCE_MAIN_SYNC)  # main zone sync
         return _input_sources.difference(_net_sources)
 
     async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
@@ -361,7 +384,9 @@ class MusicCast(PlayerProvider):
             mass_player = self.mass.players.get(player_id)
             assert mass_player is not None
             msg = (
-                f"The switch source you specified for {mass_player.name} is not allowed. "
+                "The switch source you specified for "
+                f"{mass_player.display_name or mass_player.name}"
+                " is not allowed. "
                 f"The source must be any of: {', '.join(sorted(_allowed_sources))} "
                 "Will use the first available source."
             )
@@ -512,10 +537,16 @@ class MusicCast(PlayerProvider):
         device_ip = get_primary_ip_address(info)
         if device_ip is None:
             return
-        device_info = await self.mass.http_session.get(
-            f"http://{device_ip}/{MC_DEVICE_INFO_ENDPOINT}"
-        )
-        if device_info.status == 404:
+        try:
+            device_info = await self.mass.http_session.get(
+                f"http://{device_ip}/{MC_DEVICE_INFO_ENDPOINT}", raise_for_status=True
+            )
+        except ClientError:
+            # typical Errors are
+            # ClientResponseError -> raise_for_status
+            # ClientConnectorError -> unable to connect/ not existing/ timeout
+            # but we can use the base exception class, as we only check
+            # if the device is suitable
             return
         device_info_json = await device_info.json()
         device_id = device_info_json.get("device_id")
@@ -636,13 +667,9 @@ class MusicCast(PlayerProvider):
             musiccast_player._log_allowed_sources = False
             player_main = musiccast_player.player_main
             assert player_main is not None
-            main_zone_device = musiccast_player.physical_device.zone_devices.get("main")
-            assert main_zone_device is not None
-            _allowed_sources = self._get_allowed_sources_zone_switch(main_zone_device)
             self.logger.info(
-                f"The player {player_main.name} has multiple zones. "
-                "Please use the player config to configure a non-net source  for grouping. "
-                f"Allowed values are: {', '.join(_allowed_sources)}. See docs."
+                f"The player {player_main.display_name or player_main.name} has multiple zones. "
+                "Please use the player config to configure a non-net source for grouping. "
             )
 
         self.musiccast_players[device_id] = musiccast_player
@@ -656,9 +683,19 @@ class MusicCast(PlayerProvider):
         player.name = zone_data.name or "UNKNOWN NAME"
         player.powered = zone_data.power == "on"
 
-        player.volume_level = int(
-            zone_data.current_volume / (zone_data.max_volume - zone_data.min_volume) * 100
-        )
+        # NOTE: aiomusiccast does not type hint the volume variables, and they may
+        # be none, and not only integers
+        _current_volume = cast("int | None", zone_data.current_volume)
+        _max_volume = cast("int | None", zone_data.max_volume)
+        _min_volume = cast("int | None", zone_data.min_volume)
+        if _current_volume is None:
+            player.volume_level = None
+        else:
+            _min_volume = 0 if _min_volume is None else _min_volume
+            _max_volume = 100 if _max_volume is None else _max_volume
+            if _min_volume == _max_volume:
+                _max_volume += 1
+            player.volume_level = int(_current_volume / (_max_volume - _min_volume) * 100)
         player.volume_muted = zone_data.mute
 
         # STATE
@@ -733,7 +770,7 @@ class MusicCast(PlayerProvider):
         # and player.set_current_media is the helper function
         # do not access the queue controller to gain playback information here
         if update_helper.current_uri is not None and update_helper.controlled_by_mass:
-            player.set_current_media(uri=update_helper.current_uri)
+            player.set_current_media(uri=update_helper.current_uri, clear_all=True)
         elif device.is_client:
             _server = device.group_server
             _server_id = self._get_player_id_from_mc_zone_player(_server)

@@ -100,7 +100,7 @@ class RaopStreamSession:
         assert airplay_player.raop_stream.session == self
         async with self._lock:
             self._sync_clients.remove(airplay_player)
-        await airplay_player.raop_stream.stop()
+        await airplay_player.cmd_stop()
         airplay_player.raop_stream = None
 
     async def add_client(self, airplay_player: AirPlayPlayer) -> None:

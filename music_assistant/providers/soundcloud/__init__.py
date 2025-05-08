@@ -310,7 +310,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        url: str = await self._soundcloud.get_stream_url(track_id=item_id)
+        url: str = await self._soundcloud.get_stream_url(track_id=item_id, presets=["mp3"])
         return StreamDetails(
             provider=self.lookup_key,
             item_id=item_id,

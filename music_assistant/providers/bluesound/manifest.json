@@ -4,7 +4,7 @@
   "name": "Bluesound",
   "description": "BluOS Player provider for Music Assistant.",
   "codeowners": ["@cyanogenbot"],
-  "requirements": ["pyblu==2.0.0"],
+  "requirements": ["pyblu==2.0.1"],
   "documentation": "https://music-assistant.io/player-support/bluesound/",
   "mdns_discovery": ["_musc._tcp.local."]
 }

@@ -187,8 +187,14 @@ class AirPlayProvider(PlayerProvider):
     ) -> None:
         """Handle MDNS service state callback."""
         if not info:
-            return
-        if "@" in info.name:
+            # When info are not provided for the service
+            if state_change == ServiceStateChange.Removed and "@" in name:
+                # Service name is enough to mark the player as unavailable on 'Removed' notification
+                raw_id, display_name = name.split(".")[0].split("@", 1)
+            else:
+                # If we are not in a 'Removed' state, we need info to be filled to update the player
+                return
+        elif "@" in info.name:
             raw_id, display_name = info.name.split(".")[0].split("@", 1)
         elif deviceid := info.decoded_properties.get("deviceid"):
             raw_id = deviceid.replace(":", "")
@@ -207,6 +213,7 @@ class AirPlayProvider(PlayerProvider):
                 self.mass.players.update(player_id)
             return
         # handle update for existing device
+        assert info is not None  # type guard
         if airplay_player := self._players.get(player_id):
             if mass_player := self.mass.players.get(player_id):
                 cur_address = get_primary_ip_address(info)
@@ -654,13 +661,9 @@ class AirPlayProvider(PlayerProvider):
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
                 if raop_stream := airplay_player.raop_stream:
-                    # ignore this if we just started playing to prevent false positives
-                    elapsed_time = (
-                        10 if mass_player.elapsed_time is None else mass_player.elapsed_time
+                    self.mass.create_task(
+                        airplay_player.raop_stream.session.remove_client(airplay_player)
                     )
-                    if elapsed_time > 10 and mass_player.state == PlayerState.PLAYING:
-                        raop_stream.prevent_playback = True
-                        self.mass.create_task(self.monitor_prevent_playback(player_id))
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 if raop_stream := airplay_player.raop_stream:
@@ -678,30 +681,3 @@ class AirPlayProvider(PlayerProvider):
             await writer.drain()
         finally:
             writer.close()
-
-    async def monitor_prevent_playback(self, player_id: str) -> None:
-        """Monitor the prevent playback state of an airplay player."""
-        count = 0
-        if not (airplay_player := self._players.get(player_id)):
-            return
-        if not airplay_player.raop_stream:
-            return
-        prev_active_remote_id = airplay_player.raop_stream.active_remote_id
-        while count < 40:
-            count += 1
-            if not (airplay_player := self._players.get(player_id)):
-                return
-            if not (raop_stream := airplay_player.raop_stream):
-                return
-            if raop_stream.active_remote_id != prev_active_remote_id:
-                # checksum
-                return
-            if not raop_stream.prevent_playback:
-                return
-            await asyncio.sleep(0.5)
-
-        if airplay_player.raop_stream and airplay_player.raop_stream.session:
-            airplay_player.logger.info(
-                "Player has been in prevent playback mode for too long, aborting playback.",
-            )
-            await airplay_player.raop_stream.session.remove_client(airplay_player)
