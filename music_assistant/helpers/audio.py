@@ -47,8 +47,6 @@ from music_assistant.constants import (
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
-from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.player_group import PlayerGroupProvider
 
 from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
@@ -64,6 +62,8 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
+    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.providers.player_group import PlayerGroupProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
 
