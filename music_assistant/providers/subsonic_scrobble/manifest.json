@@ -7,7 +7,6 @@
   "documentation": "",
   "multi_instance": false,
   "builtin": false,
-  "requirements": [
-    "py-opensonic==5.3.1"
-  ]
+  "depends_on": "opensubsonic",
+  "requirements": []
 }
