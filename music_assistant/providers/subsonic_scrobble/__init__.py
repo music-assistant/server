@@ -8,10 +8,12 @@ from collections.abc import Callable
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.media_items import Audiobook, PodcastEpisode, Track
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.helpers.scrobbler import ScrobblerHelper
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
@@ -61,62 +63,97 @@ class SubsonicScrobbleProvider(PluginProvider):
 
 
 class SubsonicScrobbleEventHandler(ScrobblerHelper):
-    """Handles the event handling."""
+    """Handles the scrobbling event handling."""
 
     def __init__(self, mass: MusicAssistant, logger: logging.Logger) -> None:
         """Initialize."""
         super().__init__(logger)
         self._mass = mass
 
-    def _get_sonic_prov_of_played_media(
-        self, report: MediaItemPlaybackProgressReport
-    ) -> OpenSonicProvider | None:
-        """
-        Return the corresponding Subsonic music provider, or None, if the media isn't
-        a playable single item, or the source isn't a Subsonic music provider.
-        """
-        if report.media_type not in (
+    def _is_scrobblable_media_type(self, media_type: MediaType) -> bool:
+        """Return true if the given OpenSubsonic media type can be scrobbled, false otherwise."""
+        return media_type in (
             MediaType.TRACK,
             MediaType.AUDIOBOOK,
             MediaType.PODCAST_EPISODE,
-        ):
-            return None
-        prov = self._mass.get_provider(report.provider)
-        if not isinstance(prov, OpenSonicProvider):
-            return None
-        return prov
+        )
+
+    async def _get_subsonic_provider_and_item_id(
+        self, media_type: MediaType, provider_instance_id_or_domain: str, item_id: str
+    ) -> tuple[None | OpenSonicProvider, str]:
+        """Return a OpenSonicProvider or None if no subsonic provider, and the Subsonic item_id.
+
+        Returns:
+            Tuple[OpenSonicProvider | None, str]: The provider or None, and the Subsonic item_id.
+        """
+        if provider_instance_id_or_domain == "library":
+            # unwrap library item to check if we have a subsonic mapping...
+            library_item = await self._mass.music.get_library_item_by_prov_id(
+                media_type, item_id, provider_instance_id_or_domain
+            )
+            if library_item is None:
+                return None, item_id
+            assert isinstance(library_item, (Track, Audiobook, PodcastEpisode))
+            for mapping in library_item.provider_mappings:
+                if mapping.provider_domain.startswith("opensubsonic"):
+                    # found a subsonic mapping, proceed...
+                    prov = self._mass.get_provider(mapping.provider_instance)
+                    assert isinstance(prov, OpenSonicProvider)
+                    return prov, mapping.item_id
+            # no subsonic mapping has been found in library item, ignore...
+            return None, item_id
+        elif provider_instance_id_or_domain.startswith("opensubsonic"):
+            # found a subsonic mapping, proceed...
+            prov = self._mass.get_provider(provider_instance_id_or_domain)
+            assert isinstance(prov, OpenSonicProvider)
+            return prov, item_id
+        # not an item from subsonic provider, ignore...
+        return None, item_id
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
-        def handler() -> None:
+        def handler(prov: OpenSonicProvider, item_id: str, uri: str) -> None:
             try:
-                prov = self._get_sonic_prov_of_played_media(report)
-                if not prov:
-                    return
-                prov._conn.scrobble(report.item_id, submission=False)
-                self.logger.debug(f"track {report.uri} marked as 'now playing'")
-                self.currently_playing = report.uri
+                self.logger.info("scrobble play now event")
+                prov._conn.scrobble(item_id, submission=False)
+                self.logger.debug(f"track {uri} marked as 'now playing'")
+                self.currently_playing = uri
             except Exception as err:
                 self.logger.exception(err)
 
+        media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
+        if not self._is_scrobblable_media_type(media_type):
+            return
+        prov, item_id = await self._get_subsonic_provider_and_item_id(
+            media_type, provider_instance_id_or_domain, item_id
+        )
+        if not prov:
+            return
+
         # the opensubsonic library is not async friendly,
         # so we need to run it in a executor thread
-        await asyncio.to_thread(handler)
+        await asyncio.to_thread(handler, prov, item_id, report.uri)
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
-        def handler() -> None:
+        def handler(prov: OpenSonicProvider, item_id: str, uri: str) -> None:
             try:
-                prov = self._get_sonic_prov_of_played_media(report)
-                if not prov:
-                    return
-                prov._conn.scrobble(report.item_id, submission=True, listenTime=int(time.time()))
-                self.logger.debug(f"track {report.uri} marked as 'played'")
-                self.last_scrobbled = report.uri
+                prov._conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
+                self.logger.debug(f"track {uri} marked as 'played'")
+                self.last_scrobbled = uri
             except Exception as err:
                 self.logger.exception(err)
 
+        media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
+        if not self._is_scrobblable_media_type(media_type):
+            return
+        prov, item_id = await self._get_subsonic_provider_and_item_id(
+            media_type, provider_instance_id_or_domain, item_id
+        )
+        if not prov:
+            return
+
         # the opensubsonic library is not async friendly,
         # so we need to run it in a executor thread
-        await asyncio.to_thread(handler)
+        await asyncio.to_thread(handler, prov, item_id, report.uri)
 
 
 async def get_config_entries(
