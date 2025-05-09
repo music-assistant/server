@@ -272,6 +272,9 @@ class OpenSonicProvider(MusicProvider):
         chan_id, ep_id = eid.split(EP_CHAN_SEP)
         chan = await self._run_async(self._conn.get_podcasts, inc_episodes=True, pid=chan_id)
 
+        if not chan[0].episode:
+            raise MediaNotFoundError(f"Missing episode list for podcast channel '{chan[0].id}'")
+
         for episode in chan[0].episode:
             if episode.id == ep_id:
                 return episode
@@ -330,7 +333,14 @@ class OpenSonicProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Provide a generator for reading all artists."""
         artists = await self._run_async(self._conn.get_artists)
+
+        if not artists.index:
+            return
+
         for index in artists.index:
+            if not index.artist:
+                continue
+
             for artist in index.artist:
                 yield parse_artist(self.instance_id, artist)
 
@@ -431,8 +441,9 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Album {prov_album_id} not found"
             raise MediaNotFoundError(msg) from e
         tracks = []
-        for sonic_song in sonic_album.song:
-            tracks.append(self._parse_track(sonic_song))
+        if sonic_album.song:
+            for sonic_song in sonic_album.song:
+                tracks.append(self._parse_track(sonic_song))
         return tracks
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -501,8 +512,9 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Album {prov_artist_id} not found"
             raise MediaNotFoundError(msg) from e
         albums = []
-        for entry in sonic_artist.album:
-            albums.append(parse_album(self.logger, self.instance_id, entry))
+        if sonic_artist.album:
+            for entry in sonic_artist.album:
+                albums.append(parse_album(self.logger, self.instance_id, entry))
         return albums
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:

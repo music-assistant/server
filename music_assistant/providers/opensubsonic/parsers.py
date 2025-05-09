@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -234,6 +235,9 @@ def parse_epsiode(
     """Parse an Open Subsonic Podcast Episode into an MA PodcastEpisode."""
     eid = f"{sonic_episode.channel_id}{EP_CHAN_SEP}{sonic_episode.id}"
     pos = 1
+    if not sonic_channel.episode:
+        raise MediaNotFoundError(f"Podcast Channel '{sonic_channel.id}' missing episode list")
+
     for ep in sonic_channel.episode:
         if ep.id == sonic_episode.id:
             break
