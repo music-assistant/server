@@ -425,8 +425,18 @@ class PlexProvider(MusicProvider):
         return cast("PlexObjectT", results)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
+        """Get item mapping for a given media type, key, and name."""
+        # Ensure name is a valid string
+        if not name:
+            self.logger.warning(
+                "Received None or empty name for media item. Media type: %s, Key: %s",
+                media_type,
+                key,
+            )
+            name = "[Unknown]"  # Default name if None or empty
+
         mapped_name, mapped_version = parse_title_and_version(name)
-        
+
         if not mapped_name:
             self.logger.warning(
                 "Failed to map name for media item. Media type: %s, Key: %s, Original name: %s",
