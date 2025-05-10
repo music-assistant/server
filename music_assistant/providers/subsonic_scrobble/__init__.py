@@ -68,7 +68,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
     def __init__(self, mass: MusicAssistant, logger: logging.Logger) -> None:
         """Initialize."""
         super().__init__(logger)
-        self._mass = mass
+        self.mass = mass
 
     def _is_scrobblable_media_type(self, media_type: MediaType) -> bool:
         """Return true if the given OpenSubsonic media type can be scrobbled, false otherwise."""
@@ -88,23 +88,23 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         """
         if provider_instance_id_or_domain == "library":
             # unwrap library item to check if we have a subsonic mapping...
-            library_item = await self._mass.music.get_library_item_by_prov_id(
+            library_item = await self.mass.music.get_library_item_by_prov_id(
                 media_type, item_id, provider_instance_id_or_domain
             )
             if library_item is None:
                 return None, item_id
-            assert isinstance(library_item, (Track, Audiobook, PodcastEpisode))
+            assert isinstance(library_item, Track | Audiobook | PodcastEpisode)
             for mapping in library_item.provider_mappings:
                 if mapping.provider_domain.startswith("opensubsonic"):
                     # found a subsonic mapping, proceed...
-                    prov = self._mass.get_provider(mapping.provider_instance)
+                    prov = self.mass.get_provider(mapping.provider_instance)
                     assert isinstance(prov, OpenSonicProvider)
                     return prov, mapping.item_id
             # no subsonic mapping has been found in library item, ignore...
             return None, item_id
         elif provider_instance_id_or_domain.startswith("opensubsonic"):
             # found a subsonic mapping, proceed...
-            prov = self._mass.get_provider(provider_instance_id_or_domain)
+            prov = self.mass.get_provider(provider_instance_id_or_domain)
             assert isinstance(prov, OpenSonicProvider)
             return prov, item_id
         # not an item from subsonic provider, ignore...
@@ -115,7 +115,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
             try:
                 self.logger.info("scrobble play now event")
                 prov._conn.scrobble(item_id, submission=False)
-                self.logger.debug(f"track {uri} marked as 'now playing'")
+                self.logger.debug("track %s marked as 'now playing'", uri)
                 self.currently_playing = uri
             except Exception as err:
                 self.logger.exception(err)
@@ -137,7 +137,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         def handler(prov: OpenSonicProvider, item_id: str, uri: str) -> None:
             try:
                 prov._conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
-                self.logger.debug(f"track {uri} marked as 'played'")
+                self.logger.debug("track %s marked as 'played'", uri)
                 self.last_scrobbled = uri
             except Exception as err:
                 self.logger.exception(err)
