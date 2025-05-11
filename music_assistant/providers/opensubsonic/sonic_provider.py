@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 
     from libopensonic.media import Album as SonicAlbum
     from libopensonic.media import Artist as SonicArtist
+    from libopensonic.media import Bookmark as SonicBookmark
     from libopensonic.media import Child as SonicSong
     from libopensonic.media import OpenSubsonicExtension
     from libopensonic.media import Playlist as SonicPlaylist
@@ -750,8 +751,57 @@ class OpenSonicProvider(MusicProvider):
 
         media_item is the full media item details of the played/playing track.
         """
-        # Leave this function as the place where we will create a bookmark for podcasts when they
-        # are stopped early and delete the bookmark when they are finished.
+        if media_type != MediaType.PODCAST_EPISODE:
+            # We don't handle audio books in this provider so this is the only resummable media
+            # type we should see.
+            return
+
+        _, ep_id = prov_item_id.split(EP_CHAN_SEP)
+
+        if fully_played:
+            # We completed the episode and should delete our bookmark
+            try:
+                await self._run_async(self._conn.delete_bookmark, id=ep_id)
+            except DataNotFoundError:
+                # We probably raced with something else deleting this bookmark, not really a problem
+                return
+
+        # Otherwise, create a new bookmark for this item or update the existing one
+        # MA provides a position in seconds but expects it back in milliseconds, while
+        # the Open Subsonic spec expects a position in milliseconds but returns it in
+        # seconds, go figure.
+        await self._run_async(self._conn.create_bookmark, id=ep_id, position=(position * 1000))
+
+    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+        """
+        Get progress (resume point) details for the given Audiobook or Podcast episode.
+
+        This is a separate call from the regular get_item call to ensure the resume position
+        is always up-to-date and because a lot providers have this info present on a dedicated
+        endpoint.
+
+        Will be called right before playback starts to ensure the resume position is correct.
+
+        Returns a boolean with the fully_played status
+        and an integer with the resume position in ms.
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            raise NotImplementedError("AudioBooks are not supported by the Open Subsonic provider")
+
+        _, ep_id = item_id.split(EP_CHAN_SEP)
+
+        try:
+            bookmarks: list[SonicBookmark] = await self._run_async(self._conn.get_bookmarks)
+        except ParameterError:
+            # This is the current return from gonic 0.16.4 for all calls to getBookmarks see:
+            # https://github.com/sentriz/gonic/issues/578
+            return (False, 0)
+
+        for mark in bookmarks:
+            if mark.entry.id == ep_id:
+                return (False, mark.position * 1000)
+        # If we get here, there is no bookmark
+        return (False, 0)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
