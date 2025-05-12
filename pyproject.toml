@@ -19,7 +19,7 @@ dependencies = [
   "aiosqlite==0.21.0",
   "certifi==2025.4.26",
   "colorlog==6.9.0",
-  "cryptography==44.0.2",
+  "cryptography==44.0.3",
   "faust-cchardet>=2.1.18",
   "ifaddr==0.2.0",
   "mashumaro==3.15",

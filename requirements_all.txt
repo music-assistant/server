@@ -18,7 +18,7 @@ bgutil-ytdlp-pot-provider==0.8.3
 bidict==0.23.1
 certifi==2025.4.26
 colorlog==6.9.0
-cryptography==44.0.2
+cryptography==44.0.3
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 duration-parser==1.0.1
