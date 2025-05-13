@@ -426,14 +426,13 @@ class PlexProvider(MusicProvider):
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Get item mapping for a given media type, key, and name."""
-        # Ensure name is a valid string
         if not name:
             self.logger.info(
                 "Received None or empty name for media item. Media type: %s, Key: %s",
                 media_type,
                 key,
             )
-            name = "[Unknown]"  # Default name if None or empty
+            name = "[Unknown]"
 
         mapped_name, mapped_version = parse_title_and_version(name)
 
@@ -444,10 +443,10 @@ class PlexProvider(MusicProvider):
                 key,
                 name,
             )
-            mapped_name = "[Unknown]"  # Default name if mapping fails
+            mapped_name = "[Unknown]"
         if not mapped_version and media_type not in (MediaType.ALBUM, MediaType.TRACK):
-            mapped_version = ""  # Default version if parsing fails
-        
+            mapped_version = ""
+
         return ItemMapping(
             media_type=media_type,
             item_id=key,
