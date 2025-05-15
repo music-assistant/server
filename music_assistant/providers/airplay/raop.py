@@ -12,7 +12,7 @@ from contextlib import suppress
 from random import randint
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlayerState
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
@@ -441,14 +441,14 @@ class RaopStream:
                         prev_progress_report = now
                         self.mass.create_task(self._send_progress(queue))
             if "set pause" in line or "Pause at" in line:
-                mass_player.state = PlayerState.PAUSED
+                mass_player.state = PlaybackState.PAUSED
                 self.mass.players.update(airplay_player.player_id)
             if "Restarted at" in line or "restarting w/ pause" in line:
-                mass_player.state = PlayerState.PLAYING
+                mass_player.state = PlaybackState.PLAYING
                 self.mass.players.update(airplay_player.player_id)
             if "restarting w/o pause" in line:
                 # streaming has started
-                mass_player.state = PlayerState.PLAYING
+                mass_player.state = PlaybackState.PLAYING
                 mass_player.elapsed_time = 0
                 mass_player.elapsed_time_last_updated = time.time()
                 self.mass.players.update(airplay_player.player_id)

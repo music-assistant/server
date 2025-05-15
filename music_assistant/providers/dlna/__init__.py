@@ -23,7 +23,7 @@ from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlayerFeature, PlayerState, PlayerType
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
@@ -195,25 +195,25 @@ class DLNAPlayer:
         return self.device is not None and self.device.profile_device.available
 
     @staticmethod
-    def get_state(device: DmrDevice) -> PlayerState:
-        """Return current PlayerState of the player."""
+    def get_state(device: DmrDevice) -> PlaybackState:
+        """Return current PlaybackState of the player."""
         if device.transport_state is None:
-            return PlayerState.IDLE
+            return PlaybackState.IDLE
         if device.transport_state in (
             TransportState.PLAYING,
             TransportState.TRANSITIONING,
         ):
-            return PlayerState.PLAYING
+            return PlaybackState.PLAYING
         if device.transport_state in (
             TransportState.PAUSED_PLAYBACK,
             TransportState.PAUSED_RECORDING,
         ):
-            return PlayerState.PAUSED
+            return PlaybackState.PAUSED
         if device.transport_state == TransportState.VENDOR_DEFINED:
             # Unable to map this state to anything reasonable, fallback to idle
-            return PlayerState.IDLE
+            return PlaybackState.IDLE
 
-        return PlayerState.IDLE
+        return PlaybackState.IDLE
 
 
 class DLNAPlayerProvider(PlayerProvider):

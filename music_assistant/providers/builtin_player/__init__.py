@@ -31,8 +31,8 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     EventType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     ProviderFeature,
 )
@@ -320,10 +320,10 @@ class BuiltinPlayerProvider(PlayerProvider):
                 poll_interval=POLL_INTERVAL,
                 hidden_by_default=True,
                 expose_to_ha_by_default=False,
-                state=PlayerState.IDLE,
+                state=PlaybackState.IDLE,
             )
         else:
-            player.state = PlayerState.IDLE
+            player.state = PlaybackState.IDLE
             player.name = player_name
             player.available = True
             player.powered = False
@@ -340,7 +340,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             cb()
         if player := self.mass.players.get(player_id):
             player.available = False
-            player.state = PlayerState.IDLE
+            player.state = PlaybackState.IDLE
             player.powered = False
             self.mass.players.update(player.player_id)
 
@@ -372,16 +372,16 @@ class BuiltinPlayerProvider(PlayerProvider):
         player.volume_level = state.volume
         if not state.powered:
             player.powered = False
-            player.state = PlayerState.IDLE
+            player.state = PlaybackState.IDLE
         elif state.playing:
             player.powered = True
-            player.state = PlayerState.PLAYING
+            player.state = PlaybackState.PLAYING
         elif state.paused:
             player.powered = True
-            player.state = PlayerState.PAUSED
+            player.state = PlaybackState.PAUSED
         else:
             player.powered = True
-            player.state = PlayerState.IDLE
+            player.state = PlaybackState.IDLE
 
         self.mass.players.update(player_id)
         return True

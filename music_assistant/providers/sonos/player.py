@@ -22,8 +22,8 @@ from aiosonos.const import SonosEvent
 from aiosonos.exceptions import ConnectionFailed, FailedCommand
 from music_assistant_models.enums import (
     EventType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     RepeatMode,
 )
@@ -90,7 +90,7 @@ class SonosPlayer:
             self.airplay_mode_enabled
             and self.client.player.is_coordinator
             and (airplay_player := self.get_linked_airplay_player(False))
-            and airplay_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+            and airplay_player.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         )
 
     def get_linked_airplay_player(self, enabled_only: bool = True) -> Player | None:
@@ -260,7 +260,7 @@ class SonosPlayer:
         await self.client.player.set_volume(volume_level)
         # sync volume level with airplay player
         if airplay := self.get_linked_airplay_player(False):
-            if airplay.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
+            if airplay.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
                 airplay.volume_level = volume_level
 
     async def cmd_volume_mute(self, muted: bool) -> None:
@@ -340,8 +340,8 @@ class SonosPlayer:
         elif container_type == ContainerType.AIRPLAY:
             # check if the MA airplay player is active
             if airplay_player and airplay_player.state in (
-                PlayerState.PLAYING,
-                PlayerState.PAUSED,
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
             ):
                 self.mass_player.state = airplay_player.state
                 self.mass_player.active_source = airplay_player.active_source
@@ -500,7 +500,7 @@ class SonosPlayer:
         if not self.connected:
             return
         queue = self.mass.player_queues.get(event.object_id)
-        if not queue or queue.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
+        if not queue or queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             return
         if session_id := self.client.player.group.active_session_id:
             await self.client.api.playback_session.refresh_cloud_queue(session_id)
@@ -524,7 +524,7 @@ class SonosPlayer:
     async def sync_play_modes(self, queue_id: str) -> None:
         """Sync the play modes between MA and Sonos."""
         queue = self.mass.player_queues.get(queue_id)
-        if not queue or queue.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
+        if not queue or queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             return
         repeat_single_enabled = queue.repeat_mode == RepeatMode.ONE
         repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL

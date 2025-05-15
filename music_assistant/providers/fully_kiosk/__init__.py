@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from fullykiosk import FullyKiosk
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlayerFeature, PlayerState, PlayerType
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError, SetupFailedError
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
@@ -145,7 +145,7 @@ class FullyKioskProvider(PlayerProvider):
         current_url = self._fully.deviceInfo.get("soundUrlPlaying")
         player.current_item_id = current_url
         if not current_url:
-            player.state = PlayerState.IDLE
+            player.state = PlaybackState.IDLE
         player.available = True
         self.mass.players.update(player_id)
 
@@ -175,7 +175,7 @@ class FullyKioskProvider(PlayerProvider):
         if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
             return
         await self._fully.stopSound()
-        player.state = PlayerState.IDLE
+        player.state = PlaybackState.IDLE
         self.mass.players.update(player_id)
 
     async def play_media(
@@ -190,7 +190,7 @@ class FullyKioskProvider(PlayerProvider):
         player.current_media = media
         player.elapsed_time = 0
         player.elapsed_time_last_updated = time.time()
-        player.state = PlayerState.PLAYING
+        player.state = PlaybackState.PLAYING
         self.mass.players.update(player_id)
 
     async def poll_player(self, player_id: str) -> None:

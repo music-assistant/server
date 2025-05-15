@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from hass_client.exceptions import FailedCommand
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlayerFeature, PlayerState, PlayerType
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import InvalidDataError, LoginFailed, SetupFailedError
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
@@ -324,7 +324,7 @@ class HomeAssistantPlayers(PlayerProvider):
             extra_data["bypass_proxy"] = True
 
         # stop the player if it is already playing
-        if player.state == PlayerState.PLAYING:
+        if player.state == PlaybackState.PLAYING:
             await self.cmd_stop(player_id)
 
         await self.hass_prov.hass.call_service(
@@ -498,7 +498,7 @@ class HomeAssistantPlayers(PlayerProvider):
             name=state["attributes"]["friendly_name"],
             available=state["state"] not in UNAVAILABLE_STATES,
             device_info=DeviceInfo.from_dict(dev_info),
-            state=StateMap.get(state["state"], PlayerState.IDLE),
+            state=StateMap.get(state["state"], PlaybackState.IDLE),
             extra_data=extra_player_data,
         )
         # work out supported features
@@ -546,7 +546,7 @@ class HomeAssistantPlayers(PlayerProvider):
                 self.mass.create_task(self._late_add_player(entity_id))
                 return
             if "s" in state:
-                player.state = StateMap.get(state["s"], PlayerState.IDLE)
+                player.state = StateMap.get(state["s"], PlaybackState.IDLE)
                 player.available = state["s"] not in UNAVAILABLE_STATES
                 if PlayerFeature.POWER in player.supported_features:
                     player.powered = state["s"] not in OFF_STATES

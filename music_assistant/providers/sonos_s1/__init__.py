@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     ProviderFeature,
 )
@@ -333,7 +333,7 @@ class SonosPlayerProvider(PlayerProvider):
             return
         sonos_player = self.sonosplayers[player_id]
         # dynamically change the poll interval
-        if sonos_player.mass_player.state == PlayerState.PLAYING:
+        if sonos_player.mass_player.state == PlaybackState.PLAYING:
             sonos_player.mass_player.poll_interval = 5
         else:
             sonos_player.mass_player.poll_interval = 30

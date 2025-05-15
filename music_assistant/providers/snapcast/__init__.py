@@ -20,8 +20,8 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     MediaType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     ProviderFeature,
 )
@@ -364,7 +364,7 @@ class SnapCastProvider(PlayerProvider):
             player_id = self._get_ma_id(snap_client_id)
             if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
                 continue
-            if player.state != PlayerState.PLAYING:
+            if player.state != PlaybackState.PLAYING:
                 continue
             await self.cmd_stop(player_id)
         self._snapserver.stop()
@@ -478,7 +478,7 @@ class SnapCastProvider(PlayerProvider):
         # update the state first to avoid race conditions, if an active play_announcement
         # finishes the player.state should be IDLE.
         player = self.mass.players.get(player_id, raise_unavailable=False)
-        player.state = PlayerState.IDLE
+        player.state = PlaybackState.IDLE
         player.current_media = None
         player.active_source = None
         self._set_childs_state(player_id)
@@ -615,7 +615,7 @@ class SnapCastProvider(PlayerProvider):
                 audio_output=stream_path,
                 extra_input_args=["-y", "-re"],
             ) as ffmpeg_proc:
-                player.state = PlayerState.PLAYING
+                player.state = PlaybackState.PLAYING
                 player.current_media = media
                 player.elapsed_time = 0
                 player.elapsed_time_last_updated = time.time()
@@ -628,7 +628,7 @@ class SnapCastProvider(PlayerProvider):
             # to ensure that all snapclients have consumed the audio
             while stream.status != "idle":
                 await asyncio.sleep(0.25)
-            player.state = PlayerState.IDLE
+            player.state = PlaybackState.IDLE
             player.elapsed_time = time.time() - player.elapsed_time_last_updated
             self.mass.players.update(player_id)
             self._set_childs_state(player_id)
@@ -700,7 +700,7 @@ class SnapCastProvider(PlayerProvider):
             await self.cmd_volume_set(player_id, orig_volume_level)
 
         # and restore the group to either the default or the music stream
-        if player.state == PlayerState.IDLE:
+        if player.state == PlaybackState.IDLE:
             new_stream_name = "default"
         else:
             new_stream_name = self._get_stream_name(player_id, SnapCastStreamType.MUSIC)

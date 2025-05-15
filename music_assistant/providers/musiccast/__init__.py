@@ -9,18 +9,15 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from aiohttp.client_exceptions import (
-    ClientError,
-    ServerDisconnectedError,
-)
+from aiohttp.client_exceptions import ClientError, ServerDisconnectedError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     ProviderFeature,
 )
@@ -64,10 +61,7 @@ from .musiccast import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import (
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -702,11 +696,11 @@ class MusicCast(PlayerProvider):
 
         match device.state:
             case MusicCastPlayerState.PAUSED:
-                player.state = PlayerState.PAUSED
+                player.state = PlaybackState.PAUSED
             case MusicCastPlayerState.PLAYING:
-                player.state = PlayerState.PLAYING
+                player.state = PlaybackState.PLAYING
             case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
-                player.state = PlayerState.IDLE
+                player.state = PlaybackState.IDLE
         player.elapsed_time = device.media_position
         player.elapsed_time_last_updated = device.media_position_updated_at
 

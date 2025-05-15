@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from aiohttp import web
-from aioslimproto.client import PlayerState as SlimPlayerState
+from aioslimproto.client import PlaybackState as SlimPlayerState
 from aioslimproto.client import SlimClient
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import Preset as SlimPreset
@@ -28,8 +28,8 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     MediaType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     ProviderFeature,
     RepeatMode,
@@ -71,11 +71,11 @@ CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 
 
 STATE_MAP = {
-    SlimPlayerState.BUFFERING: PlayerState.PLAYING,
-    SlimPlayerState.BUFFER_READY: PlayerState.PLAYING,
-    SlimPlayerState.PAUSED: PlayerState.PAUSED,
-    SlimPlayerState.PLAYING: PlayerState.PLAYING,
-    SlimPlayerState.STOPPED: PlayerState.IDLE,
+    SlimPlayerState.BUFFERING: PlaybackState.PLAYING,
+    SlimPlayerState.BUFFER_READY: PlaybackState.PLAYING,
+    SlimPlayerState.PAUSED: PlaybackState.PAUSED,
+    SlimPlayerState.PLAYING: PlaybackState.PLAYING,
+    SlimPlayerState.STOPPED: PlaybackState.IDLE,
 }
 REPEATMODE_MAP = {RepeatMode.OFF: 0, RepeatMode.ONE: 1, RepeatMode.ALL: 2}
 
@@ -542,7 +542,7 @@ class SlimprotoProvider(PlayerProvider):
         # TODO: support late joining of a client into an existing stream session
         # so it doesn't need to be restarted anymore.
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
-        if active_queue.state == PlayerState.PLAYING:
+        if active_queue.state == PlaybackState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
             # this could potentially be called by multiple players at the exact same time
             # so we debounce the resync a bit here with a timer

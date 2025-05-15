@@ -16,7 +16,7 @@ from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
 from aiosonos.utils import get_discovery_info
 from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlayerState, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from zeroconf import ServiceStateChange
@@ -198,7 +198,7 @@ class SonosPlayerProvider(PlayerProvider):
         if "values/airplay_mode" in changed_keys and (
             (sonos_player := self.sonos_players.get(config.player_id))
             and (airplay_player := sonos_player.get_linked_airplay_player(False))
-            and airplay_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+            and airplay_player.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         ):
             # edge case: we switched from airplay mode to sonos mode (or vice versa)
             # we need to make sure that playback gets stopped on the airplay player
@@ -262,7 +262,7 @@ class SonosPlayerProvider(PlayerProvider):
             if airplay_child_ids:
                 if (
                     airplay_player.active_source != sonos_player.mass_player.active_source
-                    and airplay_player.state == PlayerState.PLAYING
+                    and airplay_player.state == PlaybackState.PLAYING
                 ):
                     # edge case player is not playing a MA queue - fail this request
                     raise PlayerCommandFailed("Player is not playing a Music Assistant queue.")
@@ -656,7 +656,7 @@ class SonosPlayerProvider(PlayerProvider):
         mass_player = self.mass.players.get(player_id)
         mass_player.active_source = airplay_player.active_source
         if (
-            airplay_player.state == PlayerState.PLAYING
+            airplay_player.state == PlaybackState.PLAYING
             and airplay_player.active_source == media.queue_id
         ):
             # if the airplay player is already playing,

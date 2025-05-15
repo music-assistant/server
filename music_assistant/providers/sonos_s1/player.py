@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import PlayerFeature, PlayerState
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, Player
 from soco import SoCoException
@@ -622,7 +622,7 @@ class SonosPlayer:
         self.mass_player.available = self.available
 
         if not self.available:
-            self.mass_player.state = PlayerState.IDLE
+            self.mass_player.state = PlaybackState.IDLE
             self.mass_player.synced_to = None
             self.mass_player.group_childs.clear()
             return
@@ -788,15 +788,15 @@ class SonosPlayer:
         return track_info
 
 
-def _convert_state(sonos_state: str | None) -> PlayerState:
-    """Convert Sonos state to PlayerState."""
+def _convert_state(sonos_state: str | None) -> PlaybackState:
+    """Convert Sonos state to PlaybackState."""
     if sonos_state == "PLAYING":
-        return PlayerState.PLAYING
+        return PlaybackState.PLAYING
     if sonos_state == "TRANSITIONING":
-        return PlayerState.PLAYING
+        return PlaybackState.PLAYING
     if sonos_state == "PAUSED_PLAYBACK":
-        return PlayerState.PAUSED
-    return PlayerState.IDLE
+        return PlaybackState.PAUSED
+    return PlaybackState.IDLE
 
 
 def _timespan_secs(timespan: str | None) -> int | None:

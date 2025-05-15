@@ -27,8 +27,8 @@ from music_assistant_models.enums import (
     ContentType,
     EventType,
     MediaType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     ProviderFeature,
 )
@@ -325,7 +325,7 @@ class PlayerGroupProvider(PlayerProvider):
             group_player = cast("Player", group_player)
 
         # always stop at power off
-        if not powered and group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+        if not powered and group_player.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             await self.cmd_stop(group_player.player_id)
 
         if powered and player_id.startswith(SYNCGROUP_PREFIX):
@@ -339,7 +339,7 @@ class PlayerGroupProvider(PlayerProvider):
                 player_provider = self.mass.get_provider(member.provider)
                 assert player_provider  # for typing
                 if (
-                    member.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+                    member.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
                     and member.active_source != group_player.active_source
                 ):
                     # stop playing existing content on member if we start the group player
@@ -460,7 +460,7 @@ class PlayerGroupProvider(PlayerProvider):
         group_player.current_media = media
         group_player.elapsed_time = 0
         group_player.elapsed_time_last_updated = time() - 1
-        group_player.state = PlayerState.PLAYING
+        group_player.state = PlaybackState.PLAYING
         self.mass.players.update(player_id)
 
         # forward to downstream play_media commands
@@ -586,7 +586,7 @@ class PlayerGroupProvider(PlayerProvider):
         await self._ungroup_subgroups_if_found(group_player)
 
         # handle resync/resume if group player was already playing
-        if group_player.state == PlayerState.PLAYING and group_type == GROUP_TYPE_UNIVERSAL:
+        if group_player.state == PlaybackState.PLAYING and group_type == GROUP_TYPE_UNIVERSAL:
             child_player_provider = self.mass.players.get_player_provider(player_id)
             base_url = f"{self.mass.streams.base_url}/ugp/{group_player.player_id}.flac"
             await child_player_provider.play_media(
@@ -627,7 +627,7 @@ class PlayerGroupProvider(PlayerProvider):
         group_type = self.mass.config.get_raw_player_config_value(
             group_player.player_id, CONF_ENTRY_GROUP_TYPE.key, CONF_ENTRY_GROUP_TYPE.default_value
         )
-        was_playing = child_player.state == PlayerState.PLAYING
+        was_playing = child_player.state == PlaybackState.PLAYING
         is_sync_leader = len(child_player.group_childs) > 0
         group_player.group_childs.remove(player_id)
         child_player.active_group = None
@@ -843,7 +843,7 @@ class PlayerGroupProvider(PlayerProvider):
             player.elapsed_time_last_updated = child_player.elapsed_time_last_updated
             break
         else:
-            player.state = PlayerState.IDLE
+            player.state = PlaybackState.IDLE
         if group_type == GROUP_TYPE_UNIVERSAL:
             can_group_with = {
                 # allow grouping with all providers, except the playergroup provider itself
@@ -886,7 +886,7 @@ class PlayerGroupProvider(PlayerProvider):
                 # This is a member of another group
                 await self.cmd_ungroup_member(child_player.player_id, child_player.synced_to)
                 changed = True
-        if changed and player.state == PlayerState.PLAYING:
+        if changed and player.state == PlaybackState.PLAYING:
             # Restart playback to ensure all members play the same content
             await self.mass.player_queues.resume(player.player_id, False)
 

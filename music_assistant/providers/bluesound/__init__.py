@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, TypedDict
 
-from music_assistant_models.enums import PlayerFeature, PlayerState, PlayerType, ProviderFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, ProviderFeature
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from pyblu import Player as BluosPlayer
@@ -42,18 +42,18 @@ PLAYER_FEATURES_BASE = {
 }
 
 PLAYBACK_STATE_MAP = {
-    "play": PlayerState.PLAYING,
-    "stream": PlayerState.PLAYING,
-    "stop": PlayerState.IDLE,
-    "pause": PlayerState.PAUSED,
-    "connecting": PlayerState.IDLE,
+    "play": PlaybackState.PLAYING,
+    "stream": PlaybackState.PLAYING,
+    "stop": PlaybackState.IDLE,
+    "pause": PlaybackState.PAUSED,
+    "connecting": PlaybackState.IDLE,
 }
 
 PLAYBACK_STATE_POLL_MAP = {
-    "play": PlayerState.PLAYING,
-    "stream": PlayerState.PLAYING,
-    "stop": PlayerState.IDLE,
-    "pause": PlayerState.PAUSED,
+    "play": PlaybackState.PLAYING,
+    "stream": PlaybackState.PLAYING,
+    "stop": PlaybackState.IDLE,
+    "pause": PlaybackState.PAUSED,
     "connecting": "CONNECTING",
 }
 

@@ -23,8 +23,8 @@ from music_assistant_models.enums import (
     EventType,
     HidePlayerOption,
     MediaType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     ProviderFeature,
     ProviderType,
@@ -214,7 +214,7 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        if player.state == PlayerState.PLAYING:
+        if player.state == PlaybackState.PLAYING:
             self.logger.info(
                 "Ignore PLAY request to player %s: player is already playing", player.display_name
             )
@@ -259,7 +259,7 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
-        if player.state == PlayerState.PLAYING:
+        if player.state == PlaybackState.PLAYING:
             await self.cmd_pause(player.player_id)
         else:
             await self.cmd_play(player.player_id)
@@ -354,7 +354,7 @@ class PlayerController(CoreController):
         if (
             not powered
             and not player_was_synced
-            and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+            and player.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         ):
             await self.cmd_stop(player_id)
 
@@ -708,7 +708,7 @@ class PlayerController(CoreController):
         # in that case we need to stop the player first
         prev_source = player.active_source
         if prev_source and source != prev_source:
-            if player.state != PlayerState.IDLE:
+            if player.state != PlaybackState.IDLE:
                 await self.cmd_stop(player_id)
                 await asyncio.sleep(0.5)  # small delay to allow stop to process
             player.active_source = None
@@ -802,7 +802,7 @@ class PlayerController(CoreController):
             # perform some sanity checks on the child player
             # if we're not joining a group player
             if parent_player.provider != "player_group":
-                if child_player.group_childs and child_player.state != PlayerState.IDLE:
+                if child_player.group_childs and child_player.state != PlaybackState.IDLE:
                     # guard edge case: childplayer is already a sync leader on its own
                     raise PlayerCommandFailed(
                         f"Player {child_player.name} is already synced with other players, "
@@ -1261,8 +1261,8 @@ class PlayerController(CoreController):
                 if exclude_self and child_player.player_id == group_player.player_id:
                     continue
                 if only_playing and child_player.state not in (
-                    PlayerState.PLAYING,
-                    PlayerState.PAUSED,
+                    PlaybackState.PLAYING,
+                    PlaybackState.PAUSED,
                 ):
                     continue
                 yield child_player
@@ -1270,7 +1270,7 @@ class PlayerController(CoreController):
     async def wait_for_state(
         self,
         player: Player,
-        wanted_state: PlayerState,
+        wanted_state: PlaybackState,
         timeout: float = 60.0,
         minimal_time: float = 0,
     ) -> None:
@@ -1325,12 +1325,12 @@ class PlayerController(CoreController):
             # edge case: ensure that the player is powered off if the player gets disabled
             if player.power_control != PLAYER_CONTROL_NONE:
                 await self.cmd_power(config.player_id, False)
-            elif player.state != PlayerState.IDLE:
+            elif player.state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
             player.available = False
         # if the PlayerQueue was playing, restart playback
         # TODO: add property to ConfigEntry if it requires a restart of playback on change
-        elif not player_disabled and resume_queue and resume_queue.state == PlayerState.PLAYING:
+        elif not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
             # always stop first to ensure the player uses the new config
             await self.mass.player_queues.stop(resume_queue.queue_id)
             self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
@@ -1350,7 +1350,7 @@ class PlayerController(CoreController):
         # signal player provider that the config changed
         if not (player := self.get(player_id)):
             return
-        if player.state == PlayerState.PLAYING:
+        if player.state == PlaybackState.PLAYING:
             self.logger.info("Restarting playback of Player %s after DSP change", player_id)
             # this will restart ffmpeg with the new settings
             self.mass.call_later(0, self.mass.player_queues.resume, player.active_source, False)
@@ -1517,7 +1517,7 @@ class PlayerController(CoreController):
             )
             await self.cmd_ungroup(player.player_id)
         # stop player if its currently playing
-        elif prev_state in (PlayerState.PLAYING, PlayerState.PAUSED):
+        elif prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             self.logger.debug(
                 "Announcement to player %s - stop existing content (%s)...",
                 player.display_name,
@@ -1525,7 +1525,7 @@ class PlayerController(CoreController):
             )
             await self.cmd_stop(player.player_id)
             # wait for the player to stop
-            await self.wait_for_state(player, PlayerState.IDLE, 10, 0.4)
+            await self.wait_for_state(player, PlaybackState.IDLE, 10, 0.4)
         # adjust volume if needed
         # in case of a (sync) group, we need to do this for all child players
         prev_volumes: dict[str, int] = {}
@@ -1541,7 +1541,7 @@ class PlayerController(CoreController):
                         volume_player.player_id,
                         None,
                     )
-                    and volume_player.state == PlayerState.PLAYING
+                    and volume_player.state == PlaybackState.PLAYING
                 ):
                     self.logger.warning(
                         "Detected announcement to playergroup %s while group member %s is playing "
@@ -1575,7 +1575,7 @@ class PlayerController(CoreController):
         )
         await self.play_media(player_id=player.player_id, media=announcement)
         # wait for the player(s) to play
-        await self.wait_for_state(player, PlayerState.PLAYING, 10, minimal_time=0.1)
+        await self.wait_for_state(player, PlaybackState.PLAYING, 10, minimal_time=0.1)
         # wait for the player to stop playing
         if not announcement.duration:
             media_info = await async_parse_tags(
@@ -1584,7 +1584,7 @@ class PlayerController(CoreController):
             announcement.duration = media_info.duration
         await self.wait_for_state(
             player,
-            PlayerState.IDLE,
+            PlaybackState.IDLE,
             max(announcement.duration * 2, 60),
             announcement.duration + 2,
         )
@@ -1605,11 +1605,11 @@ class PlayerController(CoreController):
             return
         elif prev_synced_to:
             await self.cmd_group(player.player_id, prev_synced_to)
-        elif prev_queue_active and prev_state == PlayerState.PLAYING:
+        elif prev_queue_active and prev_state == PlaybackState.PLAYING:
             await self.mass.player_queues.resume(queue.queue_id, True)
-            await self.wait_for_state(player, PlayerState.PLAYING, 5)
+            await self.wait_for_state(player, PlaybackState.PLAYING, 5)
 
-        elif prev_state == PlayerState.PLAYING:
+        elif prev_state == PlaybackState.PLAYING:
             # player was playing something else - try to resume that here
             self.logger.warning("Can not resume %s on %s", prev_media_name, player.display_name)
             # TODO !!
@@ -1621,7 +1621,7 @@ class PlayerController(CoreController):
                 player_id = player.player_id
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
-                player_playing = player.state == PlayerState.PLAYING
+                player_playing = player.state == PlaybackState.PLAYING
                 if player_playing:
                     self.mass.loop.call_soon(self.update, player_id)
                 # Poll player;
@@ -1635,7 +1635,7 @@ class PlayerController(CoreController):
                         await player_prov.poll_player(player_id)
                     except PlayerUnavailableError:
                         player.available = False
-                        player.state = PlayerState.IDLE
+                        player.state = PlaybackState.IDLE
                     except Exception as err:
                         self.logger.warning(
                             "Error while requesting latest state from player %s: %s",

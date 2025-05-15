@@ -16,8 +16,8 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     MediaType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
 )
 from music_assistant_models.errors import PlayerUnavailableError
@@ -512,13 +512,13 @@ class ChromecastProvider(PlayerProvider):
         # player state
         castplayer.player.elapsed_time_last_updated = time.time()
         if status.player_is_playing:
-            castplayer.player.state = PlayerState.PLAYING
+            castplayer.player.state = PlaybackState.PLAYING
             castplayer.player.current_item_id = status.content_id
         elif status.player_is_paused:
-            castplayer.player.state = PlayerState.PAUSED
+            castplayer.player.state = PlaybackState.PAUSED
             castplayer.player.current_item_id = status.content_id
         else:
-            castplayer.player.state = PlayerState.IDLE
+            castplayer.player.state = PlaybackState.IDLE
             castplayer.player.current_item_id = None
 
         # elapsed time
@@ -688,7 +688,7 @@ class ChromecastProvider(PlayerProvider):
             return
         if castplayer.active_group:
             return
-        if castplayer.player.state != PlayerState.PLAYING:
+        if castplayer.player.state != PlaybackState.PLAYING:
             return
         if castplayer.player.announcement_in_progress:
             return

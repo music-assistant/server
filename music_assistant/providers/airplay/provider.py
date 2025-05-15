@@ -13,8 +13,8 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     MediaType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
     PlayerType,
     ProviderFeature,
 )
@@ -426,7 +426,7 @@ class AirPlayProvider(PlayerProvider):
 
         # check if we should (re)start or join a stream session
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
-        if active_queue.state == PlayerState.PLAYING:
+        if active_queue.state == PlaybackState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
             # TODO: allow late joining to existing stream
             await self.mass.player_queues.stop(active_queue.queue_id)
@@ -613,7 +613,7 @@ class AirPlayProvider(PlayerProvider):
             elif path == "/ctrl-int/1/play":
                 # sometimes this request is sent by a device as confirmation of a play command
                 # we ignore this if the player is already playing
-                if mass_player.state != PlayerState.PLAYING:
+                if mass_player.state != PlaybackState.PLAYING:
                     self.mass.create_task(self.mass.player_queues.play(active_queue.queue_id))
             elif path == "/ctrl-int/1/playpause":
                 self.mass.create_task(self.mass.player_queues.play_pause(active_queue.queue_id))
@@ -633,7 +633,7 @@ class AirPlayProvider(PlayerProvider):
             elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
                 # sometimes this request is sent by a device as confirmation of a play command
                 # we ignore this if the player is already playing
-                if mass_player.state == PlayerState.PLAYING:
+                if mass_player.state == PlaybackState.PLAYING:
                     self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
             elif "dmcp.device-volume=" in path and not ignore_volume_report:
                 # This is a bit annoying as this can be either the device confirming a new volume
