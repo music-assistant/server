@@ -113,7 +113,7 @@ jobs:
           echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
       - name: Build and Push release
-        uses: docker/build-push-action@v6.16.0
+        uses: docker/build-push-action@v6.17.0
         if: ${{ github.event.release.prerelease == false }}
         with:
           context: .
@@ -130,7 +130,7 @@ jobs:
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
             BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_STABLE }}
       - name: Build and Push pre-release
-        uses: docker/build-push-action@v6.16.0
+        uses: docker/build-push-action@v6.17.0
         if: ${{ github.event.release.prerelease == true }}
         with:
           context: .
