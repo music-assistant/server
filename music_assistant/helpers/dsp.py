@@ -9,7 +9,7 @@ from music_assistant_models.dsp import (
     ParametricEQFilter,
     ToneControlFilter,
 )
-from music_assistant_models.streamdetails import AudioFormat
+from music_assistant_models.media_items.audio_format import AudioFormat
 
 # ruff: noqa: PLR0915
 
@@ -38,7 +38,9 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 # Get gain for this channel, default to 0 if not specified
                 gain_db = dsp_filter.per_channel_preamp.get(channel_id, 0)
                 # Apply both the overall preamp and the per-channel preamp
-                total_gain_db = dsp_filter.preamp + gain_db
+                total_gain_db = (
+                    dsp_filter.preamp + gain_db if dsp_filter.preamp is not None else gain_db
+                )
                 if total_gain_db != 0:
                     # Convert dB to linear gain
                     gain = 10 ** (total_gain_db / 20)

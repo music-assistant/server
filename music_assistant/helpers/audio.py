@@ -31,7 +31,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant_models.streamdetails import AudioFormat
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
     CONF_ALLOW_AUDIO_CACHE,
@@ -58,10 +58,12 @@ from .util import detect_charset, has_enough_space
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig, PlayerConfig
     from music_assistant_models.player import Player
-    from music_assistant_models.player_queue import QueueItem
+    from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
-    from music_assistant import MusicAssistant
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.providers.player_group import PlayerGroupProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
 
@@ -85,6 +87,34 @@ class StreamCache:
     or when the audio stream is slow itself.
     """
 
+    def __init__(self, mass: MusicAssistant, streamdetails: StreamDetails) -> None:
+        """Initialize the StreamCache."""
+        self.mass = mass
+        self.streamdetails = streamdetails
+        self.logger = LOGGER.getChild("cache")
+        self._cache_file: str | None = None
+        self._fetch_task: asyncio.Task[None] | None = None
+        self._subscribers: int = 0
+        self._first_part_received = asyncio.Event()
+        self._all_data_written: bool = False
+        self._stream_error: str | None = None
+        self.org_path: str | None = streamdetails.path
+        self.org_stream_type: StreamType | None = streamdetails.stream_type
+        self.org_extra_input_args: list[str] | None = streamdetails.extra_input_args
+        self.org_audio_format = streamdetails.audio_format
+        streamdetails.audio_format = AudioFormat(
+            content_type=ContentType.NUT,
+            codec_type=streamdetails.audio_format.codec_type,
+            sample_rate=streamdetails.audio_format.sample_rate,
+            bit_depth=streamdetails.audio_format.bit_depth,
+            channels=streamdetails.audio_format.channels,
+        )
+        streamdetails.path = "-"
+        streamdetails.stream_type = StreamType.CACHE
+        streamdetails.can_seek = True
+        streamdetails.allow_seek = True
+        streamdetails.extra_input_args = []
+
     async def create(self) -> None:
         """Create the cache file (if needed)."""
         if self._cache_file is None:
@@ -93,6 +123,7 @@ class StreamCache:
             ):
                 # we have a mapping stored for this uri, prefer that
                 self._cache_file = cached_cache_path
+                assert self._cache_file is not None  # for type checking
                 if await asyncio.to_thread(os.path.exists, self._cache_file):
                     # cache file already exists from a previous session,
                     # we can simply use that, there is nothing to create
@@ -124,6 +155,7 @@ class StreamCache:
         """Release the cache file."""
         self._subscribers -= 1
         if self._subscribers <= 0:
+            assert self._cache_file is not None  # for type checking
             CACHE_FILES_IN_USE.discard(self._cache_file)
 
     async def get_audio_stream(self) -> str | AsyncGenerator[bytes, None]:
@@ -170,12 +202,17 @@ class StreamCache:
     async def _create_cache_file(self) -> None:
         time_start = time.time()
         self.logger.debug("Creating audio cache for %s", self.streamdetails.uri)
+        assert self._cache_file is not None  # for type checking
         CACHE_FILES_IN_USE.add(self._cache_file)
         self._first_part_received.clear()
         self._all_data_written = False
         extra_input_args = ["-y", *(self.org_extra_input_args or [])]
+        audio_source: AsyncGenerator[bytes, None] | str | int
         if self.org_stream_type == StreamType.CUSTOM:
-            audio_source = self.mass.get_provider(self.streamdetails.provider).get_audio_stream(
+            provider = self.mass.get_provider(self.streamdetails.provider)
+            if TYPE_CHECKING:  # avoid circular import
+                assert isinstance(provider, MusicProvider)
+            audio_source = provider.get_audio_stream(
                 self.streamdetails,
             )
         elif self.org_stream_type == StreamType.ICY:
@@ -183,14 +220,18 @@ class StreamCache:
         elif self.org_stream_type == StreamType.HLS:
             if self.streamdetails.media_type == MediaType.RADIO:
                 raise NotImplementedError("Caching of this streamtype is not supported!")
+            assert self.org_path is not None  # for type checking
             substream = await get_hls_substream(self.mass, self.org_path)
             audio_source = substream.path
         elif self.org_stream_type == StreamType.ENCRYPTED_HTTP:
+            assert self.org_path is not None  # for type checking
+            assert self.streamdetails.decryption_key is not None  # for type checking
             audio_source = self.org_path
             extra_input_args += ["-decryption_key", self.streamdetails.decryption_key]
         elif self.org_stream_type == StreamType.MULTI_FILE:
             audio_source = get_multi_file_stream(self.mass, self.streamdetails)
         else:
+            assert self.org_path is not None  # for type checking
             audio_source = self.org_path
 
         # we always use ffmpeg to fetch the original audio source
@@ -199,15 +240,15 @@ class StreamCache:
         # and it also accounts for complicated cases such as encrypted streams or
         # m4a/mp4 streams with the moov atom at the end of the file.
         # ffmpeg will produce a lossless copy of the original codec.
+        ffmpeg_proc = FFMpeg(
+            audio_input=audio_source,
+            input_format=self.org_audio_format,
+            output_format=self.streamdetails.audio_format,
+            extra_input_args=extra_input_args,
+            audio_output=self._cache_file,
+            collect_log_history=True,
+        )
         try:
-            ffmpeg_proc = FFMpeg(
-                audio_input=audio_source,
-                input_format=self.org_audio_format,
-                output_format=self.streamdetails.audio_format,
-                extra_input_args=extra_input_args,
-                audio_output=self._cache_file,
-                collect_log_history=True,
-            )
             await ffmpeg_proc.start()
             # wait until the first data is written to the cache file
             while ffmpeg_proc.returncode is None:
@@ -249,7 +290,7 @@ class StreamCache:
             await self._remove_cache_file()
             # unblock the waiting tasks by setting the event
             # this will allow the tasks to continue and handle the error
-            self._stream_error = str(err) or err.__qualname__
+            self._stream_error = str(err) or err.__qualname__  # type: ignore [attr-defined]
             self._first_part_received.set()
         finally:
             await ffmpeg_proc.close()
@@ -258,35 +299,8 @@ class StreamCache:
         self._first_part_received.clear()
         self._all_data_written = False
         self._fetch_task = None
+        assert self._cache_file is not None  # for type checking
         await remove_file(self._cache_file)
-
-    def __init__(self, mass: MusicAssistant, streamdetails: StreamDetails) -> None:
-        """Initialize the StreamCache."""
-        self.mass = mass
-        self.streamdetails = streamdetails
-        self.logger = LOGGER.getChild("cache")
-        self._cache_file: str | None = None
-        self._fetch_task: asyncio.Task | None = None
-        self._subscribers: int = 0
-        self._first_part_received = asyncio.Event()
-        self._all_data_written: bool = False
-        self._stream_error: str | None = None
-        self.org_path: str | None = streamdetails.path
-        self.org_stream_type: StreamType | None = streamdetails.stream_type
-        self.org_extra_input_args: list[str] | None = streamdetails.extra_input_args
-        self.org_audio_format = streamdetails.audio_format
-        streamdetails.audio_format = AudioFormat(
-            content_type=ContentType.NUT,
-            codec_type=streamdetails.audio_format.codec_type,
-            sample_rate=streamdetails.audio_format.sample_rate,
-            bit_depth=streamdetails.audio_format.bit_depth,
-            channels=streamdetails.audio_format.channels,
-        )
-        streamdetails.path = "-"
-        streamdetails.stream_type = StreamType.CACHE
-        streamdetails.can_seek = True
-        streamdetails.allow_seek = True
-        streamdetails.extra_input_args = []
 
 
 async def crossfade_pcm_parts(
@@ -439,7 +453,7 @@ async def strip_silence(
 
 
 def get_player_dsp_details(
-    mass: MusicAssistant, player: Player, group_preventing_dsp=False
+    mass: MusicAssistant, player: Player, group_preventing_dsp: bool = False
 ) -> DSPDetails:
     """Return DSP details of single a player.
 
@@ -479,6 +493,7 @@ def get_stream_dsp_details(
     """Return DSP details of all players playing this queue, keyed by player_id."""
     player = mass.players.get(queue_id)
     dsp: dict[str, DSPDetails] = {}
+    assert player is not None  # for type checking
     group_preventing_dsp = is_grouping_preventing_dsp(player)
     output_format = None
     is_external_group = False
@@ -488,6 +503,8 @@ def get_stream_dsp_details(
             try:
                 # We need a bit of a hack here since only the leader knows the correct output format
                 provider = mass.get_provider(player.provider)
+                if TYPE_CHECKING:  # avoid circular import
+                    assert isinstance(provider, PlayerGroupProvider)
                 if provider:
                     output_format = provider._get_sync_leader(player).output_format
             except RuntimeError:
@@ -557,6 +574,7 @@ async def get_stream_details(
     else:
         # retrieve streamdetails from provider
         media_item = queue_item.media_item
+        assert media_item is not None  # for type checking
         # sort by quality and check item's availability
         for prov_media in sorted(
             media_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
@@ -566,12 +584,14 @@ async def get_stream_details(
                 continue
             # guard that provider is available
             music_prov = mass.get_provider(prov_media.provider_instance)
+            if TYPE_CHECKING:  # avoid circular import
+                assert isinstance(music_prov, MusicProvider)
             if not music_prov:
                 LOGGER.debug(f"Skipping {prov_media} - provider not available")
                 continue  # provider not available ?
             # get streamdetails from provider
             try:
-                streamdetails: StreamDetails = await music_prov.get_stream_details(
+                streamdetails = await music_prov.get_stream_details(
                     prov_media.item_id, media_item.media_type
                 )
             except MusicAssistantError as err:
@@ -587,6 +607,7 @@ async def get_stream_details(
             streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
             and streamdetails.media_type == MediaType.RADIO
         ):
+            assert streamdetails.path is not None  # for type checking
             resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
             streamdetails.path = resolved_url
             streamdetails.stream_type = stream_type
@@ -611,7 +632,7 @@ async def get_stream_details(
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
     streamdetails.target_loudness = float(
-        player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
+        str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET))
     )
     streamdetails.volume_normalization_mode = _get_normalization_mode(
         core_config, player_settings, streamdetails
@@ -714,6 +735,8 @@ async def get_media_stream(
     extra_input_args = streamdetails.extra_input_args or []
     strip_silence_begin = streamdetails.strip_silence_begin
     strip_silence_end = streamdetails.strip_silence_end
+    if filter_params is None:
+        filter_params = []
     if streamdetails.fade_in:
         filter_params.append("afade=type=in:start_time=0:duration=3")
         strip_silence_begin = False
@@ -726,13 +749,18 @@ async def get_media_stream(
     elif stream_type == StreamType.MULTI_FILE:
         audio_source = get_multi_file_stream(mass, streamdetails)
     elif stream_type == StreamType.CUSTOM:
-        audio_source = mass.get_provider(streamdetails.provider).get_audio_stream(
+        music_prov = mass.get_provider(streamdetails.provider)
+        if TYPE_CHECKING:  # avoid circular import
+            assert isinstance(music_prov, MusicProvider)
+        audio_source = music_prov.get_audio_stream(
             streamdetails,
             seek_position=streamdetails.seek_position if streamdetails.can_seek else 0,
         )
     elif stream_type == StreamType.ICY:
+        assert streamdetails.path is not None  # for type checking
         audio_source = get_icy_radio_stream(mass, streamdetails.path, streamdetails)
     elif stream_type == StreamType.HLS:
+        assert streamdetails.path is not None  # for type checking
         substream = await get_hls_substream(mass, streamdetails.path)
         audio_source = substream.path
         if streamdetails.media_type == MediaType.RADIO:
@@ -741,9 +769,12 @@ async def get_media_stream(
             # so we tell ffmpeg to loop around in this case.
             extra_input_args += ["-stream_loop", "-1", "-re"]
     elif stream_type == StreamType.ENCRYPTED_HTTP:
+        assert streamdetails.path is not None  # for type checking
+        assert streamdetails.decryption_key is not None  # for type checking
         audio_source = streamdetails.path
         extra_input_args += ["-decryption_key", streamdetails.decryption_key]
     else:
+        assert streamdetails.path is not None  # for type checking
         audio_source = streamdetails.path
 
     # handle seek support
@@ -774,6 +805,7 @@ async def get_media_stream(
 
     try:
         await ffmpeg_proc.start()
+        assert ffmpeg_proc.proc is not None  # for type checking
         logger.debug(
             "Started media stream for %s"
             " - using streamtype: %s"
@@ -886,7 +918,7 @@ async def get_media_stream(
         streamdetails.seconds_streamed = seconds_streamed
         # store accurate duration
         if finished and not streamdetails.seek_position and seconds_streamed:
-            streamdetails.duration = seconds_streamed
+            streamdetails.duration = int(seconds_streamed)
 
         # release cache if needed
         if cache := streamdetails.cache:
@@ -936,10 +968,14 @@ async def get_media_stream(
         if (finished or seconds_streamed >= 30) and (
             music_prov := mass.get_provider(streamdetails.provider)
         ):
+            if TYPE_CHECKING:  # avoid circular import
+                assert isinstance(music_prov, MusicProvider)
             mass.create_task(music_prov.on_streamed(streamdetails))
 
 
-def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=None):
+def create_wave_header(
+    samplerate: int = 44100, channels: int = 2, bitspersample: int = 16, duration: int | None = None
+) -> bytes:
     """Generate a wave header from given params."""
     file = BytesIO()
 
@@ -1005,7 +1041,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
     """
     cache_base_key = "resolved_radio_info"
     if cache := await mass.cache.get(url, base_key=cache_base_key):
-        return cache
+        return cast("tuple[str, StreamType]", cache)
     stream_type = StreamType.HTTP
     resolved_url = url
     timeout = ClientTimeout(total=0, connect=10, sock_read=5)
@@ -1024,7 +1060,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
             or ".m3u?" in url
             or ".m3u8?" in url
             or ".pls?" in url
-            or "audio/x-mpegurl" in headers.get("content-type")
+            or "audio/x-mpegurl" in headers.get("content-type", "")
             or "audio/x-scpls" in headers.get("content-type", "")
         ):
             # url is playlist, we need to unfold it
@@ -1074,15 +1110,15 @@ async def get_icy_radio_stream(
             if not meta_data:
                 continue
             meta_data = meta_data.rstrip(b"\0")
-            stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
-            if not stream_title:
+            stream_title_re = re.search(rb"StreamTitle='([^']*)';", meta_data)
+            if not stream_title_re:
                 continue
             try:
                 # in 99% of the cases the stream title is utf-8 encoded
-                stream_title = stream_title.group(1).decode("utf-8")
+                stream_title = stream_title_re.group(1).decode("utf-8")
             except UnicodeDecodeError:
                 # fallback to iso-8859-1
-                stream_title = stream_title.group(1).decode("iso-8859-1", errors="replace")
+                stream_title = stream_title_re.group(1).decode("iso-8859-1", errors="replace")
             cleaned_stream_title = clean_stream_title(stream_title)
             if cleaned_stream_title != streamdetails.stream_title:
                 LOGGER.log(
@@ -1127,7 +1163,12 @@ async def get_hls_substream(
         return PlaylistItem(path=url, key=substreams[0].key)
     # sort substreams on best quality (highest bandwidth) when available
     if any(x for x in substreams if x.stream_info):
-        substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
+        substreams.sort(
+            key=lambda x: int(
+                x.stream_info.get("BANDWIDTH", "0") if x.stream_info is not None else 0
+            ),
+            reverse=True,
+        )
     substream = substreams[0]
     if not substream.path.startswith("http"):
         # path is relative, stitch it together
@@ -1159,6 +1200,7 @@ async def get_http_stream(
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     skip_bytes = 0
     if seek_position and streamdetails.size:
+        assert streamdetails.duration is not None  # for type checking
         skip_bytes = int(streamdetails.size / streamdetails.duration * seek_position)
         headers["Range"] = f"bytes={skip_bytes}-{streamdetails.size}"
 
@@ -1238,6 +1280,7 @@ async def get_file_stream(
     chunk_size = get_chunksize(streamdetails.audio_format)
     async with aiofiles.open(streamdetails.data, "rb") as _file:
         if seek_position:
+            assert streamdetails.duration is not None  # for type checking
             seek_pos = int((streamdetails.size / streamdetails.duration) * seek_position)
             await _file.seek(seek_pos)
         # yield chunks of data from file
@@ -1286,11 +1329,18 @@ async def get_preview_stream(
     """Create a 30 seconds preview audioclip for the given streamdetails."""
     if not (music_prov := mass.get_provider(provider_instance_id_or_domain)):
         raise ProviderUnavailableError
+    if TYPE_CHECKING:  # avoid circular import
+        assert isinstance(music_prov, MusicProvider)
     streamdetails = await music_prov.get_stream_details(item_id, media_type)
+
+    audio_input: AsyncGenerator[bytes, None] | str
+    if streamdetails.stream_type == StreamType.CUSTOM:
+        audio_input = music_prov.get_audio_stream(streamdetails, 30)
+    else:
+        assert streamdetails.path is not None  # for type checking
+        audio_input = streamdetails.path
     async for chunk in get_ffmpeg_stream(
-        audio_input=music_prov.get_audio_stream(streamdetails, 30)
-        if streamdetails.stream_type == StreamType.CUSTOM
-        else streamdetails.path,
+        audio_input=audio_input,
         input_format=streamdetails.audio_format,
         output_format=AudioFormat(content_type=ContentType.AAC),
         extra_input_args=["-to", "30"],
@@ -1401,11 +1451,12 @@ def is_output_limiter_enabled(mass: MusicAssistant, player: Player) -> bool:
     elif player.synced_to:
         # Not in sync group, but synced, get from the leader
         deciding_player_id = player.synced_to
-    return mass.config.get_raw_player_config_value(
+    output_limiter_enabled = mass.config.get_raw_player_config_value(
         deciding_player_id,
         CONF_ENTRY_OUTPUT_LIMITER.key,
         CONF_ENTRY_OUTPUT_LIMITER.default_value,
     )
+    return bool(output_limiter_enabled)
 
 
 def get_player_filter_params(
@@ -1434,7 +1485,8 @@ def get_player_filter_params(
             # We can still apply the DSP of that single player.
             if player.group_childs:
                 child_player = mass.players.get(player.group_childs[0])
-                dsp = mass.config.get_player_dsp_config(child_player)
+                assert child_player is not None  # for type checking
+                dsp = mass.config.get_player_dsp_config(child_player.player_id)
             else:
                 # This should normally never happen, but if it does, we disable DSP.
                 dsp.enabled = False
@@ -1525,16 +1577,23 @@ async def analyze_loudness(
     elif streamdetails.stream_type == StreamType.MULTI_FILE:
         audio_source = get_multi_file_stream(mass, streamdetails)
     elif streamdetails.stream_type == StreamType.CUSTOM:
-        audio_source = mass.get_provider(streamdetails.provider).get_audio_stream(
+        music_prov = mass.get_provider(streamdetails.provider)
+        if TYPE_CHECKING:  # avoid circular import
+            assert isinstance(music_prov, MusicProvider)
+        audio_source = music_prov.get_audio_stream(
             streamdetails,
         )
     elif streamdetails.stream_type == StreamType.HLS:
+        assert streamdetails.path is not None  # for type checking
         substream = await get_hls_substream(mass, streamdetails.path)
         audio_source = substream.path
     elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
+        assert streamdetails.path is not None  # for type checking
+        assert streamdetails.decryption_key is not None  # for type checking
         audio_source = streamdetails.path
         extra_input_args += ["-decryption_key", streamdetails.decryption_key]
     else:
+        assert streamdetails.path is not None  # for type checking
         audio_source = streamdetails.path
 
     # calculate BS.1770 R128 integrated loudness with ffmpeg
@@ -1593,10 +1652,12 @@ def _get_normalization_mode(
         return VolumeNormalizationMode.DISABLED
     # work out preference for track or radio
     preference = VolumeNormalizationMode(
-        core_config.get_value(
-            CONF_VOLUME_NORMALIZATION_RADIO
-            if streamdetails.media_type == MediaType.RADIO
-            else CONF_VOLUME_NORMALIZATION_TRACKS,
+        str(
+            core_config.get_value(
+                CONF_VOLUME_NORMALIZATION_RADIO
+                if streamdetails.media_type == MediaType.RADIO
+                else CONF_VOLUME_NORMALIZATION_TRACKS,
+            )
         )
     )
 

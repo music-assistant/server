@@ -130,6 +130,8 @@ def create_didl_metadata(media: PlayerMedia) -> str:
         )
     duration_str = str(datetime.timedelta(seconds=media.duration or 0)) + ".000"
 
+    assert media.queue_item_id is not None  # for type checking
+
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">'
         f'<item id="{media.queue_item_id or xmlescape(media.uri)}" restricted="true" parentID="{media.queue_id or ""}">'

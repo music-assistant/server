@@ -12,7 +12,7 @@ from music_assistant_models.enums import EventType
 from music_assistant_models.errors import LoginFailed
 
 if TYPE_CHECKING:
-    from music_assistant import MusicAssistant
+    from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class AuthenticationHelper:
     ) -> bool | None:
         """Exit context manager."""
         self.mass.webserver.unregister_dynamic_route(self._cb_path, "GET")
+        return None
 
     async def authenticate(self, auth_url: str, timeout: int = 60) -> dict[str, str]:
         """Start the auth process and return any query params if received on the callback."""

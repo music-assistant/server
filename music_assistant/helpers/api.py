@@ -42,7 +42,7 @@ class APICommandHandler:
             if not hasattr(value, "__name__"):
                 continue
             if value.__name__ == "ItemCls":
-                type_hints[key] = func.__self__.item_cls
+                type_hints[key] = func.__self__.item_cls  # type: ignore[attr-defined]
         return APICommandHandler(
             command=command,
             signature=inspect.signature(func),
@@ -64,7 +64,7 @@ def api_command(command: str) -> Callable[[_F], _F]:
 def parse_arguments(
     func_sig: inspect.Signature,
     func_types: dict[str, Any],
-    args: dict | None,
+    args: dict[str, Any] | None,
     strict: bool = False,
 ) -> dict[str, Any]:
     """Parse (and convert) incoming arguments to correct types."""
@@ -161,6 +161,7 @@ def parse_value(  # noqa: PLR0911
         logging.getLogger(__name__).warning(err)
         return None
     if origin is type:
+        assert isinstance(value, str)  # for type checking
         return eval(value)
     if value_type is Any:
         return value
@@ -169,9 +170,10 @@ def parse_value(  # noqa: PLR0911
         raise KeyError(msg)
 
     try:
-        if issubclass(value_type, Enum):  # type: ignore[arg-type]
-            return value_type(value)  # type: ignore[operator]
-        if issubclass(value_type, datetime):  # type: ignore[arg-type]
+        if issubclass(value_type, Enum):
+            return value_type(value)
+        if issubclass(value_type, datetime):
+            assert isinstance(value, str)  # for type checking
             return parse_utc_timestamp(value)
     except TypeError:
         # happens if value_type is not a class
@@ -190,7 +192,7 @@ def parse_value(  # noqa: PLR0911
         if value_type is bool and isinstance(value, str | int):
             return try_parse_bool(value)
 
-    if not isinstance(value, value_type):  # type: ignore[arg-type]
+    if not isinstance(value, value_type):
         # all options failed, raise exception
         msg = (
             f"Value {value} of type {type(value)} is invalid for {name}, "

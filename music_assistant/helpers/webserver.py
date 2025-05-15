@@ -9,7 +9,9 @@ from aiohttp import web
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable
+
+    from aiohttp.typedefs import Handler
 
 
 MAX_CLIENT_SIZE: Final = 1024**2 * 16
@@ -30,7 +32,7 @@ class Webserver:
         self._apprunner: web.AppRunner | None = None
         self._webapp: web.Application | None = None
         self._tcp_site: web.TCPSite | None = None
-        self._static_routes: list[tuple[str, str, Awaitable]] | None = None
+        self._static_routes: list[tuple[str, str, Handler]] | None = None
         self._dynamic_routes: dict[str, Callable] | None = {} if enable_dynamic_routes else None
         self._bind_port: int | None = None
 
@@ -39,7 +41,7 @@ class Webserver:
         bind_ip: str | None,
         bind_port: int,
         base_url: str,
-        static_routes: list[tuple[str, str, Awaitable]] | None = None,
+        static_routes: list[tuple[str, str, Handler]] | None = None,
         static_content: tuple[str, str, str] | None = None,
     ) -> None:
         """Async initialize of module."""
@@ -95,12 +97,12 @@ class Webserver:
             await self._webapp.cleanup()
 
     @property
-    def base_url(self):
+    def base_url(self) -> str:
         """Return the base URL of this webserver."""
         return self._base_url
 
     @property
-    def port(self):
+    def port(self) -> int | None:
         """Return the port of this webserver."""
         return self._bind_port
 
@@ -121,6 +123,7 @@ class Webserver:
         self._dynamic_routes[key] = handler
 
         def _remove():
+            assert self._dynamic_routes is not None  # for type checking
             return self._dynamic_routes.pop(key)
 
         return _remove
@@ -142,6 +145,7 @@ class Webserver:
         """Redirect request to correct destination."""
         # find handler for the request
         for key in (f"{request.method}.{request.path}", f"*.{request.path}"):
+            assert self._dynamic_routes is not None  # for type checking
             if handler := self._dynamic_routes.get(key):
                 return await handler(request)
         # deny all other requests

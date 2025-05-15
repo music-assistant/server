@@ -4,7 +4,7 @@
 # This image forms the base for the final image and is not meant to be used directly
 # NOTE that the dev add-on is also based on this base image
 
-FROM python:3.12-alpine3.21
+FROM python:3.13-alpine3.21
 
 RUN set -x \
     && apk add --no-cache \
@@ -21,8 +21,8 @@ RUN set -x \
         snapcast
 
 # Get static ffmpeg builds from https://hub.docker.com/r/mwader/static-ffmpeg/
-COPY --from=mwader/static-ffmpeg:7.1 /ffmpeg /usr/local/bin/
-COPY --from=mwader/static-ffmpeg:7.1 /ffprobe /usr/local/bin/
+COPY --from=mwader/static-ffmpeg:7.1.1 /ffmpeg /usr/local/bin/
+COPY --from=mwader/static-ffmpeg:7.1.1 /ffprobe /usr/local/bin/
 
 # Copy widevine client files to container
 RUN mkdir -p /usr/local/bin/widevine_cdm
