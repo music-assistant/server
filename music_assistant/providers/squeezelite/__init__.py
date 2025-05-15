@@ -764,9 +764,8 @@ class SlimprotoProvider(PlayerProvider):
         # ignore unexpected spikes
         if (
             sync_playpoints
-            and abs(
-                statistics.fmean(abs(x.diff) for x in sync_playpoints) - abs(diff)
-            ) > DEVIATION_JUMP_IGNORE
+            and abs(statistics.fmean(abs(x.diff) for x in sync_playpoints) - abs(diff))
+            > DEVIATION_JUMP_IGNORE
         ):
             return
 
