@@ -759,7 +759,7 @@ class SlimprotoProvider(PlayerProvider):
             - self._get_corrected_elapsed_milliseconds(slimplayer)
         )
 
-	sync_playpoints.append(SyncPlayPoint(now, sync_master.player_id, diff))
+        sync_playpoints.append(SyncPlayPoint(now, sync_master.player_id, diff))
 
         # ignore unexpected spikes
         if (
