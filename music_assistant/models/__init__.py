@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
-    from music_assistant import MusicAssistant
+    from music_assistant.mass import MusicAssistant
 
 
 ProviderInstanceType = MetadataProvider | MusicProvider | PlayerProvider | PluginProvider
@@ -27,6 +27,7 @@ class ProviderModuleType(Protocol):
         mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> ProviderInstanceType:
         """Initialize provider(instance) with given configuration."""
+        raise NotImplementedError
 
     @staticmethod
     async def get_config_entries(
@@ -42,3 +43,4 @@ class ProviderModuleType(Protocol):
         action: [optional] action key called from config entries UI.
         values: the (intermediate) raw values for config entries sent with the action.
         """
+        raise NotImplementedError
