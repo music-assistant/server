@@ -22,7 +22,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
 
-import chardet
+import cchardet as chardet
 import ifaddr
 from zeroconf import IPVersion
 
@@ -32,7 +32,6 @@ from music_assistant.helpers.process import check_output
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from chardet.resultdict import ResultDict
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -227,19 +226,6 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
 
     def call() -> tuple[str, ...]:
         result: list[tuple[int, str]] = []
-        # try to get the primary IP address
-        # this is the IP address of the default route
-        _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        _sock.settimeout(0)
-        try:
-            # doesn't even have to be reachable
-            _sock.connect(("10.254.254.254", 1))
-            primary_ip = _sock.getsockname()[0]
-        except Exception:
-            primary_ip = ""
-        finally:
-            _sock.close()
-        # get all IP addresses of all network interfaces
         adapters = ifaddr.get_adapters()
         for adapter in adapters:
             for ip in adapter.ips:
@@ -252,9 +238,7 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
                 if ip_str.startswith(("::1", "::ffff:", "fe80")):
                     # filter out IPv6 loopback/link-local address
                     continue
-                if ip_str == primary_ip:
-                    score = 10
-                elif ip_str.startswith(("192.168.",)):
+                if ip_str.startswith(("192.168.",)):
                     # we rank the 192.168 range a bit higher as its most
                     # often used as the private network subnet
                     score = 2
@@ -269,10 +253,6 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
         return tuple(ip[1] for ip in result)
 
     return await asyncio.to_thread(call)
-
-
-async def get_primary_ip_address() -> str | None:
-    """Return the primary IP address of the system."""
 
 
 async def is_port_in_use(port: int) -> bool:
@@ -392,6 +372,21 @@ async def install_package(package: str) -> None:
     LOGGER.debug("Installing python package %s", package)
     args = ["uv", "pip", "install", "--no-cache", "--find-links", HA_WHEELS, package]
     return_code, output = await check_output(*args)
+
+    if return_code != 0 and "Permission denied" in output.decode():
+        # try again with regular pip
+        # uv pip seems to have issues with permissions on docker installs
+        args = [
+            "pip",
+            "install",
+            "--no-cache-dir",
+            "--no-input",
+            "--find-links",
+            HA_WHEELS,
+            package,
+        ]
+        return_code, output = await check_output(*args)
+
     if return_code != 0:
         msg = f"Failed to install package {package}\n{output.decode()}"
         raise RuntimeError(msg)
@@ -553,7 +548,7 @@ async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
 async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     """Detect charset of raw data."""
     try:
-        detected: ResultDict = await asyncio.to_thread(chardet.detect, data)
+        detected: dict[str, Any] = await asyncio.to_thread(chardet.detect, data)
         if detected and detected["encoding"] and detected["confidence"] > 0.75:
             assert isinstance(detected["encoding"], str)  # for type checking
             return detected["encoding"]
