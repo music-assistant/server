@@ -28,7 +28,7 @@ ibroadcastaio==0.4.0
 ifaddr==0.2.0
 liblistenbrainz==0.5.6
 mashumaro==3.15
-music-assistant-frontend==2.15.0
+music-assistant-frontend==2.15.1
 music-assistant-models==1.1.45
 mutagen==1.47.0
 orjson==3.10.18
