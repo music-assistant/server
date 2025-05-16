@@ -701,7 +701,10 @@ class ChromecastProvider(PlayerProvider):
         castplayer.player.poll_interval = 10
         media_controller = castplayer.cc.media_controller
         # update metadata of current item chromecast
-        if media_controller.status.media_custom_data["queue_item_id"] != current_item.queue_item_id:
+        if (
+            media_controller.status.media_custom_data.get("queue_item_id")
+            != current_item.queue_item_id
+        ):
             image_url = (
                 self.mass.metadata.get_image_url(current_item.image, size=512)
                 if current_item.image
