@@ -22,7 +22,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
 
-import cchardet as chardet
+import chardet
 import ifaddr
 from zeroconf import IPVersion
 
@@ -32,6 +32,7 @@ from music_assistant.helpers.process import check_output
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from chardet.resultdict import ResultDict
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
@@ -567,7 +568,7 @@ async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
 async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     """Detect charset of raw data."""
     try:
-        detected: dict[str, Any] = await asyncio.to_thread(chardet.detect, data)
+        detected: ResultDict = await asyncio.to_thread(chardet.detect, data)
         if detected and detected["encoding"] and detected["confidence"] > 0.75:
             assert isinstance(detected["encoding"], str)  # for type checking
             return detected["encoding"]
