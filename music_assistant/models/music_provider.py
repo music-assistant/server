@@ -463,7 +463,7 @@ class MusicProvider(Provider):
                 return [x async for x in self.get_library_tracks()]
             library_item_ids = cast("list[int]", library_item_ids)
             query = "tracks.item_id in :ids"
-            query_params = {"ids": library_items}
+            query_params = {"ids": library_item_ids}
             return await self.mass.music.tracks.library_items(
                 extra_query=query, extra_query_params=query_params
             )

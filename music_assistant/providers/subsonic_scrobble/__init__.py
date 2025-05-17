@@ -114,7 +114,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         def handler(prov: OpenSonicProvider, item_id: str, uri: str) -> None:
             try:
                 self.logger.info("scrobble play now event")
-                prov._conn.scrobble(item_id, submission=False)
+                prov.conn.scrobble(item_id, submission=False)
                 self.logger.debug("track %s marked as 'now playing'", uri)
                 self.currently_playing = uri
             except Exception as err:
@@ -136,7 +136,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         def handler(prov: OpenSonicProvider, item_id: str, uri: str) -> None:
             try:
-                prov._conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
+                prov.conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
                 self.logger.debug("track %s marked as 'played'", uri)
                 self.last_scrobbled = uri
             except Exception as err:

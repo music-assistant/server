@@ -9,6 +9,7 @@ the upnp callbacks and json rpc api for slimproto clients.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import urllib.parse
 from collections.abc import AsyncGenerator
@@ -266,6 +267,20 @@ class StreamsController(CoreController):
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
+        # print a big fat message in the log where the streamserver is running
+        # because this is a common source of issues for people with more complex setups
+        self.logger.log(
+            logging.INFO if self.mass.config.onboard_done else logging.WARNING,
+            "\n\n################################################################################\n"
+            "Starting streamserver on  %s:%s\n"
+            "This is the IP address that is communicated to players.\n"
+            "If this is incorrect, audio will not play!\n"
+            "See the documentation how to configure the publish IP for the Streamserver\n"
+            "in Settings --> Core modules --> Streamserver\n"
+            "################################################################################\n",
+            self.publish_ip,
+            self.publish_port,
+        )
         await self._server.setup(
             bind_ip=config.get_value(CONF_BIND_IP),
             bind_port=self.publish_port,

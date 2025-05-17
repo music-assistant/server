@@ -365,7 +365,7 @@ class AirPlayProvider(PlayerProvider):
             # check if we need to replace the stream
             if airplay_player.raop_stream.prevent_playback:
                 # player is in prevent playback mode, we need to stop the stream
-                await airplay_player.cmd_stop(False)
+                await airplay_player.cmd_stop()
             else:
                 await airplay_player.raop_stream.session.replace_stream(audio_source)
                 return
@@ -661,9 +661,13 @@ class AirPlayProvider(PlayerProvider):
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
                 if raop_stream := airplay_player.raop_stream:
-                    self.mass.create_task(
-                        airplay_player.raop_stream.session.remove_client(airplay_player)
-                    )
+                    raop_stream.prevent_playback = True
+                    if mass_player.synced_to:
+                        self.mass.create_task(self.cmd_ungroup(airplay_player.player_id))
+                    else:
+                        self.mass.create_task(
+                            airplay_player.raop_stream.session.remove_client(airplay_player)
+                        )
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 if raop_stream := airplay_player.raop_stream:

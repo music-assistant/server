@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlayerState
-
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -31,14 +29,11 @@ class AirPlayPlayer:
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
 
-    async def cmd_stop(self, update_state: bool = True) -> None:
+    async def cmd_stop(self) -> None:
         """Send STOP command to player."""
-        if self.raop_stream:
+        if self.raop_stream and self.raop_stream.session:
             # forward stop to the entire stream session
             await self.raop_stream.session.stop()
-        if update_state and (mass_player := self.mass.players.get(self.player_id)):
-            mass_player.state = PlayerState.IDLE
-            self.mass.players.update(mass_player.player_id)
 
     async def cmd_play(self) -> None:
         """Send PLAY (unpause) command to player."""

@@ -190,6 +190,26 @@ class WebserverController(CoreController):
             self.publish_port = config.get_value(CONF_BIND_PORT)
             self.publish_ip = default_publish_ip
             bind_ip = config.get_value(CONF_BIND_IP)
+            # print a big fat message in the log where the webserver is running
+            # because this is a common source of issues for people with more complex setups
+            if not self.mass.config.onboard_done:
+                self.logger.warning(
+                    "\n\n################################################################################\n"
+                    "Starting webserver on  %s:%s - base url: %s\n"
+                    "If this is incorrect, see the documentation how to configure the Webserver\n"
+                    "in Settings --> Core modules --> Webserver\n"
+                    "################################################################################\n",
+                    bind_ip,
+                    self.publish_port,
+                    base_url,
+                )
+            else:
+                self.logger.info(
+                    "Starting webserver on  %s:%s - base url: %s\n#\n",
+                    bind_ip,
+                    self.publish_port,
+                    base_url,
+                )
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=self.publish_port,

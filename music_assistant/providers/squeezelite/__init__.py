@@ -759,15 +759,15 @@ class SlimprotoProvider(PlayerProvider):
             - self._get_corrected_elapsed_milliseconds(slimplayer)
         )
 
+        sync_playpoints.append(SyncPlayPoint(now, sync_master.player_id, diff))
+
         # ignore unexpected spikes
         if (
             sync_playpoints
-            and abs(statistics.fmean(x.diff for x in sync_playpoints)) > DEVIATION_JUMP_IGNORE
+            and abs(statistics.fmean(abs(x.diff) for x in sync_playpoints) - abs(diff))
+            > DEVIATION_JUMP_IGNORE
         ):
             return
-
-        # we can now append the current playpoint to our list
-        sync_playpoints.append(SyncPlayPoint(now, sync_master.player_id, diff))
 
         min_req_playpoints = 2 if sync_master.elapsed_seconds < 2 else MIN_REQ_PLAYPOINTS
         if len(sync_playpoints) < min_req_playpoints:

@@ -56,7 +56,6 @@ class Webserver:
                 "max_field_size": MAX_LINE_SIZE,
             },
         )
-        self.logger.info("Starting server on  %s:%s - base url: %s", bind_ip, bind_port, base_url)
         self._apprunner = web.AppRunner(self._webapp, access_log=None, shutdown_timeout=10)
         # add static routes
         if self._static_routes:
