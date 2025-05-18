@@ -1590,7 +1590,7 @@ class PlayerQueuesController(CoreController):
         )
 
     async def _resolve_media_items(
-        self, media_item: MediaItemTypeOrItemMapping, start_item: str | None = None
+        self, media_item: MediaItemTypeOrItemMapping | BrowseFolder, start_item: str | None = None
     ) -> list[MediaItemType]:
         """Resolve/unwrap media items to enqueue."""
         # resolve Itemmapping to full media item
