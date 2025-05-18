@@ -127,68 +127,88 @@ class MusicProvider(Provider):
         raise NotImplementedError
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
-        if ProviderFeature.ARTIST_ALBUMS in self.supported_features:
-            raise NotImplementedError
-        return []
+        """Get a list of all albums for the given artist.
+
+        This method is only called if the provider supports ProviderFeature.ARTIST_ALBUMS.
+        """
+        raise NotImplementedError
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of most popular tracks for the given artist."""
-        if ProviderFeature.ARTIST_TOPTRACKS in self.supported_features:
-            raise NotImplementedError
-        return []
+        """Get a list of most popular tracks for the given artist.
 
-    async def get_album(self, prov_album_id: str) -> Album:  # type: ignore[return]
-        """Get full album details by id."""
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            raise NotImplementedError
+        This method is only called if the provider supports ProviderFeature.ARTIST_TOPTRACKS.
+        """
+        raise NotImplementedError
 
-    async def get_track(self, prov_track_id: str) -> Track:  # type: ignore[return]
-        """Get full track details by id."""
-        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-            raise NotImplementedError
+    async def get_album(self, prov_album_id: str) -> Album:
+        """Get full album details by id.
 
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:  # type: ignore[return]
-        """Get full playlist details by id."""
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            raise NotImplementedError
+        This method is only called if the provider supports ProviderFeature.LIBRARY_ALBUMS.
+        """
+        raise NotImplementedError
 
-    async def get_radio(self, prov_radio_id: str) -> Radio:  # type: ignore[return]
-        """Get full radio details by id."""
-        if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
-            raise NotImplementedError
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Get full track details by id.
 
-    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:  # type: ignore[return]
-        """Get full audiobook details by id."""
-        if ProviderFeature.LIBRARY_AUDIOBOOKS in self.supported_features:
-            raise NotImplementedError
+        This method is only called if the provider supports ProviderFeature.LIBRARY_TRACKS.
+        """
+        raise NotImplementedError
 
-    async def get_podcast(self, prov_podcast_id: str) -> Podcast:  # type: ignore[return]
-        """Get full audiobook details by id."""
-        if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
-            raise NotImplementedError
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """Get full playlist details by id.
 
-    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:  # type: ignore[return]
-        """Get (full) podcast episode details by id."""
-        if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
-            raise NotImplementedError
+        This method is only called if the provider supports ProviderFeature.LIBRARY_PLAYLISTS.
+        """
+        raise NotImplementedError
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Get full radio details by id.
+
+        This method is only called if the provider supports ProviderFeature.LIBRARY_RADIOS.
+        """
+        raise NotImplementedError
+
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get full audiobook details by id.
+
+        This method is only called if the provider supports ProviderFeature.LIBRARY_AUDIOBOOKS.
+        """
+        raise NotImplementedError
+
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get full podcast details by id.
+
+        This method is only called if the provider supports ProviderFeature.LIBRARY_PODCASTS.
+        """
+        raise NotImplementedError
+
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get (full) podcast episode details by id.
+
+        This method is only called if the provider supports ProviderFeature.LIBRARY_PODCASTS.
+        """
+        raise NotImplementedError
 
     async def get_album_tracks(
         self,
         prov_album_id: str,
-    ) -> list[Track]:  # type: ignore[return]
-        """Get album tracks for given album id."""
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            raise NotImplementedError
+    ) -> list[Track]:
+        """Get album tracks for given album id.
+
+        This method is only called if the provider supports ProviderFeature.LIBRARY_ALBUMS.
+        """
+        raise NotImplementedError
 
     async def get_playlist_tracks(
         self,
         prov_playlist_id: str,
         page: int = 0,
-    ) -> list[Track]:  # type: ignore[return]
-        """Get all playlist tracks for given playlist id."""
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            raise NotImplementedError
+    ) -> list[Track]:
+        """Get all playlist tracks for given playlist id.
+
+        This method is only called if the provider supports ProviderFeature.LIBRARY_PLAYLISTS.
+        """
+        raise NotImplementedError
 
     async def get_podcast_episodes(
         self,
@@ -328,7 +348,7 @@ class MusicProvider(Provider):
         """Get streamdetails for a track/radio/chapter/episode."""
         raise NotImplementedError
 
-    async def get_audio_stream(  # type: ignore[return]
+    async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """
@@ -336,8 +356,7 @@ class MusicProvider(Provider):
 
         Will only be called when the stream_type is set to CUSTOM.
         """
-        if False:
-            yield
+        yield b""
         raise NotImplementedError
 
     async def on_streamed(

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
 
-    from music_assistant import MusicAssistant
+    from music_assistant.mass import MusicAssistant
 
 
 class Provider:
@@ -29,7 +29,7 @@ class Provider:
         self.config = config
         mass_logger = logging.getLogger(MASS_LOGGER_NAME)
         self.logger = mass_logger.getChild(self.domain)
-        log_level = config.get_value(CONF_LOG_LEVEL)
+        log_level = str(config.get_value(CONF_LOG_LEVEL))
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
         else:
@@ -44,7 +44,7 @@ class Provider:
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        return ()
+        return set()
 
     @property
     def lookup_key(self) -> str:
@@ -129,7 +129,7 @@ class Provider:
         """Unload provider with error message."""
         self.mass.call_later(1, self.mass.unload_provider, self.instance_id, error)
 
-    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return Provider(instance) as serializable dict."""
         return {
             "type": self.type.value,
