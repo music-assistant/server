@@ -89,37 +89,37 @@ class MusicProvider(Provider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library/subscribed playlists from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
         """Retrieve library/subscribed audiobooks from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Retrieve library/subscribed podcasts from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -168,15 +168,15 @@ class MusicProvider(Provider):
         if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
             raise NotImplementedError
 
-    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:  # type: ignore[return]
         """Get (full) podcast episode details by id."""
         if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
             raise NotImplementedError
 
     async def get_album_tracks(
         self,
-        prov_album_id: str,  # type: ignore[return]
-    ) -> list[Track]:
+        prov_album_id: str,
+    ) -> list[Track]:  # type: ignore[return]
         """Get album tracks for given album id."""
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
             raise NotImplementedError
@@ -185,7 +185,7 @@ class MusicProvider(Provider):
         self,
         prov_playlist_id: str,
         page: int = 0,
-    ) -> list[Track]:
+    ) -> list[Track]:  # type: ignore[return]
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
@@ -195,7 +195,7 @@ class MusicProvider(Provider):
         prov_podcast_id: str,
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all PodcastEpisodes for given podcast id."""
-        yield
+        yield  # type: ignore[misc]
         if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
             raise NotImplementedError
 
@@ -304,9 +304,7 @@ class MusicProvider(Provider):
         if ProviderFeature.PLAYLIST_CREATE in self.supported_features:
             raise NotImplementedError
 
-    async def get_similar_tracks(  # type: ignore[return]
-        self, prov_track_id: str, limit: int = 25
-    ) -> list[Track]:
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:  # type: ignore[return]
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
             raise NotImplementedError

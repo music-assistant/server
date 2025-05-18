@@ -408,7 +408,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def get_library_item_by_prov_mappings(
         self,
-        provider_mappings: list[ProviderMapping],
+        provider_mappings: Iterable[ProviderMapping],
     ) -> ItemCls | None:
         """Get the library item for the given provider_instance."""
         # always prefer provider instance first
