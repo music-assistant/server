@@ -45,6 +45,7 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     MediaItemType,
     MediaItemTypeOrItemMapping,
     Playlist,
@@ -490,7 +491,7 @@ class MyDemoMusicprovider(MusicProvider):
         # to false in a MediaItemImage object.
         return path
 
-    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping]:
+    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping | BrowseFolder]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).

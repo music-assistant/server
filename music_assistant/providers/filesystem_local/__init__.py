@@ -259,7 +259,7 @@ class LocalFileSystemProvider(MusicProvider):
             )
         return result
 
-    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping]:
+    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping | BrowseFolder]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
@@ -269,7 +269,7 @@ class LocalFileSystemProvider(MusicProvider):
             return await self.mass.music.podcasts.library_items(provider=self.instance_id)
         if self.media_content_type == "audiobooks":
             return await self.mass.music.audiobooks.library_items(provider=self.instance_id)
-        items: list[MediaItemTypeOrItemMapping] = []
+        items: list[MediaItemTypeOrItemMapping | BrowseFolder] = []
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""

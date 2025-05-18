@@ -412,7 +412,7 @@ class MusicProvider(Provider):
             return await self.get_podcast_episode(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping]:  # noqa: PLR0911, PLR0915
+    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -529,9 +529,9 @@ class MusicProvider(Provider):
             raise KeyError(msg)
 
         # no subpath: return main listing
-        items: list[MediaItemType] = []
+        folders: list[BrowseFolder] = []
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-            items.append(
+            folders.append(
                 BrowseFolder(
                     item_id="artists",
                     provider=self.instance_id,
@@ -542,7 +542,7 @@ class MusicProvider(Provider):
                 )
             )
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            items.append(
+            folders.append(
                 BrowseFolder(
                     item_id="albums",
                     provider=self.instance_id,
@@ -553,7 +553,7 @@ class MusicProvider(Provider):
                 )
             )
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-            items.append(
+            folders.append(
                 BrowseFolder(
                     item_id="tracks",
                     provider=self.domain,
@@ -564,7 +564,7 @@ class MusicProvider(Provider):
                 )
             )
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            items.append(
+            folders.append(
                 BrowseFolder(
                     item_id="playlists",
                     provider=self.instance_id,
@@ -575,7 +575,7 @@ class MusicProvider(Provider):
                 )
             )
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
-            items.append(
+            folders.append(
                 BrowseFolder(
                     item_id="radios",
                     provider=self.instance_id,
@@ -585,7 +585,7 @@ class MusicProvider(Provider):
                 )
             )
         if ProviderFeature.LIBRARY_AUDIOBOOKS in self.supported_features:
-            items.append(
+            folders.append(
                 BrowseFolder(
                     item_id="audiobooks",
                     provider=self.instance_id,
@@ -595,7 +595,7 @@ class MusicProvider(Provider):
                 )
             )
         if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
-            items.append(
+            folders.append(
                 BrowseFolder(
                     item_id="podcasts",
                     provider=self.instance_id,
@@ -604,10 +604,10 @@ class MusicProvider(Provider):
                     translation_key="podcasts",
                 )
             )
-        if len(items) == 1:
+        if len(folders) == 1:
             # only one level, return the items directly
-            return await self.browse(items[0].path)
-        return items
+            return await self.browse(folders[0].path)
+        return folders
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """

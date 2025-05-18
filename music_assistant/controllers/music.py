@@ -434,11 +434,11 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/browse")
-    async def browse(self, path: str | None = None) -> list[MediaItemType]:
+    async def browse(self, path: str | None = None) -> Sequence[MediaItemType | BrowseFolder]:
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider
-            root_items: list[MediaItemType] = []
+            root_items: list[BrowseFolder] = []
             for prov in self.providers:
                 if ProviderFeature.BROWSE not in prov.supported_features:
                     continue
@@ -454,7 +454,7 @@ class MusicController(CoreController):
             return root_items
 
         # provider level
-        prepend_items: list[MediaItemType] = []
+        prepend_items: list[BrowseFolder] = []
         provider_instance, sub_path = path.split("://", 1)
         prov = self.mass.get_provider(provider_instance)
         # handle regular provider listing, always add back folder first
@@ -542,7 +542,7 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/item_by_uri")
-    async def get_item_by_uri(self, uri: str) -> MediaItemType:
+    async def get_item_by_uri(self, uri: str) -> MediaItemType | BrowseFolder:
         """Fetch MediaItem by uri."""
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         return await self.get_item(
@@ -574,7 +574,7 @@ class MusicController(CoreController):
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> MediaItemType:
+    ) -> MediaItemType | BrowseFolder:
         """Get single music item by id and media type."""
         if provider_instance_id_or_domain == "database":
             # backwards compatibility - to remove when 2.0 stable is released
