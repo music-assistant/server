@@ -31,10 +31,7 @@ from music_assistant.constants import (
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.helpers.upnp import (
-    get_xml_soap_set_next_url,
-    get_xml_soap_set_url,
-)
+from music_assistant.helpers.upnp import get_xml_soap_set_next_url, get_xml_soap_set_url
 from music_assistant.models.player_provider import PlayerProvider
 
 from .const import CONF_AIRPLAY_MODE
@@ -352,9 +349,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
-        # We do nothing here as we handle the queue in the cloud queue endpoint.
-        # For sonos s2, instead of enqueuing tracks one by one, the sonos player itself
-        # can interact with our queue directly through the cloud queue endpoint.
+        sonos_player = self.sonos_players[player_id]
+        if session_id := sonos_player.client.player.group.active_session_id:
+            await sonos_player.client.api.playback_session.refresh_cloud_queue(session_id)
 
     async def play_announcement(
         self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
@@ -421,31 +418,34 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue ItemWindow request: %s", request.query)
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        upcoming_window_size = int(request.query.get("upcomingWindowSize") or 10)
-        previous_window_size = int(request.query.get("previousWindowSize") or 10)
         queue_version = request.query.get("queueVersion")
         context_version = request.query.get("contextVersion")
         if not (mass_queue := self.mass.player_queues.get_active_queue(sonos_player_id)):
             return web.Response(status=501)
         if item_id := request.query.get("itemId"):
-            queue_index = self.mass.player_queues.index_by_id(mass_queue.queue_id, item_id)
+            cur_queue_index = self.mass.player_queues.index_by_id(mass_queue.queue_id, item_id)
         else:
-            queue_index = mass_queue.current_index
-        if queue_index is None:
+            cur_queue_index = mass_queue.current_index
+        if cur_queue_index is None:
             return web.Response(status=501)
-        offset = max(queue_index - previous_window_size, 0)
-        queue_items = self.mass.player_queues.items(
-            mass_queue.queue_id,
-            limit=upcoming_window_size + previous_window_size,
-            offset=max(queue_index - previous_window_size, 0),
-        )
-        sonos_queue_items = [await self._parse_sonos_queue_item(item) for item in queue_items]
+        # because Sonos does not show our queue in the app anyways,
+        # we just return the current and 2 next items in the queue
+        cur_queue_item = self.mass.player_queues.get_item(mass_queue.queue_id, cur_queue_index)
+        queue_items = [cur_queue_item]
+        if next_queue_item := self.mass.player_queues.get_next_item(
+            mass_queue.queue_id, cur_queue_index
+        ):
+            queue_items.append(next_queue_item)
+            if next_next_queue_item := self.mass.player_queues.get_next_item(
+                mass_queue.queue_id, next_queue_item.queue_item_id
+            ):
+                queue_items.append(next_next_queue_item)
         result = {
-            "includesBeginningOfQueue": offset == 0,
-            "includesEndOfQueue": mass_queue.items <= (queue_index + len(sonos_queue_items)),
+            "includesBeginningOfQueue": False,
+            "includesEndOfQueue": True,
             "contextVersion": context_version,
             "queueVersion": queue_version,
-            "items": sonos_queue_items,
+            "items": [await self._parse_sonos_queue_item(item) for item in queue_items],
         }
         return web.json_response(result)
 
@@ -501,14 +501,14 @@ class SonosPlayerProvider(PlayerProvider):
             "playbackPolicies": {
                 "canSkip": True,
                 "limitedSkips": False,
-                "canSkipToItem": True,
+                "canSkipToItem": False,  # unsure
                 "canSkipBack": True,
                 # seek needs to be disabled because we dont properly support range requests
                 "canSeek": False,
-                "canRepeat": True,
-                "canRepeatOne": True,
-                "canCrossfade": False,  # crossfading is handled by our streams controller
-                "canShuffle": False,  # handled by our streams controller
+                "canRepeat": False,  # handled by MA queue controller
+                "canRepeatOne": True,  # synced from MA queue controller
+                "canCrossfade": False,  # handled by MA queue controller
+                "canShuffle": False,  # handled by MA queue controller
             },
         }
         return web.json_response(result)
@@ -539,7 +539,7 @@ class SonosPlayerProvider(PlayerProvider):
         return web.Response(status=204)
 
     async def _parse_sonos_queue_item(self, queue_item: QueueItem) -> dict[str, Any]:
-        """Parse a Sonos queue item to a PlayerMedia object."""
+        """Parse a MusicAssistant QueueItem to a Sonos Media (queue) object."""
         queue = self.mass.player_queues.get(queue_item.queue_id)
         assert queue  # for type checking
         stream_url = await self.mass.streams.resolve_stream_url(queue.session_id, queue_item)

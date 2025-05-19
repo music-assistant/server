@@ -1496,8 +1496,8 @@ class PlayerQueuesController(CoreController):
         """Return next QueueItem for given queue."""
         if isinstance(cur_index, str):
             cur_index = self.index_by_id(queue_id, cur_index)
-        for _ in range(5):
-            if (next_index := self._get_next_index(queue_id, cur_index)) is None:
+        for skip in range(5):
+            if (next_index := self._get_next_index(queue_id, cur_index + skip)) is None:
                 break
             next_item = self.get_item(queue_id, next_index)
             if not next_item.available:
