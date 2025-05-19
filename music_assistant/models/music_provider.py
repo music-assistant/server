@@ -17,8 +17,8 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     BrowseFolder,
+    ItemMapping,
     MediaItemType,
-    MediaItemTypeOrItemMapping,
     Playlist,
     Podcast,
     PodcastEpisode,
@@ -412,7 +412,7 @@ class MusicProvider(Provider):
             return await self.get_podcast_episode(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).

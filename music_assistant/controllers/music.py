@@ -33,7 +33,6 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemType,
-    MediaItemTypeOrItemMapping,
     RecommendationFolder,
     SearchResults,
 )
@@ -615,7 +614,7 @@ class MusicController(CoreController):
     @api_command("music/favorites/add_item")
     async def add_item_to_favorites(
         self,
-        item: str | MediaItemTypeOrItemMapping,
+        item: str | MediaItemType | ItemMapping,
     ) -> None:
         """Add an item to the favorites."""
         if isinstance(item, str):
@@ -1286,10 +1285,10 @@ class MusicController(CoreController):
     def _sort_search_result(
         self,
         search_query: str,
-        items: Sequence[MediaItemTypeOrItemMapping],
-    ) -> UniqueList[MediaItemTypeOrItemMapping]:
+        items: Sequence[MediaItemType | ItemMapping],
+    ) -> UniqueList[MediaItemType | ItemMapping]:
         """Sort search results on priority/preference."""
-        scored_items: list[tuple[int, MediaItemTypeOrItemMapping]] = []
+        scored_items: list[tuple[int, MediaItemType | ItemMapping]] = []
         # search results are already sorted by (streaming) providers on relevance
         # but we prefer exact name matches and library items so we simply put those
         # on top of the list.

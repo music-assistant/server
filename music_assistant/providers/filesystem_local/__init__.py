@@ -35,7 +35,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemChapter,
     MediaItemImage,
-    MediaItemTypeOrItemMapping,
+    MediaItemType,
     Playlist,
     Podcast,
     PodcastEpisode,
@@ -259,7 +259,7 @@ class LocalFileSystemProvider(MusicProvider):
             )
         return result
 
-    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping | BrowseFolder]:
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
@@ -269,7 +269,7 @@ class LocalFileSystemProvider(MusicProvider):
             return await self.mass.music.podcasts.library_items(provider=self.instance_id)
         if self.media_content_type == "audiobooks":
             return await self.mass.music.audiobooks.library_items(provider=self.instance_id)
-        items: list[MediaItemTypeOrItemMapping | BrowseFolder] = []
+        items: list[MediaItemType | ItemMapping | BrowseFolder] = []
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""

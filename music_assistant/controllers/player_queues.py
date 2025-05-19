@@ -46,7 +46,6 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemType,
-    MediaItemTypeOrItemMapping,
     PlayableMediaItemType,
     Playlist,
     PodcastEpisode,
@@ -369,7 +368,7 @@ class PlayerQueuesController(CoreController):
     async def play_media(
         self,
         queue_id: str,
-        media: MediaItemTypeOrItemMapping | list[MediaItemTypeOrItemMapping] | str | list[str],
+        media: MediaItemType | ItemMapping | list[MediaItemType | ItemMapping] | str | list[str],
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
