@@ -1209,7 +1209,7 @@ class PlayerQueuesController(CoreController):
         # without having to compare the entire list
         queue.items_last_updated = time.time()
         self.signal_update(queue_id, True)
-        if queue.state == PlayerState.PLAYING:
+        if queue.state == PlayerState.PLAYING and queue.index_in_buffer is not None:
             # if the queue is playing,
             # ensure to (re)queue the next track because it might have changed
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
@@ -1492,7 +1492,7 @@ class PlayerQueuesController(CoreController):
         # all other: just the next index
         return cur_index + 1
 
-    def get_next_item(self, queue_id: str, cur_index: int | str | None = None) -> QueueItem | None:
+    def get_next_item(self, queue_id: str, cur_index: int | str) -> QueueItem | None:
         """Return next QueueItem for given queue."""
         if isinstance(cur_index, str):
             cur_index = self.index_by_id(queue_id, cur_index)
