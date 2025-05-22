@@ -14,7 +14,7 @@ aiosonos==0.1.9
 aiosqlite==0.21.0
 async-upnp-client==0.44.0
 audible==0.10.0
-bgutil-ytdlp-pot-provider==0.8.3
+bgutil-ytdlp-pot-provider==0.8.5
 bidict==0.23.1
 certifi==2025.4.26
 chardet>=5.2.0
@@ -54,6 +54,6 @@ sxm==0.2.8
 unidecode==1.4.0
 websocket-client==1.8.0
 xmltodict==0.14.2
-yt-dlp==2025.4.30
+yt-dlp==2025.5.22
 ytmusicapi==1.10.3
 zeroconf==0.147.0
