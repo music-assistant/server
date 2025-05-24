@@ -1,4 +1,4 @@
-"""Tune-In musicprovider support for MusicAssistant."""
+"""Tune-In music provider support for MusicAssistant."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
-from music_assistant_models.media_items import SearchResults  # add to imports
+from music_assistant_models.media_items import SearchResults
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
@@ -31,7 +31,7 @@ from music_assistant.models.music_provider import MusicProvider
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,  # Added search support
+    ProviderFeature.SEARCH,
 }
 
 if TYPE_CHECKING:
@@ -242,7 +242,7 @@ class TuneInProvider(MusicProvider):
         return result
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a radio station."""
+        """Get stream details for a radio station."""
         if item_id.startswith("http"):
             # custom url
             return StreamDetails(
@@ -282,12 +282,12 @@ class TuneInProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
-        """Perform search on musicprovider."""
+        """Perform search on Tune-in music provider"""
         result = SearchResults()
         if MediaType.RADIO not in media_types:
             return result
         params = {
-            "query": quote(search_query),  # ensure query is url-encoded
+            "query": quote(search_query),
             "formats": "ogg,aac,wma,mp3,hls",
             "username": self.config.get_value(CONF_USERNAME),
             "partnerId": "1",
