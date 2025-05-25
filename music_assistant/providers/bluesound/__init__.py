@@ -86,7 +86,6 @@ async def get_config_entries(
 
 class BluesoundDiscoveryInfo(TypedDict):
     """Template for MDNS discovery info."""
-
     _objectType: str
     ip_address: str
     port: str
