@@ -826,7 +826,7 @@ class LocalFileSystemProvider(MusicProvider):
         for item in playlist_items:
             new_playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
         async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(playlist_data)
+            await _file.write(new_playlist_data)
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
