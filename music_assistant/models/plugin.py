@@ -72,9 +72,12 @@ class PluginProvider(Provider):
     Plugin Provider implementations should inherit from this base model.
     """
 
-    def get_source(self) -> PluginSource:
-        """Get (audio)source details for this plugin."""
+    def get_source(self) -> PluginSource:  # type: ignore[return]
+        """
+        Get (audio)source details for this plugin.
+
         # Will only be called if ProviderFeature.AUDIO_SOURCE is declared
+        """
         raise NotImplementedError
 
     async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:

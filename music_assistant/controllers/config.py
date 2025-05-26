@@ -391,6 +391,20 @@ class ConfigController:
             self.get(f"{CONF_PLAYERS}/{player_id}/{key}", default),
         )
 
+    def get_base_player_config(self, player_id: str, provider: str) -> PlayerConfig:
+        """
+        Return base PlayerConfig for a player.
+
+        This is used to get the base config for a player, without any provider specific values,
+        for initialization purposes.
+        """
+        if not (raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}")):
+            raw_conf = {
+                "player_id": player_id,
+                "provider": provider,
+            }
+        return PlayerConfig.parse([], raw_conf)
+
     @api_command("config/players/save")
     async def save_player_config(
         self, player_id: str, values: dict[str, ConfigValueType]

@@ -289,18 +289,11 @@ class PlayerQueuesController(CoreController):
         return self._queue_items[queue_id][offset : offset + limit]
 
     @api_command("player_queues/get_active_queue")
-    def get_active_queue(self, player_id: str) -> PlayerQueue:
+    def get_active_queue(self, player_id: str) -> PlayerQueue | None:
         """Return the current active/synced queue for a player."""
         if player := self.mass.players.get(player_id):
-            # account for player that is synced (sync child)
-            if player.synced_to and player.synced_to != player.player_id:
-                return self.get_active_queue(player.synced_to)
-            # handle active group player
-            if player.active_group and player.active_group != player.player_id:
-                return self.get_active_queue(player.active_group)
-            # active_source may be filled with other queue id
-            return self.get(player.active_source) or self.get(player_id)
-        return self.get(player_id)
+            return self.mass.players.get_active_queue(player)
+        return None
 
     # Queue commands
 
@@ -389,7 +382,7 @@ class PlayerQueuesController(CoreController):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # always fetch the underlying player so we can raise early if its not available
         queue_player = self.mass.players.get(queue_id, True)
-        if queue_player.announcement_in_progress:
+        if queue_player.extra_data.get("announcement_in_progress"):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
 
@@ -667,7 +660,7 @@ class PlayerQueuesController(CoreController):
                 await player_provider.cmd_stop(queue_player.player_id)
 
         # we auto stop a player from paused when its paused for 30 seconds
-        if not queue_player.announcement_in_progress:
+        if not queue_player.extra_data.get("announcement_in_progress"):
             self.mass.create_task(_watch_pause())
 
     @api_command("player_queues/play_pause")
@@ -971,7 +964,7 @@ class PlayerQueuesController(CoreController):
         if (queue := self._queues.get(queue_id)) is None:
             # race condition
             return
-        if player.announcement_in_progress:
+        if player.extra_data.get("announcement_in_progress"):
             # do nothing while the announcement is in progress
             return
         # determine if this queue is currently active for this player
