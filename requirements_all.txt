@@ -27,7 +27,7 @@ hass-client==1.2.0
 ibroadcastaio==0.4.0
 ifaddr==0.2.0
 liblistenbrainz==0.5.6
-mashumaro==3.15
+mashumaro==3.16
 music-assistant-frontend==2.15.1
 music-assistant-models==1.1.45
 mutagen==1.47.0
