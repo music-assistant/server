@@ -714,12 +714,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         query_params = extra_query_params or {}
         query_parts: list[str] = extra_query_parts or []
         join_parts: list[str] = extra_join_parts or []
-        # create special performant random query
-        if not search and order_by and order_by.startswith("random"):
-            query_parts.append(
-                f"{self.db_table}.item_id in "
-                f"(SELECT item_id FROM {self.db_table} ORDER BY RANDOM() LIMIT {limit})"
-            )
+
         # handle search
         if search:
             search = create_safe_string(search, True, True)
@@ -747,7 +742,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # build final query
         sql_query += f" GROUP BY {self.db_table}.item_id"
         if order_by:
-            if sort_key := SORT_KEYS.get(order_by):
+            if order_by.startswith("random"):
+                sql_query += " ORDER BY RANDOM()"
+            elif sort_key := SORT_KEYS.get(order_by):
                 sql_query += f" ORDER BY {sort_key}"
         # return dbresult parsed to media item model
         return [
