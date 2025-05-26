@@ -53,7 +53,7 @@ test = [
   "pytest-cov==6.1.1",
   "syrupy==4.9.1",
   "tomli==2.2.1",
-  "ruff==0.11.10",
+  "ruff==0.11.11",
 ]
 
 [project.scripts]
