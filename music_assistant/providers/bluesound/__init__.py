@@ -18,7 +18,6 @@ from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC,
-    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import (
     get_port_from_zeroconf,
@@ -57,13 +56,17 @@ PLAYBACK_STATE_POLL_MAP = {
     "connecting": "CONNECTING",
 }
 
-SOURCE_LINE_IN = "line_in"
-SOURCE_AIRPLAY = "airplay"
-SOURCE_SPOTIFY = "spotify"
 SOURCE_UNKNOWN = "unknown"
-SOURCE_RADIO = "radio"
 POLL_STATE_STATIC = "static"
 POLL_STATE_DYNAMIC = "dynamic"
+
+
+SOURCE_MAP = {
+    "input0": "line_in",
+    "Airplay": "airplay",
+    "Spotify": "spotify",
+    "RadioParadise": "radio",
+}
 
 
 async def setup(
@@ -86,6 +89,7 @@ async def get_config_entries(
 
 class BluesoundDiscoveryInfo(TypedDict):
     """Template for MDNS discovery info."""
+
     _objectType: str
     ip_address: str
     port: str
@@ -137,27 +141,23 @@ class BluesoundPlayer:
         if self.dynamic_poll_count > 0:
             self.dynamic_poll_count -= 1
 
+        if not self.mass_player:
+            return
+
         self.sync_status = await self.client.sync_status()
+        self.logger.debug(self.sync_status)
         self.status = await self.client.status()
 
         # Update timing
         self.mass_player.elapsed_time = self.status.seconds
         self.mass_player.elapsed_time_last_updated = time.time()
 
-        if not self.mass_player:
-            return
-        if self.sync_status.volume == -1:
-            self.mass_player.volume_level = 100
-        else:
-            self.mass_player.volume_level = self.sync_status.volume
-        self.mass_player.volume_muted = self.status.mute
+        # Check volume
+        volume = 100 if self.sync_status.volume == -1 else self.sync_status.volume
+        self.mass_player.volume_level = volume
 
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
-            "Speaker state: %s vs reported state: %s",
-            PLAYBACK_STATE_POLL_MAP[self.status.state],
-            self.mass_player.state,
-        )
+        # Check if mute is toggled
+        self.mass_player.volume_muted = self.status.mute
 
         if (
             self.poll_state == POLL_STATE_DYNAMIC and self.dynamic_poll_count <= 0
@@ -168,26 +168,26 @@ class BluesoundPlayer:
             self.mass.players.update(self.player_id)
 
         if self.status.state == "stream":
-            mass_active = self.mass.streams.base_url
-        elif self.status.state == "stream" and self.status.input_id == "input0":
-            self.mass_player.active_source = SOURCE_LINE_IN
-        elif self.status.state == "stream" and self.status.input_id == "Airplay":
-            self.mass_player.active_source = SOURCE_AIRPLAY
-        elif self.status.state == "stream" and self.status.input_id == "Spotify":
-            self.mass_player.active_source = SOURCE_SPOTIFY
-        elif self.status.state == "stream" and self.status.input_id == "RadioParadise":
-            self.mass_player.active_source = SOURCE_RADIO
-        elif self.status.state == "stream" and (mass_active not in self.status.stream_url):
-            self.mass_player.active_source = SOURCE_UNKNOWN
-
-        # TODO check pair status
-
-        # TODO fix pairing
-
+            source = SOURCE_MAP.get(self.status.input_id)
+            if (
+                not source
+                and self.mass.streams.base_url not in self.status.stream_url
+                and self.sync_status.leader
+            ):
+                source = SOURCE_UNKNOWN
+            self.mass_player.active_source = source
         if self.sync_status.leader is None:
             if self.sync_status.followers:
-                if len(self.sync_status.followers) > 1:
-                    self.mass_player.group_childs.set(self.sync_status.followers)
+                self.logger.debug("followers %s", self.sync_status.followers)
+                self.followers = self.sync_status.followers
+                if len(self.sync_status.followers) >= 1:
+                    child_player_ids = [
+                        player.player_id
+                        for follower in self.followers
+                        if (player := self.mass.players.get_by_ip(follower.ip)) is not None
+                    ]
+                    self.mass_player.group_childs.set(child_player_ids)
+                    self.logger.debug("Children %s", self.mass_player.group_childs)
                 else:
                     self.mass_player.group_childs.clear()
                 self.mass_player.synced_to = None
@@ -202,11 +202,17 @@ class BluesoundPlayer:
                 )
             else:
                 self.mass_player.current_media = None
+        elif self.sync_status.leader is not None:
+            # self.mass_player.group_childs.clear()
+            self.statusleader = self.sync_status.leader
+            statusleadermass = self.mass.players.get_by_ip(self.statusleader.ip)
+            self.logger.debug("synced to %s", statusleadermass.player_id)
+            self.logger.debug(self.mass_player)
+            self.leader = self.mass.players.get_by_ip(self.sync_status.leader.ip).player_id
 
-        else:
-            self.mass_player.group_childs.clear()
-            self.mass_player.synced_to = self.sync_status.leader
-            self.mass_player.active_source = self.sync_status.leader
+            self.mass_player.active_source = self.mass.players.get_by_ip(
+                self.statusleader.ip
+            ).player_id
 
         self.mass_player.state = PLAYBACK_STATE_MAP[self.status.state]
         self.mass.players.update(self.player_id)
@@ -231,7 +237,8 @@ class BluesoundPlayerProvider(PlayerProvider):
     ) -> None:
         """Handle MDNS service state callback for BluOS."""
         name = name.split(".", 1)[0]
-        self.player_id = info.decoded_properties["mac"]
+        if info:
+            self.player_id = info.decoded_properties["mac"]
         # Handle removed player
 
         if state_change == ServiceStateChange.Removed:
@@ -239,7 +246,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             if mass_player := self.mass.players.get(self.player_id):
                 # The player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
-                mass_player.available = False
+                # mass_player.available = False
                 self.mass.players.update(self.player_id)
             return
 
@@ -260,7 +267,7 @@ class BluesoundPlayerProvider(PlayerProvider):
                     )
                 if not mass_player.available:
                     self.logger.debug("Player back online: %s", mass_player.display_name)
-                    bluos_player.client.sync()
+                    # not sure
                 bluos_player.discovery_info = info
                 self.mass.players.update(self.player_id)
                 return
@@ -289,6 +296,7 @@ class BluesoundPlayerProvider(PlayerProvider):
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
                 PlayerFeature.PAUSE,
+                PlayerFeature.SET_MEMBERS,
             },
             needs_poll=True,
             poll_interval=30,
@@ -394,8 +402,38 @@ class BluesoundPlayerProvider(PlayerProvider):
 
     async def cmd_group(self, player_id: str, target_player: str) -> None:
         """Handle GROUP command for BluOS player."""
+        if bluos_player := self.bluos_players[player_id]:
+            await bluos_player.client.add_follower(
+                self.bluos_players[target_player].ip_address,
+                self.bluos_players[target_player].port,
+            )
+            # mass_player.synced_to = target_player
+            # mass_target_player.group_childs.append(player_id)
+            # self.mass.players.update(player_id)
+            # self.mass.players.update(target_player)
+            await bluos_player.update_attributes()
 
     async def cmd_ungroup(self, player_id: str) -> None:
         """Handle UNGROUP command for BluOS player."""
+        self.logger.debug("Ungrouping player")
         if bluos_player := self.bluos_players[player_id]:
-            await bluos_player.client.player.leave_group()
+            play_state = await bluos_player.client.play(timeout=1)
+            if play_state == "stream":
+                bluos_player.poll_state = POLL_STATE_DYNAMIC
+                bluos_player.dynamic_poll_count = 6
+                bluos_player.mass_player.poll_interval = 0.5
+            # Optimistic state, reduces interface lag
+        # mass_player = self.mass.players.get(player_id)
+        # if not mass_player or not mass_player.synced_to:
+        #     self.logger.warning("Cannot ungroup: player %s is not part of a group", player_id)
+        #     return
+
+        # leader_id = mass_player.synced_to
+        # bluos_follower = self.bluos_players.get(player_id)
+
+        # self.logger.debug("Ungrouping player %s from leader %s", player_id, leader_id)
+        # if bluos_leader := self.bluos_players[leader_id]:
+        #     await bluos_leader.client.remove_follower(
+        #         bluos_follower.ip_address, bluos_follower.port
+        #     )
+        #     await bluos_leader.update_attributes()

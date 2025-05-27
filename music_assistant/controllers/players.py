@@ -187,6 +187,13 @@ class PlayerController(CoreController):
         """Return Player by name or None if no match is found."""
         return next((x for x in self._players.values() if x.name == name), None)
 
+    @api_command("players/get_by_ip")
+    def get_by_ip(self, ip_address: str) -> Player | None:
+        """Return Player by name or None if no match is found."""
+        return next(
+            (x for x in self._players.values() if x.device_info.ip_address == ip_address), None
+        )
+
     # Player commands
 
     @api_command("players/cmd/stop")
