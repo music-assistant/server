@@ -33,6 +33,7 @@ _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
+        ConfigValueType,
         PlayerConfig,
         ProviderConfig,
     )
@@ -53,7 +54,12 @@ async def setup(
     return AlexaProvider(mass, manifest, config)
 
 
-async def get_config_entries() -> tuple[ConfigEntry, ...]:
+async def get_config_entries(
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
+) -> tuple[ConfigEntry, ...]:
     """
     Return Config entries to setup this provider.
 
@@ -61,6 +67,7 @@ async def get_config_entries() -> tuple[ConfigEntry, ...]:
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+    # ruff: noqa: ARG001
     return (
         ConfigEntry(key=CONF_URL, type=ConfigEntryType.STRING, label="URL", required=True),
         ConfigEntry(key=CONF_USERNAME, type=ConfigEntryType.STRING, label="E-Mail", required=True),
