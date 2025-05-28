@@ -10,7 +10,7 @@ from alexapy import (
     AlexaAPI,
     AlexaLogin,
 )
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     PlayerFeature,
@@ -23,7 +23,6 @@ from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -34,7 +33,6 @@ _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
-        ConfigValueType,
         PlayerConfig,
         ProviderConfig,
     )
@@ -55,12 +53,7 @@ async def setup(
     return AlexaProvider(mass, manifest, config)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
+async def get_config_entries() -> tuple[ConfigEntry, ...]:
     """
     Return Config entries to setup this provider.
 
@@ -151,7 +144,6 @@ class AlexaProvider(PlayerProvider):
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
-            CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
         )
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
