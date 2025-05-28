@@ -282,7 +282,7 @@ class TuneInProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
-        """Perform search on Tune-in music provider"""
+        """Perform search on Tune-in music provider."""
         result = SearchResults()
         if MediaType.RADIO not in media_types:
             return result
