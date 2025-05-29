@@ -8,7 +8,6 @@ from urllib.parse import quote
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
-
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -18,22 +17,20 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
-from music_assistant_models.media_items import SearchResults
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
     MediaType,
     ProviderMapping,
     Radio,
+    SearchResults,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
-
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
-
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
