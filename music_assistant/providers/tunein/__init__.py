@@ -5,10 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from music_assistant.constants import CONF_USERNAME
-from music_assistant.helpers.throttle_retry import Throttler
-from music_assistant.models.music_provider import MusicProvider
-
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -35,14 +31,18 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_USERNAME
+from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.models.music_provider import MusicProvider
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant import MusicAssistant
-    from music_assistant.models import ProviderInstanceType
-
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant import MusicAssistant
+    from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS,
