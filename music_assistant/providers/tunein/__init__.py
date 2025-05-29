@@ -12,7 +12,6 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
-    ProviderConfig,
 )
 from music_assistant_models.enums import (
     ConfigEntryType,
