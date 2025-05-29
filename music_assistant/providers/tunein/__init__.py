@@ -1,6 +1,6 @@
 """Tune-In music provider support for MusicAssistant."""
 
-rom __future__ import annotations
+from __future__ import annotations
 
 from typing import TYPE_CHECKING
 from urllib.parse import quote
