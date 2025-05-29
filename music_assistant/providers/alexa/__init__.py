@@ -6,6 +6,7 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+import aiohttp
 from alexapy import (
     AlexaAPI,
     AlexaLogin,
@@ -24,6 +25,7 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
+    CONF_ENTRY_HTTP_PROFILE,
     CONF_PASSWORD,
     CONF_USERNAME,
 )
@@ -151,6 +153,7 @@ class AlexaProvider(PlayerProvider):
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
+            CONF_ENTRY_HTTP_PROFILE,
         )
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
@@ -243,6 +246,18 @@ class AlexaProvider(PlayerProvider):
         """
         if not (player := self.mass.players.get(player_id)):
             return
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(
+                    "http://localhost:3000/ma/push-url",
+                    json={"streamUrl": media.uri},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    await resp.text()
+            except Exception as exc:
+                _LOGGER.error("Failed to push URL to Alexa: %s", exc)
+                return
 
         device_object = self.AlexaDevice()
         await device_object.createobject(player_id, self.login)
