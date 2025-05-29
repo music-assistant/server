@@ -1,14 +1,19 @@
 """Tune-In music provider support for MusicAssistant."""
 
-from __future__ import annotations
+rom __future__ import annotations
 
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueType,
+    ProviderConfig,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -16,7 +21,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
@@ -29,8 +38,10 @@ from music_assistant_models.streamdetails import StreamDetails
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
