@@ -716,59 +716,59 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         join_parts: list[str] = extra_join_parts or []
 
 
-    # handle search
-    if search:
-        safe_search = create_safe_string(search, True, True)
-        query_params["search"] = f"%{safe_search}%"
-        query_parts.append(f"{self.db_table}.search_name LIKE :search")
+        # handle search
+        if search:
+            safe_search = create_safe_string(search, True, True)
+            query_params["search"] = f"%{safe_search}%"
+            query_parts.append(f"{self.db_table}.search_name LIKE :search")
 
-    # handle favorite filter
-    if favorite is not None:
-        query_parts.append(f"{self.db_table}.favorite = :favorite")
-        query_params["favorite"] = favorite
+        # handle favorite filter
+        if favorite is not None:
+            query_parts.append(f"{self.db_table}.favorite = :favorite")
+            query_params["favorite"] = favorite
 
-    # handle provider join
-    if provider:
-        join_parts.append(
-            f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
-            f"AND provider_mappings.media_type = '{self.media_type.value}' "
-            f"AND (provider_mappings.provider_instance = '{provider}' "
-            f"OR provider_mappings.provider_domain = '{provider}')"
-        )
+        # handle provider join
+        if provider:
+            join_parts.append(
+                f"JOIN provider_mappings ON provider_mappings.item_id = {self.db_table}.item_id "
+                f"AND provider_mappings.media_type = '{self.media_type.value}' "
+                f"AND (provider_mappings.provider_instance = '{provider}' "
+                f"OR provider_mappings.provider_domain = '{provider}')"
+            )
 
-    # Prevent duplicate WHERE
-    query_parts = [x[5:] if x.lower().startswith("where ") else x for x in query_parts]
+        # Prevent duplicate WHERE
+        query_parts = [x[5:] if x.lower().startswith("where ") else x for x in query_parts]
 
-    # --- Optimized RANDOM ORDER block ---
-    if order_by and order_by.startswith("random"):
-        # Build filtered subquery for item IDs
-        subquery = f"SELECT {self.db_table}.item_id FROM {self.db_table}"
-        if query_parts:
-            subquery += " WHERE " + " AND ".join(query_parts)
-        subquery += f" ORDER BY RANDOM() LIMIT {limit}"
+        # --- Optimized RANDOM ORDER block ---
+        if order_by and order_by.startswith("random"):
+            # Build filtered subquery for item IDs
+            subquery = f"SELECT {self.db_table}.item_id FROM {self.db_table}"
+            if query_parts:
+                subquery += " WHERE " + " AND ".join(query_parts)
+            subquery += f" ORDER BY RANDOM() LIMIT {limit}"
 
-        # Main query joins the subquery
-        sql_query = (
-            f"SELECT * FROM {self.db_table} "
-            f"JOIN ({subquery}) AS filtered_random "
-            f"ON {self.db_table}.item_id = filtered_random.item_id "
-            f"GROUP BY {self.db_table}.item_id"
-        )
-        # Note: limit is already applied in subquery, so use 0 offset and large limit to pass results
-        query_limit = limit
-        query_offset = 0
-    else:
-        # Normal query path
-        sql_query = self.base_query
-        if join_parts:
-            sql_query += f" {' '.join(join_parts)}"
-        if query_parts:
-            sql_query += " WHERE " + " AND ".join(query_parts)
-        sql_query += f" GROUP BY {self.db_table}.item_id"
-        if order_by and (sort_key := SORT_KEYS.get(order_by)):
-            sql_query += f" ORDER BY {sort_key}"
-        query_limit = limit
-        query_offset = offset
+            # Main query joins the subquery
+            sql_query = (
+                f"SELECT * FROM {self.db_table} "
+                f"JOIN ({subquery}) AS filtered_random "
+                f"ON {self.db_table}.item_id = filtered_random.item_id "
+                f"GROUP BY {self.db_table}.item_id"
+            )
+            # Note: limit is already applied in subquery, so use 0 offset and large limit to pass results
+            query_limit = limit
+            query_offset = 0
+        else:
+            # Normal query path
+            sql_query = self.base_query
+            if join_parts:
+                sql_query += f" {' '.join(join_parts)}"
+            if query_parts:
+                sql_query += " WHERE " + " AND ".join(query_parts)
+            sql_query += f" GROUP BY {self.db_table}.item_id"
+            if order_by and (sort_key := SORT_KEYS.get(order_by)):
+                sql_query += f" ORDER BY {sort_key}"
+            query_limit = limit
+            query_offset = offset
         return [
             self.item_cls.from_dict(self._parse_db_row(db_row))
             for db_row in await self.mass.music.database.get_rows_from_query(
