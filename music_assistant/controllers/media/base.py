@@ -715,7 +715,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         query_parts: list[str] = extra_query_parts or []
         join_parts: list[str] = extra_join_parts or []
 
-
         # handle search
         if search:
             safe_search = create_safe_string(search, True, True)
