@@ -754,7 +754,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 f"ON {self.db_table}.item_id = filtered_random.item_id "
                 f"GROUP BY {self.db_table}.item_id"
             )
-            # Note: limit is already applied in subquery, so use 0 offset and large limit to pass results
+            # Note: limit is already applied in subquery, so use 0 offset 
+            # and large limit to pass results
             query_limit = limit
             query_offset = 0
         else:
