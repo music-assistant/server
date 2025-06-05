@@ -1,4 +1,4 @@
-"""Improv Audio Player Provider."""
+"""Resonate Audio Player Provider."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player_provider import PlayerProvider
 
-from . import improv_models
+from . import resonate_models
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
@@ -55,7 +55,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return ImprovPlayerProvider(mass, manifest, config)
+    return ResonatePlayerProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -76,13 +76,13 @@ async def get_config_entries(
 
 
 class PlayerInstance:
-    """A connected improv audio player."""
+    """A connected resonate audio player."""
 
-    prov: ImprovPlayerProvider
+    prov: ResonatePlayerProvider
     request: web.Request
     wsock: web.WebSocketResponse = field(init=False)
     player_id: str | None = None
-    player_info: improv_models.PlayerInfo | None = None
+    player_info: resonate_models.PlayerInfo | None = None
     # Task responsible for handling messages from the player
     _handle_task: asyncio.Task[str] | None = None
     # Task responsible for sending audio and other data
@@ -90,10 +90,10 @@ class PlayerInstance:
     # Task responsible for processing the audio stream
     stream_task: asyncio.Task[None] | None = None
     _to_write: asyncio.Queue[str | bytes]
-    session_info: improv_models.SessionInfo | None = None
+    session_info: resonate_models.SessionInfo | None = None
 
-    def __init__(self, prov: ImprovPlayerProvider, request: web.Request):
-        """Init a new player insance."""
+    def __init__(self, prov: ResonatePlayerProvider, request: web.Request):
+        """Init a new player instance."""
         self.prov = prov
         self.request = request
         self.wsock = web.WebSocketResponse(heartbeat=55)
@@ -101,9 +101,7 @@ class PlayerInstance:
 
     async def disconnect(self) -> None:
         """Disconnect client and cancel tasks."""
-        self.prov.logger.debug(
-            "Disconnecting client %s", self.player_id or self.request.remote
-        )
+        self.prov.logger.debug("Disconnecting client %s", self.player_id or self.request.remote)
 
         # Cancel running tasks
         if self.stream_task and not self.stream_task.done():
@@ -127,9 +125,7 @@ class PlayerInstance:
                 player.state = PlayerState.IDLE
                 self.prov.mass.players.update(self.player_id)
 
-        self.prov.logger.info(
-            "Client %s disconnected", self.player_id or self.request.remote
-        )
+        self.prov.logger.info("Client %s disconnected", self.player_id or self.request.remote)
 
     async def handle_client(self) -> web.WebSocketResponse:
         """Handle the websocket connection."""
@@ -149,8 +145,8 @@ class PlayerInstance:
 
         # 1. Send Source Hello
         self.send_message(
-            improv_models.SourceHelloMessage(
-                payload=improv_models.SourceInfo(
+            resonate_models.SourceHelloMessage(
+                payload=resonate_models.SourceInfo(
                     name="Music Assistant",
                     # TODO: will this make problems with multiple MA instances?
                     source_id=self.prov.instance_id,
@@ -169,9 +165,7 @@ class PlayerInstance:
                     continue
 
                 try:
-                    await self._handle_message(
-                        improv_models.Message.from_json(msg.data)
-                    )
+                    await self._handle_message(resonate_models.Message.from_json(msg.data))
                 except Exception as e:
                     logger.error(
                         "Failed to process message for %s: %s",
@@ -194,30 +188,24 @@ class PlayerInstance:
             except asyncio.QueueFull:  # can be raised by put_nowait
                 _ = self._writer_task.cancel()
 
-            if self.player_id and (
-                player := self.prov.mass.players.get(self.player_id)
-            ):
+            if self.player_id and (player := self.prov.mass.players.get(self.player_id)):
                 player.available = False
                 player.state = PlayerState.IDLE
                 self.prov.mass.players.update(self.player_id)
             else:
-                logger.debug(
-                    "WebSocket disconnected before player/hello or already cleaned up."
-                )
+                logger.debug("WebSocket disconnected before player/hello or already cleaned up.")
 
         return self.wsock
 
-    async def _handle_message(self, message: improv_models.Message) -> None:
+    async def _handle_message(self, message: resonate_models.Message) -> None:
         """Handle incoming commands from the client."""
         msg_type = message.type
         payload = message.payload
         logger = self.prov.logger
         if msg_type == "player/hello":
             # TODO: reject if player_id is already connected
-            player_info = improv_models.PlayerInfo.from_dict(payload)
-            logger.info(
-                f"Received player/hello from {player_info.player_id} ({player_info.name})"
-            )
+            player_info = resonate_models.PlayerInfo.from_dict(payload)
+            logger.info(f"Received player/hello from {player_info.player_id} ({player_info.name})")
             self.player_info = player_info
             self.player_id = player_info.player_id
 
@@ -239,12 +227,12 @@ class PlayerInstance:
             if not self.player_id:
                 logger.warning("Received player/state before player/hello")
                 return
-            state_info = improv_models.PlayerState.from_dict(payload)
+            state_info = resonate_models.PlayerState.from_dict(payload)
             # Update MA player state
             player = cast("Player", self.prov.mass.players.get(self.player_id, True))
-            if state_info.state == improv_models.PlayerStateType.PLAYING:
+            if state_info.state == resonate_models.PlayerStateType.PLAYING:
                 player.state = PlayerState.PLAYING
-            elif state_info.state == improv_models.PlayerStateType.PAUSED:
+            elif state_info.state == resonate_models.PlayerStateType.PAUSED:
                 player.state = PlayerState.PAUSED
             else:
                 player.state = PlayerState.IDLE
@@ -253,17 +241,15 @@ class PlayerInstance:
         elif msg_type == "player/time":
             payload["source_received"] = int(time.time() * 1_000_000)
             payload["source_transmitted"] = int(time.time() * 1_000_000)
-            # time_reply = improv_models.SourceTimeInfo.from_dict(payload)
+            # time_reply = resonate_models.SourceTimeInfo.from_dict(payload)
             self.send_message(
-                improv_models.SourceTimeMessage(
-                    payload=improv_models.SourceTimeInfo.from_dict(payload)
+                resonate_models.SourceTimeMessage(
+                    payload=resonate_models.SourceTimeInfo.from_dict(payload)
                 )
             )
 
         else:
-            logger.debug(
-                "%s received unhandled command type: %", self.player_id, msg_type
-            )
+            logger.debug("%s received unhandled command type: %", self.player_id, msg_type)
 
     async def _writer(self) -> None:
         """Write outgoing messages from the queue."""
@@ -281,7 +267,7 @@ class PlayerInstance:
                 else:
                     await self.wsock.send_str(item)
 
-    def send_message(self, message: improv_models.ServerMessages) -> None:
+    def send_message(self, message: resonate_models.ServerMessages) -> None:
         """Enqueue a JSON message to be sent to the client."""
         # TODO: handle full queue
         self._to_write.put_nowait(message.to_json())
@@ -291,21 +277,19 @@ class PlayerInstance:
         # TODO: handle full queue
         self._to_write.put_nowait(data)
 
-    def pack_audio_chunk(
-        self, timestamp_us: int, sample_count: int, audio_data: bytes
-    ) -> bytes:
+    def pack_audio_chunk(self, timestamp_us: int, sample_count: int, audio_data: bytes) -> bytes:
         """Pack audio data the audio header."""
         header = struct.pack(
-            improv_models.BINARY_HEADER_FORMAT,
-            improv_models.BinaryMessageType.PlayAudioChunk.value,
+            resonate_models.BINARY_HEADER_FORMAT,
+            resonate_models.BinaryMessageType.PlayAudioChunk.value,
             timestamp_us,
             sample_count,
         )
         return header + audio_data
 
 
-class ImprovPlayerProvider(PlayerProvider):
-    """Implementation of the WIP improv audio protocol."""
+class ResonatePlayerProvider(PlayerProvider):
+    """Implementation of the WIP resonate audio protocol."""
 
     instances: set[PlayerInstance] = set()
     _unregister_cbs: list[Callable[[], None]] = []
@@ -318,19 +302,17 @@ class ImprovPlayerProvider(PlayerProvider):
         self._unregister_cbs = [
             # For web clients
             mass.webserver.register_dynamic_route(
-                "/improv",
+                "/resonate",
                 self._handle_player_ws_connect,
             ),
             # And local devices
             mass.streams.register_dynamic_route(
-                "/improv",
+                "/resonate",
                 self._handle_player_ws_connect,
             ),
         ]
 
-    async def _handle_player_ws_connect(
-        self, request: web.Request
-    ) -> web.WebSocketResponse:
+    async def _handle_player_ws_connect(self, request: web.Request) -> web.WebSocketResponse:
         """Handle incoming WebSocket connection request."""
         instance = PlayerInstance(self, request)
         try:
@@ -363,9 +345,7 @@ class ImprovPlayerProvider(PlayerProvider):
         )
         self.instances.clear()
 
-    async def get_player_config_entries(
-        self, player_id: str
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         # TODO: should be more like builtin_player
         return (
@@ -377,9 +357,7 @@ class ImprovPlayerProvider(PlayerProvider):
         """Send STOP command to given player."""
         instance = self._get_player_instance(player_id)
         if instance is None or instance.session_info is None:
-            self.logger.warning(
-                "Stop command called but player %s is not connected.", player_id
-            )
+            self.logger.warning("Stop command called but player %s is not connected.", player_id)
             # Still update MA state if the player exists
             if player := self.mass.players.get(player_id):
                 player.state = PlayerState.IDLE
@@ -397,10 +375,8 @@ class ImprovPlayerProvider(PlayerProvider):
 
         # Send session stop message
         instance.send_message(
-            improv_models.SessionEndMessage(
-                payload=improv_models.SessionEndPayload(
-                    instance.session_info.session_id
-                )
+            resonate_models.SessionEndMessage(
+                payload=resonate_models.SessionEndPayload(instance.session_info.session_id)
             )
         )
 
@@ -423,7 +399,7 @@ class ImprovPlayerProvider(PlayerProvider):
         await self.cmd_stop(player_id)
 
         # TODO: dynamic session info
-        session_info = improv_models.SessionInfo(
+        session_info = resonate_models.SessionInfo(
             session_id=f"mass-session-{int(time.time())}",
             codec=STREAM_CODEC,
             sample_rate=STREAM_SAMPLE_RATE,
@@ -442,15 +418,13 @@ class ImprovPlayerProvider(PlayerProvider):
         self.mass.players.update(player.player_id)
 
         # Send Session Start to all connected clients
-        instance.send_message(improv_models.SessionStartMessage(payload=session_info))
+        instance.send_message(resonate_models.SessionStartMessage(payload=session_info))
 
         instance.stream_task = self.mass.create_task(
             self._stream_audio(player_id, session_info.now, media)
         )
 
-    async def _stream_audio(
-        self, player_id: str, start_time_us: int, media: PlayerMedia
-    ) -> None:
+    async def _stream_audio(self, player_id: str, start_time_us: int, media: PlayerMedia) -> None:
         # TODO: move to PlayerInstance
         queue = self.mass.player_queues.get(player_id)
         instance = self._get_player_instance(player_id)
@@ -471,9 +445,7 @@ class ImprovPlayerProvider(PlayerProvider):
 
         queue_item = self.mass.player_queues.get_item(player_id, media.queue_item_id)
         if not queue_item:
-            self.logger.error(
-                "Queue item %s not found in queue %s", media.queue_item_id, player_id
-            )
+            self.logger.error("Queue item %s not found in queue %s", media.queue_item_id, player_id)
             return
 
         samples_sent = 0

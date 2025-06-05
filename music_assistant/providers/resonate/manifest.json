@@ -1,8 +1,8 @@
 {
   "type": "player",
-  "domain": "improv",
-  "name": "Improv Test",
-  "description": "Just a test implementation",
+  "domain": "resonate",
+  "name": "Resonate",
+  "description": "WIP resonate provider",
   "codeowners": [
     "@music-assistant"
   ],

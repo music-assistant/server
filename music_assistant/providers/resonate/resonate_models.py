@@ -1,4 +1,4 @@
-"""Models for improv audio."""
+"""Models for the resonate audio protocol."""
 
 from __future__ import annotations
 
@@ -22,6 +22,8 @@ class MediaCommand(Enum):
 
 @dataclass
 class Message(DataClassORJSONMixin):
+    """Message type used by resonate."""
+
     type: str
     payload: dict[str, Any] | Any
 
@@ -229,9 +231,7 @@ class PlayerTimeMessage(DataClassORJSONMixin):
     type: Literal["player/time"] = "player/time"
 
 
-ClientMessages = (
-    PlayerHelloMessage | StreamCommandMessage | PlayerStateMessage | PlayerTimeMessage
-)
+ClientMessages = PlayerHelloMessage | StreamCommandMessage | PlayerStateMessage | PlayerTimeMessage
 
 ServerMessages = (
     SessionStartMessage
