@@ -83,8 +83,6 @@ class PlayerTimeInfo(DataClassORJSONMixin):
     """Timing information from the player."""
 
     player_transmitted: int
-    source_received: int
-    source_transmitted: int
 
 
 @dataclass
@@ -231,7 +229,9 @@ class PlayerTimeMessage(DataClassORJSONMixin):
     type: Literal["player/time"] = "player/time"
 
 
-ClientMessages = PlayerHelloMessage | StreamCommandMessage | PlayerStateMessage | PlayerTimeMessage
+ClientMessages = (
+    PlayerHelloMessage | StreamCommandMessage | PlayerStateMessage | PlayerTimeMessage
+)
 
 ServerMessages = (
     SessionStartMessage

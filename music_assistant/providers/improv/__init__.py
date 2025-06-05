@@ -31,7 +31,11 @@ from music_assistant.models.player_provider import PlayerProvider
 from . import improv_models
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.provider import ProviderManifest
 
@@ -40,7 +44,7 @@ TARGET_CHUNK_DURATION_MS = 250
 
 # TODO: make dynamic
 STREAM_CODEC = "pcm"
-STREAM_SAMPLE_RATE = 44100
+STREAM_SAMPLE_RATE = 48000
 STREAM_CHANNELS = 2
 STREAM_BIT_DEPTH = 16
 STREAM_CONTENT_TYPE = ContentType.PCM_S16LE
@@ -97,7 +101,9 @@ class PlayerInstance:
 
     async def disconnect(self) -> None:
         """Disconnect client and cancel tasks."""
-        self.prov.logger.debug("Disconnecting client %s", self.player_id or self.request.remote)
+        self.prov.logger.debug(
+            "Disconnecting client %s", self.player_id or self.request.remote
+        )
 
         # Cancel running tasks
         if self.stream_task and not self.stream_task.done():
@@ -121,7 +127,9 @@ class PlayerInstance:
                 player.state = PlayerState.IDLE
                 self.prov.mass.players.update(self.player_id)
 
-        self.prov.logger.info("Client %s disconnected", self.player_id or self.request.remote)
+        self.prov.logger.info(
+            "Client %s disconnected", self.player_id or self.request.remote
+        )
 
     async def handle_client(self) -> web.WebSocketResponse:
         """Handle the websocket connection."""
@@ -161,7 +169,9 @@ class PlayerInstance:
                     continue
 
                 try:
-                    await self._handle_message(improv_models.Message.from_json(msg.data))
+                    await self._handle_message(
+                        improv_models.Message.from_json(msg.data)
+                    )
                 except Exception as e:
                     logger.error(
                         "Failed to process message for %s: %s",
@@ -184,12 +194,16 @@ class PlayerInstance:
             except asyncio.QueueFull:  # can be raised by put_nowait
                 _ = self._writer_task.cancel()
 
-            if self.player_id and (player := self.prov.mass.players.get(self.player_id)):
+            if self.player_id and (
+                player := self.prov.mass.players.get(self.player_id)
+            ):
                 player.available = False
                 player.state = PlayerState.IDLE
                 self.prov.mass.players.update(self.player_id)
             else:
-                logger.debug("WebSocket disconnected before player/hello or already cleaned up.")
+                logger.debug(
+                    "WebSocket disconnected before player/hello or already cleaned up."
+                )
 
         return self.wsock
 
@@ -201,7 +215,9 @@ class PlayerInstance:
         if msg_type == "player/hello":
             # TODO: reject if player_id is already connected
             player_info = improv_models.PlayerInfo.from_dict(payload)
-            logger.info(f"Received player/hello from {player_info.player_id} ({player_info.name})")
+            logger.info(
+                f"Received player/hello from {player_info.player_id} ({player_info.name})"
+            )
             self.player_info = player_info
             self.player_id = player_info.player_id
 
@@ -234,8 +250,20 @@ class PlayerInstance:
                 player.state = PlayerState.IDLE
             self.prov.mass.players.update(self.player_id)
 
+        elif msg_type == "player/time":
+            payload["source_received"] = int(time.time() * 1_000_000)
+            payload["source_transmitted"] = int(time.time() * 1_000_000)
+            # time_reply = improv_models.SourceTimeInfo.from_dict(payload)
+            self.send_message(
+                improv_models.SourceTimeMessage(
+                    payload=improv_models.SourceTimeInfo.from_dict(payload)
+                )
+            )
+
         else:
-            logger.debug("%s received unhandled command type: %", self.player_id, msg_type)
+            logger.debug(
+                "%s received unhandled command type: %", self.player_id, msg_type
+            )
 
     async def _writer(self) -> None:
         """Write outgoing messages from the queue."""
@@ -263,7 +291,9 @@ class PlayerInstance:
         # TODO: handle full queue
         self._to_write.put_nowait(data)
 
-    def pack_audio_chunk(self, timestamp_us: int, sample_count: int, audio_data: bytes) -> bytes:
+    def pack_audio_chunk(
+        self, timestamp_us: int, sample_count: int, audio_data: bytes
+    ) -> bytes:
         """Pack audio data the audio header."""
         header = struct.pack(
             improv_models.BINARY_HEADER_FORMAT,
@@ -298,7 +328,9 @@ class ImprovPlayerProvider(PlayerProvider):
             ),
         ]
 
-    async def _handle_player_ws_connect(self, request: web.Request) -> web.WebSocketResponse:
+    async def _handle_player_ws_connect(
+        self, request: web.Request
+    ) -> web.WebSocketResponse:
         """Handle incoming WebSocket connection request."""
         instance = PlayerInstance(self, request)
         try:
@@ -331,7 +363,9 @@ class ImprovPlayerProvider(PlayerProvider):
         )
         self.instances.clear()
 
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(
+        self, player_id: str
+    ) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         # TODO: should be more like builtin_player
         return (
@@ -343,7 +377,9 @@ class ImprovPlayerProvider(PlayerProvider):
         """Send STOP command to given player."""
         instance = self._get_player_instance(player_id)
         if instance is None or instance.session_info is None:
-            self.logger.warning("Stop command called but player %s is not connected.", player_id)
+            self.logger.warning(
+                "Stop command called but player %s is not connected.", player_id
+            )
             # Still update MA state if the player exists
             if player := self.mass.players.get(player_id):
                 player.state = PlayerState.IDLE
@@ -362,7 +398,9 @@ class ImprovPlayerProvider(PlayerProvider):
         # Send session stop message
         instance.send_message(
             improv_models.SessionEndMessage(
-                payload=improv_models.SessionEndPayload(instance.session_info.session_id)
+                payload=improv_models.SessionEndPayload(
+                    instance.session_info.session_id
+                )
             )
         )
 
@@ -410,7 +448,9 @@ class ImprovPlayerProvider(PlayerProvider):
             self._stream_audio(player_id, session_info.now, media)
         )
 
-    async def _stream_audio(self, player_id: str, start_time_us: int, media: PlayerMedia) -> None:
+    async def _stream_audio(
+        self, player_id: str, start_time_us: int, media: PlayerMedia
+    ) -> None:
         # TODO: move to PlayerInstance
         queue = self.mass.player_queues.get(player_id)
         instance = self._get_player_instance(player_id)
@@ -431,7 +471,9 @@ class ImprovPlayerProvider(PlayerProvider):
 
         queue_item = self.mass.player_queues.get_item(player_id, media.queue_item_id)
         if not queue_item:
-            self.logger.error("Queue item %s not found in queue %s", media.queue_item_id, player_id)
+            self.logger.error(
+                "Queue item %s not found in queue %s", media.queue_item_id, player_id
+            )
             return
 
         samples_sent = 0
@@ -464,7 +506,9 @@ class ImprovPlayerProvider(PlayerProvider):
                 await asyncio.sleep(current_chunk_samples / STREAM_SAMPLE_RATE)
 
         self.logger.info(
-            "Finished streaming queue %s (total samples sent: %s)", player_id, samples_sent
+            "Finished streaming queue %s (total samples sent: %s)",
+            player_id,
+            samples_sent,
         )
 
     async def remove_player(self, player_id: str) -> None:
