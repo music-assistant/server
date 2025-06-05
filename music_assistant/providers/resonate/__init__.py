@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
 MAX_PENDING_MSG = 512
-TARGET_CHUNK_DURATION_MS = 20
+TARGET_CHUNK_DURATION_MS = 80
 
 # TODO: make dynamic
 STREAM_CODEC = "pcm"
