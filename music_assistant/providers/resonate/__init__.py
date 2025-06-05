@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import struct
-import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import field
@@ -239,8 +238,8 @@ class PlayerInstance:
             self.prov.mass.players.update(self.player_id)
 
         elif msg_type == "player/time":
-            payload["source_received"] = int(time.time() * 1_000_000)
-            payload["source_transmitted"] = int(time.time() * 1_000_000)
+            payload["source_received"] = int(self.prov.time() * 1_000_000)
+            payload["source_transmitted"] = int(self.prov.time() * 1_000_000)
             # time_reply = resonate_models.SourceTimeInfo.from_dict(payload)
             self.send_message(
                 resonate_models.SourceTimeMessage(
@@ -293,6 +292,7 @@ class ResonatePlayerProvider(PlayerProvider):
 
     instances: set[PlayerInstance] = set()
     _unregister_cbs: list[Callable[[], None]] = []
+    time: Callable[[], float]
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -311,6 +311,7 @@ class ResonatePlayerProvider(PlayerProvider):
                 self._handle_player_ws_connect,
             ),
         ]
+        self.time = mass.loop.time
 
     async def _handle_player_ws_connect(self, request: web.Request) -> web.WebSocketResponse:
         """Handle incoming WebSocket connection request."""
@@ -400,12 +401,12 @@ class ResonatePlayerProvider(PlayerProvider):
 
         # TODO: dynamic session info
         session_info = resonate_models.SessionInfo(
-            session_id=f"mass-session-{int(time.time())}",
+            session_id=f"mass-session-{int(self.time())}",
             codec=STREAM_CODEC,
             sample_rate=STREAM_SAMPLE_RATE,
             channels=STREAM_CHANNELS,
             bit_depth=STREAM_BIT_DEPTH,
-            now=int(time.time() * 1_000_000),
+            now=int(self.time() * 1_000_000),
             codec_header=None,
         )
         instance.session_info = session_info
@@ -413,7 +414,7 @@ class ResonatePlayerProvider(PlayerProvider):
         player = self.mass.players.get(player_id, True)
         assert player
         player.elapsed_time = 0
-        player.elapsed_time_last_updated = time.time() - 1
+        player.elapsed_time_last_updated = self.time() - 1
         player.state = PlayerState.PLAYING
         self.mass.players.update(player.player_id)
 
