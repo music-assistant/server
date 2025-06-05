@@ -101,7 +101,7 @@ TRACK_EXTENSIONS = {
 }
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
-AUDIOBOOK_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg"}
+AUDIOBOOK_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg", "opus"}
 PODCAST_EPISODE_EXTENSIONS = {"aa", "aax", "m4b", "m4a", "mp3", "mp4", "flac", "ogg"}
 PLAYLIST_EXTENSIONS = {"m3u", "pls", "m3u8"}
 SUPPORTED_EXTENSIONS = {
