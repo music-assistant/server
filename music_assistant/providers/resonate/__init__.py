@@ -502,7 +502,7 @@ class ResonatePlayerProvider(PlayerProvider):
                 # self.logger.info(
                 #     "sleeping for %s", split_chunks_count * TARGET_CHUNK_DURATION_MS
                 # )
-                await asyncio.sleep(split_chunks_count * TARGET_CHUNK_DURATION_MS // 1000)
+                await asyncio.sleep(split_chunks_count * TARGET_CHUNK_DURATION_MS / 1000)
 
         self.logger.info(
             "Finished streaming queue %s (total samples sent: %s)",
