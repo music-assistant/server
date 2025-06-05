@@ -211,6 +211,7 @@ class PlayerInstance:
                 player_id=self.player_id,
                 provider=self.prov.instance_id,
                 type=PlayerType.PLAYER,
+                can_group_with={self.prov.instance_id},
                 name=player_info.name,
                 available=True,
                 # TODO: powered should probably indicate if a session is active or not
