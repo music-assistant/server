@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 from aiohttp import WSMsgType, web
 from music_assistant_models.enums import (
     ContentType,
+    PlayerFeature,
     PlayerState,
     PlayerType,
     ProviderFeature,
@@ -219,7 +220,7 @@ class PlayerInstance:
                 # TODO: powered should probably indicate if a session is active or not
                 powered=True,
                 device_info=DeviceInfo(),
-                supported_features=set(),
+                supported_features={PlayerFeature.SET_MEMBERS},
                 state=PlayerState.IDLE,
             )
             await self.prov.mass.players.register_or_update(player)
@@ -427,6 +428,25 @@ class ResonatePlayerProvider(PlayerProvider):
         instance.stream_task = self.mass.create_task(
             self._stream_audio(player_id, session_info.now, media)
         )
+
+    async def cmd_group(self, player_id: str, target_player: str) -> None:
+        """Handle GROUP command for given player.
+
+        Join/add the given player(id) to the given (master) player/sync group.
+
+            - player_id: player_id of the player to handle the command.
+            - target_player: player_id of the sync leader.
+        """
+        raise NotImplementedError
+
+    async def cmd_ungroup(self, player_id: str) -> None:
+        """Handle UNGROUP command for given player.
+
+        Remove the given player from any (sync)groups it currently is grouped to.
+
+            - player_id: player_id of the player to handle the command.
+        """
+        raise NotImplementedError
 
     async def _stream_audio(self, player_id: str, start_time_us: int, media: PlayerMedia) -> None:
         # TODO: move to PlayerInstance
