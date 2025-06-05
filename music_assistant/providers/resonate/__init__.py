@@ -10,7 +10,13 @@ from dataclasses import field
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import WSMsgType, web
-from music_assistant_models.enums import ContentType, PlayerState, PlayerType, ProviderFeature
+from music_assistant_models.enums import (
+    ContentType,
+    PlayerFeature,
+    PlayerState,
+    PlayerType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo, Player
@@ -30,7 +36,7 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
 MAX_PENDING_MSG = 512
-TARGET_CHUNK_DURATION_MS = 20
+TARGET_CHUNK_DURATION_MS = 80
 
 # TODO: make dynamic
 STREAM_CODEC = "pcm"
@@ -210,7 +216,7 @@ class PlayerInstance:
                 # TODO: powered should probably indicate if a session is active or not
                 powered=True,
                 device_info=DeviceInfo(),
-                supported_features=set(),
+                supported_features={PlayerFeature.SET_MEMBERS},
                 state=PlayerState.IDLE,
             )
             await self.prov.mass.players.register_or_update(player)
@@ -233,6 +239,7 @@ class PlayerInstance:
         elif msg_type == "player/time":
             payload["source_received"] = int(self.prov.time() * 1_000_000)
             payload["source_transmitted"] = int(self.prov.time() * 1_000_000)
+            logger.info("player/time received from %s, payload is %s", self.player_id, payload)
             # time_reply = resonate_models.SourceTimeInfo.from_dict(payload)
             self.send_message(
                 resonate_models.SourceTimeMessage(
@@ -264,10 +271,15 @@ class PlayerInstance:
         # TODO: handle full queue
         self._to_write.put_nowait(message.to_json())
 
-    def send_binary(self, data: bytes) -> None:
+    async def send_binary(self, data: bytes) -> None:
         """Enqueue a binary message to be sent to the client."""
-        # TODO: handle full queue
-        self._to_write.put_nowait(data)
+        await self._to_write.put(data)
+
+    def send_audio_chunk(self, timestamp_us: int, sample_count: int, audio_data: bytes) -> bytes:
+        """Pack audio data the audio header."""
+        # TODO: do any encoding here if needed
+        binary_chunk = self.pack_audio_chunk(timestamp_us, sample_count, audio_data)
+        self.send_binary(binary_chunk)
 
     def pack_audio_chunk(self, timestamp_us: int, sample_count: int, audio_data: bytes) -> bytes:
         """Pack audio data the audio header."""
@@ -432,6 +444,46 @@ class ResonatePlayerProvider(PlayerProvider):
             self._stream_audio(player_id, session_info.now, media)
         )
 
+    async def cmd_group(self, player_id: str, target_player: str) -> None:
+        """Handle GROUP command for given player.
+
+        Join/add the given player(id) to the given (master) player/sync group.
+
+            - player_id: player_id of the player to handle the command.
+            - target_player: player_id of the sync leader.
+        """
+        # TODO: check if player is not already grouped to anothr player or playing media
+        if (child_player := self.mass.players.get(player_id)) is None:
+            return  # guard
+        if child_player.state == PlayerState.PLAYING:
+            await self.cmd_stop(child_player.player_id)
+        if (player := self.mass.players.get(target_player)) is None:
+            return  # should not happen but guard anyways
+        if player.state == PlayerState.PLAYING:
+            await self.cmd_stop(player.player_id)
+        # Add child player to group
+        # TODO: add child player to a group that is already playing
+        child_player.synced_to = target_player
+        player.group_members.append(player_id)
+        self.mass.players.update(player.player_id)
+
+    async def cmd_ungroup(self, player_id: str) -> None:
+        """Handle UNGROUP command for given player.
+
+        Remove the given player from any (sync)groups it currently is grouped to.
+
+            - player_id: player_id of the player to handle the command.
+        """
+        if (player := self.mass.players.get(player_id)) is None:
+            return
+        if parent_player := self.mass.players.get(player.synced_to):
+            # Remove player from group
+            parent_player.group_members.remove(player_id)
+            self.mass.players.update(parent_player.player_id)
+        player.group_members.clear()
+        player.synced_to = None
+        self.mass.players.update(player_id)
+
     async def _stream_audio(self, player_id: str, start_time_us: int, media: PlayerMedia) -> None:
         # TODO: move to PlayerInstance
         queue = self.mass.player_queues.get(player_id)
@@ -482,28 +534,36 @@ class ResonatePlayerProvider(PlayerProvider):
                     (samples_sent / (STREAM_SAMPLE_RATE * STREAM_SAMPLE_SIZE)) * 1_000_000
                 )
 
-                binary_chunk = instance.pack_audio_chunk(
-                    chunk_timestamp_us, TARGET_CHUNK_SAMPLES, c
-                )
-                instance.send_binary(binary_chunk)
+                mass_player = self.mass.players.get(player_id, True)
+                sync_player_ids = mass_player.group_members or [mass_player.player_id]
+                for child_player_id in sync_player_ids:
+                    if child_instance := self._get_player_instance(child_player_id):
+                        child_instance.send_audio_chunk(
+                            timestamp_us=chunk_timestamp_us,
+                            sample_count=TARGET_CHUNK_SAMPLES,
+                            audio_data=c,
+                        )
 
                 samples_sent += TARGET_CHUNK_BYTES
 
                 chunk_pos += TARGET_CHUNK_BYTES
                 split_chunks_count += 1
 
-            self.logger.info(
-                "Split into %s audio chunks. We sent %s bytes from %s bytes, we lost %s bytes",
-                split_chunks_count,
-                chunk_pos + TARGET_CHUNK_BYTES - 1,
-                len(chunk),
-                len(chunk) - (chunk_pos + TARGET_CHUNK_BYTES - 1),
-            )
+            # self.logger.info(
+            #     "Split into %s audio chunks. We sent %s bytes from %s bytes, we lost %s bytes",
+            #     split_chunks_count,
+            #     chunk_pos + TARGET_CHUNK_BYTES - 1,
+            #     len(chunk),
+            #     len(chunk) - (chunk_pos + TARGET_CHUNK_BYTES - 1),
+            # )
 
             if preload > 0:
                 preload -= split_chunks_count * TARGET_CHUNK_DURATION_MS
             else:
-                await asyncio.sleep(split_chunks_count * TARGET_CHUNK_DURATION_MS)
+                # self.logger.info(
+                #     "sleeping for %s", split_chunks_count * TARGET_CHUNK_DURATION_MS
+                # )
+                await asyncio.sleep(split_chunks_count * TARGET_CHUNK_DURATION_MS / 1000)
 
         self.logger.info(
             "Finished streaming queue %s (total samples sent: %s)",
