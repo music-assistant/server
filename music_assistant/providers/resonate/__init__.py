@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
 MAX_PENDING_MSG = 512
-TARGET_CHUNK_DURATION_MS = 250
+TARGET_CHUNK_DURATION_MS = 20
 
 # TODO: make dynamic
 STREAM_CODEC = "pcm"
@@ -48,6 +48,8 @@ STREAM_CHANNELS = 2
 STREAM_BIT_DEPTH = 16
 STREAM_CONTENT_TYPE = ContentType.PCM_S16LE
 STREAM_SAMPLE_SIZE = STREAM_CHANNELS * (STREAM_BIT_DEPTH // 8)
+TARGET_CHUNK_BYTES = STREAM_SAMPLE_SIZE * STREAM_SAMPLE_RATE // 1000 * TARGET_CHUNK_DURATION_MS
+TARGET_CHUNK_SAMPLES = STREAM_SAMPLE_RATE // 1000 * TARGET_CHUNK_DURATION_MS
 
 
 async def setup(
@@ -450,33 +452,53 @@ class ResonatePlayerProvider(PlayerProvider):
             return
 
         samples_sent = 0
-        preload = 4  # TODO: client tells us this
+        preload = 2000  # TODO: client tells us this
 
         # TODO: explicit chunk size, better error handling, better player state,
         # support dynamic chunk sizes, samples_sent should be duration instead
         # verify that the players buffer will not be overrun
+        # TODO: rename vars
         async for chunk in self.mass.streams.get_queue_flow_stream(
             queue=queue,
             start_queue_item=queue_item,
             pcm_format=pcm_format,
         ):
-            current_chunk_samples = len(chunk) // STREAM_SAMPLE_SIZE
+            # TODO: check off by one errors
+            chunk_pos = 0
+            split_chunks_count = 0
+            while True:
+                if chunk_pos + TARGET_CHUNK_BYTES >= len(chunk):
+                    break
+                c = chunk[
+                    chunk_pos : chunk_pos + TARGET_CHUNK_BYTES
+                ]  # TODO: maybe that's not so efficient?
 
-            chunk_timestamp_us = start_time_us + int(
-                (samples_sent / STREAM_SAMPLE_RATE) * 1_000_000
+                chunk_timestamp_us = start_time_us + int(
+                    (samples_sent / (STREAM_SAMPLE_RATE * STREAM_SAMPLE_SIZE)) * 1_000_000
+                )
+
+                binary_chunk = instance.pack_audio_chunk(
+                    chunk_timestamp_us, TARGET_CHUNK_SAMPLES, c
+                )
+                instance.send_binary(binary_chunk)
+
+                samples_sent += TARGET_CHUNK_BYTES
+
+                chunk_pos += TARGET_CHUNK_BYTES
+                split_chunks_count += 1
+
+            self.logger.info(
+                "Split into %s audio chunks. We sent %s bytes from %s bytes, we lost %s bytes",
+                split_chunks_count,
+                chunk_pos + TARGET_CHUNK_BYTES - 1,
+                len(chunk),
+                len(chunk) - (chunk_pos + TARGET_CHUNK_BYTES - 1),
             )
-
-            binary_chunk = instance.pack_audio_chunk(
-                chunk_timestamp_us, current_chunk_samples, chunk
-            )
-            instance.send_binary(binary_chunk)
-
-            samples_sent += current_chunk_samples
 
             if preload > 0:
-                preload -= 1
+                preload -= split_chunks_count * TARGET_CHUNK_DURATION_MS
             else:
-                await asyncio.sleep(current_chunk_samples / STREAM_SAMPLE_RATE)
+                await asyncio.sleep(split_chunks_count * TARGET_CHUNK_DURATION_MS)
 
         self.logger.info(
             "Finished streaming queue %s (total samples sent: %s)",
