@@ -439,7 +439,13 @@ class ResonatePlayerProvider(PlayerProvider):
         self.mass.players.update(player.player_id)
 
         # Send Session Start to all connected clients
-        instance.send_message(resonate_models.SessionStartMessage(payload=session_info))
+        session_start_msg = resonate_models.SessionStartMessage(payload=session_info)
+        mass_player = self.mass.players.get(player_id, True)
+        assert mass_player is not None  # for type checker
+        sync_player_ids = mass_player.group_childs or [mass_player.player_id]
+        for child_player_id in sync_player_ids:
+            if child_instance := self._get_player_instance(child_player_id):
+                child_instance.send_message(session_start_msg)
 
         instance.stream_task = self.mass.create_task(
             self._stream_audio(player_id, session_info.now, media)
