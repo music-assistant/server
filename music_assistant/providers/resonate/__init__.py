@@ -242,6 +242,7 @@ class PlayerInstance:
         elif msg_type == "player/time":
             payload["source_received"] = int(self.prov.time() * 1_000_000)
             payload["source_transmitted"] = int(self.prov.time() * 1_000_000)
+            logger.info("player/time received from %s, payload is %s", self.player_id, payload)
             # time_reply = resonate_models.SourceTimeInfo.from_dict(payload)
             self.send_message(
                 resonate_models.SourceTimeMessage(
@@ -487,18 +488,21 @@ class ResonatePlayerProvider(PlayerProvider):
                 chunk_pos += TARGET_CHUNK_BYTES
                 split_chunks_count += 1
 
-            self.logger.info(
-                "Split into %s audio chunks. We sent %s bytes from %s bytes, we lost %s bytes",
-                split_chunks_count,
-                chunk_pos + TARGET_CHUNK_BYTES - 1,
-                len(chunk),
-                len(chunk) - (chunk_pos + TARGET_CHUNK_BYTES - 1),
-            )
+            # self.logger.info(
+            #     "Split into %s audio chunks. We sent %s bytes from %s bytes, we lost %s bytes",
+            #     split_chunks_count,
+            #     chunk_pos + TARGET_CHUNK_BYTES - 1,
+            #     len(chunk),
+            #     len(chunk) - (chunk_pos + TARGET_CHUNK_BYTES - 1),
+            # )
 
             if preload > 0:
                 preload -= split_chunks_count * TARGET_CHUNK_DURATION_MS
             else:
-                await asyncio.sleep(split_chunks_count * TARGET_CHUNK_DURATION_MS)
+                # self.logger.info(
+                #     "sleeping for %s", split_chunks_count * TARGET_CHUNK_DURATION_MS
+                # )
+                await asyncio.sleep(split_chunks_count * TARGET_CHUNK_DURATION_MS // 1000)
 
         self.logger.info(
             "Finished streaming queue %s (total samples sent: %s)",
