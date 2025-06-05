@@ -272,11 +272,11 @@ class PlayerInstance:
         # TODO: handle full queue
         self._to_write.put_nowait(message.to_json())
 
-    async def send_binary(self, data: bytes) -> None:
+    def send_binary(self, data: bytes) -> None:
         """Enqueue a binary message to be sent to the client."""
-        await self._to_write.put(data)
+        self._to_write.put_nowait(data)
 
-    def send_audio_chunk(self, timestamp_us: int, sample_count: int, audio_data: bytes) -> bytes:
+    def send_audio_chunk(self, timestamp_us: int, sample_count: int, audio_data: bytes) -> None:
         """Pack audio data the audio header."""
         # TODO: do any encoding here if needed
         binary_chunk = self.pack_audio_chunk(timestamp_us, sample_count, audio_data)
@@ -453,7 +453,7 @@ class ResonatePlayerProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the sync leader.
         """
-        # TODO: check if player is not already grouped to anothr player or playing media
+        # TODO: check if player is not already grouped to another player or playing media
         if (child_player := self.mass.players.get(player_id)) is None:
             return  # guard
         if child_player.state == PlayerState.PLAYING:
@@ -465,7 +465,7 @@ class ResonatePlayerProvider(PlayerProvider):
         # Add child player to group
         # TODO: add child player to a group that is already playing
         child_player.synced_to = target_player
-        player.group_members.append(player_id)
+        player.group_childs.append(player_id)
         self.mass.players.update(player.player_id)
 
     async def cmd_ungroup(self, player_id: str) -> None:
@@ -477,11 +477,11 @@ class ResonatePlayerProvider(PlayerProvider):
         """
         if (player := self.mass.players.get(player_id)) is None:
             return
-        if parent_player := self.mass.players.get(player.synced_to):
+        if player.synced_to and (parent_player := self.mass.players.get(player.synced_to)):
             # Remove player from group
-            parent_player.group_members.remove(player_id)
+            parent_player.group_childs.remove(player_id)
             self.mass.players.update(parent_player.player_id)
-        player.group_members.clear()
+        player.group_childs.clear()
         player.synced_to = None
         self.mass.players.update(player_id)
 
@@ -536,7 +536,8 @@ class ResonatePlayerProvider(PlayerProvider):
                 )
 
                 mass_player = self.mass.players.get(player_id, True)
-                sync_player_ids = mass_player.group_members or [mass_player.player_id]
+                assert mass_player is not None  # for type checker
+                sync_player_ids = mass_player.group_childs or [mass_player.player_id]
                 for child_player_id in sync_player_ids:
                     if child_instance := self._get_player_instance(child_player_id):
                         child_instance.send_audio_chunk(
