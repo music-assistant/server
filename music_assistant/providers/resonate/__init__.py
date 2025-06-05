@@ -10,19 +10,13 @@ from dataclasses import field
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import WSMsgType, web
-from music_assistant_models.enums import (
-    ContentType,
-    PlayerState,
-    PlayerType,
-    ProviderFeature,
-)
+from music_assistant_models.enums import ContentType, PlayerState, PlayerType, ProviderFeature
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo, Player
+from zeroconf import ServiceStateChange
 
-from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-)
+from music_assistant.constants import CONF_ENTRY_FLOW_MODE_ENFORCED
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player_provider import PlayerProvider
@@ -30,13 +24,10 @@ from music_assistant.models.player_provider import PlayerProvider
 from . import resonate_models
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import (
-        ConfigEntry,
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.provider import ProviderManifest
+    from zeroconf.asyncio import AsyncServiceInfo
 
 MAX_PENDING_MSG = 512
 TARGET_CHUNK_DURATION_MS = 20
@@ -314,6 +305,20 @@ class ResonatePlayerProvider(PlayerProvider):
             ),
         ]
         self.time = mass.loop.time
+
+    async def on_mdns_service_state_change(
+        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+    ) -> None:
+        """Handle MDNS service state callback."""
+        if state_change == ServiceStateChange.Removed:
+            # we don't listen for removed players here.
+            # instead we just wait for the player connection to fail
+            return
+        if not info:
+            return
+        name = name.split("@", 1)[1] if "@" in name else name
+        # player_id = info.decoded_properties["player_id"]
+        # TODO add player discovery handling here
 
     async def _handle_player_ws_connect(self, request: web.Request) -> web.WebSocketResponse:
         """Handle incoming WebSocket connection request."""

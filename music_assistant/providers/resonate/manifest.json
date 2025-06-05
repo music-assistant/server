@@ -3,10 +3,9 @@
   "domain": "resonate",
   "name": "Resonate",
   "description": "WIP resonate provider",
-  "codeowners": [
-    "@music-assistant"
-  ],
+  "codeowners": ["@music-assistant"],
   "multi_instance": false,
   "builtin": true,
-  "allow_disable": false
+  "allow_disable": false,
+  "mdns_discovery": ["_resonate._tcp.local."]
 }
