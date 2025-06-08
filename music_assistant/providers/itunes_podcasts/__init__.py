@@ -241,9 +241,9 @@ class ITunesPodcastsProvider(MusicProvider):
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
-        podcast_id, guid_or_stream_url = prov_episode_id.split(" ")
+        podcast_id, guid_or_stream_url = prov_episode_id.split(" ", 1)
         async for mass_episode in self.get_podcast_episodes(podcast_id):
-            _, _guid_or_stream_url = mass_episode.item_id.split(" ")
+            _, _guid_or_stream_url = mass_episode.item_id.split(" ", 1)
             # this is enough, as internal
             if guid_or_stream_url == _guid_or_stream_url:
                 return mass_episode
@@ -281,7 +281,7 @@ class ITunesPodcastsProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for item."""
-        podcast_id, guid_or_stream_url = item_id.split(" ")
+        podcast_id, guid_or_stream_url = item_id.split(" ", 1)
         stream_url = await self._get_episode_stream_url(podcast_id, guid_or_stream_url)
         if stream_url is None:
             raise MediaNotFoundError
