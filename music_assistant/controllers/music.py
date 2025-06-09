@@ -1193,7 +1193,7 @@ class MusicController(CoreController):
                 item_id="favorite_radio",
                 provider="library",
                 name="Favorite Radio stations",
-                translation_key="favorite_radio",
+                translation_key="favorite_radio_stations",
                 icon="mdi-access-point",
                 items=await self.radio.library_items(favorite=True, limit=10, order_by="random"),
             ),
