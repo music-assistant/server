@@ -412,28 +412,3 @@ class AlexaProvider(PlayerProvider):
         await device_object.createobject(player_id, self.login)
         api = AlexaAPI(device_object, self.login)
         await api.next()
-
-    async def cmd_group(self, player_id: str, target_player: str) -> None:
-        """Handle GROUP command for given player.
-
-        Join/add the given player(id) to the given (master) player/sync group.
-
-            - player_id: player_id of the player to handle the command.
-            - target_player: player_id of the syncgroup master or group player.
-        """
-
-    async def cmd_ungroup(self, player_id: str) -> None:
-        """Handle UNGROUP command for given player.
-
-        Remove the given player from any (sync)groups it currently is grouped to.
-
-            - player_id: player_id of the player to handle the command.
-        """
-
-    async def play_announcement(
-        self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
-    ) -> None:
-        """Handle (provider native) playback of an announcement on given player."""
-
-    async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates."""
