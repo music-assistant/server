@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from alexapy import (
-    AlexaAPI,
-    AlexaLogin,
-)
+from aiohttp import web
+from alexapy import AlexaAPI, AlexaLogin, AlexaProxy
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
 )
+from music_assistant_models.errors import LoginFailed
 from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
@@ -29,6 +30,7 @@ from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_USERNAME,
 )
+from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.models.player_provider import PlayerProvider
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,6 +47,8 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 CONF_URL = "url"
+CONF_ACTION_AUTH = "auth"
+CONF_AUTH_TOKEN = "token"
 
 SUPPORTED_FEATURES = {ProviderFeature.UNKNOWN}
 
@@ -70,13 +74,128 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
+    # config flow auth action/step (authenticate button clicked)
+    if action == CONF_ACTION_AUTH and values:
+        async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
+            login = AlexaLogin(
+                url=str(values[CONF_URL]),
+                email=str(values[CONF_USERNAME]),
+                password=str(values[CONF_PASSWORD]),
+                outputpath=lambda x: x,
+            )
+
+            # --- Proxy authentication logic using AlexaProxy ---
+            # Build the proxy path and URL
+            proxy_path = "/alexa/auth/proxy/"
+            post_path = "/alexa/auth/proxy/ap/signin"
+            base_url = mass.webserver.base_url.rstrip("/")
+            proxy_url = f"{base_url}{proxy_path}"
+
+            # Create AlexaProxy instance
+            proxy = AlexaProxy(login, proxy_url)
+
+            # Handler that delegates to AlexaProxy's all_handler
+            async def proxy_handler(request: web.Request) -> Any:
+                response = await proxy.all_handler(request)
+                if "Successfully logged in" in getattr(response, "text", ""):
+                    # Notify the callback URL
+                    async with aiohttp.ClientSession() as session:
+                        await session.get(auth_helper.callback_url)
+                    return web.Response(
+                        text="""
+                        <html>
+                            <body>
+                                <h2>Login successful!</h2>
+                                <p>You may now close this window.</p>
+                            </body>
+                        </html>
+                        """,
+                        content_type="text/html",
+                    )
+                return response
+
+            # Register GET for the base proxy path
+            mass.webserver.register_dynamic_route(proxy_path, proxy_handler, "GET")
+            # Register POST for the specific signin helper path
+            mass.webserver.register_dynamic_route(post_path, proxy_handler, "POST")
+
+            try:
+                await auth_helper.authenticate(proxy_url)
+                await save_cookie(login, str(values[CONF_USERNAME]))
+            except KeyError:
+                # no URL param was found so user probably cancelled the auth
+                pass
+            except Exception as error:
+                raise LoginFailed(f"Failed to authenticate with Amazon '{error}'.")
+            finally:
+                mass.webserver.unregister_dynamic_route(proxy_path)
+                mass.webserver.unregister_dynamic_route(post_path)
+
     return (
-        ConfigEntry(key=CONF_URL, type=ConfigEntryType.STRING, label="URL", required=True),
-        ConfigEntry(key=CONF_USERNAME, type=ConfigEntryType.STRING, label="E-Mail", required=True),
         ConfigEntry(
-            key=CONF_PASSWORD, type=ConfigEntryType.STRING, label="Password", required=True
+            key=CONF_URL,
+            type=ConfigEntryType.STRING,
+            label="URL",
+            required=True,
+            default_value="amazon.com",
+        ),
+        ConfigEntry(
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="E-Mail",
+            required=True,
+        ),
+        ConfigEntry(
+            key=CONF_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Password",
+            required=True,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_AUTH,
+            type=ConfigEntryType.ACTION,
+            label="Authenticate with Amazon",
+            description="Click to start the authentication process.",
+            action=CONF_ACTION_AUTH,
+            depends_on=CONF_URL,
         ),
     )
+
+
+async def save_cookie(login: AlexaLogin, username: str) -> None:
+    """Save the cookie file for the Alexa login."""
+    if login._session is None:
+        _LOGGER.error("AlexaLogin session is not initialized.")
+        return
+    login._cookiefile = [
+        login._outputpath(
+            f"/home/user/music-assistant_server/music_assistant/providers/alexa/alexa_media.{username}.pickle"
+        ),
+    ]
+    if (login._cookiefile[0]) and os.path.exists(login._cookiefile[0]):
+        _LOGGER.debug("Removing outdated cookiefile %s", login._cookiefile[0])
+        await delete_cookie(login._cookiefile[0])
+    cookie_jar = login._session.cookie_jar
+    assert isinstance(cookie_jar, aiohttp.CookieJar)
+    if login._debug:
+        _LOGGER.debug("Saving cookie to %s", login._cookiefile[0])
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, cookie_jar.save, login._cookiefile[0])
+    except (OSError, EOFError, TypeError, AttributeError):
+        _LOGGER.debug("Error saving pickled cookie to %s", login._cookiefile[0])
+
+
+async def delete_cookie(cookiefile: str) -> None:
+    """Delete the specified cookie file."""
+    if os.path.exists(cookiefile):
+        try:
+            os.remove(cookiefile)
+            _LOGGER.debug("Deleted cookie file: %s", cookiefile)
+        except OSError as e:
+            _LOGGER.error("Failed to delete cookie file %s: %s", cookiefile, e)
+    else:
+        _LOGGER.debug("Cookie file %s does not exist, nothing to delete.", cookiefile)
 
 
 class AlexaProvider(PlayerProvider):
@@ -94,6 +213,9 @@ class AlexaProvider(PlayerProvider):
         async def createobject(self, player_id: str, login: AlexaLogin) -> None:
             """Initialize Alexa Device."""
             devices = await AlexaAPI.get_devices(login)
+
+            if devices is None:
+                return
 
             for device in devices:
                 if device["accountName"] == player_id:
@@ -113,9 +235,9 @@ class AlexaProvider(PlayerProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         self.login = AlexaLogin(
-            url=self.config.get_value(CONF_URL),
-            email=self.config.get_value(CONF_USERNAME),
-            password=self.config.get_value(CONF_PASSWORD),
+            url=str(self.config.get_value(CONF_URL)),
+            email=str(self.config.get_value(CONF_USERNAME)),
+            password=str(self.config.get_value(CONF_PASSWORD)),
             outputpath=lambda x: x,
         )
 
@@ -128,6 +250,9 @@ class AlexaProvider(PlayerProvider):
         await self.login.login(cookies=await self.login.load_cookie())
 
         devices = await AlexaAPI.get_devices(self.login)
+
+        if devices is None:
+            return
 
         for device in devices:
             if device.get("capabilities") and "MUSIC_SKILL" in device.get("capabilities"):
