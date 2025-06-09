@@ -4,7 +4,7 @@ Brotli>=1.0.9
 aioaudiobookshelf==0.1.7
 aiodns>=3.2.0
 aiofiles==24.1.0
-aiohttp==3.11.18
+aiohttp==3.12.11
 aiohttp-fast-zlib==0.2.3
 aiojellyfin==0.14.1
 aiomusiccast==0.14.8
