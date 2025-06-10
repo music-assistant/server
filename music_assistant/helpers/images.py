@@ -9,7 +9,7 @@ import random
 from base64 import b64decode
 from collections.abc import Iterable
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import aiofiles
 from aiohttp.client_exceptions import ClientError
@@ -17,19 +17,20 @@ from PIL import Image, UnidentifiedImageError
 
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.models.metadata_provider import MetadataProvider
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemImage
+    from PIL.Image import Image as ImageClass
 
-    from music_assistant import MusicAssistant
-    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.mass import MusicAssistant
 
 
 async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) -> bytes:
     """Create thumbnail from image url."""
     # TODO: add local cache here !
     if prov := mass.get_provider(provider):
-        prov: MusicProvider | MetadataProvider
+        assert isinstance(prov, MusicProvider | MetadataProvider)
         if resolved_image := await prov.resolve_image(path_or_url):
             if isinstance(resolved_image, bytes):
                 return resolved_image
@@ -49,7 +50,7 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
     if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg")):
         if await asyncio.to_thread(os.path.isfile, path_or_url):
             async with aiofiles.open(path_or_url, "rb") as _file:
-                return await _file.read()
+                return cast("bytes", await _file.read())
     # use ffmpeg for embedded images
     if img_data := await get_embedded_image(path_or_url):
         return img_data
@@ -72,7 +73,7 @@ async def get_image_thumb(
     if not size and image_format.encode() in img_data:
         return img_data
 
-    def _create_image():
+    def _create_image() -> bytes:
         data = BytesIO()
         try:
             img = Image.open(BytesIO(img_data))
@@ -90,12 +91,14 @@ async def get_image_thumb(
 
 
 async def create_collage(
-    mass: MusicAssistant, images: Iterable[MediaItemImage], dimensions: tuple[int] = (1500, 1500)
+    mass: MusicAssistant,
+    images: Iterable[MediaItemImage],
+    dimensions: tuple[int, int] = (1500, 1500),
 ) -> bytes:
     """Create a basic collage image from multiple image urls."""
     image_size = 250
 
-    def _new_collage():
+    def _new_collage() -> ImageClass:
         return Image.new("RGB", (dimensions[0], dimensions[1]), color=(255, 255, 255, 255))
 
     collage = await asyncio.to_thread(_new_collage)
@@ -122,7 +125,7 @@ async def create_collage(
                     del img_data
                     break
 
-    def _save_collage():
+    def _save_collage() -> bytes:
         final_data = BytesIO()
         collage.convert("RGB").save(final_data, "JPEG", optimize=True)
         return final_data.getvalue()
@@ -136,4 +139,5 @@ async def get_icon_string(icon_path: str) -> str:
     assert ext == "svg"
     async with aiofiles.open(icon_path) as _file:
         xml_data = await _file.read()
+        assert isinstance(xml_data, str)  # for type checking
         return xml_data.replace("\n", "").strip()

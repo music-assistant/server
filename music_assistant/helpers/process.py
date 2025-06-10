@@ -54,7 +54,7 @@ class AsyncProcess:
         self._stdout = None if stdout is False else stdout
         self._stderr = asyncio.subprocess.DEVNULL if stderr is False else stderr
         self._close_called = False
-        self._returncode: bool | None = None
+        self._returncode: int | None = None
 
     @property
     def closed(self) -> bool:
@@ -87,6 +87,7 @@ class AsyncProcess:
         # send interrupt signal to process when we're cancelled
         await self.close(send_signal=exc_type in (GeneratorExit, asyncio.CancelledError))
         self._returncode = self.returncode
+        return None
 
     async def start(self) -> None:
         """Perform Async init of process."""
@@ -120,6 +121,8 @@ class AsyncProcess:
         """Read exactly n bytes from the process stdout (or less if eof)."""
         if self._close_called:
             return b""
+        assert self.proc is not None  # for type checking
+        assert self.proc.stdout is not None  # for type checking
         try:
             return await self.proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
@@ -134,12 +137,16 @@ class AsyncProcess:
         """
         if self._close_called:
             return b""
+        assert self.proc is not None  # for type checking
+        assert self.proc.stdout is not None  # for type checking
         return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
         if self.closed:
             raise RuntimeError("write called while process already done")
+        assert self.proc is not None  # for type checking
+        assert self.proc.stdin is not None  # for type checking
         self.proc.stdin.write(data)
         with suppress(BrokenPipeError, ConnectionResetError):
             await self.proc.stdin.drain()
@@ -148,6 +155,8 @@ class AsyncProcess:
         """Write end of file to to process stdin."""
         if self.closed:
             return
+        assert self.proc is not None  # for type checking
+        assert self.proc.stdin is not None  # for type checking
         try:
             if self.proc.stdin.can_write_eof():
                 self.proc.stdin.write_eof()
@@ -165,6 +174,8 @@ class AsyncProcess:
         """Read line from stderr."""
         if self.returncode is not None:
             return b""
+        assert self.proc is not None  # for type checking
+        assert self.proc.stderr is not None  # for type checking
         try:
             return await self.proc.stderr.readline()
         except ValueError as err:
@@ -180,6 +191,7 @@ class AsyncProcess:
 
     async def iter_stderr(self) -> AsyncGenerator[str, None]:
         """Iterate lines from the stderr stream as string."""
+        line: str | bytes
         while True:
             line = await self.read_stderr()
             if line == b"":
@@ -198,13 +210,15 @@ class AsyncProcess:
         if self.closed:
             raise RuntimeError("communicate called while process already done")
         # abort existing readers on stderr/stdout first before we send communicate
-        waiter: asyncio.Future
-        if self.proc.stdout and (waiter := self.proc.stdout._waiter):
-            self.proc.stdout._waiter = None
+        waiter: asyncio.Future[None]
+        assert self.proc is not None  # for type checking
+        # _waiter is attribute of StreamReader
+        if self.proc.stdout and (waiter := self.proc.stdout._waiter):  # type: ignore[attr-defined]
+            self.proc.stdout._waiter = None  # type: ignore[attr-defined]
             if waiter and not waiter.done():
                 waiter.set_exception(asyncio.CancelledError())
-        if self.proc.stderr and (waiter := self.proc.stderr._waiter):
-            self.proc.stderr._waiter = None
+        if self.proc.stderr and (waiter := self.proc.stderr._waiter):  # type: ignore[attr-defined]
+            self.proc.stderr._waiter = None  # type: ignore[attr-defined]
             if waiter and not waiter.done():
                 waiter.set_exception(asyncio.CancelledError())
         stdout, stderr = await asyncio.wait_for(self.proc.communicate(input), timeout)
@@ -220,13 +234,13 @@ class AsyncProcess:
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
         # abort existing readers on stderr/stdout first before we send communicate
-        waiter: asyncio.Future
-        if self.proc.stdout and (waiter := self.proc.stdout._waiter):
-            self.proc.stdout._waiter = None
+        waiter: asyncio.Future[None]
+        if self.proc.stdout and (waiter := self.proc.stdout._waiter):  # type: ignore[attr-defined]
+            self.proc.stdout._waiter = None  # type: ignore[attr-defined]
             if waiter and not waiter.done():
                 waiter.set_exception(asyncio.CancelledError())
-        if self.proc.stderr and (waiter := self.proc.stderr._waiter):
-            self.proc.stderr._waiter = None
+        if self.proc.stderr and (waiter := self.proc.stderr._waiter):  # type: ignore[attr-defined]
+            self.proc.stderr._waiter = None  # type: ignore[attr-defined]
             if waiter and not waiter.done():
                 waiter.set_exception(asyncio.CancelledError())
         await asyncio.sleep(0)  # yield to loop
@@ -261,6 +275,7 @@ class AsyncProcess:
     async def wait(self) -> int:
         """Wait for the process and return the returncode."""
         if self._returncode is None:
+            assert self.proc is not None
             self._returncode = await self.proc.wait()
         return self._returncode
 
@@ -275,6 +290,7 @@ async def check_output(*args: str, env: dict[str, str] | None = None) -> tuple[i
         *args, stderr=asyncio.subprocess.STDOUT, stdout=asyncio.subprocess.PIPE, env=env
     )
     stdout, _ = await proc.communicate()
+    assert proc.returncode is not None  # for type checking
     return (proc.returncode, stdout)
 
 
@@ -290,4 +306,5 @@ async def communicate(
         stdin=asyncio.subprocess.PIPE if input is not None else None,
     )
     stdout, stderr = await proc.communicate(input)
+    assert proc.returncode is not None  # for type checking
     return (proc.returncode, stdout, stderr)

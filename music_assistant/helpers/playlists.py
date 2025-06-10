@@ -8,13 +8,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from aiohttp import client_exceptions
+from aiohttp import ClientTimeout, client_exceptions
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.util import detect_charset
 
 if TYPE_CHECKING:
-    from music_assistant import MusicAssistant
+    from music_assistant.mass import MusicAssistant
 
 
 LOGGER = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
 
     length = None
     title = None
-    stream_info = None
+    stream_info: dict[str, str] | None = None
     key = None
 
     for line in m3u_lines:
@@ -148,7 +148,9 @@ async def fetch_playlist(
 ) -> list[PlaylistItem]:
     """Parse an online m3u or pls playlist."""
     try:
-        async with mass.http_session.get(url, allow_redirects=True, timeout=5) as resp:
+        async with mass.http_session.get(
+            url, allow_redirects=True, timeout=ClientTimeout(total=5)
+        ) as resp:
             try:
                 raw_data = await resp.content.read(64 * 1024)
                 # NOTE: using resp.charset is not reliable, we need to detect it ourselves

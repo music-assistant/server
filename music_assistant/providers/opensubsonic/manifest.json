@@ -7,7 +7,7 @@
     "@khers"
   ],
   "requirements": [
-    "py-opensonic==7.0.1"
+    "py-opensonic==7.0.2"
   ],
   "documentation": "https://music-assistant.io/music-providers/subsonic/",
   "multi_instance": true

@@ -425,17 +425,34 @@ class PlexProvider(MusicProvider):
         return cast("PlexObjectT", results)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
-        name, version = parse_title_and_version(name)
-        if media_type in (MediaType.ALBUM, MediaType.TRACK):
-            name, version = parse_title_and_version(name)
-        else:
-            version = ""
+        """Get item mapping for a given media type, key, and name."""
+        if not name:
+            self.logger.info(
+                "Received None or empty name for media item. Media type: %s, Key: %s",
+                media_type,
+                key,
+            )
+            name = "[Unknown]"
+
+        mapped_name, mapped_version = parse_title_and_version(name)
+
+        if not mapped_name:
+            self.logger.info(
+                "Failed to map name for media item. Media type: %s, Key: %s, Original name: %s",
+                media_type,
+                key,
+                name,
+            )
+            mapped_name = "[Unknown]"
+        if not mapped_version and media_type not in (MediaType.ALBUM, MediaType.TRACK):
+            mapped_version = ""
+
         return ItemMapping(
             media_type=media_type,
             item_id=key,
             provider=self.lookup_key,
-            name=name,
-            version=version,
+            name=mapped_name,
+            version=mapped_version,
         )
 
     async def _get_or_create_artist_by_name(self, artist_name: str) -> Artist | ItemMapping:

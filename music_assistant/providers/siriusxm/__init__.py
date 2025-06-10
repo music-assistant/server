@@ -18,9 +18,11 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemLink,
-    MediaItemTypeOrItemMapping,
+    MediaItemType,
     ProviderMapping,
     Radio,
 )
@@ -242,7 +244,7 @@ class SiriusXMProvider(MusicProvider):
 
         return self._current_stream_details
 
-    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping]:
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).

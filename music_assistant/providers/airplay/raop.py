@@ -53,7 +53,7 @@ class RaopStreamSession:
         self.prov = airplay_provider
         self.mass = airplay_provider.mass
         self.input_format = input_format
-        self._sync_clients = sync_clients
+        self.sync_clients = sync_clients
         self._audio_source = audio_source
         self._audio_source_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
@@ -66,7 +66,7 @@ class RaopStreamSession:
         assert self.prov.cliraop_bin
         _, stdout = await check_output(self.prov.cliraop_bin, "-ntp")
         start_ntp = int(stdout.strip())
-        wait_start = 1750 + (250 * len(self._sync_clients))
+        wait_start = 1750 + (250 * len(self.sync_clients))
 
         async def _start_client(raop_player: AirPlayPlayer) -> None:
             # stop existing stream if running
@@ -77,7 +77,7 @@ class RaopStreamSession:
             await raop_player.raop_stream.start(start_ntp, wait_start)
 
         async with TaskManager(self.mass) as tm:
-            for _raop_player in self._sync_clients:
+            for _raop_player in self.sync_clients:
                 tm.create_task(_start_client(_raop_player))
         self._audio_source_task = asyncio.create_task(self._audio_streamer())
 
@@ -88,20 +88,24 @@ class RaopStreamSession:
             with suppress(asyncio.CancelledError):
                 await self._audio_source_task
         await asyncio.gather(
-            *[self.remove_client(x) for x in self._sync_clients],
+            *[self.remove_client(x) for x in self.sync_clients],
             return_exceptions=True,
         )
 
     async def remove_client(self, airplay_player: AirPlayPlayer) -> None:
         """Remove a sync client from the session."""
-        if airplay_player not in self._sync_clients:
+        if airplay_player not in self.sync_clients:
             return
         assert airplay_player.raop_stream
         assert airplay_player.raop_stream.session == self
         async with self._lock:
-            self._sync_clients.remove(airplay_player)
-        await airplay_player.cmd_stop()
+            self.sync_clients.remove(airplay_player)
+        await airplay_player.raop_stream.stop()
         airplay_player.raop_stream = None
+        # if this was the last client, stop the session
+        if not self.sync_clients:
+            await self.stop()
+            return
 
     async def add_client(self, airplay_player: AirPlayPlayer) -> None:
         """Add a sync client to the session."""
@@ -123,7 +127,7 @@ class RaopStreamSession:
         # this is the easiest way to ensure the new audio source is used
         # as quickly as possible, without waiting for the buffers to be drained
         # it also allows to change the player settings such as DSP on the fly
-        for sync_client in self._sync_clients:
+        for sync_client in self.sync_clients:
             if not sync_client.raop_stream:
                 continue  # guard
             sync_client.raop_stream.start_ffmpeg_stream()
@@ -135,7 +139,7 @@ class RaopStreamSession:
             async for chunk in self._audio_source:
                 async with self._lock:
                     sync_clients = [
-                        x for x in self._sync_clients if x.raop_stream and x.raop_stream.running
+                        x for x in self.sync_clients if x.raop_stream and x.raop_stream.running
                     ]
                     if not sync_clients:
                         return
@@ -149,7 +153,7 @@ class RaopStreamSession:
                 await asyncio.gather(
                     *[
                         x.raop_stream.write_eof()
-                        for x in self._sync_clients
+                        for x in self.sync_clients
                         if x.raop_stream and x.raop_stream.running
                     ],
                     return_exceptions=True,
@@ -311,6 +315,9 @@ class RaopStream:
             await self._cliraop_proc.close(True)
         if self._ffmpeg_proc and not self._ffmpeg_proc.closed:
             await self._ffmpeg_proc.close(True)
+        if mass_player := self.mass.players.get(self.airplay_player.player_id):
+            mass_player.state = PlayerState.IDLE
+            self.mass.players.update(mass_player.player_id)
 
     async def write_chunk(self, chunk: bytes) -> None:
         """Write a (pcm) audio chunk."""
@@ -457,10 +464,6 @@ class RaopStream:
                 break
             logger.log(VERBOSE_LOG_LEVEL, line)
 
-        # if we reach this point, the process exited
-        if airplay_player.raop_stream == self:
-            mass_player.state = PlayerState.IDLE
-            self.mass.players.update(airplay_player.player_id)
         # ensure we're cleaned up afterwards (this also logs the returncode)
         await self.stop()
 

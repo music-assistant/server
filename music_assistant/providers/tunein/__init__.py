@@ -1,10 +1,14 @@
-"""Tune-In musicprovider support for MusicAssistant."""
+"""Tune-In music provider support for MusicAssistant."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from urllib.parse import quote
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -12,24 +16,24 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
     MediaType,
     ProviderMapping,
     Radio,
+    SearchResults,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
-
-SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_RADIOS,
-    ProviderFeature.BROWSE,
-}
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -39,6 +43,12 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+}
 
 
 async def setup(
@@ -239,7 +249,7 @@ class TuneInProvider(MusicProvider):
         return result
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a radio station."""
+        """Get stream details for a radio station."""
         if item_id.startswith("http"):
             # custom url
             return StreamDetails(
@@ -275,6 +285,37 @@ class TuneInProvider(MusicProvider):
             )
         msg = f"Unable to retrieve stream details for {item_id}"
         raise MediaNotFoundError(msg)
+
+    async def search(
+        self, search_query: str, media_types: list[MediaType], limit: int = 10
+    ) -> SearchResults:
+        """Perform search on Tune-in music provider."""
+        result = SearchResults()
+        if MediaType.RADIO not in media_types:
+            return result
+        params = {
+            "query": quote(search_query),
+            "formats": "ogg,aac,wma,mp3,hls",
+            "username": self.config.get_value(CONF_USERNAME),
+            "partnerId": "1",
+            "render": "json",
+        }
+        data = await self.__get_data("search.ashx", **params)
+        radios = []
+        if data and "body" in data:
+            count = 0
+            for item in data["body"]:
+                if item.get("type") == "audio" and "preset_id" in item:
+                    try:
+                        stream_info = await self._get_stream_info(item["preset_id"])
+                        radios.append(self._parse_radio(item, stream_info))
+                        count += 1
+                        if count >= limit:
+                            break
+                    except Exception as err:
+                        self.logger.debug("Failed to parse radio: %s", err)
+        result.radio = radios
+        return result
 
     async def __get_data(self, endpoint: str, **kwargs):
         """Get data from api."""

@@ -46,7 +46,6 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemType,
-    MediaItemTypeOrItemMapping,
     PlayableMediaItemType,
     Playlist,
     PodcastEpisode,
@@ -369,7 +368,7 @@ class PlayerQueuesController(CoreController):
     async def play_media(
         self,
         queue_id: str,
-        media: MediaItemTypeOrItemMapping | list[MediaItemTypeOrItemMapping] | str | list[str],
+        media: MediaItemType | ItemMapping | list[MediaItemType | ItemMapping] | str | list[str],
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
@@ -1209,7 +1208,7 @@ class PlayerQueuesController(CoreController):
         # without having to compare the entire list
         queue.items_last_updated = time.time()
         self.signal_update(queue_id, True)
-        if queue.state == PlayerState.PLAYING:
+        if queue.state == PlayerState.PLAYING and queue.index_in_buffer is not None:
             # if the queue is playing,
             # ensure to (re)queue the next track because it might have changed
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
@@ -1492,12 +1491,14 @@ class PlayerQueuesController(CoreController):
         # all other: just the next index
         return cur_index + 1
 
-    def get_next_item(self, queue_id: str, cur_index: int | str | None = None) -> QueueItem | None:
+    def get_next_item(self, queue_id: str, cur_index: int | str) -> QueueItem | None:
         """Return next QueueItem for given queue."""
         if isinstance(cur_index, str):
             cur_index = self.index_by_id(queue_id, cur_index)
-        for _ in range(5):
-            if (next_index := self._get_next_index(queue_id, cur_index)) is None:
+        if cur_index is None:
+            return None  # guard
+        for skip in range(5):
+            if (next_index := self._get_next_index(queue_id, cur_index + skip)) is None:
                 break
             next_item = self.get_item(queue_id, next_index)
             if not next_item.available:
@@ -1590,7 +1591,7 @@ class PlayerQueuesController(CoreController):
         )
 
     async def _resolve_media_items(
-        self, media_item: MediaItemTypeOrItemMapping, start_item: str | None = None
+        self, media_item: MediaItemType | ItemMapping | BrowseFolder, start_item: str | None = None
     ) -> list[MediaItemType]:
         """Resolve/unwrap media items to enqueue."""
         # resolve Itemmapping to full media item

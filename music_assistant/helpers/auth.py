@@ -14,7 +14,7 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant.helpers.json import json_loads
 
 if TYPE_CHECKING:
-    from music_assistant import MusicAssistant
+    from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ class AuthenticationHelper:
     ) -> bool | None:
         """Exit context manager."""
         self.mass.webserver.unregister_dynamic_route(self._cb_path, self._method)
+        return None
 
     async def authenticate(self, auth_url: str, timeout: int = 60) -> dict[str, str]:
         """
