@@ -931,7 +931,7 @@ class YoutubeMusicProvider(MusicProvider):
                         "skip": ["translated_subs", "dash"],
                         "player_client": ["web_music"],
                         "player_skip": ["webpage"],
-                        "getpot_bgutil_baseurl": [self._po_token_server_url],
+                        "youtubepot-bgutilhttp:base_url": [self._po_token_server_url],
                     },
                 },
             }
