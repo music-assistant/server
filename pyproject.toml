@@ -37,6 +37,7 @@ dependencies = [
   "shortuuid==1.0.13",
   "zeroconf==0.147.0",
   "uv>=0.8.0",
+  "gql[all]==3.5.3",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
@@ -172,6 +173,11 @@ line-ending = "lf"
 [tool.pytest.ini_options]
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "jupyterlab>=4.4.3",
+]
 
 [tool.ruff.lint]
 ignore = [
