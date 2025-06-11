@@ -149,8 +149,8 @@ async def get_config_entries(
             flow_base_path = f"apple_music_auth/{values['session_id']}/"
             flow_timeout = 600
             parent_file_path = pathlib.Path(__file__).parent.resolve()
-            base_url = mass.webserver.base_url
-            flow_base_url = f"{mass.webserver.base_url}/{flow_base_path}index.html"
+            base_url = f"{mass.webserver.base_url}/{flow_base_path}"
+            flow_base_url = f"{base_url}index.html"
 
             async def serve_mk_auth_page(request: web.Request) -> web.Response:
                 auth_html_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.html")
@@ -163,8 +163,7 @@ async def get_config_entries(
             async def serve_mk_glue(request: web.Request) -> web.Response:
                 return_html = f"""
                 const return_url='{callback_url}';
-                const test_url='{base_url}';
-                const flow_base_url='{flow_base_url}';
+                const base_url='{base_url}';
                 const app_token='{values[CONF_MUSIC_APP_TOKEN]}';
                 const callback_method='{callback_method}';
                 const user_token='{

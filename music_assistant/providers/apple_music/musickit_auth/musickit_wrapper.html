@@ -14,7 +14,7 @@
     var callbackConsumed = false;
     var closing = false;
 
-    console.log("Base URL: ", test_url);
+    console.log("Base URL: ", base_url);
     console.log("Flow base url: ", flow_base_url);
     console.log("Callback URL: ", return_url);
     // The underlying MA auth helper times-out after fixed period so this window can no longer pass back any data so just close it.
@@ -32,8 +32,8 @@
       document.getElementById('message').innerHTML = "Apple MusicKit loaded";
       MusicKit.configure({
         developerToken: app_token,
-        url: flow_base_url,
-        baseUrl: flow_base_url,
+        url: base_url,
+        baseUrl: base_url,
         app: {
           name: 'Music Assistant',
           build: (typeof mass_version !== 'undefined' ) ? mass_version : '0.0.0'
