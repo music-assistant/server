@@ -77,6 +77,7 @@ CONF_ACTION_AUTH_LOCAL = "auth_local"
 CONF_ACTION_CLEAR_AUTH = "auth"
 CONF_ACTION_LIBRARY = "library"
 CONF_ACTION_GDM = "gdm"
+CONF_TRACK_PAGE_SIZE = "track_page_size"
 
 CONF_AUTH_TOKEN = "token"
 CONF_LIBRARY_ID = "library_id"
@@ -270,6 +271,18 @@ async def get_config_entries(  # noqa: PLR0915
             conf_libraries.default_value = libraries[0]
             conf_libraries.value = libraries[0]
         entries.append(conf_libraries)
+        entries.append(
+            ConfigEntry(
+                key=CONF_TRACK_PAGE_SIZE,
+                type=ConfigEntryType.INTEGER,
+                label="Tracks page size",
+                description="Number of tracks to fetch per page when reading library.",
+                required=True,
+                default_value=500,
+                category="advanced",
+                value=cast("int", values.get(CONF_TRACK_PAGE_SIZE)) if values else None,
+            )
+        )
 
     # show authentication options
     if values is None or not values.get(CONF_AUTH_TOKEN):
@@ -827,9 +840,23 @@ class PlexProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Plex Music."""
-        tracks_obj = await self._search_track(None, limit=99999)
-        for track in tracks_obj:
-            yield await self._parse_track(track)
+        page_size = int(self.config.get_value(CONF_TRACK_PAGE_SIZE) or 500)
+        offset = 0
+        while True:
+            batch = cast(
+                "list[PlexTrack]",
+                await self._run_async(
+                    self._plex_library.searchTracks,
+                    title=None,
+                    limit=page_size,
+                    offset=offset,
+                ),
+            )
+            if not batch:
+                break
+            for plex_track in batch:
+                yield await self._parse_track(plex_track)
+            offset += page_size
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
@@ -922,6 +949,14 @@ class PlexProvider(MusicProvider):
         media_part: PlexMediaPart = media.parts[0]
         audio_stream: PlexAudioStream = media_part.audioStreams()[0]
 
+        plex_data = {
+            "rating_key": plex_track.ratingKey,
+            "key": media_part.key,
+            "duration": plex_track.duration,
+            "server_url": self._baseurl,
+            "token": self.config.get_value(CONF_AUTH_TOKEN),
+            "machine_identifier": self._plex_server.machineIdentifier,
+        }
         stream_details = StreamDetails(
             item_id=plex_track.key,
             provider=self.lookup_key,
@@ -931,7 +966,7 @@ class PlexProvider(MusicProvider):
             ),
             stream_type=StreamType.HTTP,
             duration=plex_track.duration,
-            data=plex_track,
+            data=plex_data,
             can_seek=True,
             allow_seek=True,
         )
@@ -963,7 +998,7 @@ class PlexProvider(MusicProvider):
         def mark_played() -> None:
             item = streamdetails.data
             params = {
-                "key": str(item.ratingKey),
+                "key": str(item["rating_key"]),
                 "identifier": "com.plexapp.plugins.library",
             }
             self._plex_server.query("/:/scrobble", params=params)
