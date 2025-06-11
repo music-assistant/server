@@ -161,7 +161,7 @@ async def get_config_entries(
             async def serve_mk_glue(request: web.Request) -> web.Response:
                 return_html = f"""
                 const return_url='{callback_url}';
-                const base_url='{mass.webserver.base_url}';
+                const base_url='{auth_helper.mass.webserver.base_url}';
                 const app_token='{values[CONF_MUSIC_APP_TOKEN]}';
                 const callback_method='{callback_method}';
                 const user_token='{
