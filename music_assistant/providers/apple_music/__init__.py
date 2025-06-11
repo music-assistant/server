@@ -154,11 +154,23 @@ async def get_config_entries(
 
             async def serve_mk_auth_page(request: web.Request) -> web.Response:
                 auth_html_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.html")
-                return web.FileResponse(auth_html_path, headers={"content-type": "text/html"})
+                return web.FileResponse(
+                    auth_html_path,
+                    headers={
+                        "content-type": "text/html",
+                        "Referrer-Policy": "origin-when-cross-origin",
+                    },
+                )
 
             async def serve_mk_auth_css(request: web.Request) -> web.Response:
                 auth_css_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.css")
-                return web.FileResponse(auth_css_path, headers={"content-type": "text/css"})
+                return web.FileResponse(
+                    auth_css_path,
+                    headers={
+                        "content-type": "text/css",
+                        "Referrer-Policy": "origin-when-cross-origin",
+                    },
+                )
 
             async def serve_mk_glue(request: web.Request) -> web.Response:
                 return_html = f"""
@@ -176,7 +188,13 @@ async def get_config_entries(
                 const flow_start_time={int(time.time())};
                 const mass_version='{mass.version}';
                 """
-                return web.Response(body=return_html, headers={"content-type": "text/javascript"})
+                return web.Response(
+                    body=return_html,
+                    headers={
+                        "content-type": "text/javascript",
+                        "Referrer-Policy": "origin-when-cross-origin",
+                    },
+                )
 
             mass.webserver.register_dynamic_route(
                 f"/{flow_base_path}index.html", serve_mk_auth_page
