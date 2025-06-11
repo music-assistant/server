@@ -15,7 +15,7 @@
     var closing = false;
 
     console.log("Base URL: ", base_url);
-
+    console.log("Callback URL: ", return_url);
     // The underlying MA auth helper times-out after fixed period so this window can no longer pass back any data so just close it.
     // Self closing windows is anti-pattern user experience but better than leaving non-functioning UI presented
     if (typeof flow_timeout !== 'undefined' && flow_timeout > 0) {
