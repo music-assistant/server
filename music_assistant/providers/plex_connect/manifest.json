@@ -1,0 +1,14 @@
+{
+  "type": "plugin",
+  "domain": "plex_connect",
+  "name": "Plex Connect",
+  "description": "Add Plex Connetion support to ANY Music Assistant player.",
+  "codeowners": [
+    ""
+  ],
+  "requirements": [
+    "plexapi==4.16.1"
+  ],
+  "documentation": "https://music-assistant.io/music-providers/plex/",
+  "multi_instance": false
+}
