@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import pathlib
 import re
@@ -183,6 +184,8 @@ async def get_config_entries(
             flow_base_url = f"{mass.webserver.base_url}/{flow_base_path}index.html"
 
             try:
+                _logger = logging.getLogger(__name__)
+                _logger.debug("Flow base URL: %s", flow_base_url)
                 result = await auth_helper.authenticate(flow_base_url, flow_timeout)
                 values[CONF_MUSIC_USER_TOKEN] = result["music-user-token"]
                 values[CONF_MUSIC_USER_TOKEN_TIMESTAMP] = result["music-user-token-timestamp"]
