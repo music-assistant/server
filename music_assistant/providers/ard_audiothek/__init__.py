@@ -45,7 +45,6 @@ from gql.transport.requests import RequestsHTTPTransport
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
-    LinkType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -55,7 +54,6 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
-    MediaItemLink,
     MediaItemType,
     Playlist,
     Podcast,
@@ -68,7 +66,15 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.ard_audiothek.helper import (
+    livestream_query,
+    organizations_query,
+    publications_query,
+    radio_list_query,
+    radio_metadata_query,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -76,12 +82,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-CACHE_CATEGORY_OTHER = 1
-CACHE_KEY_TIMESTAMP = (
-    "timestamp"  # tuple of two ints, timestamp_subscriptions and timestamp_actions
-)
-CACHE_KEY_RADIO = "radio"  # list[str] : all available rss feed urls
 
 
 async def setup(
@@ -177,40 +177,6 @@ class ARDAudiothek(MusicProvider):
             fetch_schema_from_transport=True,
         )
 
-        timestamps = await self.mass.cache.get(
-            key=CACHE_KEY_TIMESTAMP,
-            base_key=self.lookup_key,
-            category=CACHE_CATEGORY_OTHER,
-            default=None,
-        )
-        if timestamps is None:
-            self.timestamp_subscriptions: int = 0
-            self.timestamp_actions: int = 0
-        else:
-            self.timestamp_subscriptions, self.timestamp_actions = timestamps
-
-        self.logger.debug(
-            "Our timestamps are (subscriptions, actions)  (%s, %s)",
-            self.timestamp_subscriptions,
-            self.timestamp_actions,
-        )
-
-        # self.radio_feeds = self._load_radio_feeds()
-
-        # we are syncing the playlog, but not event based. A simple check in on_played,
-        # should be sufficient
-        self.progress_guard_timestamp = 0.0
-
-    # async def _load_radio_feeds(self):
-    #     radio_feeds = await self.mass.cache.get(
-    #         key=CACHE_KEY_RADIO,
-    #         base_key=self.lookup_key,
-    #         category=CACHE_CATEGORY_OTHER,
-    #         default=None,
-    #     )
-    #     if radio_feeds is None:
-    #         radio_feeds: set[str] = set(self._load_radio_feeds())
-
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         # OPTIONAL
@@ -280,41 +246,57 @@ class ARDAudiothek(MusicProvider):
         """Get full radio details by id."""
         # Get full details of a single Radio station.
         # Mandatory only if you reported LIBRARY_RADIOS in the supported_features.
+        radio_query = self._client.execute(
+            livestream_query, variable_values={"coreId": prov_radio_id}
+        )
+
+        metadata_query = self._client.execute(
+            radio_metadata_query,
+            variable_values={
+                "coreId": radio_query["permanentLivestreamByCoreId"]["publisherCoreId"]
+            },
+        )
+
+        image_url = find_image_url(metadata_query["publicationServiceByCoreId"]["imagesList"])
+
         radio = Radio(
-            item_id="WyJwZXJtYW5lbnRfbGl2ZXN0cmVhbXMiLCI1ODc5MjkwMCJd",
+            item_id=prov_radio_id,
             provider=self.domain,
-            name="PULS",  # codespell:ignore
+            name=radio_query["permanentLivestreamByCoreId"]["title"],
             provider_mappings={
                 ProviderMapping(
-                    item_id="WyJwZXJtYW5lbnRfbGl2ZXN0cmVhbXMiLCI1ODc5MjkwMCJd",
+                    item_id=prov_radio_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                 )
             },
         )
-        radio.metadata.links = {
-            MediaItemLink(
-                type=LinkType.WEBSITE,
-                url="http://www.br.de/on3/index.html",
-            ),
-            MediaItemLink(
-                type=LinkType.TIKTOK,
-                url="https://www.tiktok.com/@deinpuls",
-            ),
-            MediaItemLink(
-                type=LinkType.INSTAGRAM,
-                url="https://www.instagram.com/dein_puls",
-            ),
-        }
+        media_links = None
 
-        radio.metadata.description = "PULS ist das junge Programm des Bayerischen Rundfunks. Und zwar in echt. Das Neueste aus Politik und Popkultur, aus Bayern - und der Welt."  # noqa: E501 # codespell:ignore
-        radio.metadata.genres = set("Pop und Szene")  # codespell:ignore
+        radio.metadata.links = media_links
+        # {
+        #     MediaItemLink(
+        #         type=LinkType.WEBSITE,
+        #         url="http://www.br.de/on3/index.html",
+        #     ),
+        #     MediaItemLink(
+        #         type=LinkType.TIKTOK,
+        #         url="https://www.tiktok.com/@deinpuls",
+        #     ),
+        #     MediaItemLink(
+        #         type=LinkType.INSTAGRAM,
+        #         url="https://www.instagram.com/dein_puls",
+        #     ),
+        # }
+
+        radio.metadata.description = metadata_query["publicationServiceByCoreId"]["synopsis"]
+        radio.metadata.genres = {metadata_query["publicationServiceByCoreId"]["genre"]}
 
         radio.metadata.images = UniqueList(
             [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path="https://api.ardmediathek.de/image-service/images/urn:ard:image:3a2e73b206fe0a53?w=200&ch=b8c5a3f57ecad023",
+                    path=image_url,
                     provider=self.lookup_key,
                     remotely_accessible=True,
                 )
@@ -467,78 +449,46 @@ class ARDAudiothek(MusicProvider):
         # The MusicProvider base model has a default implementation of this method
         # that will call the get_library_* methods if you did not override it.
 
-        radio = Radio(
-            item_id="WyJwZXJtYW5lbnRfbGl2ZXN0cmVhbXMiLCI1ODc5MjkwMCJd",
-            provider=self.domain,
-            name="PULS",  # codespell:ignore
-            provider_mappings={
-                ProviderMapping(
-                    item_id="WyJwZXJtYW5lbnRfbGl2ZXN0cmVhbXMiLCI1ODc5MjkwMCJd",
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-        radio.metadata.links = {
-            MediaItemLink(
-                type=LinkType.WEBSITE,
-                url="https://www.ardaudiothek.de/sender/br/puls/?livestream=urn:ard:permanent-livestream:55aefaed64870aa5",  # codespell:ignore  # noqa: E501
-            )
-        }
+        part_parts = path.split("://")[1].split("/")
+        organization = part_parts[0] if part_parts else ""
+        provider = part_parts[1] if len(part_parts) > 1 else ""
+        radio_station = part_parts[2] if len(part_parts) > 2 else ""
 
-        radio.metadata.description = "PULS ist das junge Programm des Bayerischen Rundfunks. Und zwar in echt. Das Neueste aus Politik und Popkultur, aus Bayern - und der Welt."  # noqa: E501  # codespell:ignore
-        radio.metadata.genres = set("Pop und Szene")  # codespell:ignore
+        if not organization:
+            return await self.get_organizations(path)
 
-        radio.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path="https://api.ardmediathek.de/image-service/images/urn:ard:image:3a2e73b206fe0a53?w=200&ch=b8c5a3f57ecad023",
-                    provider=self.lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
-        )
+        if not provider:
+            # list radios for specific organization
+            return await self.get_publications(path, organization)
 
-        return [
-            BrowseFolder(
-                item_id="popular",
-                provider=self.domain,
-                path=path + "popular",
-                name="",
-                translation_key="radiobrowser_by_popularity",
-            ),
-            BrowseFolder(
-                item_id="country",
-                provider=self.domain,
-                path=path + "country",
-                name="",
-                translation_key="radiobrowser_by_country",
-            ),
-            BrowseFolder(
-                item_id="tag",
-                provider=self.domain,
-                path=path + "tag",
-                name="",
-                translation_key="radiobrowser_by_tag",
-            ),
-            radio,
-        ]
+        if not radio_station:
+            return await self.get_radio_list(provider)
+
+        return []
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
-        return StreamDetails(
-            provider=self.domain,
-            item_id=item_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.try_parse("EAC3JOC"),
-            ),
-            media_type=MediaType.RADIO,
-            stream_type=StreamType.HTTP,
-            path="https://mcdn.hf.br.de/br/hf/puls/master.m3u8",  # codespell:ignore
-            can_seek=False,
-            allow_seek=False,
-        )
+        if media_type == MediaType.RADIO:
+            radio_query = self._client.execute(
+                livestream_query, variable_values={"coreId": item_id}
+            )
+
+            livestreams = radio_query["permanentLivestreamByCoreId"]["audioList"]
+            selected_livestream = max(livestreams, key=lambda x: x["audioBitrate"])
+
+            return StreamDetails(
+                provider=self.domain,
+                item_id=item_id,
+                audio_format=AudioFormat(
+                    content_type=ContentType.try_parse(selected_livestream["audioCodec"]),
+                ),
+                media_type=MediaType.RADIO,
+                stream_type=StreamType.HTTP,
+                path=selected_livestream["href"],  # codespell:ignore
+                can_seek=False,
+                allow_seek=False,
+            )
+        return None  # type: ignore[return-value]
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """
@@ -584,3 +534,136 @@ class ARDAudiothek(MusicProvider):
         # base model should be sufficient for most (streaming) providers.
         # If you need to do some custom sync logic, you can override this method.
         # For example the filesystem provider in MA, overrides this method to scan the filesystem.
+
+    @use_cache(3600)
+    async def get_organizations(self, path: str) -> list[BrowseFolder]:
+        """Create a list of all available organizations."""
+        result = self._client.execute(organizations_query)
+        organizations = []
+
+        for org in result["organizations"]["nodes"]:
+            if all(
+                b["coreId"] is None for b in org["publicationServicesByOrganizationName"]["nodes"]
+            ):
+                # No available station
+                continue
+            image_url = ""
+            # for img in org["images"]["nodes"]:
+            #     if img["title"] == "defaultLogo":
+            #         image_url = img["url"].replace("{width}", str(img["width"]))
+            organizations += [
+                BrowseFolder(
+                    item_id=org["coreId"],
+                    provider=self.domain,
+                    path=path + org["coreId"],
+                    image=MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=image_url,
+                        provider=self.domain,
+                        remotely_accessible=True,
+                    ),
+                    name=org["name"],
+                )
+            ]
+
+        return organizations
+
+    @use_cache(3600)
+    async def get_publications(self, path: str, core_id: str) -> list[BrowseFolder]:
+        """Create a list of publications for a given organization."""
+        result = self._client.execute(publications_query, variable_values={"coreId": core_id})
+        publications = []
+
+        for pub in result["organizationByCoreId"]["publicationServicesByOrganizationName"]["nodes"]:
+            if not pub["coreId"]:
+                continue
+            image_url = find_image_url(pub["imagesList"])
+            publications += [
+                BrowseFolder(
+                    item_id=pub["coreId"],
+                    provider=self.domain,
+                    path=path + "/" + pub["coreId"],
+                    image=MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=image_url,
+                        provider=self.domain,
+                        remotely_accessible=True,
+                    ),
+                    name=pub["title"],
+                )
+            ]
+
+        return publications
+
+    @use_cache(3600)
+    async def get_radio_list(self, core_id: str) -> list[Radio]:
+        """Create list of available radio stations for a publication service."""
+        result = self._client.execute(radio_list_query, variable_values={"coreId": core_id})
+        pub_service = result["publicationServiceByCoreId"]
+        radios = []
+        image_url = find_image_url(pub_service["imagesList"])
+
+        for r in pub_service["permanentLivestreams"]["nodes"]:
+            if not r["coreId"]:
+                continue
+
+            radio = Radio(
+                item_id=r["coreId"],
+                provider=self.domain,
+                name=r["title"],
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=r["coreId"],
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            )
+            media_links = None
+
+            radio.metadata.links = media_links
+            # {
+            #     MediaItemLink(
+            #         type=LinkType.WEBSITE,
+            #         url="http://www.br.de/on3/index.html",
+            #     ),
+            #     MediaItemLink(
+            #         type=LinkType.TIKTOK,
+            #         url="https://www.tiktok.com/@deinpuls",
+            #     ),
+            #     MediaItemLink(
+            #         type=LinkType.INSTAGRAM,
+            #         url="https://www.instagram.com/dein_puls",
+            #     ),
+            # }
+
+            radio.metadata.description = r["summary"]
+            radio.metadata.genres = {pub_service["genre"]}
+
+            radio.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=image_url,
+                        provider=self.lookup_key,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
+
+            radios += [radio]
+
+        return radios
+
+
+def find_image_url(image_list: list[dict[str, str]]) -> str:
+    """Extract the image for hopefully all possible cases."""
+    image_url = ""
+    selected_img = image_list[0] if image_list else None
+    for img in image_list:
+        if "Logo 1:1" in img["title"] or "-Logo" in img["title"]:
+            selected_img = img
+            break
+    if selected_img:
+        image_url = selected_img["url"].replace("{width}", str(selected_img["width"]))
+    return image_url
