@@ -77,6 +77,7 @@ from music_assistant.providers.ard_audiothek.helper import (
     publications_query,
     radio_metadata_query,
     show_episode_query,
+    show_length_query,
     show_query,
 )
 
@@ -453,13 +454,19 @@ class ARDAudiothek(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get podcast episodes."""
-        result = self._client.execute(show_query, variable_values={"showId": prov_podcast_id})[
-            "show"
-        ]
-        for idx, episode in enumerate(result["items"]["nodes"]):
-            if len(episode["audioList"]) == 0:
-                continue
-            yield self._parse_podcast_episode(episode, prov_podcast_id, idx)
+        length = self._client.execute(
+            show_length_query, variable_values={"showId": prov_podcast_id}
+        )["show"]["items"]["totalCount"]
+        step_size = 255
+        for offset in range(0, length, step_size):
+            result = self._client.execute(
+                show_query,
+                variable_values={"showId": prov_podcast_id, "first": step_size, "offset": offset},
+            )["show"]
+            for idx, episode in enumerate(result["items"]["nodes"]):
+                if len(episode["audioList"]) == 0:
+                    continue
+                yield self._parse_podcast_episode(episode, prov_podcast_id, idx)
 
     # @use_cache(3600)
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:

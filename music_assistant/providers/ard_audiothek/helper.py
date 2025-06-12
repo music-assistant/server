@@ -144,8 +144,18 @@ query Livestream($coreId: String!) {
 }
 """)
 
-show_query = gql("""
+show_length_query = gql("""
 query Show($showId: ID!) {
+  show(id: $showId) {
+    items {
+      totalCount
+    }
+  }
+}
+""")
+
+show_query = gql("""
+query Show($showId: ID!, $first: Int, $offset: Int) {
   show(id: $showId) {
     synopsis
     title
@@ -157,7 +167,7 @@ query Show($showId: ID!) {
     publicationService {
       title
     }
-    items {
+    items(first: $first, offset: $offset) {
       totalCount
       nodes {
         duration
@@ -179,7 +189,6 @@ query Show($showId: ID!) {
           aspectRatio
         }
         coreId
-        synopsis
         summary
       }
     }
