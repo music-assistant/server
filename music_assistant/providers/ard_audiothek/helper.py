@@ -229,14 +229,43 @@ query Search($query: String) {
       totalCount
       title
       nodes {
-        coreId
-        title
         synopsis
+        title
+        coreId
         imagesList {
-          title
-          url
           width
+          url
           aspectRatio
+        }
+        publicationService {
+          title
+        }
+        items {
+          totalCount
+          nodes {
+            duration
+            audioList {
+              audioBitrate
+              audioCodec
+              availableFrom
+              availableTo
+              href
+            }
+            title
+            titleClean
+            titleWithoutNumber
+            episodeNumber
+            imagesList {
+              title
+              url
+              width
+              aspectRatio
+            }
+          }
+        }
+        showType
+        editorialCategoriesList {
+          title
         }
       }
     }

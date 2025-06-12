@@ -70,7 +70,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.helper import (
-    ard_search_query,  # noqa: F401
+    ard_search_query,
     livestream_query,
     organizations_query,
     publications_list_query,
@@ -234,7 +234,17 @@ class ARDAudiothek(MusicProvider):
         # It allows searching your provider for media items.
         # See the model for SearchResults for more information on what to return, but
         # in general you should return a list of MediaItems for each media type.
-        return SearchResults()
+        result = self._client.execute(ard_search_query, variable_values={"query": search_query})[
+            "search"
+        ]
+
+        podcasts = []
+        for element in result["shows"]["nodes"]:
+            podcasts += [self._parse_podcast(element, element["coreId"])]
+            if len(podcasts) == limit:
+                break
+
+        return SearchResults(podcasts=podcasts)
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
@@ -361,15 +371,10 @@ class ARDAudiothek(MusicProvider):
 
         return []
 
-    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
-        """Get podcast."""
-        result = self._client.execute(show_query, variable_values={"showId": prov_podcast_id})[
-            "show"
-        ]
-
+    def _parse_podcast(self, result: dict[str, Any], podcast_id: str) -> Podcast:
         podcast = Podcast(
             name=result["title"],
-            item_id=prov_podcast_id,
+            item_id=podcast_id,
             publisher=result["publicationService"]["title"],
             provider=self.lookup_key,
             provider_mappings={
@@ -407,6 +412,14 @@ class ARDAudiothek(MusicProvider):
 
         return podcast
 
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get podcast."""
+        result = self._client.execute(show_query, variable_values={"showId": prov_podcast_id})[
+            "show"
+        ]
+
+        return self._parse_podcast(result, prov_podcast_id)
+
     def _parse_podcast_episode(
         self, episode: dict[str, Any], podcast_id: str, idx: int
     ) -> PodcastEpisode:
@@ -435,7 +448,7 @@ class ARDAudiothek(MusicProvider):
         podcast_episode.metadata.description = episode["summary"]
         return podcast_episode
 
-    @use_cache(3600)
+    # @use_cache(3600)
     async def get_podcast_episodes(
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
@@ -446,10 +459,9 @@ class ARDAudiothek(MusicProvider):
         for idx, episode in enumerate(result["items"]["nodes"]):
             if len(episode["audioList"]) == 0:
                 continue
-
             yield self._parse_podcast_episode(episode, prov_podcast_id, idx)
 
-    @use_cache(3600)
+    # @use_cache(3600)
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
         result = self._client.execute(
@@ -459,7 +471,7 @@ class ARDAudiothek(MusicProvider):
             raise MediaNotFoundError("Episode not found")
         return self._parse_podcast_episode(result, result["showId"], result["rowId"])
 
-    @use_cache(3600)
+    # @use_cache(3600)
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if media_type == MediaType.RADIO:
