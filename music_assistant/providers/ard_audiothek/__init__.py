@@ -38,7 +38,7 @@ See also our general DEVELOPMENT.md guide in the repository for more information
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from gql import Client
 from gql.transport.requests import RequestsHTTPTransport
@@ -49,14 +49,15 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
-    Playlist,
     Podcast,
+    PodcastEpisode,
     ProviderMapping,
     Radio,
     RecommendationFolder,
@@ -69,11 +70,14 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.helper import (
+    ard_search_query,  # noqa: F401
     livestream_query,
     organizations_query,
+    publications_list_query,
     publications_query,
-    radio_list_query,
     radio_metadata_query,
+    show_episode_query,
+    show_query,
 )
 
 if TYPE_CHECKING:
@@ -248,21 +252,17 @@ class ARDAudiothek(MusicProvider):
         # Mandatory only if you reported LIBRARY_RADIOS in the supported_features.
         radio_query = self._client.execute(
             livestream_query, variable_values={"coreId": prov_radio_id}
-        )
+        )["permanentLivestreamByCoreId"]
 
         metadata_query = self._client.execute(
             radio_metadata_query,
-            variable_values={
-                "coreId": radio_query["permanentLivestreamByCoreId"]["publisherCoreId"]
-            },
-        )
-
-        image_url = find_image_url(metadata_query["publicationServiceByCoreId"]["imagesList"])
+            variable_values={"coreId": radio_query["publisherCoreId"]},
+        )["publicationServiceByCoreId"]
 
         radio = Radio(
             item_id=prov_radio_id,
             provider=self.domain,
-            name=radio_query["permanentLivestreamByCoreId"]["title"],
+            name=radio_query["title"],
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_radio_id,
@@ -289,19 +289,10 @@ class ARDAudiothek(MusicProvider):
         #     ),
         # }
 
-        radio.metadata.description = metadata_query["publicationServiceByCoreId"]["synopsis"]
-        radio.metadata.genres = {metadata_query["publicationServiceByCoreId"]["genre"]}
+        radio.metadata.description = metadata_query["synopsis"]
+        radio.metadata.genres = {metadata_query["genre"]}
 
-        radio.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=image_url,
-                    provider=self.lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
-        )
+        radio.metadata.add_image(self.create_media_image(radio_query["imagesList"]))
 
         return radio
 
@@ -335,106 +326,10 @@ class ARDAudiothek(MusicProvider):
         # Remove track(s) from a playlist.
         # This is only called if the provider supports the PLAYLIST_TRACKS_EDIT feature.
 
-    async def create_playlist(self, name: str) -> Playlist:  # type: ignore[empty-body]
-        """Create a new playlist on provider with given name."""
-        # Create a new playlist on the provider.
-        # This is only called if the provider supports the PLAYLIST_CREATE feature.
-
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:  # type: ignore[empty-body]
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         # Get a list of similar tracks based on the provided track.
         # This is only called if the provider supports the SIMILAR_TRACKS feature.
-
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:  # type: ignore[empty-body]
-        """
-        Get progress (resume point) details for the given Audiobook or Podcast episode.
-
-        This is a separate call from the regular get_item call to ensure the resume position
-        is always up-to-date and because a lot providers have this info present on a dedicated
-        endpoint.
-
-        Will be called right before playback starts to ensure the resume position is correct.
-
-        Returns a boolean with the fully_played status
-        and an integer with the resume position in ms.
-        """
-        # optional function to get the resume position of a audiobook or podcast episode
-        # only implement this if your provider supports providing this information
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """
-        Return the (custom) audio stream for the provider item.
-
-        Will only be called when the stream_type is set to CUSTOM.
-        """
-        # this is an async generator that should yield raw audio bytes
-        # for the given streamdetails. You can use this to provide a custom
-        # stream generator for the audio stream. This is only called when the
-        # stream_type is set to CUSTOM in the get_stream_details method.
-        yield  # type: ignore[misc]
-
-    async def on_streamed(
-        self,
-        streamdetails: StreamDetails,
-    ) -> None:
-        """
-        Handle callback when given streamdetails completed streaming.
-
-        To get the number of seconds streamed, see streamdetails.seconds_streamed.
-        To get the number of seconds seeked/skipped, see streamdetails.seek_position.
-        Note that seconds_streamed is the total streamed seconds, so without seeked time.
-
-        NOTE: Due to internal and player buffering,
-        this may be called in advance of the actual completion.
-        """
-        # This is an OPTIONAL callback that is called when an item has been streamed.
-        # You can use this e.g. for playback reporting or statistics.
-
-    async def on_played(
-        self,
-        media_type: MediaType,
-        prov_item_id: str,
-        fully_played: bool,
-        position: int,
-        media_item: MediaItemType,
-        is_playing: bool = False,
-    ) -> None:
-        """
-        Handle callback when a (playable) media item has been played.
-
-        This is called by the Queue controller when;
-            - a track has been fully played
-            - a track has been stopped (or skipped) after being played
-            - every 30s when a track is playing
-
-        Fully played is True when the track has been played to the end.
-
-        Position is the last known position of the track in seconds, to sync resume state.
-        When fully_played is set to false and position is 0,
-        the user marked the item as unplayed in the UI.
-
-        is_playing is True when the track is currently playing.
-
-        media_item is the full media item details of the played/playing track.
-        """
-        # This is an OPTIONAL callback that is called when an item has been streamed.
-        # You can use this e.g. for playback reporting or statistics.
-
-    async def resolve_image(self, path: str) -> str | bytes:
-        """
-        Resolve an image from an image path.
-
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
-        """
-        # This is an OPTIONAL method that you can implement to resolve image paths.
-        # This is used to resolve image paths that are returned in the MediaItems.
-        # You can return a URL to an image or a generator that yields the raw bytes of the image.
-        # This will only be called when you set 'remotely_accessible'
-        # to false in a MediaItemImage object.
-        return path
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
@@ -466,29 +361,133 @@ class ARDAudiothek(MusicProvider):
 
         return []
 
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get podcast."""
+        result = self._client.execute(show_query, variable_values={"showId": prov_podcast_id})[
+            "show"
+        ]
+
+        podcast = Podcast(
+            name=result["title"],
+            item_id=prov_podcast_id,
+            publisher=result["publicationService"]["title"],
+            provider=self.lookup_key,
+            provider_mappings={
+                ProviderMapping(
+                    item_id="none",
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            total_episodes=result["items"]["totalCount"],
+        )
+
+        media_links = None
+
+        podcast.metadata.links = media_links
+        # {
+        #     MediaItemLink(
+        #         type=LinkType.WEBSITE,
+        #         url="http://www.br.de/on3/index.html",
+        #     ),
+        #     MediaItemLink(
+        #         type=LinkType.TIKTOK,
+        #         url="https://www.tiktok.com/@deinpuls",
+        #     ),
+        #     MediaItemLink(
+        #         type=LinkType.INSTAGRAM,
+        #         url="https://www.instagram.com/dein_puls",
+        #     ),
+        # }
+
+        podcast.metadata.description = result["synopsis"]
+        podcast.metadata.genres = {r["title"] for r in result["editorialCategoriesList"]}
+
+        podcast.metadata.add_image(self.create_media_image(result["imagesList"]))
+
+        return podcast
+
+    def _parse_podcast_episode(
+        self, episode: dict[str, Any], podcast_id: str, idx: int
+    ) -> PodcastEpisode:
+        podcast_episode = PodcastEpisode(
+            name=episode["title"],
+            duration=episode["duration"],
+            item_id=episode["coreId"],
+            provider=self.lookup_key,
+            podcast=ItemMapping(
+                item_id=podcast_id,
+                provider=self.lookup_key,
+                name=episode["title"],
+                media_type=MediaType.PODCAST,
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=episode["coreId"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            position=idx,
+        )
+
+        podcast_episode.metadata.add_image(self.create_media_image(episode["imagesList"]))
+        podcast_episode.metadata.description = episode["summary"]
+        return podcast_episode
+
+    @use_cache(3600)
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
+        """Get podcast episodes."""
+        result = self._client.execute(show_query, variable_values={"showId": prov_podcast_id})[
+            "show"
+        ]
+        for idx, episode in enumerate(result["items"]["nodes"]):
+            if len(episode["audioList"]) == 0:
+                continue
+
+            yield self._parse_podcast_episode(episode, prov_podcast_id, idx)
+
+    @use_cache(3600)
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get single podcast episode."""
+        result = self._client.execute(
+            show_episode_query, variable_values={"coreId": prov_episode_id}
+        )["itemByCoreId"]
+        if result is None:
+            raise MediaNotFoundError("Episode not found")
+        return self._parse_podcast_episode(result, result["showId"], result["rowId"])
+
+    @use_cache(3600)
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if media_type == MediaType.RADIO:
-            radio_query = self._client.execute(
-                livestream_query, variable_values={"coreId": item_id}
-            )
+            result = self._client.execute(livestream_query, variable_values={"coreId": item_id})[
+                "permanentLivestreamByCoreId"
+            ]
+            seek = False
+        elif media_type == MediaType.PODCAST_EPISODE:
+            result = self._client.execute(show_episode_query, variable_values={"coreId": item_id})[
+                "itemByCoreId"
+            ]
+            seek = True
 
-            livestreams = radio_query["permanentLivestreamByCoreId"]["audioList"]
-            selected_livestream = max(livestreams, key=lambda x: x["audioBitrate"])
+        streams = result["audioList"]
+        selected_stream = max(streams, key=lambda x: x["audioBitrate"])
 
-            return StreamDetails(
-                provider=self.domain,
-                item_id=item_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(selected_livestream["audioCodec"]),
-                ),
-                media_type=MediaType.RADIO,
-                stream_type=StreamType.HTTP,
-                path=selected_livestream["href"],  # codespell:ignore
-                can_seek=False,
-                allow_seek=False,
-            )
-        return None  # type: ignore[return-value]
+        return StreamDetails(
+            provider=self.domain,
+            item_id=item_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(selected_stream["audioCodec"]),
+            ),
+            media_type=MediaType.RADIO,
+            stream_type=StreamType.HTTP,
+            path=fix_url(selected_stream["href"]),
+            can_seek=seek,
+            allow_seek=seek,
+        )
 
     async def recommendations(self) -> list[RecommendationFolder]:
         """
@@ -526,22 +525,13 @@ class ARDAudiothek(MusicProvider):
             )
         ]
 
-    async def sync_library(self, media_type: MediaType) -> None:
-        """Run library sync for this provider."""
-        # Run a full sync of the library for the given media type.
-        # This is called by the music controller to sync items from your provider to the library.
-        # As a generic rule of thumb the default implementation within the MusicProvider
-        # base model should be sufficient for most (streaming) providers.
-        # If you need to do some custom sync logic, you can override this method.
-        # For example the filesystem provider in MA, overrides this method to scan the filesystem.
-
     @use_cache(3600)
     async def get_organizations(self, path: str) -> list[BrowseFolder]:
         """Create a list of all available organizations."""
-        result = self._client.execute(organizations_query)
+        result = self._client.execute(organizations_query)["organizations"]["nodes"]
         organizations = []
 
-        for org in result["organizations"]["nodes"]:
+        for org in result:
             if all(
                 b["coreId"] is None for b in org["publicationServicesByOrganizationName"]["nodes"]
             ):
@@ -571,24 +561,20 @@ class ARDAudiothek(MusicProvider):
     @use_cache(3600)
     async def get_publications(self, path: str, core_id: str) -> list[BrowseFolder]:
         """Create a list of publications for a given organization."""
-        result = self._client.execute(publications_query, variable_values={"coreId": core_id})
+        result = self._client.execute(publications_query, variable_values={"coreId": core_id})[
+            "organizationByCoreId"
+        ]["publicationServicesByOrganizationName"]["nodes"]
         publications = []
 
-        for pub in result["organizationByCoreId"]["publicationServicesByOrganizationName"]["nodes"]:
+        for pub in result:
             if not pub["coreId"]:
                 continue
-            image_url = find_image_url(pub["imagesList"])
             publications += [
                 BrowseFolder(
                     item_id=pub["coreId"],
                     provider=self.domain,
                     path=path + "/" + pub["coreId"],
-                    image=MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                        provider=self.domain,
-                        remotely_accessible=True,
-                    ),
+                    image=self.create_media_image(pub["imagesList"]),
                     name=pub["title"],
                 )
             ]
@@ -596,14 +582,14 @@ class ARDAudiothek(MusicProvider):
         return publications
 
     @use_cache(3600)
-    async def get_radio_list(self, core_id: str) -> list[Radio]:
-        """Create list of available radio stations for a publication service."""
-        result = self._client.execute(radio_list_query, variable_values={"coreId": core_id})
-        pub_service = result["publicationServiceByCoreId"]
-        radios = []
-        image_url = find_image_url(pub_service["imagesList"])
+    async def get_radio_list(self, core_id: str) -> list[Radio | Podcast]:
+        """Create list of available radio stations and shows for a publication service."""
+        result = self._client.execute(publications_list_query, variable_values={"coreId": core_id})[
+            "publicationServiceByCoreId"
+        ]
+        publications = []  # type: list[Radio | Podcast]
 
-        for r in pub_service["permanentLivestreams"]["nodes"]:
+        for r in result["permanentLivestreams"]["nodes"]:
             if not r["coreId"]:
                 continue
 
@@ -638,32 +624,75 @@ class ARDAudiothek(MusicProvider):
             # }
 
             radio.metadata.description = r["summary"]
-            radio.metadata.genres = {pub_service["genre"]}
+            radio.metadata.genres = {result["genre"]}
 
-            radio.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                        provider=self.lookup_key,
-                        remotely_accessible=True,
+            radio.metadata.add_image(self.create_media_image(r["imagesList"]))
+
+            publications += [radio]
+
+        for pod in result["shows"]["nodes"]:
+            if not pod["coreId"]:
+                continue
+
+            podcast = Podcast(
+                item_id=pod["coreId"],
+                provider=self.domain,
+                name=pod["title"],
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=pod["coreId"],
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
                     )
-                ]
+                },
             )
+            media_links = None
 
-            radios += [radio]
+            podcast.metadata.links = media_links
+            # {
+            #     MediaItemLink(
+            #         type=LinkType.WEBSITE,
+            #         url="http://www.br.de/on3/index.html",
+            #     ),
+            #     MediaItemLink(
+            #         type=LinkType.TIKTOK,
+            #         url="https://www.tiktok.com/@deinpuls",
+            #     ),
+            #     MediaItemLink(
+            #         type=LinkType.INSTAGRAM,
+            #         url="https://www.instagram.com/dein_puls",
+            #     ),
+            # }
 
-        return radios
+            podcast.metadata.description = pod["synopsis"]
+            podcast.metadata.genres = {p["title"] for p in pod["editorialCategoriesList"]}
+
+            podcast.metadata.add_image(self.create_media_image(pod["imagesList"]))
+
+            publications += [podcast]
+
+        return publications
+
+    def create_media_image(self, image_list: list[dict[str, str]]) -> MediaItemImage:
+        """Extract the image for hopefully all possible cases."""
+        image_url = ""
+        selected_img = image_list[0] if image_list else None
+        for img in image_list:
+            if img["aspectRatio"] == "1x1":
+                selected_img = img
+                break
+        if selected_img:
+            image_url = selected_img["url"].replace("{width}", str(selected_img["width"]))
+        return MediaItemImage(
+            type=ImageType.THUMB,
+            path=image_url,
+            provider=self.domain,
+            remotely_accessible=True,
+        )
 
 
-def find_image_url(image_list: list[dict[str, str]]) -> str:
-    """Extract the image for hopefully all possible cases."""
-    image_url = ""
-    selected_img = image_list[0] if image_list else None
-    for img in image_list:
-        if "Logo 1:1" in img["title"] or "-Logo" in img["title"]:
-            selected_img = img
-            break
-    if selected_img:
-        image_url = selected_img["url"].replace("{width}", str(selected_img["width"]))
-    return image_url
+def fix_url(url: str) -> str:
+    """Fix some of the stream urls, which do not provide a protocol."""
+    if url.startswith("//"):
+        url = "https:" + url
+    return url

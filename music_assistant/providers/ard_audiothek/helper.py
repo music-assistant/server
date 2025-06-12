@@ -3,7 +3,7 @@
 from gql import gql
 
 organizations_query = gql("""
-query Nodes {
+query Organizations {
   organizations {
     nodes {
       coreId
@@ -15,6 +15,7 @@ query Nodes {
           imageId
           url
           width
+          aspectRatio
         }
       }
     publicationServicesByOrganizationName {
@@ -28,7 +29,7 @@ query Nodes {
 """)
 
 publications_query = gql("""
-query Query ($coreId: String!) {
+query PublicationServices ($coreId: String!) {
   organizationByCoreId(coreId: $coreId) {
     publicationServicesByOrganizationName {
       nodes {
@@ -39,6 +40,7 @@ query Query ($coreId: String!) {
             title
             url
             width
+            aspectRatio
           }
 
       }
@@ -47,8 +49,8 @@ query Query ($coreId: String!) {
 }
 """)
 
-radio_list_query = gql("""
-query PermanentLivestreamByCoreId($coreId: String!) {
+publications_list_query = gql("""
+query Publications($coreId: String!) {
   publicationServiceByCoreId(coreId: $coreId) {
     title
     permanentLivestreams {
@@ -59,21 +61,40 @@ query PermanentLivestreamByCoreId($coreId: String!) {
           audioBitrate
           href
           audioCodec
+          availableFrom
+          availableTo
         }
         coreId
         summary
+        imagesList {
+          url
+          width
+          aspectRatio
+          title
+        }
       }
     }
     genre
     synopsis
-    imagesList {
-      url
-      width
-      title
-    }
     socialMediaAccounts {
       url
       service
+    }
+    shows {
+      nodes {
+        coreId
+        title
+        synopsis
+        imagesList {
+          url
+          width
+          aspectRatio
+          title
+        }
+        editorialCategoriesList {
+          title
+        }
+      }
     }
   }
 }
@@ -81,7 +102,7 @@ query PermanentLivestreamByCoreId($coreId: String!) {
 
 
 radio_metadata_query = gql("""
-query PermanentLivestreamByCoreId($coreId: String!) {
+query PublicationServiceMetadata($coreId: String!) {
   publicationServiceByCoreId(coreId: $coreId) {
     genre
     imagesList {
@@ -100,7 +121,7 @@ query PermanentLivestreamByCoreId($coreId: String!) {
 """)
 
 livestream_query = gql("""
-query PermanentLivestreamByCoreId($coreId: String!) {
+query Livestream($coreId: String!) {
   permanentLivestreamByCoreId(coreId: $coreId) {
     publisherCoreId
     summary
@@ -110,15 +131,119 @@ query PermanentLivestreamByCoreId($coreId: String!) {
       title
       url
       width
+      aspectRatio
     }
     audioList {
         audioBitrate
         href
         audioCodec
+        availableFrom
+        availableTo
     }
   }
 }
 """)
+
+show_query = gql("""
+query Show($showId: ID!) {
+  show(id: $showId) {
+    synopsis
+    title
+    imagesList {
+      width
+      url
+      aspectRatio
+    }
+    publicationService {
+      title
+    }
+    items {
+      totalCount
+      nodes {
+        duration
+        audioList {
+          audioBitrate
+          audioCodec
+          availableFrom
+          availableTo
+          href
+        }
+        title
+        titleClean
+        titleWithoutNumber
+        episodeNumber
+        imagesList {
+          title
+          url
+          width
+          aspectRatio
+        }
+        coreId
+        synopsis
+        summary
+      }
+    }
+    showType
+    editorialCategoriesList {
+      title
+    }
+  }
+}
+""")
+
+show_episode_query = gql("""
+query ShowEpisode($coreId: String!) {
+  itemByCoreId(coreId: $coreId) {
+      duration
+      audioList {
+        audioBitrate
+        audioCodec
+        availableFrom
+        availableTo
+        href
+      }
+      title
+      titleClean
+      titleWithoutNumber
+      episodeNumber
+      imagesList {
+        title
+        url
+        width
+        aspectRatio
+      }
+      coreId
+    showId
+    rowId
+    synopsis
+    summary
+  }
+}
+""")
+
+
+ard_search_query = gql("""
+query Search($query: String) {
+  search(query: $query) {
+    shows {
+      totalCount
+      title
+      nodes {
+        coreId
+        title
+        synopsis
+        imagesList {
+          title
+          url
+          width
+          aspectRatio
+        }
+      }
+    }
+  }
+}
+""")
+
 
 query = gql("""
 query Nodes {
