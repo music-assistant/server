@@ -235,15 +235,13 @@ class ARDAudiothek(MusicProvider):
         # It allows searching your provider for media items.
         # See the model for SearchResults for more information on what to return, but
         # in general you should return a list of MediaItems for each media type.
-        result = self._client.execute(ard_search_query, variable_values={"query": search_query})[
-            "search"
-        ]
+        result = self._client.execute(
+            ard_search_query, variable_values={"query": search_query, "limit": limit}
+        )["search"]
 
         podcasts = []
         for element in result["shows"]["nodes"]:
             podcasts += [self._parse_podcast(element, element["coreId"])]
-            if len(podcasts) == limit:
-                break
 
         return SearchResults(podcasts=podcasts)
 
@@ -449,7 +447,6 @@ class ARDAudiothek(MusicProvider):
         podcast_episode.metadata.description = episode["summary"]
         return podcast_episode
 
-    # @use_cache(3600)
     async def get_podcast_episodes(
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
@@ -457,7 +454,7 @@ class ARDAudiothek(MusicProvider):
         length = self._client.execute(
             show_length_query, variable_values={"showId": prov_podcast_id}
         )["show"]["items"]["totalCount"]
-        step_size = 255
+        step_size = 32
         for offset in range(0, length, step_size):
             result = self._client.execute(
                 show_query,
@@ -468,7 +465,6 @@ class ARDAudiothek(MusicProvider):
                     continue
                 yield self._parse_podcast_episode(episode, prov_podcast_id, idx)
 
-    # @use_cache(3600)
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
         result = self._client.execute(
@@ -478,7 +474,6 @@ class ARDAudiothek(MusicProvider):
             raise MediaNotFoundError("Episode not found")
         return self._parse_podcast_episode(result, result["showId"], result["rowId"])
 
-    # @use_cache(3600)
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if media_type == MediaType.RADIO:
@@ -556,22 +551,21 @@ class ARDAudiothek(MusicProvider):
             ):
                 # No available station
                 continue
-            image_url = ""
-            # for img in org["images"]["nodes"]:
-            #     if img["title"] == "defaultLogo":
-            #         image_url = img["url"].replace("{width}", str(img["width"]))
+            image = None
+            for pub in org["publicationServicesByOrganizationName"]["nodes"]:
+                pub_title = pub["title"].lower()
+                org_name = org["name"].lower()
+                org_title = org["title"].lower()
+                if pub_title in (org_name, org_title) or pub_title.replace(" ", "") == org_name:
+                    image = self.create_media_image(pub["imagesList"])
+                    break
             organizations += [
                 BrowseFolder(
                     item_id=org["coreId"],
                     provider=self.domain,
                     path=path + org["coreId"],
-                    image=MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                        provider=self.domain,
-                        remotely_accessible=True,
-                    ),
-                    name=org["name"],
+                    image=image,
+                    name=org["title"],
                 )
             ]
 

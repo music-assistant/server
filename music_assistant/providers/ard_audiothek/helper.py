@@ -2,76 +2,80 @@
 
 from gql import gql
 
-organizations_query = gql("""
+image_list = """
+imagesList {
+  title
+  url
+  width
+  aspectRatio
+}
+"""
+
+audio_list = """
+audioList {
+  audioBitrate
+  href
+  audioCodec
+  availableFrom
+  availableTo
+}
+"""
+
+organizations_query = gql(
+    """
 query Organizations {
   organizations {
     nodes {
       coreId
       name
       title
-      images {
+      publicationServicesByOrganizationName {
         nodes {
-          title
-          imageId
-          url
-          width
-          aspectRatio
+          coreId
+          title"""
+    + image_list
+    + """
         }
       }
-    publicationServicesByOrganizationName {
-      nodes {
-          coreId
-            }
-        }
     }
   }
 }
-""")
+"""
+)
 
-publications_query = gql("""
+publications_query = gql(
+    """
 query PublicationServices ($coreId: String!) {
   organizationByCoreId(coreId: $coreId) {
     publicationServicesByOrganizationName {
       nodes {
           coreId
           title
-          synopsis
-          imagesList {
-            title
-            url
-            width
-            aspectRatio
-          }
-
+          synopsis"""
+    + image_list
+    + """
       }
     }
   }
 }
-""")
+"""
+)
 
-publications_list_query = gql("""
+publications_list_query = gql(
+    """
 query Publications($coreId: String!) {
   publicationServiceByCoreId(coreId: $coreId) {
     title
     permanentLivestreams {
       nodes {
         current
-        title
-        audioList {
-          audioBitrate
-          href
-          audioCodec
-          availableFrom
-          availableTo
-        }
+        title"""
+    + audio_list
+    + """
         coreId
-        summary
-        imagesList {
-          url
-          width
-          aspectRatio
-          title
-        }
+        summary"""
+    + image_list
+    + """
       }
     }
     genre
@@ -84,13 +88,9 @@ query Publications($coreId: String!) {
       nodes {
         coreId
         title
-        synopsis
-        imagesList {
-          url
-          width
-          aspectRatio
-          title
-        }
+        synopsis"""
+    + image_list
+    + """
         editorialCategoriesList {
           title
         }
@@ -98,18 +98,17 @@ query Publications($coreId: String!) {
     }
   }
 }
-""")
+"""
+)
 
 
-radio_metadata_query = gql("""
+radio_metadata_query = gql(
+    """
 query PublicationServiceMetadata($coreId: String!) {
   publicationServiceByCoreId(coreId: $coreId) {
-    genre
-    imagesList {
-      url
-      width
-      title
-    }
+    genre"""
+    + image_list
+    + """
     socialMediaAccounts {
       url
       service
@@ -118,31 +117,24 @@ query PublicationServiceMetadata($coreId: String!) {
     synopsis
   }
 }
-""")
+"""
+)
 
-livestream_query = gql("""
+livestream_query = gql(
+    """
 query Livestream($coreId: String!) {
   permanentLivestreamByCoreId(coreId: $coreId) {
     publisherCoreId
     summary
     current
-    title
-    imagesList {
-      title
-      url
-      width
-      aspectRatio
-    }
-    audioList {
-        audioBitrate
-        href
-        audioCodec
-        availableFrom
-        availableTo
-    }
+    title"""
+    + image_list
+    + audio_list
+    + """
   }
 }
-""")
+"""
+)
 
 show_length_query = gql("""
 query Show($showId: ID!) {
@@ -154,40 +146,30 @@ query Show($showId: ID!) {
 }
 """)
 
-show_query = gql("""
+show_query = gql(
+    """
 query Show($showId: ID!, $first: Int, $offset: Int) {
   show(id: $showId) {
     synopsis
     title
-    imagesList {
-      width
-      url
-      aspectRatio
-    }
+"""
+    + image_list
+    + """
     publicationService {
       title
     }
     items(first: $first, offset: $offset) {
       totalCount
       nodes {
-        duration
-        audioList {
-          audioBitrate
-          audioCodec
-          availableFrom
-          availableTo
-          href
-        }
+        duration"""
+    + audio_list
+    + """
         title
         titleClean
         titleWithoutNumber
-        episodeNumber
-        imagesList {
-          title
-          url
-          width
-          aspectRatio
-        }
+        episodeNumber"""
+    + image_list
+    + """
         coreId
         summary
       }
@@ -198,29 +180,22 @@ query Show($showId: ID!, $first: Int, $offset: Int) {
     }
   }
 }
-""")
+"""
+)
 
-show_episode_query = gql("""
+show_episode_query = gql(
+    """
 query ShowEpisode($coreId: String!) {
   itemByCoreId(coreId: $coreId) {
-      duration
-      audioList {
-        audioBitrate
-        audioCodec
-        availableFrom
-        availableTo
-        href
-      }
+      duration"""
+    + audio_list
+    + """
       title
       titleClean
       titleWithoutNumber
-      episodeNumber
-      imagesList {
-        title
-        url
-        width
-        aspectRatio
-      }
+      episodeNumber"""
+    + image_list
+    + """
       coreId
     showId
     rowId
@@ -228,49 +203,28 @@ query ShowEpisode($coreId: String!) {
     summary
   }
 }
-""")
+"""
+)
 
 
-ard_search_query = gql("""
-query Search($query: String) {
-  search(query: $query) {
+ard_search_query = gql(
+    """
+query Search($query: String, $limit: Int) {
+  search(query: $query, limit: $limit) {
     shows {
       totalCount
       title
       nodes {
         synopsis
         title
-        coreId
-        imagesList {
-          width
-          url
-          aspectRatio
-        }
+        coreId"""
+    + image_list
+    + """
         publicationService {
           title
         }
         items {
           totalCount
-          nodes {
-            duration
-            audioList {
-              audioBitrate
-              audioCodec
-              availableFrom
-              availableTo
-              href
-            }
-            title
-            titleClean
-            titleWithoutNumber
-            episodeNumber
-            imagesList {
-              title
-              url
-              width
-              aspectRatio
-            }
-          }
         }
         showType
         editorialCategoriesList {
@@ -280,56 +234,5 @@ query Search($query: String) {
     }
   }
 }
-""")
-
-
-query = gql("""
-query Nodes {
-  organizations {
-    nodes {
-      name
-      title
-      publicationServicesByOrganizationName {
-        nodes {
-          title
-          genre
-          permanentLivestreams {
-            nodes {
-              audioList {
-                href
-                audioCodec
-                distributionType
-                audioBitrate
-                audioChannel
-              }
-              description
-            }
-          }
-          description
-          socialMediaAccounts {
-            service
-            url
-          }
-          homepageUrl
-          synopsis
-          image {
-            url
-            description
-            attribution
-            url1X1
-          }
-          nodeId
-        }
-      }
-      _links
-      images {
-        nodes {
-          title
-          imageId
-          url
-        }
-      }
-    }
-  }
-}
-""")
+"""
+)
