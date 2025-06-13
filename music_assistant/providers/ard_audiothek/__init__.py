@@ -38,18 +38,21 @@ See also our general DEVELOPMENT.md guide in the repository for more information
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from gql import Client
 from gql.transport.requests import RequestsHTTPTransport
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -82,11 +85,29 @@ from music_assistant.providers.ard_audiothek.database_queries import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from aiohttp import ClientSession
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
+# Config for login
+CONF_USER_NAME = "username"
+CONF_EMAIL = "email"
+CONF_PASSWORD = "password"
+CONF_TOKEN_BEARER = "token"
+CONF_EXPIRY_TIME = "token_expiry"
+CONF_USERID = "login_url"
+
+# Constants for config actions
+CONF_ACTION_AUTH = "authenticate"
+CONF_ACTION_CLEAR_AUTH = "clear_auth"
+
+# General config
+CONF_MAX_BITRATE = "max_num_episodes"
+
+CACHE_CATEGORY_OTHER = 0
 
 
 async def setup(
@@ -97,6 +118,49 @@ async def setup(
     # you are free to do any preflight checks here and but you must return
     #  an instance of the provider.
     return ARDAudiothek(mass, manifest, config)
+
+
+async def _login(session: ClientSession, email: str, password: str) -> tuple[str, str, str]:
+    response = await session.post(
+        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90",
+        headers={"User-Agent": "Music Assistant", "Origin": "https://accounts.ard.de"},
+        json={
+            "returnSecureToken": True,
+            "email": email,
+            "password": password,
+            "clientType": "CLIENT_TYPE_WEB",
+        },
+    )
+    data = await response.json()
+    if "error" in data:
+        if data["error"]["message"] == "EMAIL_NOT_FOUND":
+            raise LoginFailed("Email address is not registered")
+        if data["error"]["message"] == "INVALID_PASSWORD":
+            raise LoginFailed("Password is wrong")
+    token = data["idToken"]
+    uid = data["localId"]
+
+    response = await session.post(
+        "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90",
+        headers={"User-Agent": "Music Assistant", "Origin": "https://accounts.ard.de"},
+        json={
+            "idToken": token,
+        },
+    )
+    data = await response.json()
+    if "error" in data:
+        if data["error"]["message"] == "EMAIL_NOT_FOUND":
+            raise LoginFailed("Email address is not registered")
+        if data["error"]["message"] == "INVALID_PASSWORD":
+            raise LoginFailed("Password is wrong")
+
+    return token, uid, data["users"][0]["displayName"]
+
+
+def _create_aiohttptransport(headers: dict[str, str] | None = None) -> RequestsHTTPTransport:
+    return RequestsHTTPTransport(
+        url="https://api.ardaudiothek.de/graphql", verify=True, retries=3, headers=headers
+    )
 
 
 async def get_config_entries(
@@ -130,7 +194,86 @@ async def get_config_entries(
     # or some other external service, we have a simple helper that can help you with those steps
     # and a callback url that you can use to redirect the user back to the Music Assistant UI.
     # See for example the Deezer provider for an example of how to use this.
-    return ()
+    if values is None:
+        values = {}
+
+    authenticated = True
+    if values.get(CONF_TOKEN_BEARER, None) is None or values.get(CONF_USERID, None) is None:
+        authenticated = False
+
+    return (
+        ConfigEntry(
+            key="label_text",
+            type=ConfigEntryType.LABEL,
+            label=f"Successfully signed in as {values.get(CONF_USER_NAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",  # noqa: E501
+            hidden=not authenticated,
+        ),
+        ConfigEntry(
+            key=CONF_EMAIL,
+            type=ConfigEntryType.STRING,
+            label="E-Mail",
+            required=False,
+            description="E-Mail address of ARD account.",
+            hidden=authenticated,
+            value=values.get(CONF_EMAIL),
+        ),
+        ConfigEntry(
+            key=CONF_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Password",
+            required=False,
+            description="Password of ARD account.",
+            hidden=authenticated,
+            value=values.get(CONF_PASSWORD),
+        ),
+        ConfigEntry(
+            key="label_general",
+            type=ConfigEntryType.LABEL,
+            label="General config:",
+        ),
+        ConfigEntry(
+            key=CONF_MAX_BITRATE,
+            type=ConfigEntryType.INTEGER,
+            label="Maximum bitrate for streams (0 for unlimited)",
+            required=False,
+            description="Maximum bitrate for streams. Use 0 for unlimited",
+            default_value=0,
+            value=values.get(CONF_MAX_BITRATE),
+        ),
+        ConfigEntry(
+            key=CONF_TOKEN_BEARER,
+            type=ConfigEntryType.SECURE_STRING,
+            label="token",
+            hidden=True,
+            required=False,
+            value=values.get(CONF_TOKEN_BEARER),
+        ),
+        ConfigEntry(
+            key=CONF_USERID,
+            type=ConfigEntryType.SECURE_STRING,
+            label="uid",
+            hidden=True,
+            required=False,
+            value=values.get(CONF_USERID),
+        ),
+        ConfigEntry(
+            key=CONF_EXPIRY_TIME,
+            type=ConfigEntryType.SECURE_STRING,
+            label="token_expiry",
+            hidden=True,
+            required=False,
+            default_value=0,
+            value=values.get(CONF_EXPIRY_TIME),
+        ),
+        ConfigEntry(
+            key=CONF_USER_NAME,
+            type=ConfigEntryType.STRING,
+            label="username",
+            hidden=True,
+            required=False,
+            value=values.get(CONF_USER_NAME),
+        ),
+    )
 
 
 class ARDAudiothek(MusicProvider):
@@ -170,17 +313,72 @@ class ARDAudiothek(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
-        transport = RequestsHTTPTransport(
-            url="https://api.ardaudiothek.de/graphql",
-            verify=True,
-            retries=3,
+        _email = self.config.get_value(CONF_EMAIL)
+        _password = self.config.get_value(CONF_PASSWORD)
+        self.token = self.config.get_value(CONF_TOKEN_BEARER)
+        self.user_id = self.config.get_value(CONF_USERID)
+        self.token_expire = datetime.fromtimestamp(
+            float(str(self.config.get_value(CONF_EXPIRY_TIME)))
         )
 
-        # Create a client
+        self.max_bitrate = int(float(str(self.config.get_value(CONF_MAX_BITRATE))))
+
+        if (
+            _email is not None
+            and _password is not None
+            and (self.token is None or self.user_id is None or self.token_expire < datetime.now())
+        ):
+            self.token, self.user_id, _username = await _login(
+                self.mass.http_session, str(_email), str(_password)
+            )
+            self.update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
+            self.update_config_value(CONF_USERID, self.user_id, encrypted=True)
+            self.update_config_value(CONF_USER_NAME, _username)
+            self.update_config_value(
+                CONF_EXPIRY_TIME, str((datetime.now() + timedelta(hours=1)).timestamp())
+            )
+
+        headers = None
+        if self.token:
+            headers = {"Authorization": f"Bearer {self.token}"}
+
         self._client = Client(
-            transport=transport,
+            transport=_create_aiohttptransport(headers),
             fetch_schema_from_transport=True,
         )
+
+        # timestamps = await self.mass.cache.get(
+        #     key=CACHE_KEY_TIMESTAMP,
+        #     base_key=self.lookup_key,
+        #     category=CACHE_CATEGORY_OTHER,
+        #     default=None,
+        # )
+        # if timestamps is None:
+        #     self.timestamp_subscriptions: int = 0
+        #     self.timestamp_actions: int = 0
+        # else:
+        #     self.timestamp_subscriptions, self.timestamp_actions = timestamps
+
+        # self.logger.debug(
+        #     "Our timestamps are (subscriptions, actions)  (%s, %s)",
+        #     self.timestamp_subscriptions,
+        #     self.timestamp_actions,
+        # )
+
+        # feeds = await self.mass.cache.get(
+        #     key=CACHE_KEY_FEEDS,
+        #     base_key=self.lookup_key,
+        #     category=CACHE_CATEGORY_OTHER,
+        #     default=None,
+        # )
+        # if feeds is None:
+        #     self.feeds: set[str] = set()
+        # else:
+        #     self.feeds = set(feeds)  # feeds is a list here
+
+        # # we are syncing the playlog, but not event based. A simple check in on_played,
+        # # should be sufficient
+        # self.progress_guard_timestamp = 0.0
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""

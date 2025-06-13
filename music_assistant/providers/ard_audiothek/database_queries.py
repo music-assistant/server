@@ -257,3 +257,18 @@ query RadioSearch($filter: PermanentLivestreamFilter, $first: Int) {
 }
 """
 )
+
+
+check_login_query = gql(
+    """
+query CheckLogin($loginId: String!) {
+  allEndUsers(filter: { loginId: { eq: $loginId } }) {
+    count
+    nodes {
+      id
+      syncSuccessful
+    }
+  }
+}
+"""
+)
