@@ -174,11 +174,6 @@ line-ending = "lf"
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
 
-[dependency-groups]
-dev = [
-    "jupyterlab>=4.4.3",
-]
-
 [tool.ruff.lint]
 ignore = [
   "ANN002", # Just annoying, not really useful
