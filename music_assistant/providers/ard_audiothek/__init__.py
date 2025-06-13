@@ -69,13 +69,13 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.ard_audiothek.helper import (
-    ard_search_query,
+from music_assistant.providers.ard_audiothek.database_queries import (
     livestream_query,
     organizations_query,
-    publication_service_metadata_query,
     publication_services_query,
     publications_list_query,
+    search_radios_query,
+    search_shows_query,
     show_episode_query,
     show_length_query,
     show_query,
@@ -235,12 +235,12 @@ class ARDAudiothek(MusicProvider):
         # It allows searching your provider for media items.
         # See the model for SearchResults for more information on what to return, but
         # in general you should return a list of MediaItems for each media type.
-        result = self._client.execute(
-            ard_search_query, variable_values={"query": search_query, "limit": limit}
-        )["search"]
+        search_shows = self._client.execute(
+            search_shows_query, variable_values={"query": search_query, "limit": limit}
+        )["search"]["shows"]["nodes"]
 
         podcasts = []
-        for element in result["shows"]["nodes"]:
+        for element in search_shows:
             podcasts += [
                 _parse_podcast(
                     self.domain,
@@ -251,7 +251,23 @@ class ARDAudiothek(MusicProvider):
                 )
             ]
 
-        return SearchResults(podcasts=podcasts)
+        search_radios = self._client.execute(
+            search_radios_query,
+            variable_values={"filter": {"title": {"includes": search_query}}, "first": limit},
+        )["permanentLivestreams"]["nodes"]
+
+        radios = []
+        for element in search_radios:
+            radios += [
+                _parse_radio(
+                    self.domain,
+                    self.instance_id,
+                    element,
+                    element["coreId"],
+                )
+            ]
+
+        return SearchResults(podcasts=podcasts, radio=radios)
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
@@ -271,56 +287,12 @@ class ARDAudiothek(MusicProvider):
             "permanentLivestreamByCoreId"
         ]
 
-        metadata_query = self._client.execute(
-            publication_service_metadata_query,
-            variable_values={"coreId": rad["publisherCoreId"]},
-        )["publicationServiceByCoreId"]
-
-        radio = _parse_radio(
+        return _parse_radio(
             self.domain,
-            self.lookup_key,
             self.instance_id,
-            metadata_query,
             rad,
             prov_radio_id,
         )
-
-        radio = Radio(
-            item_id=prov_radio_id,
-            provider=self.domain,
-            name=rad["title"],
-            provider_mappings={
-                ProviderMapping(
-                    item_id=prov_radio_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-        media_links = None
-
-        radio.metadata.links = media_links
-        # {
-        #     MediaItemLink(
-        #         type=LinkType.WEBSITE,
-        #         url="http://www.br.de/on3/index.html",
-        #     ),
-        #     MediaItemLink(
-        #         type=LinkType.TIKTOK,
-        #         url="https://www.tiktok.com/@deinpuls",
-        #     ),
-        #     MediaItemLink(
-        #         type=LinkType.INSTAGRAM,
-        #         url="https://www.instagram.com/dein_puls",
-        #     ),
-        # }
-
-        radio.metadata.description = metadata_query["synopsis"]
-        radio.metadata.genres = {metadata_query["genre"]}
-
-        radio.metadata.add_image(create_media_image(self.domain, rad["imagesList"]))
-
-        return radio
 
     # async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
     #     """Retrieve library/subscribed podcasts from the provider.
@@ -416,6 +388,8 @@ class ARDAudiothek(MusicProvider):
             )["show"]
             for idx, episode in enumerate(result["items"]["nodes"]):
                 if len(episode["audioList"]) == 0:
+                    continue
+                if episode["status"] == "DEPUBLISHED":
                     continue
                 yield _parse_podcast_episode(
                     self.domain, self.lookup_key, self.instance_id, episode, prov_podcast_id, idx
@@ -563,20 +537,13 @@ class ARDAudiothek(MusicProvider):
             "publicationServiceByCoreId"
         ]
 
-        metadata_query = self._client.execute(
-            publication_service_metadata_query,
-            variable_values={"coreId": core_id},
-        )["publicationServiceByCoreId"]
-
         publications = []  # type: list[Radio | Podcast]
 
         for rad in result["permanentLivestreams"]["nodes"]:
             if not rad["coreId"]:
                 continue
 
-            radio = _parse_radio(
-                self.domain, self.lookup_key, self.instance_id, metadata_query, rad, rad["coreId"]
-            )
+            radio = _parse_radio(self.domain, self.instance_id, rad, rad["coreId"])
 
             publications += [radio]
 
@@ -646,19 +613,17 @@ def _parse_podcast(
 
 def _parse_radio(
     domain: str,
-    lookup_key: str,
     instance_id: str,
-    metadata: dict[str, Any],
     radio_query: dict[str, Any],
     radio_id: str,
 ) -> Radio:
     radio = Radio(
         name=radio_query["title"],
         item_id=radio_id,
-        provider=lookup_key,
+        provider=domain,
         provider_mappings={
             ProviderMapping(
-                item_id="none",
+                item_id=radio_id,
                 provider_domain=domain,
                 provider_instance=instance_id,
             )
@@ -683,8 +648,8 @@ def _parse_radio(
     #     ),
     # }
 
-    radio.metadata.description = metadata["synopsis"]
-    radio.metadata.genres = {metadata["genre"]}
+    radio.metadata.description = radio_query["publicationService"]["synopsis"]
+    radio.metadata.genres = {radio_query["publicationService"]["genre"]}
 
     radio.metadata.add_image(create_media_image(domain, radio_query["imagesList"]))
 

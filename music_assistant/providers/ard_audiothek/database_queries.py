@@ -11,6 +11,7 @@ imagesList {
 }
 """
 
+
 audio_list = """
 audioList {
   audioBitrate
@@ -20,6 +21,7 @@ audioList {
   availableTo
 }
 """
+
 
 publication_service_metadata = """
     title
@@ -31,6 +33,7 @@ publication_service_metadata = """
       service
     }
 """
+
 
 organizations_query = gql(
     """
@@ -54,6 +57,7 @@ query Organizations {
 """
 )
 
+
 publication_services_query = gql(
     """
 query PublicationServices ($coreId: String!) {
@@ -72,6 +76,7 @@ query PublicationServices ($coreId: String!) {
 """
 )
 
+
 publications_list_query = gql(
     """
 query Publications($coreId: String!) {
@@ -79,7 +84,11 @@ query Publications($coreId: String!) {
     permanentLivestreams {
       nodes {
         title
-        coreId"""
+        coreId
+        publicationService {"""
+    + publication_service_metadata
+    + """
+        }"""
     + image_list
     + """
       }
@@ -109,17 +118,6 @@ query Publications($coreId: String!) {
 )
 
 
-publication_service_metadata_query = gql(
-    """
-query PublicationServiceMetadata($coreId: String!) {
-  publicationServiceByCoreId(coreId: $coreId) {"""
-    + publication_service_metadata
-    + """
-  }
-}
-"""
-)
-
 livestream_query = gql(
     """
 query Livestream($coreId: String!) {
@@ -127,7 +125,11 @@ query Livestream($coreId: String!) {
     publisherCoreId
     summary
     current
-    title"""
+    title
+    publicationService {"""
+    + publication_service_metadata
+    + """
+    }"""
     + image_list
     + audio_list
     + """
@@ -135,6 +137,7 @@ query Livestream($coreId: String!) {
 }
 """
 )
+
 
 show_length_query = gql("""
 query Show($showId: ID!) {
@@ -145,6 +148,7 @@ query Show($showId: ID!) {
   }
 }
 """)
+
 
 show_query = gql(
     """
@@ -158,8 +162,7 @@ query Show($showId: ID!, $first: Int, $offset: Int) {
       nodes {
         duration
         title
-        titleClean
-        titleWithoutNumber
+        status
         episodeNumber
         coreId
         summary"""
@@ -182,31 +185,29 @@ query Show($showId: ID!, $first: Int, $offset: Int) {
 """
 )
 
+
 show_episode_query = gql(
     """
 query ShowEpisode($coreId: String!) {
   itemByCoreId(coreId: $coreId) {
-      duration"""
-    + audio_list
-    + """
-      title
-      titleClean
-      titleWithoutNumber
-      episodeNumber"""
-    + image_list
-    + """
-      coreId
+    duration
+    title
+    episodeNumber
+    coreId
     showId
     rowId
     synopsis
-    summary
+    summary"""
+    + audio_list
+    + image_list
+    + """
   }
 }
 """
 )
 
 
-ard_search_query = gql(
+search_shows_query = gql(
     """
 query Search($query: String, $limit: Int) {
   search(query: $query, limit: $limit) {
@@ -230,6 +231,26 @@ query Search($query: String, $limit: Int) {
         editorialCategoriesList {
           title
         }
+      }
+    }
+  }
+}
+"""
+)
+
+
+search_radios_query = gql(
+    """
+query RadioSearch($filter: PermanentLivestreamFilter, $first: Int) {
+  permanentLivestreams(filter: $filter, first: $first) {
+    nodes {
+      coreId
+      title"""
+    + image_list
+    + """
+        publicationService {"""
+    + publication_service_metadata
+    + """
       }
     }
   }
