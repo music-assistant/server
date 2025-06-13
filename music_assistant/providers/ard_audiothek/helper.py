@@ -21,6 +21,17 @@ audioList {
 }
 """
 
+publication_service_metadata = """
+    title
+    genre
+    synopsis
+    homepageUrl
+    socialMediaAccounts {
+      url
+      service
+    }
+"""
+
 organizations_query = gql(
     """
 query Organizations {
@@ -43,7 +54,7 @@ query Organizations {
 """
 )
 
-publications_query = gql(
+publication_services_query = gql(
     """
 query PublicationServices ($coreId: String!) {
   organizationByCoreId(coreId: $coreId) {
@@ -65,35 +76,31 @@ publications_list_query = gql(
     """
 query Publications($coreId: String!) {
   publicationServiceByCoreId(coreId: $coreId) {
-    title
     permanentLivestreams {
       nodes {
-        current
-        title"""
-    + audio_list
-    + """
-        coreId
-        summary"""
+        title
+        coreId"""
     + image_list
     + """
       }
-    }
-    genre
-    synopsis
-    socialMediaAccounts {
-      url
-      service
     }
     shows {
       nodes {
         coreId
         title
-        synopsis"""
-    + image_list
+        synopsis
+        items {
+          totalCount
+        }
+        publicationService {"""
+    + publication_service_metadata
     + """
+        }
         editorialCategoriesList {
           title
-        }
+        }"""
+    + image_list
+    + """
       }
     }
   }
@@ -102,19 +109,12 @@ query Publications($coreId: String!) {
 )
 
 
-radio_metadata_query = gql(
+publication_service_metadata_query = gql(
     """
 query PublicationServiceMetadata($coreId: String!) {
-  publicationServiceByCoreId(coreId: $coreId) {
-    genre"""
-    + image_list
+  publicationServiceByCoreId(coreId: $coreId) {"""
+    + publication_service_metadata
     + """
-    socialMediaAccounts {
-      url
-      service
-    }
-    homepageUrl
-    synopsis
   }
 }
 """
@@ -152,32 +152,31 @@ query Show($showId: ID!, $first: Int, $offset: Int) {
   show(id: $showId) {
     synopsis
     title
-"""
-    + image_list
-    + """
-    publicationService {
-      title
-    }
+    showType
     items(first: $first, offset: $offset) {
       totalCount
       nodes {
-        duration"""
-    + audio_list
-    + """
+        duration
         title
         titleClean
         titleWithoutNumber
-        episodeNumber"""
+        episodeNumber
+        coreId
+        summary"""
+    + audio_list
     + image_list
     + """
-        coreId
-        summary
       }
     }
-    showType
     editorialCategoriesList {
       title
     }
+    publicationService {"""
+    + publication_service_metadata
+    + """
+    }"""
+    + image_list
+    + """
   }
 }
 """
@@ -220,9 +219,10 @@ query Search($query: String, $limit: Int) {
         coreId"""
     + image_list
     + """
-        publicationService {
-          title
-        }
+        publicationService {"""
+    + publication_service_metadata
+    + """
+    }
         items {
           totalCount
         }

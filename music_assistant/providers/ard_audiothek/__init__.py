@@ -73,9 +73,9 @@ from music_assistant.providers.ard_audiothek.helper import (
     ard_search_query,
     livestream_query,
     organizations_query,
+    publication_service_metadata_query,
+    publication_services_query,
     publications_list_query,
-    publications_query,
-    radio_metadata_query,
     show_episode_query,
     show_length_query,
     show_query,
@@ -241,7 +241,15 @@ class ARDAudiothek(MusicProvider):
 
         podcasts = []
         for element in result["shows"]["nodes"]:
-            podcasts += [self._parse_podcast(element, element["coreId"])]
+            podcasts += [
+                _parse_podcast(
+                    self.domain,
+                    self.lookup_key,
+                    self.instance_id,
+                    element,
+                    element["coreId"],
+                )
+            ]
 
         return SearchResults(podcasts=podcasts)
 
@@ -259,19 +267,28 @@ class ARDAudiothek(MusicProvider):
         """Get full radio details by id."""
         # Get full details of a single Radio station.
         # Mandatory only if you reported LIBRARY_RADIOS in the supported_features.
-        radio_query = self._client.execute(
-            livestream_query, variable_values={"coreId": prov_radio_id}
-        )["permanentLivestreamByCoreId"]
+        rad = self._client.execute(livestream_query, variable_values={"coreId": prov_radio_id})[
+            "permanentLivestreamByCoreId"
+        ]
 
         metadata_query = self._client.execute(
-            radio_metadata_query,
-            variable_values={"coreId": radio_query["publisherCoreId"]},
+            publication_service_metadata_query,
+            variable_values={"coreId": rad["publisherCoreId"]},
         )["publicationServiceByCoreId"]
+
+        radio = _parse_radio(
+            self.domain,
+            self.lookup_key,
+            self.instance_id,
+            metadata_query,
+            rad,
+            prov_radio_id,
+        )
 
         radio = Radio(
             item_id=prov_radio_id,
             provider=self.domain,
-            name=radio_query["title"],
+            name=rad["title"],
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_radio_id,
@@ -301,7 +318,7 @@ class ARDAudiothek(MusicProvider):
         radio.metadata.description = metadata_query["synopsis"]
         radio.metadata.genres = {metadata_query["genre"]}
 
-        radio.metadata.add_image(self.create_media_image(radio_query["imagesList"]))
+        radio.metadata.add_image(create_media_image(self.domain, rad["imagesList"]))
 
         return radio
 
@@ -363,53 +380,12 @@ class ARDAudiothek(MusicProvider):
 
         if not provider:
             # list radios for specific organization
-            return await self.get_publications(path, organization)
+            return await self.get_publication_services(path, organization)
 
         if not radio_station:
-            return await self.get_radio_list(provider)
+            return await self.get_publications_list(provider)
 
         return []
-
-    def _parse_podcast(self, result: dict[str, Any], podcast_id: str) -> Podcast:
-        podcast = Podcast(
-            name=result["title"],
-            item_id=podcast_id,
-            publisher=result["publicationService"]["title"],
-            provider=self.lookup_key,
-            provider_mappings={
-                ProviderMapping(
-                    item_id="none",
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-            total_episodes=result["items"]["totalCount"],
-        )
-
-        media_links = None
-
-        podcast.metadata.links = media_links
-        # {
-        #     MediaItemLink(
-        #         type=LinkType.WEBSITE,
-        #         url="http://www.br.de/on3/index.html",
-        #     ),
-        #     MediaItemLink(
-        #         type=LinkType.TIKTOK,
-        #         url="https://www.tiktok.com/@deinpuls",
-        #     ),
-        #     MediaItemLink(
-        #         type=LinkType.INSTAGRAM,
-        #         url="https://www.instagram.com/dein_puls",
-        #     ),
-        # }
-
-        podcast.metadata.description = result["synopsis"]
-        podcast.metadata.genres = {r["title"] for r in result["editorialCategoriesList"]}
-
-        podcast.metadata.add_image(self.create_media_image(result["imagesList"]))
-
-        return podcast
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast."""
@@ -417,35 +393,13 @@ class ARDAudiothek(MusicProvider):
             "show"
         ]
 
-        return self._parse_podcast(result, prov_podcast_id)
-
-    def _parse_podcast_episode(
-        self, episode: dict[str, Any], podcast_id: str, idx: int
-    ) -> PodcastEpisode:
-        podcast_episode = PodcastEpisode(
-            name=episode["title"],
-            duration=episode["duration"],
-            item_id=episode["coreId"],
-            provider=self.lookup_key,
-            podcast=ItemMapping(
-                item_id=podcast_id,
-                provider=self.lookup_key,
-                name=episode["title"],
-                media_type=MediaType.PODCAST,
-            ),
-            provider_mappings={
-                ProviderMapping(
-                    item_id=episode["coreId"],
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-            position=idx,
+        return _parse_podcast(
+            self.domain,
+            self.lookup_key,
+            self.instance_id,
+            result,
+            prov_podcast_id,
         )
-
-        podcast_episode.metadata.add_image(self.create_media_image(episode["imagesList"]))
-        podcast_episode.metadata.description = episode["summary"]
-        return podcast_episode
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str
@@ -463,7 +417,9 @@ class ARDAudiothek(MusicProvider):
             for idx, episode in enumerate(result["items"]["nodes"]):
                 if len(episode["audioList"]) == 0:
                     continue
-                yield self._parse_podcast_episode(episode, prov_podcast_id, idx)
+                yield _parse_podcast_episode(
+                    self.domain, self.lookup_key, self.instance_id, episode, prov_podcast_id, idx
+                )
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
@@ -472,7 +428,14 @@ class ARDAudiothek(MusicProvider):
         )["itemByCoreId"]
         if result is None:
             raise MediaNotFoundError("Episode not found")
-        return self._parse_podcast_episode(result, result["showId"], result["rowId"])
+        return _parse_podcast_episode(
+            self.domain,
+            self.lookup_key,
+            self.instance_id,
+            result,
+            result["showId"],
+            result["rowId"],
+        )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
@@ -557,7 +520,7 @@ class ARDAudiothek(MusicProvider):
                 org_name = org["name"].lower()
                 org_title = org["title"].lower()
                 if pub_title in (org_name, org_title) or pub_title.replace(" ", "") == org_name:
-                    image = self.create_media_image(pub["imagesList"])
+                    image = create_media_image(self.domain, pub["imagesList"])
                     break
             organizations += [
                 BrowseFolder(
@@ -572,11 +535,11 @@ class ARDAudiothek(MusicProvider):
         return organizations
 
     @use_cache(3600)
-    async def get_publications(self, path: str, core_id: str) -> list[BrowseFolder]:
+    async def get_publication_services(self, path: str, core_id: str) -> list[BrowseFolder]:
         """Create a list of publications for a given organization."""
-        result = self._client.execute(publications_query, variable_values={"coreId": core_id})[
-            "organizationByCoreId"
-        ]["publicationServicesByOrganizationName"]["nodes"]
+        result = self._client.execute(
+            publication_services_query, variable_values={"coreId": core_id}
+        )["organizationByCoreId"]["publicationServicesByOrganizationName"]["nodes"]
         publications = []
 
         for pub in result:
@@ -587,59 +550,33 @@ class ARDAudiothek(MusicProvider):
                     item_id=pub["coreId"],
                     provider=self.domain,
                     path=path + "/" + pub["coreId"],
-                    image=self.create_media_image(pub["imagesList"]),
+                    image=create_media_image(self.domain, pub["imagesList"]),
                     name=pub["title"],
                 )
             ]
 
         return publications
 
-    @use_cache(3600)
-    async def get_radio_list(self, core_id: str) -> list[Radio | Podcast]:
+    async def get_publications_list(self, core_id: str) -> list[Radio | Podcast]:
         """Create list of available radio stations and shows for a publication service."""
         result = self._client.execute(publications_list_query, variable_values={"coreId": core_id})[
             "publicationServiceByCoreId"
         ]
+
+        metadata_query = self._client.execute(
+            publication_service_metadata_query,
+            variable_values={"coreId": core_id},
+        )["publicationServiceByCoreId"]
+
         publications = []  # type: list[Radio | Podcast]
 
-        for r in result["permanentLivestreams"]["nodes"]:
-            if not r["coreId"]:
+        for rad in result["permanentLivestreams"]["nodes"]:
+            if not rad["coreId"]:
                 continue
 
-            radio = Radio(
-                item_id=r["coreId"],
-                provider=self.domain,
-                name=r["title"],
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=r["coreId"],
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                    )
-                },
+            radio = _parse_radio(
+                self.domain, self.lookup_key, self.instance_id, metadata_query, rad, rad["coreId"]
             )
-            media_links = None
-
-            radio.metadata.links = media_links
-            # {
-            #     MediaItemLink(
-            #         type=LinkType.WEBSITE,
-            #         url="http://www.br.de/on3/index.html",
-            #     ),
-            #     MediaItemLink(
-            #         type=LinkType.TIKTOK,
-            #         url="https://www.tiktok.com/@deinpuls",
-            #     ),
-            #     MediaItemLink(
-            #         type=LinkType.INSTAGRAM,
-            #         url="https://www.instagram.com/dein_puls",
-            #     ),
-            # }
-
-            radio.metadata.description = r["summary"]
-            radio.metadata.genres = {result["genre"]}
-
-            radio.metadata.add_image(self.create_media_image(r["imagesList"]))
 
             publications += [radio]
 
@@ -647,61 +584,163 @@ class ARDAudiothek(MusicProvider):
             if not pod["coreId"]:
                 continue
 
-            podcast = Podcast(
-                item_id=pod["coreId"],
-                provider=self.domain,
-                name=pod["title"],
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=pod["coreId"],
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                    )
-                },
+            podcast = _parse_podcast(
+                self.domain,
+                self.lookup_key,
+                self.instance_id,
+                pod,
+                pod["coreId"],
             )
-            media_links = None
-
-            podcast.metadata.links = media_links
-            # {
-            #     MediaItemLink(
-            #         type=LinkType.WEBSITE,
-            #         url="http://www.br.de/on3/index.html",
-            #     ),
-            #     MediaItemLink(
-            #         type=LinkType.TIKTOK,
-            #         url="https://www.tiktok.com/@deinpuls",
-            #     ),
-            #     MediaItemLink(
-            #         type=LinkType.INSTAGRAM,
-            #         url="https://www.instagram.com/dein_puls",
-            #     ),
-            # }
-
-            podcast.metadata.description = pod["synopsis"]
-            podcast.metadata.genres = {p["title"] for p in pod["editorialCategoriesList"]}
-
-            podcast.metadata.add_image(self.create_media_image(pod["imagesList"]))
-
             publications += [podcast]
 
         return publications
 
-    def create_media_image(self, image_list: list[dict[str, str]]) -> MediaItemImage:
-        """Extract the image for hopefully all possible cases."""
-        image_url = ""
-        selected_img = image_list[0] if image_list else None
-        for img in image_list:
-            if img["aspectRatio"] == "1x1":
-                selected_img = img
-                break
-        if selected_img:
-            image_url = selected_img["url"].replace("{width}", str(selected_img["width"]))
-        return MediaItemImage(
-            type=ImageType.THUMB,
-            path=image_url,
-            provider=self.domain,
-            remotely_accessible=True,
-        )
+
+def _parse_podcast(
+    domain: str,
+    lookup_key: str,
+    instance_id: str,
+    podcast_query: dict[str, Any],
+    podcast_id: str,
+) -> Podcast:
+    podcast = Podcast(
+        name=podcast_query["title"],
+        item_id=podcast_id,
+        publisher=podcast_query["publicationService"]["title"],
+        provider=lookup_key,
+        provider_mappings={
+            ProviderMapping(
+                item_id="none",
+                provider_domain=domain,
+                provider_instance=instance_id,
+            )
+        },
+        total_episodes=podcast_query["items"]["totalCount"],
+    )
+
+    media_links = None
+
+    podcast.metadata.links = media_links
+    # {
+    #     MediaItemLink(
+    #         type=LinkType.WEBSITE,
+    #         url="http://www.br.de/on3/index.html",
+    #     ),
+    #     MediaItemLink(
+    #         type=LinkType.TIKTOK,
+    #         url="https://www.tiktok.com/@deinpuls",
+    #     ),
+    #     MediaItemLink(
+    #         type=LinkType.INSTAGRAM,
+    #         url="https://www.instagram.com/dein_puls",
+    #     ),
+    # }
+
+    podcast.metadata.description = podcast_query["synopsis"]
+    podcast.metadata.genres = {r["title"] for r in podcast_query["editorialCategoriesList"]}
+
+    podcast.metadata.add_image(create_media_image(domain, podcast_query["imagesList"]))
+
+    return podcast
+
+
+def _parse_radio(
+    domain: str,
+    lookup_key: str,
+    instance_id: str,
+    metadata: dict[str, Any],
+    radio_query: dict[str, Any],
+    radio_id: str,
+) -> Radio:
+    radio = Radio(
+        name=radio_query["title"],
+        item_id=radio_id,
+        provider=lookup_key,
+        provider_mappings={
+            ProviderMapping(
+                item_id="none",
+                provider_domain=domain,
+                provider_instance=instance_id,
+            )
+        },
+    )
+
+    media_links = None
+
+    radio.metadata.links = media_links
+    # {
+    #     MediaItemLink(
+    #         type=LinkType.WEBSITE,
+    #         url="http://www.br.de/on3/index.html",
+    #     ),
+    #     MediaItemLink(
+    #         type=LinkType.TIKTOK,
+    #         url="https://www.tiktok.com/@deinpuls",
+    #     ),
+    #     MediaItemLink(
+    #         type=LinkType.INSTAGRAM,
+    #         url="https://www.instagram.com/dein_puls",
+    #     ),
+    # }
+
+    radio.metadata.description = metadata["synopsis"]
+    radio.metadata.genres = {metadata["genre"]}
+
+    radio.metadata.add_image(create_media_image(domain, radio_query["imagesList"]))
+
+    return radio
+
+
+def _parse_podcast_episode(
+    domain: str,
+    lookup_key: str,
+    instance_id: str,
+    episode: dict[str, Any],
+    podcast_id: str,
+    idx: int,
+) -> PodcastEpisode:
+    podcast_episode = PodcastEpisode(
+        name=episode["title"],
+        duration=episode["duration"],
+        item_id=episode["coreId"],
+        provider=lookup_key,
+        podcast=ItemMapping(
+            item_id=podcast_id,
+            provider=lookup_key,
+            name=episode["title"],
+            media_type=MediaType.PODCAST,
+        ),
+        provider_mappings={
+            ProviderMapping(
+                item_id=episode["coreId"],
+                provider_domain=domain,
+                provider_instance=instance_id,
+            )
+        },
+        position=idx,
+    )
+
+    podcast_episode.metadata.add_image(create_media_image(domain, episode["imagesList"]))
+    podcast_episode.metadata.description = episode["summary"]
+    return podcast_episode
+
+
+def create_media_image(domain: str, image_list: list[dict[str, str]]) -> MediaItemImage:
+    """Extract the image for hopefully all possible cases."""
+    image_url = ""
+    selected_img = image_list[0] if image_list else None
+    for img in image_list:
+        if img["aspectRatio"] == "1x1":
+            selected_img = img
+            break
+    if selected_img:
+        image_url = selected_img["url"].replace("{width}", str(selected_img["width"]))
+    return MediaItemImage(
+        type=ImageType.THUMB,
+        path=image_url,
+        provider=domain,
+        remotely_accessible=True,
+    )
 
 
 def fix_url(url: str) -> str:
