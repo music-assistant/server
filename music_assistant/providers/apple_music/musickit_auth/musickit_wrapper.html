@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="referrer" content="origin">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>Apple Music Sign-in for Music Assistant</title>
   <link rel="stylesheet" href="./index.css">
   <script src="./index.js"></script>
@@ -15,8 +15,6 @@
     var callbackConsumed = false;
     var closing = false;
 
-    console.log("Base URL: ", base_url);
-    console.log("Callback URL: ", return_url);
     // The underlying MA auth helper times-out after fixed period so this window can no longer pass back any data so just close it.
     // Self closing windows is anti-pattern user experience but better than leaving non-functioning UI presented
     if (typeof flow_timeout !== 'undefined' && flow_timeout > 0) {

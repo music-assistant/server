@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import os
 import pathlib
 import re
@@ -156,10 +155,7 @@ async def get_config_entries(
                 auth_html_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.html")
                 return web.FileResponse(
                     auth_html_path,
-                    headers={
-                        "content-type": "text/html",
-                        "Referrer-Policy": "origin-when-cross-origin",
-                    },
+                    headers={"content-type": "text/html"},
                 )
 
             async def serve_mk_auth_css(request: web.Request) -> web.Response:
@@ -168,7 +164,6 @@ async def get_config_entries(
                     auth_css_path,
                     headers={
                         "content-type": "text/css",
-                        "Referrer-Policy": "origin-when-cross-origin",
                     },
                 )
 
@@ -192,7 +187,6 @@ async def get_config_entries(
                     body=return_html,
                     headers={
                         "content-type": "text/javascript",
-                        "Referrer-Policy": "origin-when-cross-origin",
                     },
                 )
 
@@ -203,8 +197,6 @@ async def get_config_entries(
             mass.webserver.register_dynamic_route(f"/{flow_base_path}index.js", serve_mk_glue)
 
             try:
-                _logger = logging.getLogger(__name__)
-                _logger.debug("Flow base URL: %s", flow_base_url)
                 result = await auth_helper.authenticate(flow_base_url, flow_timeout)
                 values[CONF_MUSIC_USER_TOKEN] = result["music-user-token"]
                 values[CONF_MUSIC_USER_TOKEN_TIMESTAMP] = result["music-user-token-timestamp"]
