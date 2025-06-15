@@ -35,8 +35,9 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
+BUFFER_DURATION_US = 3_000_000
 MAX_PENDING_MSG = 512
-TARGET_CHUNK_DURATION_MS = 80
+TARGET_CHUNK_DURATION_MS = 100
 
 # TODO: make dynamic
 STREAM_CODEC = "pcm"
@@ -448,7 +449,7 @@ class ResonatePlayerProvider(PlayerProvider):
                 child_instance.send_message(session_start_msg)
 
         instance.stream_task = self.mass.create_task(
-            self._stream_audio(player_id, session_info.now, media)
+            self._stream_audio(player_id, session_info.now + BUFFER_DURATION_US, media)
         )
 
     async def cmd_group(self, player_id: str, target_player: str) -> None:
@@ -516,7 +517,6 @@ class ResonatePlayerProvider(PlayerProvider):
             return
 
         samples_sent = 0
-        preload = 2000  # TODO: client tells us this
 
         # TODO: explicit chunk size, better error handling, better player state,
         # support dynamic chunk sizes, samples_sent should be duration instead
@@ -531,7 +531,7 @@ class ResonatePlayerProvider(PlayerProvider):
             chunk_pos = 0
             split_chunks_count = 0
             while True:
-                if chunk_pos + TARGET_CHUNK_BYTES >= len(chunk):
+                if chunk_pos >= len(chunk):
                     break
                 c = chunk[
                     chunk_pos : chunk_pos + TARGET_CHUNK_BYTES
@@ -548,30 +548,21 @@ class ResonatePlayerProvider(PlayerProvider):
                     if child_instance := self._get_player_instance(child_player_id):
                         child_instance.send_audio_chunk(
                             timestamp_us=chunk_timestamp_us,
-                            sample_count=TARGET_CHUNK_SAMPLES,
+                            sample_count=len(c) // (STREAM_SAMPLE_RATE * STREAM_SAMPLE_SIZE),
                             audio_data=c,
                         )
 
-                samples_sent += TARGET_CHUNK_BYTES
-
-                chunk_pos += TARGET_CHUNK_BYTES
+                samples_sent += len(c)
+                chunk_pos += len(c)
                 split_chunks_count += 1
 
-            # self.logger.info(
-            #     "Split into %s audio chunks. We sent %s bytes from %s bytes, we lost %s bytes",
-            #     split_chunks_count,
-            #     chunk_pos + TARGET_CHUNK_BYTES - 1,
-            #     len(chunk),
-            #     len(chunk) - (chunk_pos + TARGET_CHUNK_BYTES - 1),
-            # )
-
-            if preload > 0:
-                preload -= split_chunks_count * TARGET_CHUNK_DURATION_MS
-            else:
-                # self.logger.info(
-                #     "sleeping for %s", split_chunks_count * TARGET_CHUNK_DURATION_MS
-                # )
-                await asyncio.sleep(split_chunks_count * TARGET_CHUNK_DURATION_MS / 1000)
+                duration_to_next_chunk = (
+                    start_time_us
+                    + int((samples_sent / (STREAM_SAMPLE_RATE * STREAM_SAMPLE_SIZE)) * 1_000_000)
+                    - int(self.time() * 1_000_000)
+                )
+                if duration_to_next_chunk > BUFFER_DURATION_US:
+                    await asyncio.sleep((duration_to_next_chunk - BUFFER_DURATION_US) / 1_000_000)
 
         self.logger.info(
             "Finished streaming queue %s (total samples sent: %s)",
