@@ -88,7 +88,7 @@ class PlayerInstance:
     _writer_task: asyncio.Task[None] | None = None
     # Task responsible for processing the audio stream
     stream_task: asyncio.Task[None] | None = None
-    _to_write: asyncio.Queue[str | bytes]
+    _to_write: asyncio.Queue[resonate_models.ServerMessages | str | bytes]
     session_info: resonate_models.SessionInfo | None = None
 
     def __init__(self, prov: ResonatePlayerProvider, request: web.Request):
@@ -244,8 +244,6 @@ class PlayerInstance:
         elif msg_type == "player/time":
             payload["source_received"] = timestamp
             payload["source_transmitted"] = int(self.prov.time() * 1_000_000)
-            logger.info("player/time received from %s, payload is %s", self.player_id, payload)
-            # time_reply = resonate_models.SourceTimeInfo.from_dict(payload)
             self.send_message(
                 resonate_models.SourceTimeMessage(
                     payload=resonate_models.SourceTimeInfo.from_dict(payload)
@@ -268,13 +266,17 @@ class PlayerInstance:
 
                 if isinstance(item, bytes):
                     await self.wsock.send_bytes(item)
+                elif isinstance(item, resonate_models.ServerMessages):
+                    if isinstance(item, resonate_models.SourceTimeMessage):
+                        item.payload.source_transmitted = int(self.prov.time() * 1_000_000)
+                    await self.wsock.send_str(item.to_json())
                 else:
                     await self.wsock.send_str(item)
 
     def send_message(self, message: resonate_models.ServerMessages) -> None:
         """Enqueue a JSON message to be sent to the client."""
         # TODO: handle full queue
-        self._to_write.put_nowait(message.to_json())
+        self._to_write.put_nowait(message)
 
     def send_binary(self, data: bytes) -> None:
         """Enqueue a binary message to be sent to the client."""
