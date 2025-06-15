@@ -156,6 +156,7 @@ class PlayerInstance:
         try:
             while not wsock.closed:
                 msg = await wsock.receive()
+                timestamp = int(self.prov.time() * 1_000_000)
 
                 if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
                     break
@@ -164,7 +165,9 @@ class PlayerInstance:
                     continue
 
                 try:
-                    await self._handle_message(resonate_models.Message.from_json(msg.data))
+                    await self._handle_message(
+                        resonate_models.Message.from_json(msg.data), timestamp
+                    )
                 except Exception as e:
                     logger.error(
                         "Failed to process message for %s: %s",
@@ -196,7 +199,7 @@ class PlayerInstance:
 
         return self.wsock
 
-    async def _handle_message(self, message: resonate_models.Message) -> None:
+    async def _handle_message(self, message: resonate_models.Message, timestamp: int) -> None:
         """Handle incoming commands from the client."""
         msg_type = message.type
         payload = message.payload
@@ -239,7 +242,7 @@ class PlayerInstance:
             self.prov.mass.players.update(self.player_id)
 
         elif msg_type == "player/time":
-            payload["source_received"] = int(self.prov.time() * 1_000_000)
+            payload["source_received"] = timestamp
             payload["source_transmitted"] = int(self.prov.time() * 1_000_000)
             logger.info("player/time received from %s, payload is %s", self.player_id, payload)
             # time_reply = resonate_models.SourceTimeInfo.from_dict(payload)
