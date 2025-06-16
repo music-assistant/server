@@ -50,7 +50,7 @@ test = [
   "pre-commit-hooks==5.0.0",
   "pytest==8.3.5",
   "pytest-aiohttp==1.1.0",
-  "pytest-cov==6.1.1",
+  "pytest-cov==6.2.1",
   "syrupy==4.9.1",
   "tomli==2.2.1",
   "ruff==0.11.13",
