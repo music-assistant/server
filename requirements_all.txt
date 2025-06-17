@@ -4,7 +4,7 @@ Brotli>=1.0.9
 aioaudiobookshelf==0.1.7
 aiodns>=3.2.0
 aiofiles==24.1.0
-aiohttp==3.12.11
+aiohttp==3.12.13
 aiohttp-fast-zlib==0.3.0
 aiojellyfin==0.14.1
 aiomusiccast==0.14.8
@@ -19,7 +19,7 @@ bidict==0.23.1
 certifi==2025.4.26
 chardet>=5.2.0
 colorlog==6.9.0
-cryptography==45.0.3
+cryptography==45.0.4
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 duration-parser==1.0.1
