@@ -16,7 +16,7 @@ async-upnp-client==0.44.0
 audible==0.10.0
 bgutil-ytdlp-pot-provider==1.1.0
 bidict==0.23.1
-certifi==2025.4.26
+certifi==2025.6.15
 chardet>=5.2.0
 colorlog==6.9.0
 cryptography==45.0.4
