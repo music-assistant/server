@@ -261,10 +261,22 @@ class PlayerInstance:
             ConnectionResetError,
             asyncio.CancelledError,
         ):
+            logger = self.prov.logger
             while not self.wsock.closed:
                 item = await self._to_write.get()
 
                 if isinstance(item, bytes):
+                    _, timestamp_us, _ = struct.unpack(
+                        resonate_models.BINARY_HEADER_FORMAT, item[:13]
+                    )
+                    now = int(self.prov.time() * 1_000_000)
+                    if timestamp_us - now < 0:
+                        logger.error("Sending audio chunk after it needs to be played")
+                    elif timestamp_us - now < 250_000:
+                        logger.warning(
+                            "sending audio chunk that needs to be played very soon (in %d us)",
+                            (timestamp_us - now),
+                        )
                     await self.wsock.send_bytes(item)
                 elif isinstance(item, resonate_models.ServerMessages):
                     if isinstance(item, resonate_models.SourceTimeMessage):
