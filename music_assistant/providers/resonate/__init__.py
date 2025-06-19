@@ -523,6 +523,8 @@ class ResonatePlayerProvider(PlayerProvider):
 
         samples_sent = 0
 
+        chunk_timestamp_us = start_time_us
+
         # TODO: explicit chunk size, better error handling, better player state,
         # support dynamic chunk sizes, samples_sent should be duration instead
         # verify that the players buffer will not be overrun
@@ -532,9 +534,10 @@ class ResonatePlayerProvider(PlayerProvider):
             start_queue_item=queue_item,
             pcm_format=pcm_format,
         ):
-            # TODO: check off by one errors
             chunk_pos = 0
-            split_chunks_count = 0
+            mass_player = self.mass.players.get(player_id, True)
+            assert mass_player is not None  # for type checker
+
             while True:
                 if chunk_pos >= len(chunk):
                     break
@@ -542,32 +545,28 @@ class ResonatePlayerProvider(PlayerProvider):
                     chunk_pos : chunk_pos + TARGET_CHUNK_BYTES
                 ]  # TODO: maybe that's not so efficient?
 
-                chunk_timestamp_us = start_time_us + int(
-                    (samples_sent / (STREAM_SAMPLE_RATE * STREAM_SAMPLE_SIZE)) * 1_000_000
-                )
+                chunk_pos += len(c)
+                samples_in_chunk = len(c) // STREAM_SAMPLE_SIZE
+                samples_sent += samples_in_chunk
 
-                mass_player = self.mass.players.get(player_id, True)
-                assert mass_player is not None  # for type checker
                 sync_player_ids = mass_player.group_childs or [mass_player.player_id]
                 for child_player_id in sync_player_ids:
                     if child_instance := self._get_player_instance(child_player_id):
                         child_instance.send_audio_chunk(
                             timestamp_us=chunk_timestamp_us,
-                            sample_count=len(c) // (STREAM_SAMPLE_RATE * STREAM_SAMPLE_SIZE),
+                            sample_count=samples_in_chunk,
                             audio_data=c,
                         )
 
-                samples_sent += len(c)
-                chunk_pos += len(c)
-                split_chunks_count += 1
-
-                duration_to_next_chunk = (
-                    start_time_us
-                    + int((samples_sent / (STREAM_SAMPLE_RATE * STREAM_SAMPLE_SIZE)) * 1_000_000)
-                    - int(self.time() * 1_000_000)
+                duration_of_samples_in_chunk = int(
+                    samples_in_chunk / STREAM_SAMPLE_RATE * 1_000_000
                 )
-                if duration_to_next_chunk > BUFFER_DURATION_US:
-                    await asyncio.sleep((duration_to_next_chunk - BUFFER_DURATION_US) / 1_000_000)
+                chunk_timestamp_us += duration_of_samples_in_chunk
+
+                time_until_next_chunk = chunk_timestamp_us - int(self.time() * 1_000_000)
+
+                if time_until_next_chunk > BUFFER_DURATION_US:
+                    await asyncio.sleep((time_until_next_chunk - BUFFER_DURATION_US) / 1_000_000)
 
         self.logger.info(
             "Finished streaming queue %s (total samples sent: %s)",
