@@ -35,9 +35,9 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
-BUFFER_DURATION_US = 3_000_000
+BUFFER_DURATION_US = 2_000_000
 MAX_PENDING_MSG = 512
-TARGET_CHUNK_DURATION_MS = 100
+TARGET_CHUNK_DURATION_MS = 50
 
 # TODO: make dynamic
 STREAM_CODEC = "pcm"
