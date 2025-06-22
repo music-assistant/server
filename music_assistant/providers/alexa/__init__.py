@@ -210,21 +210,6 @@ class AlexaProvider(PlayerProvider):
         _cluster_members: str
         _locale: str
 
-        async def createobject(self, player_id: str, login: AlexaLogin) -> None:
-            """Initialize Alexa Device."""
-            devices = await AlexaAPI.get_devices(login)
-
-            if devices is None:
-                return
-
-            for device in devices:
-                if device["accountName"] == player_id:
-                    self._device_type = device["deviceType"]
-                    self.device_serial_number = device["serialNumber"]
-                    self._device_family = device["deviceOwnerCustomerId"]
-                    self._cluster_members = device["clusterMembers"]
-                    self._locale = "en-US"
-
     login: AlexaLogin
     devices: dict[str, AlexaProvider.AlexaDevice]
 
@@ -279,7 +264,11 @@ class AlexaProvider(PlayerProvider):
                 await self.mass.players.register_or_update(player)
                 # Initialize AlexaDevice and store in self.devices
                 device_object = self.AlexaDevice()
-                await device_object.createobject(player_id, self.login)
+                device_object._device_type = device["deviceType"]
+                device_object.device_serial_number = device["serialNumber"]
+                device_object._device_family = device["deviceOwnerCustomerId"]
+                device_object._cluster_members = device["clusterMembers"]
+                device_object._locale = "en-US"
                 self.devices[player_id] = device_object
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
