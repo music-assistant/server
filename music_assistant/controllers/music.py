@@ -1023,7 +1023,7 @@ class MusicController(CoreController):
             return self.podcasts
         if media_type == MediaType.PODCAST_EPISODE:
             return self.podcasts
-        return None
+        raise NotImplementedError
 
     def get_unique_providers(self) -> set[str]:
         """

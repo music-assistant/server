@@ -29,6 +29,13 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CACHE_CATEGORY_LIBRARY_ITEMS
+from music_assistant.controllers.media.albums import AlbumsController
+from music_assistant.controllers.media.artists import ArtistsController
+from music_assistant.controllers.media.audiobooks import AudiobooksController
+from music_assistant.controllers.media.playlists import PlaylistController
+from music_assistant.controllers.media.podcasts import PodcastsController
+from music_assistant.controllers.media.radio import RadioController
+from music_assistant.controllers.media.tracks import TracksController
 
 from .provider import Provider
 
@@ -439,7 +446,7 @@ class MusicProvider(Provider):
             return await self.get_podcast_episode(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -649,8 +656,54 @@ class MusicProvider(Provider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
+        # ruff: noqa: PLR0915 # too many statements
         # this reference implementation can be overridden
         # with a provider specific approach if needed
+
+        async def _controller_update_item_in_library(
+            controller: ArtistsController
+            | AlbumsController
+            | TracksController
+            | RadioController
+            | PlaylistController
+            | AudiobooksController
+            | PodcastsController,
+            prov_item: MediaItemType,
+            item_id: str | int,
+        ) -> Artist | Album | Track | Radio | Playlist | Audiobook | Podcast:
+            """Update media item in controller including type checking.
+
+            all isinstance(...) for type checking. The statement
+            library_item = await controller.update_item_in_library(prov_item)
+            cannot be moved out of this scope.
+            """
+            library_item: Artist | Album | Track | Radio | Playlist | Audiobook | Podcast
+            if isinstance(prov_item, Artist):
+                assert isinstance(controller, ArtistsController)
+                library_item = await controller.update_item_in_library(item_id, prov_item)
+            elif isinstance(prov_item, Album):
+                assert isinstance(controller, AlbumsController)
+                library_item = await controller.update_item_in_library(item_id, prov_item)
+            elif isinstance(prov_item, Track):
+                assert isinstance(controller, TracksController)
+                library_item = await controller.update_item_in_library(item_id, prov_item)
+            elif isinstance(prov_item, Radio):
+                assert isinstance(controller, RadioController)
+                library_item = await controller.update_item_in_library(item_id, prov_item)
+            elif isinstance(prov_item, Playlist):
+                assert isinstance(controller, PlaylistController)
+                library_item = await controller.update_item_in_library(item_id, prov_item)
+            elif isinstance(prov_item, Audiobook):
+                assert isinstance(controller, AudiobooksController)
+                library_item = await controller.update_item_in_library(item_id, prov_item)
+            elif isinstance(prov_item, Podcast):
+                assert isinstance(controller, PodcastsController)
+                library_item = await controller.update_item_in_library(item_id, prov_item)
+            else:
+                raise TypeError("Prov item unknown in this context.")
+
+            return library_item
+
         if not self.library_supported(media_type):
             raise UnsupportedFeaturedException("Library sync not supported for this media type")
         self.logger.debug("Start sync of %s items.", media_type.value)
@@ -660,6 +713,7 @@ class MusicProvider(Provider):
             library_item = await controller.get_library_item_by_prov_mappings(
                 prov_item.provider_mappings,
             )
+            assert not isinstance(prov_item, PodcastEpisode)
             try:
                 if not library_item and not prov_item.available:
                     # skip unavailable tracks
@@ -674,18 +728,46 @@ class MusicProvider(Provider):
                     # the additional metadata is then lazy retrieved afterwards
                     if self.is_streaming_provider:
                         prov_item.favorite = True
-                    library_item = await controller.add_item_to_library(prov_item)
+
+                    # all isinstance(...) for type checking. The statement
+                    # library_item = await controller.add_item_to_library(prov_item)
+                    # cannot be moved out of this scope.
+                    if isinstance(prov_item, Artist):
+                        assert isinstance(controller, ArtistsController)
+                        library_item = await controller.add_item_to_library(prov_item)
+                    elif isinstance(prov_item, Album):
+                        assert isinstance(controller, AlbumsController)
+                        library_item = await controller.add_item_to_library(prov_item)
+                    elif isinstance(prov_item, Track):
+                        assert isinstance(controller, TracksController)
+                        library_item = await controller.add_item_to_library(prov_item)
+                    elif isinstance(prov_item, Radio):
+                        assert isinstance(controller, RadioController)
+                        library_item = await controller.add_item_to_library(prov_item)
+                    elif isinstance(prov_item, Playlist):
+                        assert isinstance(controller, PlaylistController)
+                        library_item = await controller.add_item_to_library(prov_item)
+                    elif isinstance(prov_item, Audiobook):
+                        assert isinstance(controller, AudiobooksController)
+                        library_item = await controller.add_item_to_library(prov_item)
+                    elif isinstance(prov_item, Podcast):
+                        assert isinstance(controller, PodcastsController)
+                        library_item = await controller.add_item_to_library(prov_item)
+                    else:
+                        raise RuntimeError
                 elif getattr(library_item, "cache_checksum", None) != getattr(
                     prov_item, "cache_checksum", None
                 ):
                     # existing dbitem checksum changed (playlists only)
+                    assert isinstance(prov_item, Playlist)
+                    assert isinstance(controller, PlaylistController)
                     library_item = await controller.update_item_in_library(
                         library_item.item_id, prov_item
                     )
                 if library_item.available != prov_item.available:
                     # existing item availability changed
-                    library_item = await controller.update_item_in_library(
-                        library_item.item_id, prov_item
+                    library_item = await _controller_update_item_in_library(
+                        controller, prov_item, library_item.item_id
                     )
                 # check if resume_position_ms or fully_played changed (audiobook only)
                 resume_pos_prov = getattr(prov_item, "resume_position_ms", None)
@@ -698,8 +780,8 @@ class MusicProvider(Provider):
                         or getattr(library_item, "fully_played", None) != fully_played_prov
                     )
                 ):
-                    library_item = await controller.update_item_in_library(
-                        library_item.item_id, prov_item
+                    library_item = await _controller_update_item_in_library(
+                        controller, prov_item, library_item.item_id
                     )
 
                 cur_db_ids.add(int(library_item.item_id))
