@@ -167,11 +167,11 @@ async def save_cookie(login: AlexaLogin, username: str) -> None:
     if login._session is None:
         _LOGGER.error("AlexaLogin session is not initialized.")
         return
-    login._cookiefile = [
-        login._outputpath(
-            f"/home/user/music-assistant_server/music_assistant/providers/alexa/alexa_media.{username}.pickle"
-        ),
-    ]
+
+    cookie_dir = os.path.join(os.path.expanduser("~"), ".musicassistant", "alexa")
+    os.makedirs(cookie_dir, exist_ok=True)
+    cookie_path = os.path.join(cookie_dir, f"alexa_media.{username}.pickle")
+    login._cookiefile = [login._outputpath(cookie_path)]
     if (login._cookiefile[0]) and os.path.exists(login._cookiefile[0]):
         _LOGGER.debug("Removing outdated cookiefile %s", login._cookiefile[0])
         await delete_cookie(login._cookiefile[0])
@@ -234,11 +234,12 @@ class AlexaProvider(PlayerProvider):
             outputpath=lambda x: x,
         )
 
-        self.login._cookiefile = [
-            self.login._outputpath(
-                f"/home/user/music-assistant_server/music_assistant/providers/alexa/alexa_media.{self.config.get_value(CONF_USERNAME)}.pickle"
-            ),
-        ]
+        cookie_dir = os.path.join(os.path.expanduser("~"), ".musicassistant", "alexa")
+        os.makedirs(cookie_dir, exist_ok=True)
+        cookie_path = os.path.join(
+            cookie_dir, f"alexa_media.{self.config.get_value(CONF_USERNAME)}.pickle"
+        )
+        self.login._cookiefile = [self.login._outputpath(cookie_path)]
 
         await self.login.login(cookies=await self.login.load_cookie())
 
