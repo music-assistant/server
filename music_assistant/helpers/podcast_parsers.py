@@ -87,6 +87,8 @@ def get_stream_url_and_guid_from_episode(*, episode: dict[str, Any]) -> tuple[st
             # The media's item_id is {prov_podcast_id} {guid_or_stream_url}
             # see parse_podcast_episode.
             # However, the guid must not contain a space, otherwise it is invalid.
+            # We cannot check, if it is a proper guid (uuid.UUID4(...)), as some podcast feeds
+            # do not follow the standard.
             guid = None if len(guid.split(" ")) > 1 else guid
         return stream_url, guid
     raise ValueError("Stream URL is missing.")
