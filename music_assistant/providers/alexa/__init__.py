@@ -226,11 +226,19 @@ class AlexaProvider(PlayerProvider):
                     self._locale = "en-US"
 
     login: AlexaLogin
+    devices: dict[str, AlexaProvider.AlexaDevice]
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
+
+    def __init__(
+        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> None:
+        """Initialize AlexaProvider and its device mapping."""
+        super().__init__(mass, manifest, config)
+        self.devices = {}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -269,6 +277,10 @@ class AlexaProvider(PlayerProvider):
                     supported_features={PlayerFeature.VOLUME_SET},
                 )
                 await self.mass.players.register_or_update(player)
+                # Initialize AlexaDevice and store in self.devices
+                device_object = self.AlexaDevice()
+                await device_object.createobject(player_id, self.login)
+                self.devices[player_id] = device_object
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -288,9 +300,7 @@ class AlexaProvider(PlayerProvider):
         """Send STOP command to given player."""
         if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
             return
-
-        device_object = self.AlexaDevice()
-        await device_object.createobject(player_id, self.login)
+        device_object = self.devices[player_id]
         api = AlexaAPI(device_object, self.login)
         await api.stop()
 
@@ -301,9 +311,7 @@ class AlexaProvider(PlayerProvider):
         """Send PLAY command to given player."""
         if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
             return
-
-        device_object = self.AlexaDevice()
-        await device_object.createobject(player_id, self.login)
+        device_object = self.devices[player_id]
         api = AlexaAPI(device_object, self.login)
         await api.play()
 
@@ -314,9 +322,7 @@ class AlexaProvider(PlayerProvider):
         """Send PAUSE command to given player."""
         if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
             return
-
-        device_object = self.AlexaDevice()
-        await device_object.createobject(player_id, self.login)
+        device_object = self.devices[player_id]
         api = AlexaAPI(device_object, self.login)
         await api.pause()
 
@@ -327,9 +333,7 @@ class AlexaProvider(PlayerProvider):
         """Send VOLUME_SET command to given player."""
         if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
             return
-
-        device_object = self.AlexaDevice()
-        await device_object.createobject(player_id, self.login)
+        device_object = self.devices[player_id]
         api = AlexaAPI(device_object, self.login)
         await api.set_volume(volume_level / 100)
 
@@ -340,21 +344,12 @@ class AlexaProvider(PlayerProvider):
         """Send VOLUME MUTE command to given player."""
         if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
             return
-
-        device_object = self.AlexaDevice()
-        await device_object.createobject(player_id, self.login)
+        device_object = self.devices[player_id]
         api = AlexaAPI(device_object, self.login)
         await api.set_volume(0)
 
         player.volume_level = 0
         self.mass.players.update(player_id)
-
-    async def cmd_seek(self, player_id: str, position: int) -> None:
-        """Handle SEEK command for given queue.
-
-        - player_id: player_id of the player to handle the command.
-        - position: position in seconds to seek to in the current playing item.
-        """
 
     async def play_media(
         self,
@@ -383,9 +378,7 @@ class AlexaProvider(PlayerProvider):
             except Exception as exc:
                 _LOGGER.error("Failed to push URL to Alexa: %s", exc)
                 return
-
-        device_object = self.AlexaDevice()
-        await device_object.createobject(player_id, self.login)
+        device_object = self.devices[player_id]
         api = AlexaAPI(device_object, self.login)
         await api.run_custom("Ask music assistant to play audio")
 
@@ -408,7 +401,6 @@ class AlexaProvider(PlayerProvider):
         This will NOT be called if the end of the queue is reached (and repeat disabled).
         This will NOT be called if the player is using flow mode to playback the queue.
         """
-        device_object = self.AlexaDevice()
-        await device_object.createobject(player_id, self.login)
+        device_object = self.devices[player_id]
         api = AlexaAPI(device_object, self.login)
         await api.next()
