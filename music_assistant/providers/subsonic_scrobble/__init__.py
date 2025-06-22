@@ -17,6 +17,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
 
 
@@ -99,13 +100,23 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
                     # found a subsonic mapping, proceed...
                     prov = self.mass.get_provider(mapping.provider_instance)
                     assert isinstance(prov, OpenSonicProvider)
-                    return prov, mapping.item_id
+                    # Because there is no way to retrieve a single podcast episode in vanilla
+                    # subsonic, we have to carry around the channel id as well. See
+                    # opensubsonic.parsers.parse_episode.
+                    if isinstance(library_item, PodcastEpisode) and EP_CHAN_SEP in mapping.item_id:
+                        _, ret_id = mapping.item_id.split(EP_CHAN_SEP)
+                    else:
+                        ret_id = mapping.item_id
+                    return prov, ret_id
             # no subsonic mapping has been found in library item, ignore...
             return None, item_id
         elif provider_instance_id_or_domain.startswith("opensubsonic"):
             # found a subsonic mapping, proceed...
             prov = self.mass.get_provider(provider_instance_id_or_domain)
             assert isinstance(prov, OpenSonicProvider)
+            if media_type == MediaType.PODCAST_EPISODE and EP_CHAN_SEP in item_id:
+                _, ret_id = item_id.split(EP_CHAN_SEP)
+                return prov, ret_id
             return prov, item_id
         # not an item from subsonic provider, ignore...
         return None, item_id

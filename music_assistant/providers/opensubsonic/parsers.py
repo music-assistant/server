@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from libopensonic.media import AlbumID3 as SonicAlbum
     from libopensonic.media import AlbumInfo as SonicAlbumInfo
     from libopensonic.media import ArtistID3 as SonicArtist
-    from libopensonic.media import ArtistInfo as SonicArtistInfo
+    from libopensonic.media import ArtistInfo2 as SonicArtistInfo
     from libopensonic.media import Child as SonicSong
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastChannel as SonicPodcast
@@ -113,7 +113,7 @@ def parse_track(
         provider=instance_id,
         name=sonic_song.title,
         album=album,
-        duration=sonic_song.duration if sonic_song.duration is not None else 0,
+        duration=sonic_song.duration or 0,
         disc_number=sonic_song.disc_number or 0,
         favorite=bool(sonic_song.starred),
         metadata=metadata,
@@ -124,15 +124,15 @@ def parse_track(
                 provider_instance=instance_id,
                 available=True,
                 audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(sonic_song.content_type),
-                    sample_rate=sonic_song.sampling_rate if sonic_song.sampling_rate else 44100,
-                    bit_depth=sonic_song.bit_depth if sonic_song.bit_depth else 16,
-                    channels=sonic_song.channel_count if sonic_song.channel_count else 2,
-                    bit_rate=sonic_song.bit_rate if sonic_song.bit_rate else None,
+                    content_type=ContentType.try_parse(sonic_song.content_type or "?"),
+                    sample_rate=sonic_song.sampling_rate or 44100,
+                    bit_depth=sonic_song.bit_depth or 16,
+                    channels=sonic_song.channel_count or 2,
+                    bit_rate=sonic_song.bit_rate,
                 ),
             )
         },
-        track_number=sonic_song.track if sonic_song.track else 0,
+        track_number=sonic_song.track or 0,
     )
 
     if sonic_song.music_brainz_id:
@@ -151,17 +151,18 @@ def parse_track(
                 instance_id,
                 MediaType.ARTIST,
                 sonic_song.artist_id,
-                sonic_song.artist if sonic_song.artist else UNKNOWN_ARTIST,
+                sonic_song.artist or UNKNOWN_ARTIST,
             )
         )
 
-    for entry in sonic_song.artists:
-        if entry.id == sonic_song.artist_id:
-            continue
-        if entry.id is not None and entry.name is not None:
-            track.artists.append(
-                get_item_mapping(instance_id, MediaType.ARTIST, entry.id, entry.name)
-            )
+    if sonic_song.artists:
+        for entry in sonic_song.artists:
+            if entry.id == sonic_song.artist_id:
+                continue
+            if entry.id is not None and entry.name is not None:
+                track.artists.append(
+                    get_item_mapping(instance_id, MediaType.ARTIST, entry.id, entry.name)
+                )
 
     if not track.artists:
         if sonic_song.artist and not sonic_song.artist_id:
@@ -207,7 +208,7 @@ def parse_track(
 
 
 def parse_artist(
-    instance_id: str, sonic_artist: SonicArtist, sonic_info: SonicArtistInfo = None
+    instance_id: str, sonic_artist: SonicArtist, sonic_info: SonicArtistInfo | None = None
 ) -> Artist:
     """Parse artist and artistInfo into a Music Assistant Artist."""
     metadata: MediaItemMetadata = MediaItemMetadata()
@@ -257,7 +258,7 @@ def parse_artist(
                 provider_instance=instance_id,
             )
         },
-        sort_name=sonic_artist.sort_name if sonic_artist.sort_name else None,
+        sort_name=sonic_artist.sort_name,
     )
 
     if sonic_artist.music_brainz_id:
@@ -340,7 +341,7 @@ def parse_album(
                 media_type=MediaType.ARTIST,
                 item_id=sonic_album.artist_id,
                 provider=instance_id,
-                name=sonic_album.artist if sonic_album.artist else UNKNOWN_ARTIST,
+                name=sonic_album.artist or UNKNOWN_ARTIST,
             )
         )
     elif not sonic_album.artists:
@@ -408,12 +409,16 @@ def parse_playlist(instance_id: str, sonic_playlist: SonicPlaylist) -> Playlist:
 
 def parse_podcast(instance_id: str, sonic_podcast: SonicPodcast) -> Podcast:
     """Parse Subsonic PodcastChannel into MA Podcast."""
+    if not sonic_podcast.title:
+        raise InvalidDataError(
+            f"Subsonic Podcast ({sonic_podcast.id})is missing required name field."
+        )
     podcast = Podcast(
         item_id=sonic_podcast.id,
         provider=SUBSONIC_DOMAIN,
         name=sonic_podcast.title,
         uri=sonic_podcast.url,
-        total_episodes=len(sonic_podcast.episode),
+        total_episodes=len(sonic_podcast.episode) if sonic_podcast.episode else 0,
         provider_mappings={
             ProviderMapping(
                 item_id=sonic_podcast.id,
@@ -465,7 +470,7 @@ def parse_epsiode(
                 provider_instance=instance_id,
             )
         },
-        duration=sonic_episode.duration,
+        duration=sonic_episode.duration or 0,
     )
 
     if sonic_episode.publish_date:

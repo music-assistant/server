@@ -50,8 +50,8 @@ from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
     BrowseFolder,
+    ItemMapping,
     MediaItemType,
-    MediaItemTypeOrItemMapping,
     PodcastEpisode,
     UniqueList,
 )
@@ -630,7 +630,7 @@ class Audiobookshelf(MusicProvider):
         # If there is only a single audiobook library, we add the folders
         # from _browse_lib_audiobooks, i.e. Authors, Narrators etc.
         # Podcast libs do not have filter folders, so always the root folders.
-        browse_items: list[MediaItemTypeOrItemMapping | BrowseFolder] = []
+        browse_items: list[MediaItemType | BrowseFolder] = []
         if len(self.libraries.audiobooks) <= 1:
             browse_names = [
                 x.name for x in self.libraries.audiobooks.values()
@@ -866,7 +866,7 @@ class Audiobookshelf(MusicProvider):
                 is_finished=fully_played,
             )
 
-    async def browse(self, path: str) -> Sequence[MediaItemTypeOrItemMapping | BrowseFolder]:
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse for audiobookshelf.
 
         Generates this view:
@@ -972,7 +972,7 @@ class Audiobookshelf(MusicProvider):
             items.append(_get_folder(path, lib_id, name))
         return items
 
-    async def _browse_lib_podcasts(self, library_id: str) -> list[MediaItemTypeOrItemMapping]:
+    async def _browse_lib_podcasts(self, library_id: str) -> list[MediaItemType]:
         """No sub categories for podcasts."""
         if len(self.libraries.podcasts[library_id].item_ids) == 0:
             self._log_no_helper_item_ids()
@@ -1070,7 +1070,7 @@ class Audiobookshelf(MusicProvider):
                 )
         return sorted(items, key=lambda x: x.name)
 
-    async def _browse_books(self, library_id: str) -> Sequence[MediaItemTypeOrItemMapping]:
+    async def _browse_books(self, library_id: str) -> Sequence[MediaItemType]:
         if len(self.libraries.audiobooks[library_id].item_ids) == 0:
             self._log_no_helper_item_ids()
         items = []
@@ -1086,8 +1086,8 @@ class Audiobookshelf(MusicProvider):
 
     async def _browse_author_books(
         self, current_path: str, author_id: str
-    ) -> Sequence[MediaItemTypeOrItemMapping | BrowseFolder]:
-        items: list[MediaItemTypeOrItemMapping | BrowseFolder] = []
+    ) -> Sequence[MediaItemType | BrowseFolder]:
+        items: list[MediaItemType | BrowseFolder] = []
 
         abs_author = await self._client.get_author(
             author_id=author_id, include_items=True, include_series=True
@@ -1123,8 +1123,8 @@ class Audiobookshelf(MusicProvider):
 
     async def _browse_narrator_books(
         self, library_id: str, narrator_filter_str: str
-    ) -> Sequence[MediaItemTypeOrItemMapping]:
-        items: list[MediaItemTypeOrItemMapping] = []
+    ) -> Sequence[MediaItemType]:
+        items: list[MediaItemType] = []
         async for response in self._client.get_library_items(
             library_id=library_id, filter_str=f"narrators.{narrator_filter_str}"
         ):
@@ -1141,7 +1141,7 @@ class Audiobookshelf(MusicProvider):
 
         return sorted(items, key=lambda x: x.name)
 
-    async def _browse_series_books(self, series_id: str) -> Sequence[MediaItemTypeOrItemMapping]:
+    async def _browse_series_books(self, series_id: str) -> Sequence[MediaItemType]:
         items = []
 
         abs_series = await self._client.get_series(series_id=series_id, include_progress=True)
@@ -1160,9 +1160,7 @@ class Audiobookshelf(MusicProvider):
 
         return items
 
-    async def _browse_collection_books(
-        self, collection_id: str
-    ) -> Sequence[MediaItemTypeOrItemMapping]:
+    async def _browse_collection_books(self, collection_id: str) -> Sequence[MediaItemType]:
         items = []
         abs_collection = await self._client.get_collection(collection_id=collection_id)
         for book in abs_collection.books:

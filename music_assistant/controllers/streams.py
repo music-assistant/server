@@ -365,7 +365,7 @@ class StreamsController(CoreController):
         if not queue:
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
         session_id = request.match_info["session_id"]
-        if session_id != queue.session_id:
+        if queue.session_id and session_id != queue.session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         queue_player = self.mass.players.get(queue_id)
         queue_item_id = request.match_info["queue_item_id"]
