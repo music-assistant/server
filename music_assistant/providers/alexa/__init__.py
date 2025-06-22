@@ -376,20 +376,3 @@ class AlexaProvider(PlayerProvider):
         player.elapsed_time_last_updated = time.time()
         player.state = PlayerState.PLAYING
         self.mass.players.update(player_id)
-
-    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
-        """
-        Handle enqueuing of the next (queue) item on the player.
-
-        Called when player reports it started buffering a queue item
-        and when the queue items updated.
-
-        A PlayerProvider implementation is in itself responsible for handling this
-        so that the queue items keep playing until its empty or the player stopped.
-
-        This will NOT be called if the end of the queue is reached (and repeat disabled).
-        This will NOT be called if the player is using flow mode to playback the queue.
-        """
-        device_object = self.devices[player_id]
-        api = AlexaAPI(device_object, self.login)
-        await api.next()
