@@ -120,7 +120,7 @@ async def get_config_entries(
             mass.webserver.register_dynamic_route(post_path, proxy_handler, "POST")
 
             try:
-                await auth_helper.authenticate(proxy_url)
+                await auth_helper.authenticate(proxy_url, timeout=300)
                 await save_cookie(login, str(values[CONF_USERNAME]))
             except KeyError:
                 # no URL param was found so user probably cancelled the auth
