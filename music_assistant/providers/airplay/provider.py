@@ -282,7 +282,7 @@ class AirPlayProvider(PlayerProvider):
         player = self.mass.players.get(player_id)
         if not player:
             return
-        if player.group_childs:
+        if player.group_members:
             # pause is not supported while synced, use stop instead
             self.logger.debug("Player is synced, using STOP instead of PAUSE")
             await self.cmd_stop(player_id)

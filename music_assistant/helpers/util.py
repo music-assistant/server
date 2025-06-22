@@ -38,6 +38,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderModuleType
 
+from dataclasses import fields, is_dataclass
+
 LOGGER = logging.getLogger(__name__)
 
 HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
@@ -340,13 +342,12 @@ def get_changed_keys(
     recursive: bool = False,
 ) -> set[str]:
     """Compare 2 dicts and return set of changed keys."""
-    return set(get_changed_values(dict1, dict2, ignore_keys, recursive).keys())
+    return set(get_changed_dict_values(dict1, dict2, ignore_keys, recursive).keys())
 
 
-def get_changed_values(
+def get_changed_dict_values(
     dict1: dict[str, Any],
     dict2: dict[str, Any],
-    ignore_keys: list[str] | None = None,
     recursive: bool = False,
 ) -> dict[str, tuple[Any, Any]]:
     """
@@ -362,18 +363,45 @@ def get_changed_values(
         return {key: (None, value) for key, value in dict1.items()}
     changed_values = {}
     for key, value in dict2.items():
-        if ignore_keys and key in ignore_keys:
+        if isinstance(value, dict) and isinstance(dict1[key], dict) and recursive:
+            changed_subvalues = get_changed_dict_values(dict1[key], value, recursive)
+            for subkey, subvalue in changed_subvalues.items():
+                changed_values[f"{key}.{subkey}"] = subvalue
             continue
-        if key not in dict1:
-            changed_values[key] = (None, value)
-        elif isinstance(value, dict) or isinstance(dict1[key], dict):
-            changed_subvalues = get_changed_values(dict1[key], value, ignore_keys, recursive)
-            if recursive:
-                changed_values.update(changed_subvalues)
-            elif changed_subvalues:
-                changed_values[key] = (dict1[key], value)
-        elif dict1[key] != value:
+        if dict1[key] != value:
             changed_values[key] = (dict1[key], value)
+    return changed_values
+
+
+def get_changed_dataclass_values(
+    obj1: T,
+    obj2: T,
+    recursive: bool = False,
+) -> dict[str, tuple[Any, Any]]:
+    """
+    Compare 2 dataclass instances of the same type and return dict of changed field values.
+
+    dict key is the changed field name, value is tuple of old and new values.
+    """
+    if not (is_dataclass(obj1) and is_dataclass(obj2)):
+        raise ValueError("Both objects must be dataclass instances")
+
+    changed_values: dict[str, tuple[Any, Any]] = {}
+    for field in fields(obj1):
+        val1 = getattr(obj1, field.name, None)
+        val2 = getattr(obj2, field.name, None)
+        if recursive and is_dataclass(val1) and is_dataclass(val2):
+            sub_changes = get_changed_dataclass_values(val1, val2, recursive)
+            for sub_field, sub_value in sub_changes.items():
+                changed_values[f"{field.name}.{sub_field}"] = sub_value
+            continue
+        if recursive and isinstance(val1, dict) and isinstance(val2, dict):
+            sub_changes = get_changed_dict_values(val1, val2, recursive=recursive)
+            for sub_field, sub_value in sub_changes.items():
+                changed_values[f"{field.name}.{sub_field}"] = sub_value
+            continue
+        if val1 != val2:
+            changed_values[field.name] = (val1, val2)
     return changed_values
 
 

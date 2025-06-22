@@ -342,18 +342,15 @@ class ConfigController:
     @api_command("config/players/get")
     async def get_player_config(self, player_id: str) -> PlayerConfig:
         """Return (full) configuration for a single player."""
+        raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
                 raw_conf["provider"] = player.provider
-                prov = self.mass.get_provider(player.provider)
-                conf_entries = await prov.get_player_config_entries(player_id)
+                conf_entries = await player.get_config_entries(player_id)
             else:
                 # handle unavailable player and/or provider
-                if prov := self.mass.get_provider(raw_conf["provider"]):
-                    conf_entries = await prov.get_player_config_entries(player_id)
-                else:
-                    conf_entries = ()
+                conf_entries = []
                 raw_conf["available"] = False
                 raw_conf["name"] = raw_conf.get("name")
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
@@ -420,15 +417,12 @@ class ConfigController:
         # actually store changes (if the above did not raise)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         self.set(conf_key, config.to_raw())
-        # always update player attributes to calculate e.g. player controls etc.
-        self.mass.players.update(config.player_id, force_update=True)
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
             object_id=config.player_id,
             data=config,
         )
-
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 

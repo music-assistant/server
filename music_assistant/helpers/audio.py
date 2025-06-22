@@ -57,12 +57,12 @@ from .util import detect_charset, has_enough_space
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig, PlayerConfig
-    from music_assistant_models.player import Player
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.models.player import Player
     from music_assistant.providers.player_group import PlayerGroupProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
@@ -482,7 +482,7 @@ def get_player_dsp_details(
         filters=dsp_config.filters,
         output_gain=dsp_config.output_gain,
         output_limiter=output_limiter,
-        output_format=player.output_format,
+        output_format=player.extra_data.get("output_format", None),
     )
 
 
@@ -505,8 +505,8 @@ def get_stream_dsp_details(
                 provider = mass.get_provider(player.provider)
                 if TYPE_CHECKING:  # avoid circular import
                     assert isinstance(provider, PlayerGroupProvider)
-                if provider:
-                    output_format = provider._get_sync_leader(player).output_format
+                if provider and (sync_leader := provider._get_sync_leader(player)):
+                    output_format = sync_leader.extra_data.get("output_format", None)
             except RuntimeError:
                 # _get_sync_leader will raise a RuntimeError if this group has no players
                 # just ignore this and continue without output_format
@@ -518,14 +518,14 @@ def get_stream_dsp_details(
         if group_preventing_dsp:
             # The leader is responsible for sending the (combined) audio stream, so get
             # the output format from the leader.
-            output_format = player.output_format
+            output_format = player.extra_data.get("output_format", None)
         is_external_group = player.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR)
 
     # We don't enumerate all group members in case this group is externally created
     # (e.g. a Chromecast group from the Google Home app)
-    if player and player.group_childs and not is_external_group:
+    if player and player.group_members and not is_external_group:
         # grouped playback, get DSP details for each player in the group
-        for child_id in player.group_childs:
+        for child_id in player.group_members:
             # skip if we already have the details (so if it's the group leader)
             if child_id in dsp:
                 continue
@@ -1422,7 +1422,7 @@ def is_grouping_preventing_dsp(player: Player) -> bool:
     # We require the caller to handle non-leader cases themselves since player.synced_to
     # can be unreliable in some edge cases
     multi_device_dsp_supported = PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
-    child_count = len(player.group_childs) if player.group_childs else 0
+    child_count = len(player.group_members) if player.group_members else 0
 
     is_multiple_devices: bool
     if player.provider.startswith("player_group"):
@@ -1483,8 +1483,8 @@ def get_player_filter_params(
             # - The group leader does not support MULTI_DEVICE_DSP
             # - But only contains a single player (since nothing is preventing DSP)
             # We can still apply the DSP of that single player.
-            if player.group_childs:
-                child_player = mass.players.get(player.group_childs[0])
+            if player.group_members:
+                child_player = mass.players.get(player.group_members[0])
                 assert child_player is not None  # for type checking
                 dsp = mass.config.get_player_dsp_config(child_player.player_id)
             else:
@@ -1494,7 +1494,7 @@ def get_player_filter_params(
         # We here implicitly know what output format is used for the player
         # in the audio processing steps. We save this information to
         # later be able to show this to the user in the UI.
-        player.output_format = output_format
+        player.extra_data["output_format"] = output_format
 
         limiter_enabled = is_output_limiter_enabled(mass, player)
 

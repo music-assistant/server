@@ -10,7 +10,6 @@ from zeroconf.asyncio import AsyncServiceInfo
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import PlayerConfig
     from music_assistant_models.player import Player
 
 # ruff: noqa: ARG001, ARG002
@@ -27,19 +26,14 @@ class PlayerProvider(Provider):
         """Call after the provider has been loaded."""
         await self.discover_players()
 
-    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
-        # default implementation: feel free to override
-        if (
-            "enabled" in changed_keys
-            and config.enabled
-            and not self.mass.players.get(config.player_id)
-        ):
-            # if a player gets enabled, trigger discovery
-            task_id = f"discover_players_{self.instance_id}"
-            self.mass.call_later(5, self.discover_players, task_id=task_id)
-        else:
-            await self.poll_player(config.player_id)
+    def on_player_enabled(self, player_id: str) -> None:
+        """Call (by config manager) when a player gets enabled."""
+        # default implementation: trigger discovery - feel free to override
+        task_id = f"discover_players_{self.instance_id}"
+        self.mass.call_later(5, self.discover_players, task_id=task_id)
+
+    def on_player_disabled(self, player_id: str) -> None:
+        """Call (by config manager) when a player gets disabled."""
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player from this provider."""

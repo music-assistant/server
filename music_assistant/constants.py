@@ -715,3 +715,13 @@ CACHE_CATEGORY_OPEN_SUBSONIC: Final[int] = 12
 
 # CACHE base keys
 CACHE_KEY_PLAYER_POWER: Final[str] = "player_power"
+
+
+# extra data / extra attributes keys
+ATTR_FAKE_POWER: Final[str] = "fake_power"
+ATTR_FAKE_VOLUME: Final[str] = "fake_volume_level"
+ATTR_FAKE_MUTE: Final[str] = "fake_volume_muted"
+ATTR_ANNOUNCEMENT_IN_PROGRESS: Final[str] = "announcement_in_progress"
+ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
+ATTR_LAST_POLL: Final[str] = "last_poll"
+ATTR_GROUP_MEMBERS: Final[str] = "group_members"

@@ -252,7 +252,7 @@ class ChromecastProvider(PlayerProvider):
         # optimistically update the group childs
         if castplayer.player.type == PlayerType.GROUP:
             active_group = castplayer.player.active_group or castplayer.player.player_id
-            for child_id in castplayer.player.group_childs:
+            for child_id in castplayer.player.group_members:
                 if child := self.castplayers.get(child_id):
                     child.player.powered = powered
                     child.player.active_group = active_group if powered else None
@@ -458,11 +458,11 @@ class ChromecastProvider(PlayerProvider):
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.STEREO_PAIR
-            castplayer.player.group_childs.clear()
+            castplayer.player.group_members.clear()
         # handle cast groups
         if castplayer.cast_info.is_audio_group and not castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.GROUP
-            castplayer.player.group_childs.set(
+            castplayer.player.group_members.set(
                 str(UUID(x)) for x in castplayer.mz_controller.members
             )
             castplayer.player.supported_features = {
@@ -485,7 +485,7 @@ class ChromecastProvider(PlayerProvider):
             and castplayer.player.type == PlayerType.GROUP
         ):
             # group is being powered off, update group childs
-            for child_id in castplayer.player.group_childs:
+            for child_id in castplayer.player.group_members:
                 if child := self.castplayers.get(child_id):
                     child.player.powered = False
                     child.player.active_group = None
@@ -560,7 +560,7 @@ class ChromecastProvider(PlayerProvider):
         # where it does not receive updates from the group,
         # so we need to update the group child(s) manually
         if castplayer.player.type == PlayerType.GROUP and castplayer.player.powered:
-            for child_id in castplayer.player.group_childs:
+            for child_id in castplayer.player.group_members:
                 if child := self.castplayers.get(child_id):
                     if not child.cast_info.is_multichannel_group:
                         continue

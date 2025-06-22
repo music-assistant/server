@@ -868,7 +868,7 @@ class PlayerGroupProvider(PlayerProvider):
 
         changed = False
         # Verify that no player is part of a separate group
-        for child_player_id in player.group_childs:
+        for child_player_id in player.group_members:
             child_player = self.mass.players.get(child_player_id)
             if child_player is None:
                 continue

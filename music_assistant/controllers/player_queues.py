@@ -57,6 +57,7 @@ from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
+    ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
     CONF_CROSSFADE,
     CONF_FLOW_MODE,
@@ -382,7 +383,7 @@ class PlayerQueuesController(CoreController):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # always fetch the underlying player so we can raise early if its not available
         queue_player = self.mass.players.get(queue_id, True)
-        if queue_player.extra_data.get("announcement_in_progress"):
+        if queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
 
@@ -660,7 +661,7 @@ class PlayerQueuesController(CoreController):
                 await player_provider.cmd_stop(queue_player.player_id)
 
         # we auto stop a player from paused when its paused for 30 seconds
-        if not queue_player.extra_data.get("announcement_in_progress"):
+        if not queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
             self.mass.create_task(_watch_pause())
 
     @api_command("player_queues/play_pause")
@@ -964,7 +965,7 @@ class PlayerQueuesController(CoreController):
         if (queue := self._queues.get(queue_id)) is None:
             # race condition
             return
-        if player.extra_data.get("announcement_in_progress"):
+        if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
             # do nothing while the announcement is in progress
             return
         # determine if this queue is currently active for this player
@@ -981,10 +982,12 @@ class PlayerQueuesController(CoreController):
         # queue is active and preflight checks passed, update the queue details
         self._update_queue_from_player(player)
 
-    def on_player_remove(self, player_id: str) -> None:
+    def on_player_remove(self, player_id: str, permanent: bool) -> None:
         """Call when a player is removed from the registry."""
-        self.mass.create_task(self.mass.cache.delete(f"queue.state.{player_id}"))
-        self.mass.create_task(self.mass.cache.delete(f"queue.items.{player_id}"))
+        if permanent:
+            # if the player is permanently removed, we also remove the cached queue data
+            self.mass.create_task(self.mass.cache.delete(f"queue.state.{player_id}"))
+            self.mass.create_task(self.mass.cache.delete(f"queue.items.{player_id}"))
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
@@ -1764,11 +1767,13 @@ class PlayerQueuesController(CoreController):
         # This is enough to detect any changes in the DSPDetails
         # (so child count changed, or any output format changed)
         output_formats = []
-        if player.output_format:
-            output_formats.append(str(player.output_format))
-        for child_id in player.group_childs:
-            if (child := self.mass.players.get(child_id)) and child.output_format:
-                output_formats.append(str(child.output_format))
+        if output_format := player.extra_data.get("output_format"):
+            output_formats.append(str(output_format))
+        for child_id in player.group_members:
+            if (child := self.mass.players.get(child_id)) and (
+                output_format := child.extra_data.get("output_format")
+            ):
+                output_formats.append(str(output_format))
             else:
                 output_formats.append("unknown")
 

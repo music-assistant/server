@@ -77,7 +77,6 @@ EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
 ]
 
-ENABLE_DEBUG = os.environ.get("PYTHONDEVMODE") == "1"
 LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -127,10 +126,14 @@ class MusicAssistant:
         self.closing = False
         self.running_as_hass_addon: bool = False
         self.version: str = "0.0.0"
+        self.debug_enabled = os.environ.get("PYTHONDEVMODE") == "1" or LOGGER.isEnabledFor(
+            logging.DEBUG
+        )
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
+        self.loop_thread_id = getattr(self.loop, "_thread_id")  # noqa: B009
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
         # create shared zeroconf instance
@@ -296,10 +299,7 @@ class MusicAssistant:
         if self.closing:
             return
 
-        if ENABLE_DEBUG and not isinstance(threading.current_thread(), threading._MainThread):  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "Non-Async operation detected: This method may only be called from the eventloop."
-            )
+        self.verify_event_loop_thread("signal_event")
 
         if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
             # do not log queue time updated events because that is too chatty
@@ -363,10 +363,7 @@ class MusicAssistant:
                 existing.cancel()
             else:
                 return existing
-        if ENABLE_DEBUG and not isinstance(threading.current_thread(), threading._MainThread):  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "Non-Async operation detected: This method may only be called from the eventloop."
-            )
+        self.verify_event_loop_thread("create_task")
 
         if asyncio.iscoroutinefunction(target):
             # coroutine function
@@ -416,16 +413,13 @@ class MusicAssistant:
 
         Use task_id for debouncing.
         """
+        self.verify_event_loop_thread("call_later")
+
         if not task_id:
             task_id = uuid4().hex
 
         if existing := self._tracked_timers.get(task_id):
             existing.cancel()
-
-        if ENABLE_DEBUG and not isinstance(threading.current_thread(), threading._MainThread):  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "Non-Async operation detected: This method may only be called from the eventloop."
-            )
 
         def _create_task(_target: Coroutine[Any, Any, _R]) -> None:
             self._tracked_timers.pop(task_id)
@@ -598,6 +592,13 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", error)
         await self.unload_provider(instance_id)
 
+    def verify_event_loop_thread(self, what: str) -> None:
+        """Report and raise if we are not running in the event loop thread."""
+        if self.loop_thread_id != threading.get_ident():
+            raise RuntimeError(
+                f"Non-Async operation detected: {what} may only be called from the eventloop."
+            )
+
     def _register_api_commands(self) -> None:
         """Register all methods decorated as api_command within a class(instance)."""
         for cls in (
@@ -736,7 +737,7 @@ class MusicAssistant:
                 if dir_str.startswith(("_", ".")):
                     continue
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)
-                if dir_str == "test" and not ENABLE_DEBUG:
+                if dir_str == "test" and not self.debug_enabled:
                     continue
                 if not await isdir(dir_path):
                     continue

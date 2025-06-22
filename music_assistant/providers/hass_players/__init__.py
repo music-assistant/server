@@ -590,14 +590,14 @@ class HomeAssistantPlayers(PlayerProvider):
                 )
                 if group_members and group_members[0] == player.player_id:
                     # first in the list is the group leader
-                    player.group_childs.set(group_members)
+                    player.group_members.set(group_members)
                     player.synced_to = None
                 elif group_members and group_members[0] != player.player_id:
                     # this player is not the group leader
-                    player.group_childs.clear()
+                    player.group_members.clear()
                     player.synced_to = group_members[0]
                 else:
-                    player.group_childs.clear()
+                    player.group_members.clear()
                     player.synced_to = None
 
     async def _late_add_player(self, entity_id: str) -> None:

@@ -817,23 +817,23 @@ class MusicCast(PlayerProvider):
         if len(device.musiccast_group) == 1:
             if device.musiccast_group[0] == device:
                 # we are in a group with ourselves.
-                player.group_childs.clear()
+                player.group_members.clear()
                 player.synced_to = None
                 player.active_group = None
 
         elif not device.is_client and not device.is_server:
-            player.group_childs.clear()
+            player.group_members.clear()
             player.synced_to = None
             player.active_group = None
 
         elif device.is_client:
             _synced_to_id = self._get_player_id_from_mc_zone_player(device.group_server)
-            player.group_childs.clear()
+            player.group_members.clear()
             player.synced_to = _synced_to_id
             player.active_group = _synced_to_id
 
         elif device.is_server:
-            player.group_childs.set(
+            player.group_members.set(
                 [self._get_player_id_from_mc_zone_player(x) for x in device.musiccast_group]
             )
             player.synced_to = None

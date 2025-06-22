@@ -352,7 +352,7 @@ class SlimprotoProvider(PlayerProvider):
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
 
-        if not player.group_childs:
+        if not player.group_members:
             slimplayer = self.slimproto.get_player(player_id)
             # simple, single-player playback
             await self._handle_play_url(
@@ -806,7 +806,7 @@ class SlimprotoProvider(PlayerProvider):
         if player.synced_to:
             # unpause of sync child is handled by sync master
             return
-        if not player.group_childs:
+        if not player.group_members:
             # not a sync group, continue
             await slimplayer.unpause_at(slimplayer.jiffies)
             return
@@ -860,7 +860,7 @@ class SlimprotoProvider(PlayerProvider):
         player = self.mass.players.get(player_id)
         # we need to return the player itself too
         group_child_ids = {player_id}
-        group_child_ids.update(player.group_childs)
+        group_child_ids.update(player.group_members)
         for child_id in group_child_ids:
             if slimplayer := self.slimproto.get_player(child_id):
                 yield slimplayer
