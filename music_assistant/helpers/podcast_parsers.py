@@ -125,7 +125,7 @@ def parse_podcast_episode(
     except ValueError:
         # we are missing the episode enclosure or stream information
         return None
-    # We treat a guid as invalid if it should contain a space.
+    # We treat a guid as invalid if contains a space.
     guid_or_stream_url = guid if guid is not None and len(guid.split(" ")) == 1 else stream_url
 
     # Default episode id. A guid is preferred as identification.
