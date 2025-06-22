@@ -29,13 +29,6 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CACHE_CATEGORY_LIBRARY_ITEMS
-from music_assistant.controllers.media.albums import AlbumsController
-from music_assistant.controllers.media.artists import ArtistsController
-from music_assistant.controllers.media.audiobooks import AudiobooksController
-from music_assistant.controllers.media.playlists import PlaylistController
-from music_assistant.controllers.media.podcasts import PodcastsController
-from music_assistant.controllers.media.radio import RadioController
-from music_assistant.controllers.media.tracks import TracksController
 
 from .provider import Provider
 
@@ -43,6 +36,14 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.streamdetails import StreamDetails
+
+    from music_assistant.controllers.media.albums import AlbumsController
+    from music_assistant.controllers.media.artists import ArtistsController
+    from music_assistant.controllers.media.audiobooks import AudiobooksController
+    from music_assistant.controllers.media.playlists import PlaylistController
+    from music_assistant.controllers.media.podcasts import PodcastsController
+    from music_assistant.controllers.media.radio import RadioController
+    from music_assistant.controllers.media.tracks import TracksController
 
 # ruff: noqa: ARG001, ARG002
 
@@ -678,31 +679,33 @@ class MusicProvider(Provider):
             cannot be moved out of this scope.
             """
             library_item: Artist | Album | Track | Radio | Playlist | Audiobook | Podcast
-            if isinstance(prov_item, Artist):
-                assert isinstance(controller, ArtistsController)
-                library_item = await controller.update_item_in_library(item_id, prov_item)
-            elif isinstance(prov_item, Album):
-                assert isinstance(controller, AlbumsController)
-                library_item = await controller.update_item_in_library(item_id, prov_item)
-            elif isinstance(prov_item, Track):
-                assert isinstance(controller, TracksController)
-                library_item = await controller.update_item_in_library(item_id, prov_item)
-            elif isinstance(prov_item, Radio):
-                assert isinstance(controller, RadioController)
-                library_item = await controller.update_item_in_library(item_id, prov_item)
-            elif isinstance(prov_item, Playlist):
-                assert isinstance(controller, PlaylistController)
-                library_item = await controller.update_item_in_library(item_id, prov_item)
-            elif isinstance(prov_item, Audiobook):
-                assert isinstance(controller, AudiobooksController)
-                library_item = await controller.update_item_in_library(item_id, prov_item)
-            elif isinstance(prov_item, Podcast):
-                assert isinstance(controller, PodcastsController)
-                library_item = await controller.update_item_in_library(item_id, prov_item)
+            if TYPE_CHECKING:
+                if isinstance(prov_item, Artist):
+                    assert isinstance(controller, ArtistsController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Album):
+                    assert isinstance(controller, AlbumsController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Track):
+                    assert isinstance(controller, TracksController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Radio):
+                    assert isinstance(controller, RadioController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Playlist):
+                    assert isinstance(controller, PlaylistController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Audiobook):
+                    assert isinstance(controller, AudiobooksController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Podcast):
+                    assert isinstance(controller, PodcastsController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                else:
+                    raise TypeError("Prov item unknown in this context.")
+                return library_item
             else:
-                raise TypeError("Prov item unknown in this context.")
-
-            return library_item
+                return await controller.update_item_in_library(item_id, prov_item)
 
         if not self.library_supported(media_type):
             raise UnsupportedFeaturedException("Library sync not supported for this media type")
@@ -732,35 +735,39 @@ class MusicProvider(Provider):
                     # all isinstance(...) for type checking. The statement
                     # library_item = await controller.add_item_to_library(prov_item)
                     # cannot be moved out of this scope.
-                    if isinstance(prov_item, Artist):
-                        assert isinstance(controller, ArtistsController)
-                        library_item = await controller.add_item_to_library(prov_item)
-                    elif isinstance(prov_item, Album):
-                        assert isinstance(controller, AlbumsController)
-                        library_item = await controller.add_item_to_library(prov_item)
-                    elif isinstance(prov_item, Track):
-                        assert isinstance(controller, TracksController)
-                        library_item = await controller.add_item_to_library(prov_item)
-                    elif isinstance(prov_item, Radio):
-                        assert isinstance(controller, RadioController)
-                        library_item = await controller.add_item_to_library(prov_item)
-                    elif isinstance(prov_item, Playlist):
-                        assert isinstance(controller, PlaylistController)
-                        library_item = await controller.add_item_to_library(prov_item)
-                    elif isinstance(prov_item, Audiobook):
-                        assert isinstance(controller, AudiobooksController)
-                        library_item = await controller.add_item_to_library(prov_item)
-                    elif isinstance(prov_item, Podcast):
-                        assert isinstance(controller, PodcastsController)
-                        library_item = await controller.add_item_to_library(prov_item)
+                    if TYPE_CHECKING:
+                        if isinstance(prov_item, Artist):
+                            assert isinstance(controller, ArtistsController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Album):
+                            assert isinstance(controller, AlbumsController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Track):
+                            assert isinstance(controller, TracksController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Radio):
+                            assert isinstance(controller, RadioController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Playlist):
+                            assert isinstance(controller, PlaylistController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Audiobook):
+                            assert isinstance(controller, AudiobooksController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Podcast):
+                            assert isinstance(controller, PodcastsController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        else:
+                            raise RuntimeError
                     else:
-                        raise RuntimeError
+                        library_item = await controller.add_item_to_library(prov_item)
                 elif getattr(library_item, "cache_checksum", None) != getattr(
                     prov_item, "cache_checksum", None
                 ):
                     # existing dbitem checksum changed (playlists only)
-                    assert isinstance(prov_item, Playlist)
-                    assert isinstance(controller, PlaylistController)
+                    if TYPE_CHECKING:
+                        assert isinstance(prov_item, Playlist)
+                        assert isinstance(controller, PlaylistController)
                     library_item = await controller.update_item_in_library(
                         library_item.item_id, prov_item
                     )
