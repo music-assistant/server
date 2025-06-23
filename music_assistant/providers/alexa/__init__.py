@@ -179,9 +179,8 @@ async def save_cookie(login: AlexaLogin, username: str) -> None:
     assert isinstance(cookie_jar, aiohttp.CookieJar)
     if login._debug:
         _LOGGER.debug("Saving cookie to %s", login._cookiefile[0])
-    loop = asyncio.get_event_loop()
     try:
-        await loop.run_in_executor(None, cookie_jar.save, login._cookiefile[0])
+        await asyncio.to_thread(None, cookie_jar.save, login._cookiefile[0])
     except (OSError, EOFError, TypeError, AttributeError):
         _LOGGER.debug("Error saving pickled cookie to %s", login._cookiefile[0])
 
