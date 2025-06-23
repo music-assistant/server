@@ -169,10 +169,10 @@ async def save_cookie(login: AlexaLogin, username: str) -> None:
         return
 
     cookie_dir = os.path.join(mass.storage_path, ".alexa")
-    os.makedirs(cookie_dir, exist_ok=True)
+    await asyncio.to_thread(os.makedirs(cookie_dir, exist_ok=True))
     cookie_path = os.path.join(cookie_dir, f"alexa_media.{username}.pickle")
     login._cookiefile = [login._outputpath(cookie_path)]
-    if (login._cookiefile[0]) and os.path.exists(login._cookiefile[0]):
+    if (login._cookiefile[0]) and await asyncio.to_thread(os.path.exists(login._cookiefile[0])):
         _LOGGER.debug("Removing outdated cookiefile %s", login._cookiefile[0])
         await delete_cookie(login._cookiefile[0])
     cookie_jar = login._session.cookie_jar
@@ -189,7 +189,7 @@ async def delete_cookie(cookiefile: str) -> None:
     """Delete the specified cookie file."""
     if await asyncio.to_thread(os.path.exists, cookiefile):
         try:
-            os.remove(cookiefile)
+            await asyncio.to_thread(os.remove(cookiefile))
             _LOGGER.debug("Deleted cookie file: %s", cookiefile)
         except OSError as e:
             _LOGGER.error("Failed to delete cookie file %s: %s", cookiefile, e)
@@ -234,7 +234,7 @@ class AlexaProvider(PlayerProvider):
         )
 
         cookie_dir = os.path.join(mass.storage_path, ".alexa")
-        os.makedirs(cookie_dir, exist_ok=True)
+        await asyncio.to_thread(os.makedirs(cookie_dir, exist_ok=True))
         cookie_path = os.path.join(
             cookie_dir, f"alexa_media.{self.config.get_value(CONF_USERNAME)}.pickle"
         )
