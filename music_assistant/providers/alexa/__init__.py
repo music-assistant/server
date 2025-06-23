@@ -234,7 +234,7 @@ class AlexaProvider(PlayerProvider):
             outputpath=lambda x: x,
         )
 
-        cookie_dir = os.path.join(os.path.expanduser("~"), ".musicassistant", "alexa")
+        cookie_dir = os.path.join(mass.storage_path, ".alexa")
         os.makedirs(cookie_dir, exist_ok=True)
         cookie_path = os.path.join(
             cookie_dir, f"alexa_media.{self.config.get_value(CONF_USERNAME)}.pickle"
