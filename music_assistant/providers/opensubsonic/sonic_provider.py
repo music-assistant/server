@@ -669,13 +669,19 @@ class OpenSonicProvider(MusicProvider):
                 await self._run_async(self.conn.delete_bookmark, mid=ep_id)
             except DataNotFoundError:
                 # We probably raced with something else deleting this bookmark, not really a problem
-                return
+                self.logger.info("Bookmark for item '%s' has already been deleted.", ep_id)
+            return
 
         # Otherwise, create a new bookmark for this item or update the existing one
         # MA provides a position in seconds but expects it back in milliseconds, while
         # the Open Subsonic spec expects a position in milliseconds but returns it in
         # seconds, go figure.
-        await self._run_async(self.conn.create_bookmark, mid=ep_id, position=position * 1000)
+        await self._run_async(
+            self.conn.create_bookmark,
+            mid=ep_id,
+            position=position * 1000,
+            comment="Music Assistant Bookmark",
+        )
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """
