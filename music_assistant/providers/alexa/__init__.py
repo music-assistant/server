@@ -188,7 +188,7 @@ async def save_cookie(login: AlexaLogin, username: str) -> None:
 
 async def delete_cookie(cookiefile: str) -> None:
     """Delete the specified cookie file."""
-    if os.path.exists(cookiefile):
+    if await asyncio.to_thread(os.path.exists, cookiefile):
         try:
             os.remove(cookiefile)
             _LOGGER.debug("Deleted cookie file: %s", cookiefile)
