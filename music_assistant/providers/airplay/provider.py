@@ -463,6 +463,8 @@ class AirPlayProvider(PlayerProvider):
         if player_id in group_leader.group_childs:
             group_leader.group_childs.remove(player_id)
         mass_player.synced_to = None
+        mass_player.active_source = None
+        mass_player.state = PlayerState.IDLE
         airplay_player = self._players.get(player_id)
         if airplay_player:
             await airplay_player.cmd_stop()
