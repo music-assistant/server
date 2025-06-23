@@ -38,7 +38,6 @@ _LOGGER = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigValueType,
-        PlayerConfig,
         ProviderConfig,
     )
     from music_assistant_models.provider import ProviderManifest
@@ -50,7 +49,7 @@ CONF_URL = "url"
 CONF_ACTION_AUTH = "auth"
 CONF_AUTH_TOKEN = "token"
 
-SUPPORTED_FEATURES = set()
+SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 
 async def setup(
@@ -121,7 +120,7 @@ async def get_config_entries(
 
             try:
                 await auth_helper.authenticate(proxy_url, timeout=300)
-                await save_cookie(login, str(values[CONF_USERNAME]))
+                await save_cookie(login, str(values[CONF_USERNAME]), mass)
             except KeyError:
                 # no URL param was found so user probably cancelled the auth
                 pass
@@ -162,17 +161,17 @@ async def get_config_entries(
     )
 
 
-async def save_cookie(login: AlexaLogin, username: str) -> None:
+async def save_cookie(login: AlexaLogin, username: str, mass: MusicAssistant) -> None:
     """Save the cookie file for the Alexa login."""
     if login._session is None:
         _LOGGER.error("AlexaLogin session is not initialized.")
         return
 
     cookie_dir = os.path.join(mass.storage_path, ".alexa")
-    await asyncio.to_thread(os.makedirs(cookie_dir, exist_ok=True))
+    await asyncio.to_thread(os.makedirs, cookie_dir, exist_ok=True)
     cookie_path = os.path.join(cookie_dir, f"alexa_media.{username}.pickle")
     login._cookiefile = [login._outputpath(cookie_path)]
-    if (login._cookiefile[0]) and await asyncio.to_thread(os.path.exists(login._cookiefile[0])):
+    if (login._cookiefile[0]) and await asyncio.to_thread(os.path.exists, login._cookiefile[0]):
         _LOGGER.debug("Removing outdated cookiefile %s", login._cookiefile[0])
         await delete_cookie(login._cookiefile[0])
     cookie_jar = login._session.cookie_jar
@@ -180,7 +179,7 @@ async def save_cookie(login: AlexaLogin, username: str) -> None:
     if login._debug:
         _LOGGER.debug("Saving cookie to %s", login._cookiefile[0])
     try:
-        await asyncio.to_thread(None, cookie_jar.save, login._cookiefile[0])
+        await asyncio.to_thread(cookie_jar.save, login._cookiefile[0])
     except (OSError, EOFError, TypeError, AttributeError):
         _LOGGER.debug("Error saving pickled cookie to %s", login._cookiefile[0])
 
@@ -189,7 +188,7 @@ async def delete_cookie(cookiefile: str) -> None:
     """Delete the specified cookie file."""
     if await asyncio.to_thread(os.path.exists, cookiefile):
         try:
-            await asyncio.to_thread(os.remove(cookiefile))
+            await asyncio.to_thread(os.remove, cookiefile)
             _LOGGER.debug("Deleted cookie file: %s", cookiefile)
         except OSError as e:
             _LOGGER.error("Failed to delete cookie file %s: %s", cookiefile, e)
@@ -233,8 +232,8 @@ class AlexaProvider(PlayerProvider):
             outputpath=lambda x: x,
         )
 
-        cookie_dir = os.path.join(mass.storage_path, ".alexa")
-        await asyncio.to_thread(os.makedirs(cookie_dir, exist_ok=True))
+        cookie_dir = os.path.join(self.mass.storage_path, ".alexa")
+        await asyncio.to_thread(os.makedirs, cookie_dir, exist_ok=True)
         cookie_path = os.path.join(
             cookie_dir, f"alexa_media.{self.config.get_value(CONF_USERNAME)}.pickle"
         )
@@ -281,7 +280,6 @@ class AlexaProvider(PlayerProvider):
             CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_HTTP_PROFILE,
         )
-
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
