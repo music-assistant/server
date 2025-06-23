@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from libopensonic.media import Child as SonicSong
     from libopensonic.media import OpenSubsonicExtension
     from libopensonic.media import Playlist as SonicPlaylist
+    from libopensonic.media import PodcastChannel as SonicChannel
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
 
@@ -778,10 +779,33 @@ class OpenSonicProvider(MusicProvider):
     async def recommendations(self) -> list[RecommendationFolder]:
         """Provide recommendations.
 
-        These can provide favorited items, recently added albums, and most played albums.
-        What is included is configured with the provider.
+        These can provide favorited items, recently added albums, newest podcast episodes,
+        and most played albums.  What is included is configured with the provider.
         """
         recos: list[RecommendationFolder] = []
+
+        if self._enable_podcasts:
+            podcasts: RecommendationFolder = RecommendationFolder(
+                item_id="subsonic_newest_podcasts",
+                provider=self.domain,
+                name="Newest Podcast Episodes",
+            )
+            sonic_episodes = await self._run_async(
+                self.conn.get_newest_podcasts, count=self._reco_limit
+            )
+            sonic_channel: SonicChannel | None = None
+            for ep in sonic_episodes:
+                if sonic_channel is None or sonic_channel.id != ep.channel_id:
+                    channels = await self._run_async(
+                        self.conn.get_podcasts, inc_episodes=True, pid=ep.channel_id
+                    )
+                    if not channels:
+                        self.logger.warning("Can't find podcast channel for id %s", ep.channel_id)
+                        continue
+                    sonic_channel = channels[0]
+                podcasts.items.append(parse_epsiode(self.instance_id, ep, sonic_channel))
+            recos.append(podcasts)
+
         if self._show_faves:
             faves: RecommendationFolder = RecommendationFolder(
                 item_id="subsonic_starred_albums", provider=self.domain, name="Starred Items"

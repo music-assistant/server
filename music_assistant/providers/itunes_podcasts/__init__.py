@@ -275,7 +275,12 @@ class ITunesPodcastsProvider(MusicProvider):
             if len(episode_enclosures) < 1:
                 raise MediaNotFoundError
             stream_url: str | None = episode_enclosures[0].get("url", None)
-            if guid_or_stream_url == episode.get("guid", stream_url):
+            guid = episode.get("guid")
+            if guid is not None and len(guid.split(" ")) == 1:
+                _guid_or_stream_url_compare = guid
+            else:
+                _guid_or_stream_url_compare = stream_url
+            if guid_or_stream_url == _guid_or_stream_url_compare:
                 return stream_url
         return None
 
