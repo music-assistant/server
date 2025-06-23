@@ -50,7 +50,7 @@ CONF_URL = "url"
 CONF_ACTION_AUTH = "auth"
 CONF_AUTH_TOKEN = "token"
 
-SUPPORTED_FEATURES = {ProviderFeature.UNKNOWN}
+SUPPORTED_FEATURES = set()
 
 
 async def setup(
