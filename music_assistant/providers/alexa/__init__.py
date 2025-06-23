@@ -283,8 +283,6 @@ class AlexaProvider(PlayerProvider):
             CONF_ENTRY_HTTP_PROFILE,
         )
 
-    async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
-        """Call (by config manager) when the configuration of a player changes."""
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
