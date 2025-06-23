@@ -258,7 +258,11 @@ class AlexaProvider(PlayerProvider):
                     available=True,
                     powered=False,
                     device_info=DeviceInfo(),
-                    supported_features={PlayerFeature.VOLUME_SET},
+                    supported_features={
+                        PlayerFeature.VOLUME_SET,
+                        PlayerFeature.PAUSE,
+                        PlayerFeature.VOLUME_MUTE,
+                    },
                 )
                 await self.mass.players.register_or_update(player)
                 # Initialize AlexaDevice and store in self.devices
