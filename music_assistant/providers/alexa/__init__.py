@@ -168,7 +168,7 @@ async def save_cookie(login: AlexaLogin, username: str) -> None:
         _LOGGER.error("AlexaLogin session is not initialized.")
         return
 
-    cookie_dir = os.path.join(os.path.expanduser("~"), ".musicassistant", "alexa")
+    cookie_dir = os.path.join(mass.storage_path, ".alexa")
     os.makedirs(cookie_dir, exist_ok=True)
     cookie_path = os.path.join(cookie_dir, f"alexa_media.{username}.pickle")
     login._cookiefile = [login._outputpath(cookie_path)]
