@@ -479,4 +479,23 @@ def parse_epsiode(
     if sonic_episode.description:
         episode.metadata.description = sonic_episode.description
 
+    if sonic_episode.cover_art:
+        episode.metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_episode.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+    elif sonic_channel.cover_art:
+        episode.metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_channel.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
     return episode
