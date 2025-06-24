@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from mashumaro import field_options, pass_through
 from music_assistant_models.enums import StreamType
+from music_assistant_models.media_items.audio_format import AudioFormat  # noqa: TC002
 from music_assistant_models.player import PlayerMedia, PlayerSource
 
 from .provider import Provider
-
-if TYPE_CHECKING:
-    from music_assistant_models.media_items.audio_format import AudioFormat
 
 # ruff: noqa: ARG001, ARG002
 
