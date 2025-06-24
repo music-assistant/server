@@ -5,13 +5,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, final
 
-from music_assistant_models.enums import ProviderStage
-
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.enums import ProviderFeature, ProviderType
+    from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
     from music_assistant_models.provider import ProviderManifest
     from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
