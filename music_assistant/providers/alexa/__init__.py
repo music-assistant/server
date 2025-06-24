@@ -86,7 +86,7 @@ async def get_config_entries(
             # --- Proxy authentication logic using AlexaProxy ---
             # Build the proxy path and URL
             proxy_path = "/alexa/auth/proxy/"
-            post_path = "/alexa/auth/proxy/ap/signin"
+            post_path = "/alexa/auth/proxy/ap/signin/*"
             base_url = mass.webserver.base_url.rstrip("/")
             proxy_url = f"{base_url}{proxy_path}"
 
@@ -127,8 +127,8 @@ async def get_config_entries(
             except Exception as error:
                 raise LoginFailed(f"Failed to authenticate with Amazon '{error}'.")
             finally:
-                mass.webserver.unregister_dynamic_route(proxy_path)
-                mass.webserver.unregister_dynamic_route(post_path)
+                mass.webserver.unregister_dynamic_route(proxy_path, "GET")
+                mass.webserver.unregister_dynamic_route(post_path, "POST")
 
     return (
         ConfigEntry(
