@@ -48,6 +48,8 @@ if TYPE_CHECKING:
 CONF_URL = "url"
 CONF_ACTION_AUTH = "auth"
 CONF_AUTH_TOKEN = "token"
+CONF_API_IP = "api_ip"
+CONF_API_PORT = "api_port"
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
@@ -151,6 +153,22 @@ async def get_config_entries(
             label="Password",
             required=True,
             value=values.get(CONF_PASSWORD) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_API_IP,
+            type=ConfigEntryType.STRING,
+            label="API IP Address",
+            required=True,
+            default_value="localhost",
+            value=values.get(CONF_API_IP) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_API_PORT,
+            type=ConfigEntryType.INTEGER,
+            label="API Port",
+            required=True,
+            default_value=3000,
+            value=values.get(CONF_API_PORT) if values else None,
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH,
@@ -358,10 +376,13 @@ class AlexaProvider(PlayerProvider):
         if not (player := self.mass.players.get(player_id)):
             return
 
+        api_ip = self.config.get_value(CONF_API_IP)
+        api_port = self.config.get_value(CONF_API_PORT)
+        api_url = f"http://{api_ip}:{api_port}/ma/push-url"
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(
-                    "http://localhost:3000/ma/push-url",
+                    api_url,
                     json={"streamUrl": media.uri},
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
