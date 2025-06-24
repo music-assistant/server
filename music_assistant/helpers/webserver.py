@@ -143,10 +143,19 @@ class Webserver:
     async def _handle_catch_all(self, request: web.Request) -> web.Response:
         """Redirect request to correct destination."""
         # find handler for the request
+        # Try exact match first
         for key in (f"{request.method}.{request.path}", f"*.{request.path}"):
             assert self._dynamic_routes is not None  # for type checking
             if handler := self._dynamic_routes.get(key):
                 return await handler(request)
+        # Try prefix match (for routes registered with /*)
+        if self._dynamic_routes is not None:
+            for route_key, handler in self._dynamic_routes.items():
+                method, path = route_key.split(".", 1)
+                if method in (request.method, "*") and path.endswith("/*"):
+                    prefix = path[:-2]
+                    if request.path.startswith(prefix):
+                        return await handler(request)
         # deny all other requests
         self.logger.warning(
             "Received unhandled %s request to %s from %s\nheaders: %s\n",
