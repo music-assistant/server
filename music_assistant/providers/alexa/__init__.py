@@ -27,7 +27,9 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE,
+    CONF_IP_ADDRESS,
     CONF_PASSWORD,
+    CONF_PORT,
     CONF_USERNAME,
 )
 from music_assistant.helpers.auth import AuthenticationHelper
@@ -47,9 +49,7 @@ if TYPE_CHECKING:
 
 CONF_URL = "url"
 CONF_ACTION_AUTH = "auth"
-CONF_AUTH_TOKEN = "token"
-CONF_API_IP = "api_ip"
-CONF_API_PORT = "api_port"
+CONF_AUTH_SECRET = "secret"
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
@@ -82,6 +82,7 @@ async def get_config_entries(
                 url=str(values[CONF_URL]),
                 email=str(values[CONF_USERNAME]),
                 password=str(values[CONF_PASSWORD]),
+                otp_secret=str(values.get(CONF_AUTH_SECRET, "")),
                 outputpath=lambda x: x,
             )
 
@@ -155,20 +156,27 @@ async def get_config_entries(
             value=values.get(CONF_PASSWORD) if values else None,
         ),
         ConfigEntry(
-            key=CONF_API_IP,
+            key=CONF_AUTH_SECRET,
+            type=ConfigEntryType.SECURE_STRING,
+            label="OTP Secret",
+            required=False,
+            value=values.get(CONF_AUTH_SECRET) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_IP_ADDRESS,
             type=ConfigEntryType.STRING,
             label="API IP Address",
             required=True,
             default_value="localhost",
-            value=values.get(CONF_API_IP) if values else None,
+            value=values.get(CONF_IP_ADDRESS) if values else None,
         ),
         ConfigEntry(
-            key=CONF_API_PORT,
+            key=CONF_PORT,
             type=ConfigEntryType.INTEGER,
             label="API Port",
             required=True,
             default_value=3000,
-            value=values.get(CONF_API_PORT) if values else None,
+            value=values.get(CONF_PORT) if values else None,
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH,
@@ -376,8 +384,8 @@ class AlexaProvider(PlayerProvider):
         if not (player := self.mass.players.get(player_id)):
             return
 
-        api_ip = self.config.get_value(CONF_API_IP)
-        api_port = self.config.get_value(CONF_API_PORT)
+        api_ip = self.config.get_value(CONF_IP_ADDRESS)
+        api_port = self.config.get_value(CONF_PORT)
         api_url = f"http://{api_ip}:{api_port}/ma/push-url"
         async with aiohttp.ClientSession() as session:
             try:
