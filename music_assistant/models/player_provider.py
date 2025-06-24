@@ -10,7 +10,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant_models.player import Player
+    from music_assistant.models.player import Player
 
 # ruff: noqa: ARG001, ARG002
 

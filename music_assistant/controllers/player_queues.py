@@ -81,7 +81,8 @@ if TYPE_CHECKING:
         Track,
         UniqueList,
     )
-    from music_assistant_models.player import Player
+
+    from music_assistant.models.player import Player
 
 
 CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"

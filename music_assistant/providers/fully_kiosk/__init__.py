@@ -11,7 +11,6 @@ from fullykiosk import FullyKiosk
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError, SetupFailedError
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE_ENFORCED,
@@ -22,6 +21,7 @@ from music_assistant.constants import (
     CONF_PORT,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:

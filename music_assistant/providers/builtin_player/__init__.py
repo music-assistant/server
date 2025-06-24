@@ -38,7 +38,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE_ENFORCED,
@@ -55,6 +54,7 @@ from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:

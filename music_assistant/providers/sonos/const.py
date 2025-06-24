@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from aiosonos.api.models import PlayBackState as SonosPlayBackState
 from music_assistant_models.enums import PlaybackState, PlayerFeature
-from music_assistant_models.player import PlayerSource
+
+from music_assistant.models.player import PlayerSource
 
 PLAYBACK_STATE_MAP = {
     SonosPlayBackState.PLAYBACK_STATE_BUFFERING: PlaybackState.PLAYING,

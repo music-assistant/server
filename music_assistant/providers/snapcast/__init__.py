@@ -27,7 +27,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from snapcast.control import create_server
 from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
@@ -42,6 +41,7 @@ from music_assistant.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import get_ip_pton
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:

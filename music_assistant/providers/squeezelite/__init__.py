@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from aiohttp import web
-from aioslimproto.client import PlaybackState as SlimPlayerState
+from aioslimproto.client import PlayerState as SlimPlayerState
 from aioslimproto.client import SlimClient
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import Preset as SlimPreset
@@ -36,7 +36,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_DEPRECATED_EQ_BASS,
@@ -53,6 +52,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.audio import get_ffmpeg_stream, get_player_filter_params
 from music_assistant.helpers.util import TaskManager
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.player_group import PlayerGroupProvider
 

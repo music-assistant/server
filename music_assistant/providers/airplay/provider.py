@@ -20,7 +20,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
@@ -36,6 +35,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import get_ip_pton, lock, select_free_port
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.airplay.raop import RaopStreamSession
 from music_assistant.providers.player_group import PlayerGroupProvider

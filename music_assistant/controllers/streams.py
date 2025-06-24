@@ -80,9 +80,10 @@ from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.player import Player
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
+
+    from music_assistant.models.player import Player
 
 
 isfile = wrap(os.path.isfile)

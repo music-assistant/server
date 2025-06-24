@@ -1231,3 +1231,16 @@ class GroupPlayer(Player):
         # This will set the (relative) volume level on all child players.
         # free to override if you want to handle this differently.
         await self.mass.players.set_group_volume(self, volume_level)
+
+
+__all__ = [
+    # explictly re-export the models we imported from the models package,
+    # for convenience reasons
+    "EXTRA_ATTRIBUTES_TYPES",
+    "DeviceInfo",
+    "GroupPlayer",
+    "Player",
+    "PlayerMedia",
+    "PlayerSource",
+    "PlayerState",
+]

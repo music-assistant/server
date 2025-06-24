@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, TypedDict
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType, ProviderFeature
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from pyblu import Player as BluosPlayer
 from pyblu import Status, SyncStatus
 from zeroconf import ServiceStateChange
@@ -24,6 +23,7 @@ from music_assistant.helpers.util import (
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
 )
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:

@@ -18,7 +18,6 @@ from aiosonos.utils import get_discovery_info
 from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
@@ -32,6 +31,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.upnp import get_xml_soap_set_next_url, get_xml_soap_set_url
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 from .const import CONF_AIRPLAY_MODE

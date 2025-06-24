@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.player import DeviceInfo, Player
 from soco import SoCoException
 from soco.core import (
     MUSIC_SRC_AIRPLAY,
@@ -31,6 +30,7 @@ from soco.data_structures import DidlAudioBroadcast, DidlPlaylistContainer
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
+from music_assistant.models.player import DeviceInfo, Player
 
 from .helpers import SonosUpdateError, soco_error
 

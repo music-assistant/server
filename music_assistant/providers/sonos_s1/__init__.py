@@ -24,7 +24,6 @@ from music_assistant_models.enums import (
     ProviderFeature,
 )
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from requests.exceptions import RequestException
 from soco import SoCo, events_asyncio, zonegroupstate
 from soco import config as soco_config
@@ -39,6 +38,7 @@ from music_assistant.constants import (
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.upnp import create_didl_metadata
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 from .player import SonosPlayer

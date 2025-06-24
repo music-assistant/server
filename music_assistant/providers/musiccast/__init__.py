@@ -21,10 +21,10 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
 )
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.musiccast.avt_helpers import (
     avt_get_media_info,

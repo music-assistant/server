@@ -21,7 +21,6 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE, MediaController
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
@@ -36,6 +35,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo

@@ -34,10 +34,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderFeature
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:

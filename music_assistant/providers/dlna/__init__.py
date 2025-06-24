@@ -25,7 +25,6 @@ from async_upnp_client.search import async_search
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
@@ -38,6 +37,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.helpers.util import TaskManager
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import DLNANotifyServer

@@ -27,7 +27,8 @@ from music_assistant_models.enums import (
     PlayerType,
     RepeatMode,
 )
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
+
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .const import (
     CONF_AIRPLAY_MODE,

@@ -43,7 +43,6 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import UniqueList
-from music_assistant_models.player import PlayerMedia, PlayerState
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
@@ -68,7 +67,7 @@ from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.player import Player
+from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
 

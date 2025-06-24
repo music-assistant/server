@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from mashumaro import field_options, pass_through
 from music_assistant_models.enums import StreamType
 from music_assistant_models.media_items.audio_format import AudioFormat  # noqa: TC002
-from music_assistant_models.player import PlayerMedia, PlayerSource
+
+from music_assistant.models.player import PlayerMedia, PlayerSource
 
 from .provider import Provider
 

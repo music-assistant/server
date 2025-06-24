@@ -39,7 +39,6 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import AudioFormat, UniqueList
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
 
 from music_assistant.constants import (
     CONF_CROSSFADE,
@@ -58,6 +57,7 @@ from music_assistant.controllers.streams import DEFAULT_STREAM_HEADERS
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import TaskManager
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 from .ugp_stream import UGPStream
