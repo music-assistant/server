@@ -143,12 +143,14 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="E-Mail",
             required=True,
+            value=values.get(CONF_USERNAME) if values else None,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
             label="Password",
             required=True,
+            value=values.get(CONF_PASSWORD) if values else None,
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH,
