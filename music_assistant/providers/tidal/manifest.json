@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "tidal",
+  "stage": "stable",
   "name": "Tidal",
   "description": "Support for the Tidal streaming provider in Music Assistant.",
   "codeowners": ["@jozefKruszynski"],

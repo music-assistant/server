@@ -1,6 +1,7 @@
 {
   "type": "player",
   "domain": "player_group",
+  "stage": "beta",
   "name": "Playergroup",
   "description": "Create (permanent) groups of your favorite players. \nSupports both syncgroups (to group speakers of the same ecocystem to play in sync) and universal groups to group speakers of different ecosystems to play the same audio (but not in sync).",
   "codeowners": ["@music-assistant"],

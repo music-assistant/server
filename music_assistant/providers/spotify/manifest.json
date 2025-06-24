@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "spotify",
+  "stage": "stable",
   "name": "Spotify",
   "description": "Support for the Spotify streaming provider in Music Assistant.",
   "codeowners": ["@music-assistant"],

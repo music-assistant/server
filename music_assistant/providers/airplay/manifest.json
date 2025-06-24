@@ -1,6 +1,7 @@
 {
   "type": "player",
   "domain": "airplay",
+  "stage": "stable",
   "name": "AirPlay",
   "description": "Support for players that support the AirPlay protocol.",
   "codeowners": ["@music-assistant"],

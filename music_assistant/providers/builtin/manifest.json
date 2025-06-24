@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "builtin",
+  "stage": "stable",
   "name": "Music Assistant",
   "description": "Built-in/generic provider that handles generic urls and playlists.",
   "codeowners": ["@music-assistant"],

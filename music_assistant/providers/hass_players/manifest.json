@@ -1,6 +1,7 @@
 {
   "type": "player",
   "domain": "hass_players",
+  "stage": "stable",
   "name": "Home Assistant MediaPlayers",
   "description": "Use (supported) Home Assistant media players as players in Music Assistant.",
   "codeowners": ["@music-assistant"],

@@ -1,19 +1,14 @@
 {
   "type": "player",
   "domain": "chromecast",
+  "stage": "stable",
   "name": "Chromecast",
   "description": "Support for Chromecast based players.",
-  "codeowners": [
-    "@music-assistant"
-  ],
-  "requirements": [
-    "PyChromecast==14.0.7"
-  ],
+  "codeowners": ["@music-assistant"],
+  "requirements": ["PyChromecast==14.0.7"],
   "documentation": "https://music-assistant.io/player-support/google-cast/",
   "multi_instance": false,
   "builtin": false,
   "icon": "cast",
-  "mdns_discovery": [
-    "_googlecast._tcp.local."
-  ]
+  "mdns_discovery": ["_googlecast._tcp.local."]
 }

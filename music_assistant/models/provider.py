@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, final
 
+from music_assistant_models.enums import ProviderStage
+
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
@@ -118,6 +120,12 @@ class Provider:
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
         return None
+
+    @property
+    @final
+    def stage(self) -> ProviderStage:
+        """Return the stage of this provider."""
+        return self.manifest.stage
 
     def update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
         """Update a config value."""

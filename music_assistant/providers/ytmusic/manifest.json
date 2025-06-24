@@ -1,10 +1,16 @@
 {
   "type": "music",
   "domain": "ytmusic",
+  "stage": "experimental",
   "name": "YouTube Music",
   "description": "Support for the YouTube Music streaming provider in Music Assistant.",
   "codeowners": ["@MarvinSchenkel"],
-  "requirements": ["ytmusicapi==1.10.3", "yt-dlp==2025.6.9", "duration-parser==1.0.1", "bgutil-ytdlp-pot-provider==1.1.0"],
+  "requirements": [
+    "ytmusicapi==1.10.3",
+    "yt-dlp==2025.6.9",
+    "duration-parser==1.0.1",
+    "bgutil-ytdlp-pot-provider==1.1.0"
+  ],
   "documentation": "https://music-assistant.io/music-providers/youtube-music/",
   "multi_instance": true
 }

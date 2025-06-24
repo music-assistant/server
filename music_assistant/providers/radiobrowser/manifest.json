@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "radiobrowser",
+  "stage": "stable",
   "name": "RadioBrowser",
   "description": "Search radio streams from RadioBrowser in Music Assistant.",
   "codeowners": ["@gieljnssns"],
