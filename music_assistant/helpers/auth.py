@@ -11,6 +11,8 @@ from aiohttp.web import Request, Response
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import LoginFailed
 
+from music_assistant.helpers.json import json_loads
+
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
@@ -20,18 +22,19 @@ LOGGER = logging.getLogger(__name__)
 class AuthenticationHelper:
     """Context manager helper class for authentication with a forward and redirect URL."""
 
-    def __init__(self, mass: MusicAssistant, session_id: str) -> None:
+    def __init__(self, mass: MusicAssistant, session_id: str, method: str = "GET") -> None:
         """
         Initialize the Authentication Helper.
 
         Params:
-        - url: The URL the user needs to open for authentication.
         - session_id: a unique id for this auth session.
+        - method: the HTTP request method to expect, either "GET" or "POST" (default: GET).
         """
         self.mass = mass
         self.session_id = session_id
         self._cb_path = f"/callback/{self.session_id}"
         self._callback_response: asyncio.Queue[dict[str, str]] = asyncio.Queue(1)
+        self._method = method
 
     @property
     def callback_url(self) -> str:
@@ -40,7 +43,9 @@ class AuthenticationHelper:
 
     async def __aenter__(self) -> AuthenticationHelper:
         """Enter context manager."""
-        self.mass.webserver.register_dynamic_route(self._cb_path, self._handle_callback, "GET")
+        self.mass.webserver.register_dynamic_route(
+            self._cb_path, self._handle_callback, self._method
+        )
         return self
 
     async def __aexit__(
@@ -50,11 +55,17 @@ class AuthenticationHelper:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Exit context manager."""
-        self.mass.webserver.unregister_dynamic_route(self._cb_path, "GET")
+        self.mass.webserver.unregister_dynamic_route(self._cb_path, self._method)
         return None
 
     async def authenticate(self, auth_url: str, timeout: int = 60) -> dict[str, str]:
-        """Start the auth process and return any query params if received on the callback."""
+        """
+        Start the auth process and return any query params if received on the callback.
+
+        Params:
+        - url: The URL the user needs to open for authentication.
+        - timeout: duration in seconds helpers waits for callback (default: 60).
+        """
         self.send_url(auth_url)
         LOGGER.debug("Waiting for authentication callback on %s", self.callback_url)
         return await self.wait_for_callback(timeout)
@@ -75,6 +86,14 @@ class AuthenticationHelper:
     async def _handle_callback(self, request: Request) -> Response:
         """Handle callback response."""
         params = dict(request.query)
+        if request.method == "POST" and request.can_read_body:
+            try:
+                raw_data = await request.read()
+                data = json_loads(raw_data)
+                params.update(data)
+            except Exception as err:
+                LOGGER.error("Failed to parse POST data: %s", err)
+
         await self._callback_response.put(params)
         LOGGER.debug("Received callback with params: %s", params)
         return_html = """

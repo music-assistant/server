@@ -1,11 +1,10 @@
 {
   "type": "music",
   "domain": "podcastfeed",
+  "stage": "stable",
   "name": "Podcast RSS Feed",
   "description": "A parser for podcast rss feeds",
-  "codeowners": [
-    "@saeugetier"
-  ],
+  "codeowners": ["@saeugetier"],
   "documentation": "https://music-assistant.io/music-providers/podcastfeed/",
   "multi_instance": true
 }

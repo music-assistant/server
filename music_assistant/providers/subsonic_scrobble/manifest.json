@@ -1,6 +1,7 @@
 {
   "type": "plugin",
   "domain": "subsonic_scrobble",
+  "stage": "beta",
   "name": "Subsonic Scrobbler",
   "description": "Report your music playback back to Subsonic server",
   "codeowners": ["@clusters"],

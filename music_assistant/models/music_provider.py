@@ -37,6 +37,14 @@ if TYPE_CHECKING:
 
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.controllers.media.albums import AlbumsController
+    from music_assistant.controllers.media.artists import ArtistsController
+    from music_assistant.controllers.media.audiobooks import AudiobooksController
+    from music_assistant.controllers.media.playlists import PlaylistController
+    from music_assistant.controllers.media.podcasts import PodcastsController
+    from music_assistant.controllers.media.radio import RadioController
+    from music_assistant.controllers.media.tracks import TracksController
+
 # ruff: noqa: ARG001, ARG002
 
 
@@ -89,37 +97,37 @@ class MusicProvider(Provider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library/subscribed playlists from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
         """Retrieve library/subscribed audiobooks from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
         """Retrieve library/subscribed podcasts from the provider."""
-        yield
+        yield  # type: ignore[misc]
         raise NotImplementedError
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -127,77 +135,99 @@ class MusicProvider(Provider):
         raise NotImplementedError
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
-        if ProviderFeature.ARTIST_ALBUMS in self.supported_features:
-            raise NotImplementedError
-        return []
+        """Get a list of all albums for the given artist.
+
+        Only called if provider supports ProviderFeature.ARTIST_ALBUMS.
+        """
+        raise NotImplementedError
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of most popular tracks for the given artist."""
-        if ProviderFeature.ARTIST_TOPTRACKS in self.supported_features:
-            raise NotImplementedError
-        return []
+        """Get a list of most popular tracks for the given artist.
 
-    async def get_album(self, prov_album_id: str) -> Album:  # type: ignore[return]
-        """Get full album details by id."""
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            raise NotImplementedError
+        Only called if provider supports ProviderFeature.ARTIST_TOPTRACKS.
+        """
+        raise NotImplementedError
 
-    async def get_track(self, prov_track_id: str) -> Track:  # type: ignore[return]
-        """Get full track details by id."""
-        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-            raise NotImplementedError
+    async def get_album(self, prov_album_id: str) -> Album:
+        """Get full album details by id.
 
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:  # type: ignore[return]
-        """Get full playlist details by id."""
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            raise NotImplementedError
+        Only called if provider supports ProviderFeature.LIBRARY_ALBUMS.
+        """
+        raise NotImplementedError
 
-    async def get_radio(self, prov_radio_id: str) -> Radio:  # type: ignore[return]
-        """Get full radio details by id."""
-        if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
-            raise NotImplementedError
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Get full track details by id.
 
-    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:  # type: ignore[return]
-        """Get full audiobook details by id."""
-        if ProviderFeature.LIBRARY_AUDIOBOOKS in self.supported_features:
-            raise NotImplementedError
+        Only called if provider supports ProviderFeature.LIBRARY_TRACKS.
+        """
+        raise NotImplementedError
 
-    async def get_podcast(self, prov_podcast_id: str) -> Podcast:  # type: ignore[return]
-        """Get full audiobook details by id."""
-        if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
-            raise NotImplementedError
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """Get full playlist details by id.
+
+        Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
+        """
+        raise NotImplementedError
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Get full radio details by id.
+
+        Only called if provider supports ProviderFeature.LIBRARY_RADIOS.
+        """
+        raise NotImplementedError
+
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get full audiobook details by id.
+
+        Only called if provider supports ProviderFeature.LIBRARY_AUDIOBOOKS.
+        """
+        raise NotImplementedError
+
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get full podcast details by id.
+
+        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
+        """
+        raise NotImplementedError
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
-        """Get (full) podcast episode details by id."""
-        if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
-            raise NotImplementedError
+        """Get (full) podcast episode details by id.
+
+        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
+        """
+        raise NotImplementedError
 
     async def get_album_tracks(
         self,
-        prov_album_id: str,  # type: ignore[return]
+        prov_album_id: str,
     ) -> list[Track]:
-        """Get album tracks for given album id."""
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            raise NotImplementedError
+        """Get album tracks for given album id.
+
+        Only called if provider supports ProviderFeature.LIBRARY_ALBUMS.
+        """
+        raise NotImplementedError
 
     async def get_playlist_tracks(
         self,
         prov_playlist_id: str,
         page: int = 0,
     ) -> list[Track]:
-        """Get all playlist tracks for given playlist id."""
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            raise NotImplementedError
+        """Get all playlist tracks for given playlist id.
+
+        Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
+        """
+        raise NotImplementedError
 
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
     ) -> AsyncGenerator[PodcastEpisode, None]:
-        """Get all PodcastEpisodes for given podcast id."""
-        yield
-        if ProviderFeature.LIBRARY_PODCASTS in self.supported_features:
-            raise NotImplementedError
+        """Get all PodcastEpisodes for given podcast id.
+
+        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
+        """
+        yield  # type: ignore[misc]
+        raise NotImplementedError
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
@@ -288,28 +318,34 @@ class MusicProvider(Provider):
         return True
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Add track(s) to playlist."""
-        if ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
-            raise NotImplementedError
+        """Add track(s) to playlist.
+
+        Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
+        """
+        raise NotImplementedError
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
-        """Remove track(s) from playlist."""
-        if ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
-            raise NotImplementedError
+        """Remove track(s) from playlist.
 
-    async def create_playlist(self, name: str) -> Playlist:  # type: ignore[return]
-        """Create a new playlist on provider with given name."""
-        if ProviderFeature.PLAYLIST_CREATE in self.supported_features:
-            raise NotImplementedError
+        Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
+        """
+        raise NotImplementedError
 
-    async def get_similar_tracks(  # type: ignore[return]
-        self, prov_track_id: str, limit: int = 25
-    ) -> list[Track]:
-        """Retrieve a dynamic list of similar tracks based on the provided track."""
-        if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
-            raise NotImplementedError
+    async def create_playlist(self, name: str) -> Playlist:
+        """Create a new playlist on provider with given name.
+
+        Only called if provider supports ProviderFeature.PLAYLIST_CREATE.
+        """
+        raise NotImplementedError
+
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Retrieve a dynamic list of similar tracks based on the provided track.
+
+        Only called if provider supports ProviderFeature.SIMILAR_TRACKS.
+        """
+        raise NotImplementedError
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """
@@ -330,7 +366,7 @@ class MusicProvider(Provider):
         """Get streamdetails for a track/radio/chapter/episode."""
         raise NotImplementedError
 
-    async def get_audio_stream(  # type: ignore[return]
+    async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """
@@ -338,8 +374,7 @@ class MusicProvider(Provider):
 
         Will only be called when the stream_type is set to CUSTOM.
         """
-        if False:
-            yield
+        yield b""
         raise NotImplementedError
 
     async def on_streamed(
@@ -412,7 +447,7 @@ class MusicProvider(Provider):
             return await self.get_podcast_episode(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -622,8 +657,56 @@ class MusicProvider(Provider):
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
+        # ruff: noqa: PLR0915 # too many statements
         # this reference implementation can be overridden
         # with a provider specific approach if needed
+
+        async def _controller_update_item_in_library(
+            controller: ArtistsController
+            | AlbumsController
+            | TracksController
+            | RadioController
+            | PlaylistController
+            | AudiobooksController
+            | PodcastsController,
+            prov_item: MediaItemType,
+            item_id: str | int,
+        ) -> Artist | Album | Track | Radio | Playlist | Audiobook | Podcast:
+            """Update media item in controller including type checking.
+
+            all isinstance(...) for type checking. The statement
+            library_item = await controller.update_item_in_library(prov_item)
+            cannot be moved out of this scope.
+            """
+            library_item: Artist | Album | Track | Radio | Playlist | Audiobook | Podcast
+            if TYPE_CHECKING:
+                if isinstance(prov_item, Artist):
+                    assert isinstance(controller, ArtistsController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Album):
+                    assert isinstance(controller, AlbumsController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Track):
+                    assert isinstance(controller, TracksController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Radio):
+                    assert isinstance(controller, RadioController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Playlist):
+                    assert isinstance(controller, PlaylistController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Audiobook):
+                    assert isinstance(controller, AudiobooksController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                elif isinstance(prov_item, Podcast):
+                    assert isinstance(controller, PodcastsController)
+                    library_item = await controller.update_item_in_library(item_id, prov_item)
+                else:
+                    raise TypeError("Prov item unknown in this context.")
+                return library_item
+            else:
+                return await controller.update_item_in_library(item_id, prov_item)
+
         if not self.library_supported(media_type):
             raise UnsupportedFeaturedException("Library sync not supported for this media type")
         self.logger.debug("Start sync of %s items.", media_type.value)
@@ -633,6 +716,7 @@ class MusicProvider(Provider):
             library_item = await controller.get_library_item_by_prov_mappings(
                 prov_item.provider_mappings,
             )
+            assert not isinstance(prov_item, PodcastEpisode)
             try:
                 if not library_item and not prov_item.available:
                     # skip unavailable tracks
@@ -647,18 +731,50 @@ class MusicProvider(Provider):
                     # the additional metadata is then lazy retrieved afterwards
                     if self.is_streaming_provider:
                         prov_item.favorite = True
-                    library_item = await controller.add_item_to_library(prov_item)
+
+                    # all isinstance(...) for type checking. The statement
+                    # library_item = await controller.add_item_to_library(prov_item)
+                    # cannot be moved out of this scope.
+                    if TYPE_CHECKING:
+                        if isinstance(prov_item, Artist):
+                            assert isinstance(controller, ArtistsController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Album):
+                            assert isinstance(controller, AlbumsController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Track):
+                            assert isinstance(controller, TracksController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Radio):
+                            assert isinstance(controller, RadioController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Playlist):
+                            assert isinstance(controller, PlaylistController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Audiobook):
+                            assert isinstance(controller, AudiobooksController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        elif isinstance(prov_item, Podcast):
+                            assert isinstance(controller, PodcastsController)
+                            library_item = await controller.add_item_to_library(prov_item)
+                        else:
+                            raise RuntimeError
+                    else:
+                        library_item = await controller.add_item_to_library(prov_item)
                 elif getattr(library_item, "cache_checksum", None) != getattr(
                     prov_item, "cache_checksum", None
                 ):
                     # existing dbitem checksum changed (playlists only)
+                    if TYPE_CHECKING:
+                        assert isinstance(prov_item, Playlist)
+                        assert isinstance(controller, PlaylistController)
                     library_item = await controller.update_item_in_library(
                         library_item.item_id, prov_item
                     )
                 if library_item.available != prov_item.available:
                     # existing item availability changed
-                    library_item = await controller.update_item_in_library(
-                        library_item.item_id, prov_item
+                    library_item = await _controller_update_item_in_library(
+                        controller, prov_item, library_item.item_id
                     )
                 # check if resume_position_ms or fully_played changed (audiobook only)
                 resume_pos_prov = getattr(prov_item, "resume_position_ms", None)
@@ -671,8 +787,8 @@ class MusicProvider(Provider):
                         or getattr(library_item, "fully_played", None) != fully_played_prov
                     )
                 ):
-                    library_item = await controller.update_item_in_library(
-                        library_item.item_id, prov_item
+                    library_item = await _controller_update_item_in_library(
+                        controller, prov_item, library_item.item_id
                     )
 
                 cur_db_ids.add(int(library_item.item_id))

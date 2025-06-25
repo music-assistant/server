@@ -1,18 +1,12 @@
 {
   "type": "player",
   "domain": "musiccast",
+  "stage": "beta",
   "name": "MusicCast",
   "description": "MusicCast for Music Assistant",
-  "requirements": [
-    "aiomusiccast==0.14.8",
-    "setuptools>=1.0.0"
-  ],
-  "codeowners": [
-    "@fmunkes"
-  ],
-  "mdns_discovery": [
-    "_http._tcp.local."
-  ],
+  "requirements": ["aiomusiccast==0.14.8", "setuptools>=1.0.0"],
+  "codeowners": ["@fmunkes"],
+  "mdns_discovery": ["_http._tcp.local."],
   "documentation": "https://music-assistant.io/player-support/musiccast",
   "multi_instance": false
 }

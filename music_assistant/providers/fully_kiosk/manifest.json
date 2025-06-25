@@ -1,6 +1,7 @@
 {
   "type": "player",
   "domain": "fully_kiosk",
+  "stage": "stable",
   "name": "Fully Kiosk Browser",
   "description": "Support for media players from the Fully Kiosk app.",
   "codeowners": ["@music-assistant"],

@@ -1,6 +1,7 @@
 {
   "type": "metadata",
   "domain": "lrclib",
+  "stage": "beta",
   "name": "LRCLIB",
   "description": "LRCLIB is a completely free service for finding and contributing synchronized lyrics, with an easy-to-use and machine-friendly API.",
   "codeowners": ["@music-assistant"],

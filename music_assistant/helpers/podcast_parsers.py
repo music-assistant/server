@@ -83,6 +83,13 @@ def get_stream_url_and_guid_from_episode(*, episode: dict[str, Any]) -> tuple[st
         raise ValueError("Episode enclosure is missing")
     if stream_url := episode_enclosures[0].get("url"):
         guid = episode.get("guid")
+        if guid is not None:
+            # The media's item_id is {prov_podcast_id} {guid_or_stream_url}
+            # see parse_podcast_episode.
+            # However, the guid must not contain a space, otherwise it is invalid.
+            # We cannot check, if it is a proper guid (uuid.UUID4(...)), as some podcast feeds
+            # do not follow the standard.
+            guid = None if len(guid.split(" ")) > 1 else guid
         return stream_url, guid
     raise ValueError("Stream URL is missing.")
 
@@ -120,7 +127,8 @@ def parse_podcast_episode(
     except ValueError:
         # we are missing the episode enclosure or stream information
         return None
-    guid_or_stream_url = guid if guid is not None else stream_url
+    # We treat a guid as invalid if contains a space.
+    guid_or_stream_url = guid if guid is not None and len(guid.split(" ")) == 1 else stream_url
 
     # Default episode id. A guid is preferred as identification.
     episode_id = f"{prov_podcast_id} {guid_or_stream_url}" if mass_item_id is None else mass_item_id

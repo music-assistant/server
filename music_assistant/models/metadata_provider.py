@@ -35,16 +35,19 @@ class MetadataProvider(Provider):
         """Retrieve metadata for an artist on this Metadata provider."""
         if ProviderFeature.ARTIST_METADATA in self.supported_features:
             raise NotImplementedError
+        return None
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for an album on this Metadata provider."""
         if ProviderFeature.ALBUM_METADATA in self.supported_features:
             raise NotImplementedError
+        return None
 
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve metadata for a track on this Metadata provider."""
         if ProviderFeature.TRACK_METADATA in self.supported_features:
             raise NotImplementedError
+        return None
 
     async def resolve_image(self, path: str) -> str | bytes:
         """

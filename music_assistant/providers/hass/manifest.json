@@ -1,6 +1,7 @@
 {
   "type": "plugin",
   "domain": "hass",
+  "stage": "stable",
   "name": "Home Assistant",
   "description": "Connect Music Assistant to Home Assistant.",
   "codeowners": ["@music-assistant"],

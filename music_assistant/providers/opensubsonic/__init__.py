@@ -13,7 +13,11 @@ from .sonic_provider import (
     CONF_BASE_URL,
     CONF_ENABLE_LEGACY_AUTH,
     CONF_ENABLE_PODCASTS,
+    CONF_NEW_ALBUMS,
     CONF_OVERRIDE_OFFSET,
+    CONF_PLAYED_ALBUMS,
+    CONF_RECO_FAVES,
+    CONF_RECO_SIZE,
     OpenSonicProvider,
 )
 
@@ -86,7 +90,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_LEGACY_AUTH,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable legacy auth",
+            label="Enable Legacy Auth",
             required=True,
             description='Enable OpenSubsonic "legacy" auth support',
             default_value=False,
@@ -94,10 +98,42 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_OVERRIDE_OFFSET,
             type=ConfigEntryType.BOOLEAN,
-            label="Force player provider seek",
+            label="Force Player Provider Seek",
             required=True,
             description="Some Subsonic implementations advertise that they support seeking when "
             "they do not always. If seeking does not work for you, enable this.",
             default_value=False,
+        ),
+        ConfigEntry(
+            key=CONF_RECO_FAVES,
+            type=ConfigEntryType.BOOLEAN,
+            label="Recommend Favorites",
+            required=True,
+            description="Should favorited (starred) items be included as recommendations.",
+            default_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_NEW_ALBUMS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Recommend New Albums",
+            required=True,
+            description="Should new albums be included as recommendations.",
+            default_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_PLAYED_ALBUMS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Recommend Most Played",
+            required=True,
+            description="Should most played albums be included as recommendations.",
+            default_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_RECO_SIZE,
+            type=ConfigEntryType.INTEGER,
+            label="Recommendation Limit",
+            required=True,
+            description="How many recommendations from each enabled type should be included.",
+            default_value=10,
         ),
     )

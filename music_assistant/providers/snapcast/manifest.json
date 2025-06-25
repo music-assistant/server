@@ -1,6 +1,7 @@
 {
   "type": "player",
   "domain": "snapcast",
+  "stage": "stable",
   "name": "Snapcast",
   "description": "Support for snapcast server and clients.",
   "codeowners": ["@SantiagoSotoC"],

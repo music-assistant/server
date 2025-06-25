@@ -1,6 +1,7 @@
 {
   "type": "metadata",
   "domain": "musicbrainz",
+  "stage": "stable",
   "name": "MusicBrainz",
   "description": "MusicBrainz is an open music encyclopedia that collects music metadata and makes it available to the public. Music Assistant uses MusicBrainz primarily to identify (unique) media items and therefore this provider can not be disabled. However, note that lookups will only be performed if this info is absent locally.",
   "codeowners": ["@music-assistant"],

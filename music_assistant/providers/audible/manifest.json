@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "audible",
+  "stage": "stable",
   "name": "Audible",
   "description": "Audible provider",
   "codeowners": ["@ztripez"],

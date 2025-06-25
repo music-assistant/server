@@ -1,6 +1,7 @@
 {
   "type": "metadata",
   "domain": "fanarttv",
+  "stage": "stable",
   "name": "fanart.tv",
   "description": "fanart.tv is a community database of artwork for movies, tv series and music.",
   "codeowners": ["@music-assistant"],

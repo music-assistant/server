@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "nugs",
+  "stage": "beta",
   "name": "Nugs.net",
   "description": "Nugs.net support for Music Assistant: Live Music provider.",
   "codeowners": ["@brian10048"],

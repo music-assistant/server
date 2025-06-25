@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "jellyfin",
+  "stage": "stable",
   "name": "Jellyfin Media Server Library",
   "description": "Support for the Jellyfin streaming provider in Music Assistant.",
   "codeowners": ["@lokiberra", "@Jc2k"],

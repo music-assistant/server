@@ -1,6 +1,7 @@
 {
   "type": "plugin",
   "domain": "spotify_connect",
+  "stage": "alpha",
   "name": "Spotify Connect",
   "description": "Add Spotify Connect support to ANY Music Assistant player.",
   "codeowners": ["@music-assistant"],

@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
 )
@@ -65,6 +66,7 @@ if TYPE_CHECKING:
     from libopensonic.media import Child as SonicSong
     from libopensonic.media import OpenSubsonicExtension
     from libopensonic.media import Playlist as SonicPlaylist
+    from libopensonic.media import PodcastChannel as SonicChannel
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
 
@@ -72,6 +74,10 @@ CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 CONF_OVERRIDE_OFFSET = "override_transcode_offest"
+CONF_RECO_FAVES = "recommend_favorites"
+CONF_NEW_ALBUMS = "recommend_new"
+CONF_PLAYED_ALBUMS = "recommend_played"
+CONF_RECO_SIZE = "recommendation_count"
 
 
 Param = ParamSpec("Param")
@@ -85,6 +91,10 @@ class OpenSonicProvider(MusicProvider):
     _enable_podcasts: bool = True
     _seek_support: bool = False
     _ignore_offset: bool = False
+    _show_faves: bool = True
+    _show_new: bool = True
+    _show_played: bool = True
+    _reco_limit: int = 10
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
@@ -123,6 +133,10 @@ class OpenSonicProvider(MusicProvider):
                     break
         except OSError:
             self.logger.info("Server does not support transcodeOffset, seeking in player provider")
+        self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
+        self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
+        self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
+        self._reco_limit = int(str(self.config.get_value(CONF_RECO_SIZE)))
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -135,6 +149,7 @@ class OpenSonicProvider(MusicProvider):
             ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
+            ProviderFeature.RECOMMENDATIONS,
             ProviderFeature.ARTIST_ALBUMS,
             ProviderFeature.ARTIST_TOPTRACKS,
             ProviderFeature.SIMILAR_TRACKS,
@@ -671,13 +686,19 @@ class OpenSonicProvider(MusicProvider):
                 await self._run_async(self.conn.delete_bookmark, mid=ep_id)
             except DataNotFoundError:
                 # We probably raced with something else deleting this bookmark, not really a problem
-                return
+                self.logger.info("Bookmark for item '%s' has already been deleted.", ep_id)
+            return
 
         # Otherwise, create a new bookmark for this item or update the existing one
         # MA provides a position in seconds but expects it back in milliseconds, while
         # the Open Subsonic spec expects a position in milliseconds but returns it in
         # seconds, go figure.
-        await self._run_async(self.conn.create_bookmark, mid=ep_id, position=position * 1000)
+        await self._run_async(
+            self.conn.create_bookmark,
+            mid=ep_id,
+            position=position * 1000,
+            comment="Music Assistant Bookmark",
+        )
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """
@@ -754,3 +775,76 @@ class OpenSonicProvider(MusicProvider):
                 streamer_task.cancel()
 
         self.logger.debug("Done streaming %s", streamdetails.item_id)
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Provide recommendations.
+
+        These can provide favorited items, recently added albums, newest podcast episodes,
+        and most played albums.  What is included is configured with the provider.
+        """
+        recos: list[RecommendationFolder] = []
+
+        if self._enable_podcasts:
+            podcasts: RecommendationFolder = RecommendationFolder(
+                item_id="subsonic_newest_podcasts",
+                provider=self.domain,
+                name="Newest Podcast Episodes",
+            )
+            sonic_episodes = await self._run_async(
+                self.conn.get_newest_podcasts, count=self._reco_limit
+            )
+            sonic_channel: SonicChannel | None = None
+            for ep in sonic_episodes:
+                if sonic_channel is None or sonic_channel.id != ep.channel_id:
+                    channels = await self._run_async(
+                        self.conn.get_podcasts, inc_episodes=True, pid=ep.channel_id
+                    )
+                    if not channels:
+                        self.logger.warning("Can't find podcast channel for id %s", ep.channel_id)
+                        continue
+                    sonic_channel = channels[0]
+                podcasts.items.append(parse_epsiode(self.instance_id, ep, sonic_channel))
+            recos.append(podcasts)
+
+        if self._show_faves:
+            faves: RecommendationFolder = RecommendationFolder(
+                item_id="subsonic_starred_albums", provider=self.domain, name="Starred Items"
+            )
+            starred = await self._run_async(self.conn.get_starred2)
+            if starred.album:
+                for sonic_album in starred.album[: self._reco_limit]:
+                    faves.items.append(parse_album(self.logger, self.instance_id, sonic_album))
+            if starred.artist:
+                for sonic_artist in starred.artist[: self._reco_limit]:
+                    faves.items.append(parse_artist(self.instance_id, sonic_artist))
+            if starred.song:
+                for sonic_song in starred.song[: self._reco_limit]:
+                    faves.items.append(parse_track(self.logger, self.instance_id, sonic_song))
+
+            recos.append(faves)
+
+        if self._show_new:
+            new_stuff: RecommendationFolder = RecommendationFolder(
+                item_id="subsonic_new_albums", provider=self.domain, name="New Albums"
+            )
+            new_albums = await self._run_async(
+                self.conn.get_album_list2, ltype="newest", size=self._reco_limit
+            )
+            for sonic_album in new_albums:
+                new_stuff.items.append(parse_album(self.logger, self.instance_id, sonic_album))
+
+            recos.append(new_stuff)
+
+        if self._show_played:
+            recent: RecommendationFolder = RecommendationFolder(
+                item_id="subsonic_most_played", provider=self.domain, name="Most Played Albums"
+            )
+            albums = await self._run_async(
+                self.conn.get_album_list2, ltype="frequent", size=self._reco_limit
+            )
+            for sonic_album in albums:
+                recent.items.append(parse_album(self.logger, self.instance_id, sonic_album))
+
+            recos.append(recent)
+
+        return recos
