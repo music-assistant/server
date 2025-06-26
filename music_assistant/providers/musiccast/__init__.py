@@ -120,8 +120,8 @@ class MusicCastPlayer(Player):
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
         self.set_static_properties()
-        async with self.update_lock:
-            await self.update_player_attributes()
+        # async with self.update_lock:
+        #     await self.update_player_attributes()
         await self.mass.players.register_or_update(self)
 
     def set_static_properties(self) -> None:
@@ -333,10 +333,10 @@ class MusicCastPlayer(Player):
             self._attr_synced_to = None
             self._attr_active_group = None
 
-        try:
-            self.update_state()
-        except Exception:
-            pass
+        # try:
+        #     self.update_state()
+        # except Exception:
+        #     pass
 
     async def _cmd_run(self, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
         """Help function for all player cmds."""
@@ -523,9 +523,9 @@ class MusicCastPlayer(Player):
         We can ignore removed devices, these are handled via ungroup individually.
         """
 
-    async def poll(self) -> None:
-        """Poll player."""
-        return await super().poll()
+    # async def poll(self) -> None:
+    #     """Poll player."""
+    #     return await super().poll()
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""
@@ -534,6 +534,51 @@ class MusicCastPlayer(Player):
     # async def on_unload(self) -> None:
     #     """Unload player."""
     #     return super().on_unload()
+
+
+@dataclass(kw_only=True)
+class MusicCastPlayerHelper:
+    """MusicCastPlayerHelper.
+
+    Helper class to store MA player alongside physical device.
+    """
+
+    device_id: str  # device_id without ZONE_SPLITTER zone
+    player_main: MusicCastPlayer | None = None  # mass player
+    player_zone2: MusicCastPlayer | None = None  # mass player
+    # I can only test up to zone 2
+    player_zone3: MusicCastPlayer | None = None  # mass player
+    player_zone4: MusicCastPlayer | None = None  # mass player
+
+    # log allowed sources for a device with multiple sources once. see "_handle_zone_grouping"
+    _log_allowed_sources: bool = True
+
+    physical_device: MusicCastPhysicalDevice
+
+    def get_player(self, zone: str) -> Player | None:
+        """Get Player by zone name."""
+        match zone:
+            case "main":
+                return self.player_main
+            case "zone2":
+                return self.player_zone2
+            case "zone3":
+                return self.player_zone3
+            case "zone4":
+                return self.player_zone4
+        raise RuntimeError(f"Zone {zone} is unknown.")
+
+    def get_all_players(self) -> list[MusicCastPlayer]:
+        """Get all players."""
+        assert self.player_main is not None  # we always have main
+        players = [self.player_main]
+        if self.player_zone2 is not None:
+            players.append(self.player_zone2)
+        if self.player_zone3 is not None:
+            players.append(self.player_zone3)
+        if self.player_zone4 is not None:
+            players.append(self.player_zone4)
+        return players
 
 
 class MusicCast(PlayerProvider):
@@ -545,6 +590,14 @@ class MusicCast(PlayerProvider):
 
     # str here is the device id, NOT the player_id
     update_player_locks: dict[str, asyncio.Lock] = {}
+
+    def __init__(
+        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> None:
+        """Init."""
+        super().__init__(mass, manifest, config)
+        # str is device_id here:
+        self.musiccast_player_helpers: dict[str, MusicCastPlayerHelper] = {}
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -611,16 +664,14 @@ class MusicCast(PlayerProvider):
 
         if self.mass.players.get(device_id) is not None:
             return
-        # if (
-        #     mc_player_known is not None
-        #     and mc_player_known.player_main is not None
-        #     and (
-        #         mc_player_known.physical_device.device.device.upnp_description == description_url
-        #         and mc_player_known.player_main.available
-        #     )
-        # ):
-        #     # nothing to do, device is already connected
-        #     return
+        mc_player_known = self.musiccast_player_helpers.get(device_id)
+        if mc_player_known is not None and (
+            mc_player_known.player_main is not None
+            and mc_player_known.physical_device.device.device.upnp_description == description_url
+            and mc_player_known.player_main.available
+        ):
+            # nothing to do, device is already connected
+            return
         else:
             # new or updated player detected
             physical_device = MusicCastPhysicalDevice(
@@ -668,195 +719,32 @@ class MusicCast(PlayerProvider):
         ):
             return
 
+        musiccast_player_helper = MusicCastPlayerHelper(
+            device_id=device_id,
+            physical_device=physical_device,
+        )
+
         for zone_name, zone_device in physical_device.zone_devices.items():
             if zone_device.zone_data is None or zone_device.zone_data.name is None:
                 continue
             player = get_player(zone_name, zone_device=zone_device)
             await player.setup()
+            setattr(musiccast_player_helper, f"player_{zone_device.zone_name}", player)
 
-        # if musiccast_player.player_zone2 is not None and musiccast_player._log_allowed_sources:
-        #     musiccast_player._log_allowed_sources = False
-        #     player_main = musiccast_player.player_main
-        #     assert player_main is not None
-        #     self.logger.info(
-        #         f"The player {player_main.display_name or player_main.name} has multiple zones. "
-        #         "Please use the player config to configure a non-net source for grouping. "
-        #     )
-        #
-        # self.musiccast_players[device_id] = musiccast_player
+        if (
+            musiccast_player_helper.player_zone2 is not None
+            and musiccast_player_helper._log_allowed_sources
+        ):
+            musiccast_player_helper._log_allowed_sources = False
+            player_main = musiccast_player_helper.player_main
+            assert player_main is not None
+            self.logger.info(
+                f"The player {player_main.display_name or player_main.name} has multiple zones. "
+                "Please use the player config to configure a non-net source for grouping. "
+            )
 
-    # async def _update_player_attributes(self, player: Player, device: MusicCastZoneDevice) ->
-    # None:
-    #     # ruff: noqa: PLR0915
-    #     zone_data = device.zone_data
-    #     if zone_data is None:
-    #         return
-    #
-    #     player.name = zone_data.name or "UNKNOWN NAME"
-    #     player.powered = zone_data.power == "on"
-    #
-    #     # NOTE: aiomusiccast does not type hint the volume variables, and they may
-    #     # be none, and not only integers
-    #     _current_volume = cast("int | None", zone_data.current_volume)
-    #     _max_volume = cast("int | None", zone_data.max_volume)
-    #     _min_volume = cast("int | None", zone_data.min_volume)
-    #     if _current_volume is None:
-    #         player.volume_level = None
-    #     else:
-    #         _min_volume = 0 if _min_volume is None else _min_volume
-    #         _max_volume = 100 if _max_volume is None else _max_volume
-    #         if _min_volume == _max_volume:
-    #             _max_volume += 1
-    #         player.volume_level = int(_current_volume / (_max_volume - _min_volume) * 100)
-    #     player.volume_muted = zone_data.mute
-    #
-    #     # STATE
-    #
-    #     match device.state:
-    #         case MusicCastPlayerState.PAUSED:
-    #             player.state = PlaybackState.PAUSED
-    #         case MusicCastPlayerState.PLAYING:
-    #             player.state = PlaybackState.PLAYING
-    #         case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
-    #             player.state = PlaybackState.IDLE
-    #     player.elapsed_time = device.media_position
-    #     player.elapsed_time_last_updated = device.media_position_updated_at
-    #
-    #     # SOURCES
-    #     source_list: list[PlayerSource] = []
-    #     for source_id, source_name in device.source_mapping.items():
-    #         control = source_id in MC_CONTROL_SOURCE_IDS
-    #         passive = source_id in MC_PASSIVE_SOURCE_IDS
-    #         source_list.append(
-    #             PlayerSource(
-    #                 id=source_id,
-    #                 name=source_name,
-    #                 passive=passive,
-    #                 can_play_pause=control,
-    #                 can_seek=False,
-    #                 can_next_previous=control,
-    #             )
-    #         )
-    #     player.source_list.set(source_list)
-    #
-    #     # UPDATE UPNP HELPER
-    #     update_helper = self.upnp_update_helper.get(player.player_id)
-    #     now = time.time()
-    #     if update_helper is None or now - update_helper.last_poll > 5:
-    #         # Let's not do this too often
-    #         # Note: The devices always return the last UPnP xmls, even if
-    #         # currently another source/ playback method is used
-    #         try:
-    #             _xml_media_info = await avt_get_media_info(
-    #                 self.mass.http_session, device.physical_device
-    #             )
-    #         except ServerDisconnectedError:
-    #             return
-    #         _player_current_url = search_xml(_xml_media_info, "CurrentURI")
-    #
-    #         # controlled by mass is only True, if we are directly controlled
-    #         # i.e. we are not a group member.
-    #         # the device's source id is server, if controlled by upnp, but also, if the internal
-    #         # dlna function of the device are used. As a fallback, we then
-    #         # use the item's title. This can only fail, if our current and next item
-    #         # has the same name as the external.
-    #         controlled_by_mass = False
-    #         if _player_current_url is not None:
-    #             controlled_by_mass = (
-    #                 player.player_id in _player_current_url
-    #                 and self.mass.streams.base_url in _player_current_url
-    #                 and device.source_id == "server"
-    #             )
-    #
-    #         update_helper = UpnpUpdateHelper(
-    #             last_poll=now,
-    #             controlled_by_mass=controlled_by_mass,
-    #             current_uri=_player_current_url,
-    #         )
-    #
-    #         self.upnp_update_helper[player.player_id] = update_helper
-    #
-    #     # UPDATE PLAYBACK INFORMATION
-    #     # Note to self:
-    #     # player.current_media tells queue controller what is playing
-    #     # and player.set_current_media is the helper function
-    #     # do not access the queue controller to gain playback information here
-    #     if update_helper.current_uri is not None and update_helper.controlled_by_mass:
-    #         player.set_current_media(uri=update_helper.current_uri, clear_all=True)
-    #     elif device.is_client:
-    #         _server = device.group_server
-    #         _server_id = self._get_player_id_from_mc_zone_player(_server)
-    #         _server_update_helper = self.upnp_update_helper.get(_server_id)
-    #         if (
-    #             _server_update_helper is not None
-    #             and _server_update_helper.current_uri is not None
-    #             and _server_update_helper.controlled_by_mass
-    #         ):
-    #             player.set_current_media(
-    #                 uri=_server_update_helper.current_uri,
-    #             )
-    #         else:
-    #             player.set_current_media(
-    #                 uri=f"{_server_id}_{_server.source_id}",
-    #                 title=_server.media_title,
-    #                 artist=_server.media_artist,
-    #                 album=_server.media_album_name,
-    #                 image_url=_server.media_image_url,
-    #             )
-    #     else:
-    #         player.set_current_media(
-    #             uri=f"{player.player_id}_{device.source_id}",
-    #             title=device.media_title,
-    #             artist=device.media_artist,
-    #             album=device.media_album_name,
-    #             image_url=device.media_image_url,
-    #         )
-    #
-    #     # SOURCE
-    #     player.active_source = None  # means the player controller will figure it out
-    #     if not device.is_client and not update_helper.controlled_by_mass:
-    #         player.active_source = device.source_id
-    #     elif device.is_client:
-    #         _server = device.group_server
-    #         _server_id = self._get_player_id_from_mc_zone_player(_server)
-    #         if _server_update_helper := self.upnp_update_helper.get(_server_id):
-    #             player.active_source = (
-    #                 device.source_id if not _server_update_helper.controlled_by_mass else None
-    #             )
-    #
-    #     # GROUPING
-    #     # A zone cannot be synced to another zone or main of the same device.
-    #     # Additionally, a zone can only be synced, if main is currently not using any netusb
-    #     # function.
-    #     # For a Zone which will be synced to main, grouping emits a "main_sync" instead
-    #     # of a mc link. The other way round, we log a warning.
-    #     player.can_group_with = {self.instance_id}
-    #
-    #     if len(device.musiccast_group) == 1:
-    #         if device.musiccast_group[0] == device:
-    #             # we are in a group with ourselves.
-    #             player.group_members.clear()
-    #             player.synced_to = None
-    #             player.active_group = None
-    #
-    #     elif not device.is_client and not device.is_server:
-    #         player.group_members.clear()
-    #         player.synced_to = None
-    #         player.active_group = None
-    #
-    #     elif device.is_client:
-    #         _synced_to_id = self._get_player_id_from_mc_zone_player(device.group_server)
-    #         player.group_members.clear()
-    #         player.synced_to = _synced_to_id
-    #         player.active_group = _synced_to_id
-    #
-    #     elif device.is_server:
-    #         player.group_members.set(
-    #             [self._get_player_id_from_mc_zone_player(x) for x in device.musiccast_group]
-    #         )
-    #         player.synced_to = None
-    #         player.active_group = None
-    #
+        self.musiccast_player_helpers[device_id] = musiccast_player_helper
+
     def _non_async_udp_callback(self, mc_physical_device: MusicCastPhysicalDevice) -> None:
         """Update callback.
 
