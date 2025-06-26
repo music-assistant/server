@@ -114,7 +114,7 @@ class Player(ABC):
     _attr_elapsed_time: float | None = None
     _attr_elapsed_time_last_updated: datetime | None = None
     _attr_synced_to: str | None = None
-    _atr_active_source: str | None = None
+    _attr_active_source: str | None = None
     _attr_current_media: PlayerMedia | None = None
     _attr_needs_poll: bool = False
     _attr_poll_interval: int = 30
@@ -288,7 +288,7 @@ class Player(ABC):
         Set to None if the player is not currently playing a source or
         the player_id if the player is currently playing a MA queue.
         """
-        return self._atr_active_source
+        return self._attr_active_source
 
     @property
     def source_list(self) -> UniqueList[PlayerSource]:
