@@ -948,7 +948,7 @@ class Player(ABC):
         # return early if nothing changed (unless force_update is True)
         if len(changed_values) == 0 and not force_update:
             return
-        # sinal the state update to the PlayerController
+        # signal the state update to the PlayerController
         self.mass.players.signal_player_state_update(self, changed_values)
 
     def set_current_media(  # noqa: PLR0913
