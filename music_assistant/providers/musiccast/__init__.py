@@ -5,15 +5,16 @@ import logging
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from aiohttp.client import ClientError
+from aiohttp.client_exceptions import ServerDisconnectedError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-from music_assistant_models.enums import PlayerFeature, ProviderFeature
-from music_assistant_models.player import PlayerMedia
+from music_assistant_models.enums import PlaybackState, PlayerFeature, ProviderFeature
+from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant_models.provider import ProviderManifest
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
@@ -24,20 +25,25 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.musiccast.avt_helpers import (
+    avt_get_media_info,
     avt_next,
     avt_pause,
     avt_play,
     avt_previous,
     avt_set_url,
     avt_stop,
+    search_xml,
 )
 from music_assistant.providers.musiccast.constants import (
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
+    MC_CONTROL_SOURCE_IDS,
     MC_DEVICE_INFO_ENDPOINT,
     MC_DEVICE_UPNP_ENDPOINT,
     MC_DEVICE_UPNP_PORT,
     MC_NETUSB_SOURCE_IDS,
+    MC_PASSIVE_SOURCE_IDS,
+    MC_POLL_INTERVAL,
     MC_SOURCE_MAIN_SYNC,
     MC_SOURCE_MC_LINK,
     PLAYER_ZONE_SPLITTER,
@@ -45,6 +51,7 @@ from music_assistant.providers.musiccast.constants import (
 from music_assistant.providers.musiccast.musiccast import (
     MusicCastController,
     MusicCastPhysicalDevice,
+    MusicCastPlayerState,
     MusicCastZoneDevice,
 )
 from music_assistant.providers.sonos.helpers import get_primary_ip_address
@@ -100,6 +107,7 @@ class MusicCastPlayer(Player):
 
         Keep reference to physical and zone device.
         """
+        self._cache: dict[str, Any] = {}
         super().__init__(provider, player_id)
         self.physical_device = physical_device
         self.zone_device = zone_device
@@ -108,6 +116,227 @@ class MusicCastPlayer(Player):
         # refers to being controlled by upnp.
         self.update_lock = asyncio.Lock()
         self.upnp_update_helper: UpnpUpdateHelper | None = None
+
+    async def setup(self) -> None:
+        """Set up player in Music Assistant."""
+        self.set_static_properties()
+        async with self.update_lock:
+            await self.update_player_attributes()
+        await self.mass.players.register_or_update(self)
+
+    def set_static_properties(self) -> None:
+        """Set static properties."""
+        self._attr_supported_features = {
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+            PlayerFeature.PAUSE,
+            PlayerFeature.POWER,
+            PlayerFeature.SELECT_SOURCE,
+            PlayerFeature.SET_MEMBERS,
+            PlayerFeature.NEXT_PREVIOUS,
+            PlayerFeature.ENQUEUE,
+            PlayerFeature.GAPLESS_PLAYBACK,
+        }
+
+        self._attr_device_info = DeviceInfo(
+            manufacturer="Yamaha Corporation",
+            model=self.physical_device.device.data.model_name or "unknown model",
+            software_version=(self.physical_device.device.data.system_version or "unknown version"),
+        )
+
+        # polling
+        self._attr_needs_poll = True
+        self._attr_poll_interval = MC_POLL_INTERVAL
+
+        # default MC name
+        # if self.zone_device.zone_data is not None:
+        #     self._attr_name = self.zone_device.zone_data.name
+
+        # group
+        self._attr_can_group_with = {self._provider.instance_id}
+
+    async def update_player_attributes(self) -> None:
+        """Update Player attributes."""
+        # ruff: noqa: PLR0915
+        zone_data = self.zone_device.zone_data
+        if zone_data is None:
+            return
+
+        self.attr_powered = zone_data.power == "on"
+
+        # NOTE: aiomusiccast does not type hint the volume variables, and they may
+        # be none, and not only integers
+        _current_volume = cast("int | None", zone_data.current_volume)
+        _max_volume = cast("int | None", zone_data.max_volume)
+        _min_volume = cast("int | None", zone_data.min_volume)
+        if _current_volume is None:
+            self._attr_volume_level = None
+        else:
+            _min_volume = 0 if _min_volume is None else _min_volume
+            _max_volume = 100 if _max_volume is None else _max_volume
+            if _min_volume == _max_volume:
+                _max_volume += 1
+            self._attr_volume_level = int(_current_volume / (_max_volume - _min_volume) * 100)
+        self._attr_volume_muted = zone_data.mute
+
+        # STATE
+
+        match self.zone_device.state:
+            case MusicCastPlayerState.PAUSED:
+                self._attr_playback_state = PlaybackState.PAUSED
+            case MusicCastPlayerState.PLAYING:
+                self._attr_playback_state = PlaybackState.PLAYING
+            case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
+                self._attr_playback_state = PlaybackState.IDLE
+        self._attr_elapsed_time = self.zone_device.media_position
+        self._attr__elapsed_time_last_updated = self.zone_device.media_position_updated_at
+
+        # SOURCES
+        source_list: list[PlayerSource] = []
+        for source_id, source_name in self.zone_device.source_mapping.items():
+            control = source_id in MC_CONTROL_SOURCE_IDS
+            passive = source_id in MC_PASSIVE_SOURCE_IDS
+            source_list.append(
+                PlayerSource(
+                    id=source_id,
+                    name=source_name,
+                    passive=passive,
+                    can_play_pause=control,
+                    can_seek=False,
+                    can_next_previous=control,
+                )
+            )
+        self._attr_source_list.set(source_list)
+
+        # UPDATE UPNP HELPER
+        now = time.time()
+        if self.upnp_update_helper is None or now - self.upnp_update_helper.last_poll > 5:
+            # Let's not do this too often
+            # Note: The devices always return the last UPnP xmls, even if
+            # currently another source/ playback method is used
+            try:
+                _xml_media_info = await avt_get_media_info(
+                    self.mass.http_session, self.physical_device
+                )
+            except ServerDisconnectedError:
+                return
+            _player_current_url = search_xml(_xml_media_info, "CurrentURI")
+
+            # controlled by mass is only True, if we are directly controlled
+            # i.e. we are not a group member.
+            # the device's source id is server, if controlled by upnp, but also, if the internal
+            # dlna function of the device are used. As a fallback, we then
+            # use the item's title. This can only fail, if our current and next item
+            # has the same name as the external.
+            controlled_by_mass = False
+            if _player_current_url is not None:
+                controlled_by_mass = (
+                    self.player_id in _player_current_url
+                    and self.mass.streams.base_url in _player_current_url
+                    and self.zone_device.source_id == "server"
+                )
+
+            self.upnp_update_helper = UpnpUpdateHelper(
+                last_poll=now,
+                controlled_by_mass=controlled_by_mass,
+                current_uri=_player_current_url,
+            )
+
+        # UPDATE PLAYBACK INFORMATION
+        # Note to self:
+        # player.current_media tells queue controller what is playing
+        # and player.set_current_media is the helper function
+        # do not access the queue controller to gain playback information here
+        if (
+            self.upnp_update_helper.current_uri is not None
+            and self.upnp_update_helper.controlled_by_mass
+        ):
+            self.set_current_media(uri=self.upnp_update_helper.current_uri, clear_all=True)
+        elif self.zone_device.is_client:
+            _server = self.zone_device.group_server
+            _server_id = self._get_player_id_from_mc_zone_player(_server)
+            _server_player: MusicCastPlayer | None = self.mass.players.get(_server_id)
+            _server_update_helper: None | UpnpUpdateHelper = None
+            if _server_player is not None:
+                _server_update_helper = _server_player.upnp_update_helper
+            if (
+                _server_update_helper is not None
+                and _server_update_helper.current_uri is not None
+                and _server_update_helper.controlled_by_mass
+            ):
+                self.set_current_media(
+                    uri=_server_update_helper.current_uri,
+                )
+            else:
+                self.set_current_media(
+                    uri=f"{_server_id}_{_server.source_id}",
+                    title=_server.media_title,
+                    artist=_server.media_artist,
+                    album=_server.media_album_name,
+                    image_url=_server.media_image_url,
+                )
+        else:
+            self.set_current_media(
+                uri=f"{self.player_id}_{self.zone_device.source_id}",
+                title=self.zone_device.media_title,
+                artist=self.zone_device.media_artist,
+                album=self.zone_device.media_album_name,
+                image_url=self.zone_device.media_image_url,
+            )
+
+        # SOURCE
+        self._attr_active_source = None  # means the player controller will figure it out
+        if not self.zone_device.is_client and not self.upnp_update_helper.controlled_by_mass:
+            self._attr_active_source = self.zone_device.source_id
+        elif self.zone_device.is_client:
+            _server = self.zone_device.group_server
+            _server_id = self._get_player_id_from_mc_zone_player(_server)
+            _server_player: MusicCastPlayer | None = self.mass.players.get(_server_id)
+            if _server_player is not None and _server_player.upnp_update_helper is not None:
+                self._attr_active_source = (
+                    self.zone_device.source_id
+                    if not _server_update_helper.controlled_by_mass
+                    else None
+                )
+
+        # GROUPING
+        # A zone cannot be synced to another zone or main of the same device.
+        # Additionally, a zone can only be synced, if main is currently not using any netusb
+        # function.
+        # For a Zone which will be synced to main, grouping emits a "main_sync" instead
+        # of a mc link. The other way round, we log a warning.
+        if len(self.zone_device.musiccast_group) == 1:
+            if self.zone_device.musiccast_group[0] == self.zone_device:
+                # we are in a group with ourselves.
+                self._attr_group_members.clear()
+                self._attr_synced_to = None
+                self._attr_active_group = None
+
+        elif not self.zone_device.is_client and not self.zone_device.is_server:
+            self._attr_group_members.clear()
+            self._attr_synced_to = None
+            self._attr_active_group = None
+
+        elif self.zone_device.is_client:
+            _synced_to_id = self._get_player_id_from_mc_zone_player(self.zone_device.group_server)
+            self._attr_group_members.clear()
+            self._attr_synced_to = _synced_to_id
+            self._attr_active_group = _synced_to_id
+
+        elif self.zone_device.is_server:
+            self._attr_group_members.set(
+                [
+                    self._get_player_id_from_mc_zone_player(x)
+                    for x in self.zone_device.musiccast_group
+                ]
+            )
+            self._attr_synced_to = None
+            self._attr_active_group = None
+
+        try:
+            self.update_state()
+        except Exception:
+            pass
 
     async def _cmd_run(self, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
         """Help function for all player cmds."""
@@ -417,37 +646,19 @@ class MusicCast(PlayerProvider):
         self, physical_device: MusicCastPhysicalDevice, device_id: str
     ) -> None:
         """Register player including zones."""
+
         # player features
         # NOTE: There is seek in the upnp desc
         # http://{ip}:49154/AVTransport/desc.xml
         # however, it appears not to work as it should, so we remain at MA's own
         # seek implementation
-        supported_features = {
-            PlayerFeature.VOLUME_SET,
-            PlayerFeature.VOLUME_MUTE,
-            PlayerFeature.PAUSE,
-            PlayerFeature.POWER,
-            PlayerFeature.SELECT_SOURCE,
-            PlayerFeature.SET_MEMBERS,
-            PlayerFeature.NEXT_PREVIOUS,
-            PlayerFeature.ENQUEUE,
-            PlayerFeature.GAPLESS_PLAYBACK,
-        }
-
         def get_player(zone_name: str, zone_device: MusicCastZoneDevice) -> MusicCastPlayer:
-            player = MusicCastPlayer(
+            return MusicCastPlayer(
                 provider=self,
                 player_id=f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_name}",
                 physical_device=physical_device,
                 zone_device=zone_device,
             )
-            player.supported_features.update(supported_features)
-            player.device_info.manufacturer = "Yamaha Corporation"
-            player.device_info.model = physical_device.device.data.model_name or "unknown model"
-            player.device_info.software_version = (
-                physical_device.device.data.system_version or "unknown version"
-            )
-            return player
 
         main_device = physical_device.zone_devices.get("main")
         if (
@@ -461,10 +672,7 @@ class MusicCast(PlayerProvider):
             if zone_device.zone_data is None or zone_device.zone_data.name is None:
                 continue
             player = get_player(zone_name, zone_device=zone_device)
-
-            # player._attr_name = zone_device.zone_data.name
-            # await self._update_player_attributes(player, zone_device)
-            await self.mass.players.register_or_update(player)
+            await player.setup()
 
         # if musiccast_player.player_zone2 is not None and musiccast_player._log_allowed_sources:
         #     musiccast_player._log_allowed_sources = False
