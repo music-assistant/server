@@ -9,7 +9,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from aiohttp import web
+from aiohttp import BasicAuth, web
 from alexapy import AlexaAPI, AlexaLogin, AlexaProxy
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -50,6 +50,9 @@ if TYPE_CHECKING:
 CONF_URL = "url"
 CONF_ACTION_AUTH = "auth"
 CONF_AUTH_SECRET = "secret"
+CONF_API_BASIC_AUTH_USERNAME = "api_username"
+CONF_API_BASIC_AUTH_PASSWORD = "api_password"
+CONF_API_URL = "api_url"
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
@@ -168,28 +171,31 @@ async def get_config_entries(
             value=values.get(CONF_AUTH_SECRET) if values else None,
         ),
         ConfigEntry(
-            key=CONF_IP_ADDRESS,
-            type=ConfigEntryType.STRING,
-            label="API IP Address",
-            required=True,
-            default_value="localhost",
-            value=values.get(CONF_IP_ADDRESS) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_PORT,
-            type=ConfigEntryType.INTEGER,
-            label="API Port",
-            required=True,
-            default_value=3000,
-            value=values.get(CONF_PORT) if values else None,
-        ),
-        ConfigEntry(
             key=CONF_ACTION_AUTH,
             type=ConfigEntryType.ACTION,
             label="Authenticate with Amazon",
             description="Click to start the authentication process.",
             action=CONF_ACTION_AUTH,
             depends_on=CONF_URL,
+        ),
+        ConfigEntry(
+            key=CONF_API_URL,
+            type=ConfigEntryType.STRING,
+            label="API Url",
+            default_value="http://localhost:3000",
+            required=True,
+        ),
+        ConfigEntry(
+            key=CONF_API_BASIC_AUTH_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="API Basic Auth Username",
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_API_BASIC_AUTH_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="API Basic Auth Password",
+            required=False,
         ),
     )
 
@@ -389,15 +395,20 @@ class AlexaProvider(PlayerProvider):
         if not (player := self.mass.players.get(player_id)):
             return
 
-        api_ip = self.config.get_value(CONF_IP_ADDRESS)
-        api_port = self.config.get_value(CONF_PORT)
-        api_url = f"http://{api_ip}:{api_port}/ma/push-url"
+        username = str(self.config.get_value(CONF_API_BASIC_AUTH_USERNAME))
+        password = str(self.config.get_value(CONF_API_BASIC_AUTH_PASSWORD))
+
+        auth = None
+        if username and password:
+            auth = BasicAuth(username, password)
+
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.post(
-                    api_url,
+                    f"{self.config.get_value(CONF_API_URL)}/ma/push-url",
                     json={"streamUrl": media.uri},
                     timeout=aiohttp.ClientTimeout(total=10),
+                    auth=auth,
                 ) as resp:
                     await resp.text()
             except Exception as exc:
