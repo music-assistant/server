@@ -1,6 +1,6 @@
 {
   "type": "player",
-  "domain": "demo_player_provider",
+  "domain": "_demo_player_provider",
   "name": "Demo Player Provider",
   "description": "Test/Example Player Provider for Music Assistant.",
   "codeowners": ["@yourgithubusername"],

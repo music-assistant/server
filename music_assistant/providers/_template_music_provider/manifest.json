@@ -1,10 +1,9 @@
 {
   "type": "music",
-  "domain": "template_player_provider",
-  "name": "Name of the Player provider goes here",
-  "description": "Short description of the player provider goes here",
+  "domain": "_demo_music_provider",
+  "name": "Demo Music Provider",
+  "description": "Test/Example Music Provider for Music Assistant.",
   "codeowners": ["@yourgithubusername"],
   "requirements": [],
-  "documentation": "Link to the documentation on the music-assistant.io helppage (may be added later).",
-  "mdns_discovery": ["_optional_mdns_service_type._tcp.local."]
+  "documentation": "https://music-assistant.io/music-providers/demo/"
 }
