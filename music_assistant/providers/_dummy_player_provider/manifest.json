@@ -1,0 +1,10 @@
+{
+  "type": "player",
+  "domain": "dummy_player_provider",
+  "name": "Dummy Player Provider",
+  "description": "Test/Example Player Provider for Music Assistant.",
+  "codeowners": ["@yourgithubusername"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/player-support/dummy/",
+  "mdns_discovery": ["_dummy_service_type._tcp.local."]
+}

@@ -101,10 +101,10 @@ class Player(ABC):
 
     _attr_type: PlayerType = PlayerType.PLAYER
     _attr_supported_features: set[PlayerFeature]
-    _attr_group_members: UniqueList[str]
+    _attr_group_members: list[str]
     _attr_device_info: DeviceInfo
     _attr_can_group_with: set[str]
-    _attr_source_list: UniqueList[PlayerSource]
+    _attr_source_list: list[PlayerSource]
     _attr_available: bool = True
     _attr_name: str | None = None
     _attr_powered: bool | None = None
@@ -129,10 +129,10 @@ class Player(ABC):
         self.logger = provider.logger
         # initialize mutable attributes
         self._attr_supported_features = set()
-        self._attr_group_members = UniqueList()
+        self._attr_group_members = []
         self._attr_device_info = DeviceInfo()
         self._attr_can_group_with = set()
-        self._attr_source_list = UniqueList()
+        self._attr_source_list = []
         # do not override/overwrite these private attributes below!
         self._cache: dict[str, Any] = {}  # storage dict for cached properties
         self._player_id = player_id
@@ -247,7 +247,7 @@ class Player(ABC):
         return self._attr_elapsed_time_last_updated
 
     @property
-    def group_members(self) -> UniqueList[str]:
+    def group_members(self) -> list[str]:
         """
         Return the group members of the player.
 
@@ -290,7 +290,7 @@ class Player(ABC):
         return self._attr_active_source
 
     @property
-    def source_list(self) -> UniqueList[PlayerSource]:
+    def source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
         return self._attr_source_list
 
@@ -481,33 +481,6 @@ class Player(ABC):
             "select_source needs to be implemented when PlayerFeature.SELECT_SOURCE is set"
         )
 
-    async def group_with(self, target_player_id: str) -> None:
-        """
-        Handle GROUP_WITH command on the player.
-
-        Group this player to the given syncleader/target.
-        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
-
-        :param target_player: player_id of the target player / sync leader.
-        """
-        raise NotImplementedError(
-            "group_with needs to be implemented when PlayerFeature.SET_MEMBERS is set"
-        )
-
-    async def ungroup(self) -> None:
-        """
-        Handle UNGROUP command on the player.
-
-        Remove the player from any (sync)groups it currently is grouped to.
-        If this player is the sync leader (or group player),
-        all child's will be ungrouped and the group dissolved.
-
-        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
-        """
-        raise NotImplementedError(
-            "ungroup needs to be implemented when PlayerFeature.SET_MEMBERS is set"
-        )
-
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -525,6 +498,37 @@ class Player(ABC):
         raise NotImplementedError(
             "set_members needs to be implemented when PlayerFeature.SET_MEMBERS is set"
         )
+
+    async def group_with(self, target_player_id: str) -> None:
+        """
+        Handle GROUP_WITH command on the player.
+
+        Group this player to the given syncleader/target.
+        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
+
+        :param target_player: player_id of the target player / sync leader.
+        """
+        # default implementation will simply call set_members
+        # to add the target player to the group.
+        target_player = self.mass.players.get(target_player_id, raise_unavailable=True)
+        assert target_player  # for type checking
+        await target_player.set_members(player_ids_to_add=[self.player_id])
+
+    async def ungroup(self) -> None:
+        """
+        Handle UNGROUP command on the player.
+
+        Remove the player from any (sync)groups it currently is grouped to.
+        If this player is the sync leader (or group player),
+        all child's will be ungrouped and the group dissolved.
+
+        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
+        """
+        # default implementation will simply call set_members
+        if self.synced_to:
+            await self.set_members(player_ids_to_remove=[self.player_id])
+        else:
+            await self.set_members(player_ids_to_remove=self.group_members)
 
     async def poll(self) -> None:
         """
@@ -740,7 +744,7 @@ class Player(ABC):
         This is a convenience property which calculates the final source list
         based on any group memberships or source plugins that can be active.
         """
-        sources = self.source_list
+        sources = UniqueList(self.source_list)
         # always ensure the Music Assistant Queue is in the source list
         mass_source = next((x for x in sources if x.id == self.player_id), None)
         if mass_source is None:
@@ -1100,7 +1104,7 @@ class Player(ABC):
         self._state.powered = self.power_state
         self._state.volume_level = self.volume_state
         self._state.volume_muted = self.volume_muted_state
-        self._state.group_members = self.group_members
+        self._state.group_members = UniqueList(self.group_members)
         self._state.can_group_with = self.can_group_with
         self._state.synced_to = self.synced_to
         self._state.active_source = self.active_source_state

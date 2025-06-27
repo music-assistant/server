@@ -1104,7 +1104,7 @@ class PlayerController(CoreController):
         assert player is not None  # for type checker
         self.mass.loop.call_soon(player.update_state, force_update)
 
-    def unregister(self, player_id: str, permanent: bool = True) -> None:
+    def unregister(self, player_id: str, permanent: bool = False) -> None:
         """
         Unregister a player from the player controller.
 
