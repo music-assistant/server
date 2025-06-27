@@ -570,6 +570,38 @@ class MusicCastPlayer(Player):
         If we are a server, this is called.
         We can ignore removed devices, these are handled via ungroup individually.
         """
+        children: set[MusicCastZoneDevice] = set()
+        children_zones: list[MusicCastZoneDevice] = []
+        player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
+        for child_id in player_ids_to_add:
+            if child := self._get_zone_player(child_id):
+                _other_zone_mc: MusicCastZoneDevice | None = None
+                for x in child.other_zones:
+                    if x.is_netusb:
+                        _other_zone_mc = x
+                if _other_zone_mc and _other_zone_mc != child:
+                    # of the same device, we use main_sync as input
+                    if _other_zone_mc.zone_name == "main":
+                        children_zones.append(child)
+                    else:
+                        self.logger.warning(
+                            "It is impossible to join as a normal zone to another zone of the same "
+                            "device. Only joining to main is possible. Please refer to the docs."
+                        )
+                else:
+                    children.add(child)
+
+        for child in children_zones:
+            child_player_id = self._get_player_id_from_mc_zone_player(child)
+            child_player = self.mass.players.get(child_player_id)
+            assert child_player is not None
+            if child.state == MusicCastPlayerState.OFF:
+                await child_player.power(powered=True)
+            await self.select_source(child_player_id, MC_SOURCE_MAIN_SYNC)
+        if not children:
+            return
+
+        await self._cmd_run(self.zone_device.join_players, list(children))
 
     def _get_zone_player(self, player_id: str) -> MusicCastZoneDevice | None:
         """Get music cast zone entity based on player id."""
