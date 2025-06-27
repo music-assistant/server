@@ -776,7 +776,7 @@ class Player(ABC):
                             )
                         )
         # append all/any plugin sources
-        sources.extend(self.mass.players.get_plugin_sources(self.player_id))
+        sources.extend(self.mass.players.get_plugin_sources())
         return sources
 
     @cached_property
