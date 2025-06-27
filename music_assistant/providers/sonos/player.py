@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import time
 from typing import TYPE_CHECKING
@@ -31,7 +33,6 @@ from music_assistant.providers.sonos.const import (
     SOURCE_SPOTIFY,
     SOURCE_TV,
 )
-from music_assistant.providers.sonos.provider import SonosPlayerProvider
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
