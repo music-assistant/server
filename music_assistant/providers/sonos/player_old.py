@@ -9,45 +9,6 @@ SonosPlayer: Holds the details of the (discovered) Sonosplayer.
 
 from __future__ import annotations
 
-import asyncio
-import time
-from collections.abc import Callable
-from typing import TYPE_CHECKING
-
-from aiohttp.client_exceptions import ClientConnectorError
-from aiosonos.api.models import ContainerType, MusicService, SonosCapability
-from aiosonos.client import SonosLocalApiClient
-from aiosonos.const import EventType as SonosEventType
-from aiosonos.const import SonosEvent
-from aiosonos.exceptions import ConnectionFailed, FailedCommand
-from music_assistant_models.enums import (
-    EventType,
-    PlaybackState,
-    PlayerFeature,
-    PlayerType,
-    RepeatMode,
-)
-
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
-
-from .const import (
-    CONF_AIRPLAY_MODE,
-    PLAYBACK_STATE_MAP,
-    PLAYER_FEATURES_BASE,
-    PLAYER_SOURCE_MAP,
-    SOURCE_AIRPLAY,
-    SOURCE_LINE_IN,
-    SOURCE_RADIO,
-    SOURCE_SPOTIFY,
-    SOURCE_TV,
-)
-
-if TYPE_CHECKING:
-    from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
-    from music_assistant_models.event import MassEvent
-
-    from .provider import SonosPlayerProvider
-
 
 class SonosPlayer:
     """Holds the details of the (discovered) Sonosplayer."""
@@ -188,7 +149,7 @@ class SonosPlayer:
     #     await self._disconnect()
     #     self.mass.players.remove(self.player_id, False)
     #     for callback in self._on_cleanup_callbacks:
-            callback()
+    #       callback()
 
     # def reconnect(self, delay: float = 1) -> None:
     #     """Reconnect the player."""
@@ -280,7 +241,7 @@ class SonosPlayer:
     #         # unsupported source - try to clear the queue/player
     #         await self.cmd_stop()
 
-    # def update_attributes(self) -> None:  # noqa: PLR0915
+    # def update_attributes(self) -> None:
     #     """Update the player attributes."""
     #     if not self.mass_player:
     #         return

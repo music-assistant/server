@@ -1233,7 +1233,7 @@ class GroupPlayer(Player):
 
 
 __all__ = [
-    # explictly re-export the models we imported from the models package,
+    # explicitly re-export the models we imported from the models package,
     # for convenience reasons
     "EXTRA_ATTRIBUTES_TYPES",
     "DeviceInfo",

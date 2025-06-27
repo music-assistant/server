@@ -16,8 +16,7 @@ from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
 from aiosonos.utils import get_discovery_info
 from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, ProviderFeature
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
@@ -29,9 +28,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
-from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.helpers.upnp import get_xml_soap_set_next_url, get_xml_soap_set_url
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
 from .const import CONF_AIRPLAY_MODE
@@ -207,36 +204,36 @@ class SonosPlayerProvider(PlayerProvider):
                 await airplay_prov.cmd_stop(airplay_player.player_id)
                 airplay_player.active_source = None
 
-    # async def cmd_stop(self, player_id: str) -> None:
-    #     """Send STOP command to given player."""
-    #     if sonos_player := self.sonos_players[player_id]:
-    #         await sonos_player.cmd_stop()
+        # async def cmd_stop(self, player_id: str) -> None:
+        #     """Send STOP command to given player."""
+        #     if sonos_player := self.sonos_players[player_id]:
+        #         await sonos_player.cmd_stop()
 
-    # async def cmd_play(self, player_id: str) -> None:
-    #     """Send PLAY command to given player."""
-    #     if sonos_player := self.sonos_players[player_id]:
-    #         await sonos_player.cmd_play()
+        # async def cmd_play(self, player_id: str) -> None:
+        #     """Send PLAY command to given player."""
+        #     if sonos_player := self.sonos_players[player_id]:
+        #         await sonos_player.cmd_play()
 
-    # async def cmd_pause(self, player_id: str) -> None:
-    #     """Send PAUSE command to given player."""
-    #     if sonos_player := self.sonos_players[player_id]:
-    #         await sonos_player.cmd_pause()
+        # async def cmd_pause(self, player_id: str) -> None:
+        #     """Send PAUSE command to given player."""
+        #     if sonos_player := self.sonos_players[player_id]:
+        #         await sonos_player.cmd_pause()
 
-    # async def cmd_seek(self, player_id: str, position: int) -> None:
-    #     """Handle SEEK command for given player.
+        # async def cmd_seek(self, player_id: str, position: int) -> None:
+        #     """Handle SEEK command for given player.
 
-    #     - player_id: player_id of the player to handle the command.
-    #     - position: position in seconds to seek to in the current playing item.
-    #     """
-    #     if sonos_player := self.sonos_players[player_id]:
-    #         await sonos_player.cmd_seek(position)
+        #     - player_id: player_id of the player to handle the command.
+        #     - position: position in seconds to seek to in the current playing item.
+        #     """
+        #     if sonos_player := self.sonos_players[player_id]:
+        #         await sonos_player.cmd_seek(position)
 
-    # async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-    #     """Send VOLUME_SET command to given player."""
-    #     if sonos_player := self.sonos_players[player_id]:
-    #         await sonos_player.cmd_volume_set(volume_level)
+        # async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+        #     """Send VOLUME_SET command to given player."""
+        #     if sonos_player := self.sonos_players[player_id]:
+        #         await sonos_player.cmd_volume_set(volume_level)
 
-    # async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
+        # async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         if sonos_player := self.sonos_players[player_id]:
             await sonos_player.cmd_volume_mute(muted)
@@ -643,7 +640,7 @@ class SonosPlayerProvider(PlayerProvider):
     #     # disable crossfade mode if needed
     #     # crossfading is handled by our streams controller
     #     if sonos_player.client.player.group.play_modes.crossfade:
-            await sonos_player.client.player.group.set_play_modes(crossfade=False)
+    #         await sonos_player.client.player.group.set_play_modes(crossfade=False)
 
     # async def _play_media_airplay(
     #     self,

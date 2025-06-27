@@ -1,21 +1,37 @@
-from collections.abc import Callable
+import asyncio
 import time
 from typing import TYPE_CHECKING
-import asyncio
+
 from aiohttp import ClientConnectorError
-from music_assistant_models.enums import EventType, MediaType, PlaybackState, PlayerFeature, PlayerType, RepeatMode
-from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.player import DeviceInfo, PlayerMedia
-from music_assistant.helpers.upnp import get_xml_soap_set_url
-from music_assistant.models.player import Player
-from music_assistant.providers.sonos.const import CONF_AIRPLAY_MODE, PLAYBACK_STATE_MAP, PLAYER_SOURCE_MAP, SOURCE_AIRPLAY, SOURCE_LINE_IN, SOURCE_RADIO, SOURCE_SPOTIFY, SOURCE_TV
-from music_assistant.providers.sonos.provider import SonosPlayerProvider
 from aiosonos.api.models import ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
 from aiosonos.exceptions import ConnectionFailed, FailedCommand
+from music_assistant_models.enums import (
+    EventType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    RepeatMode,
+)
+from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.player import DeviceInfo, PlayerMedia
+
 from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.upnp import get_xml_soap_set_url
+from music_assistant.models.player import Player
+from music_assistant.providers.sonos.const import (
+    CONF_AIRPLAY_MODE,
+    PLAYBACK_STATE_MAP,
+    PLAYER_SOURCE_MAP,
+    SOURCE_AIRPLAY,
+    SOURCE_LINE_IN,
+    SOURCE_RADIO,
+    SOURCE_SPOTIFY,
+    SOURCE_TV,
+)
+from music_assistant.providers.sonos.provider import SonosPlayerProvider
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
@@ -28,10 +44,11 @@ SUPPORTED_FEATURES = {
     PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.SELECT_SOURCE
+    PlayerFeature.SELECT_SOURCE,
 }
+
+
 class SonosPlayer(Player):
-    
     def __init__(
         self,
         prov: SonosPlayerProvider,
@@ -44,7 +61,7 @@ class SonosPlayer(Player):
         self.discovery_info = discovery_info
         self.ip_address = ip_address
         self.connected: bool = False
-        self.client = SonosLocalApiClient(self.ip_address, self.mass.http_session)        
+        self.client = SonosLocalApiClient(self.ip_address, self.mass.http_session)
         self._listen_task: asyncio.Task | None = None
         # Sonos speakers can optionally have airplay (most S2 speakers do)
         # and this airplay player can also be a player within MA.
@@ -85,12 +102,17 @@ class SonosPlayer(Player):
             _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
         self._attr_supported_features = _supported_features
 
-        self._attr_name = self.discovery_info["device"]["name"] or self.discovery_info["device"]["modelDisplayName"]
-        self._attr_device_info = DeviceInfo(
+        self._attr_name = (
+            self.discovery_info["device"]["name"]
+            or self.discovery_info["device"]["modelDisplayName"]
+        )
+        self._attr_device_info = (
+            DeviceInfo(
                 model=self.discovery_info["device"]["modelDisplayName"],
                 manufacturer=self._provider.manifest.name,
                 ip_address=self.ip_address,
             ),
+        )
         self._attr_can_group_with = {self._provider.instance_id}
 
         if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
@@ -319,7 +341,7 @@ class SonosPlayer(Player):
         await self.client.player.group.play_stream_url(
             media.uri, {"name": media.title, "type": "track"}
         )
-    
+
     async def select_source(self, source: str) -> None:
         """
         Handle SELECT SOURCE command on the player.
@@ -470,7 +492,9 @@ class SonosPlayer(Player):
             self._attr_synced_to = None
         else:
             # player is group child (synced to another player)
-            group_parent: SonosPlayer = self.mass.players.get(self.client.player.group.coordinator_id)
+            group_parent: SonosPlayer = self.mass.players.get(
+                self.client.player.group.coordinator_id
+            )
             if not group_parent or not group_parent.client or not group_parent.client.player:
                 # handle race condition where the group parent is not yet discovered
                 return
@@ -480,7 +504,7 @@ class SonosPlayer(Player):
             self._attr_active_source = active_group.coordinator_id
 
         # map playback state
-        self._state= PLAYBACK_STATE_MAP[active_group.playback_state]
+        self._state = PLAYBACK_STATE_MAP[active_group.playback_state]
         self._attr_elapsed_time = active_group.position
 
         # figure out the active source based on the container
@@ -499,10 +523,8 @@ class SonosPlayer(Player):
             ):
                 self._attr_playback_state = airplay_player.playback_state
                 self._attr_active_source = airplay_player.active_source
-                self._attr_elapsed_time= airplay_player.elapsed_time
-                self._attr_elapsed_time_last_updated = (
-                    airplay_player.elapsed_time_last_updated
-                )
+                self._attr_elapsed_time = airplay_player.elapsed_time
+                self._attr_elapsed_time_last_updated = airplay_player.elapsed_time_last_updated
                 self._attr_current_media = airplay_player.current_media
                 # return early as we dont need further info
                 return
@@ -621,7 +643,7 @@ class SonosPlayer(Player):
 
         self._listen_task = self.mass.create_task(_listener())
         await init_ready.wait()
-    
+
     def reconnect(self, delay: float = 1) -> None:
         """Reconnect the player."""
         # use a task_id to prevent multiple reconnects
