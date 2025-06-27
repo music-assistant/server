@@ -17,7 +17,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return Dummy(mass, manifest, config)
+    return DummyProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -40,45 +40,42 @@ async def get_config_entries(
 class DummyPlayer(Player):
     """DummyPlayer in Music Assistant."""
 
-    def __init__(
-        self,
-        provider: PlayerProvider,
-        player_id: str,
-    ) -> None:
-        """Init MC Player.
-
-        Keep reference to physical and zone device.
-        """
-        # AttributeError: 'DummyPlayer' object has no attribute '_cache'
-        self._cache: dict[str, Any] = {}  # comment, then ^
-
-        super().__init__(provider, player_id)
-
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
-        self.set_static_properties()
-
-        self._attr_powered = True
-        self._attr_volume_muted = True
-        self._attr_name = "foo"
-
-        self._attr_playback_state = PlaybackState.IDLE
-
+        self._set_static_properties()
         self.update_state()  #  dataclasses.FrozenInstanceError: cannot assign to field 'name'
         await self.mass.players.register_or_update(self)  # RuntimeError: Invalid provider ID given:
 
-    def set_static_properties(self) -> None:
-        """Set static properties."""
+    def update_state(self, force_update=False):
+        """
+        Update the PlayerState with the current state of the player.
+
+        This method should be called to update the player's state
+        and signal any changes to the PlayerController.
+
+        :param force_update: If True, a state update event will be
+        pushed even if the state has not actually changed.
+        """
+        self._update_attributes()
+        return super().update_state(force_update)
+
+    def _set_static_properties(self) -> None:
+        """Set static properties of the player."""
         self._attr_supported_features = {
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
             PlayerFeature.POWER,
         }
-
-        # polling
         self._attr_needs_poll = True
         self._attr_poll_interval = 10
+
+    def _update_attributes(self) -> None:
+        """Update/set (dynamic) properties."""
+        self._attr_powered = True
+        self._attr_volume_muted = True
+        self._attr_name = "foo"
+        self._attr_playback_state = PlaybackState.IDLE
 
     async def power(self, powered: bool) -> None:
         """Power command."""
@@ -111,7 +108,7 @@ class DummyPlayer(Player):
         """Poll player."""
 
 
-class Dummy(PlayerProvider):
+class DummyProvider(PlayerProvider):
     """MusicCast Player Provider."""
 
     @property
@@ -123,5 +120,5 @@ class Dummy(PlayerProvider):
         """Async init."""
         # make some players here
         for i in range(4):
-            player = DummyPlayer(self, f"{i}")
+            player = DummyPlayer(self, f"dummy_{i}")
             await player.setup()

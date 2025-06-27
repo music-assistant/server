@@ -134,6 +134,7 @@ class Player(ABC):
         self._attr_can_group_with = set()
         self._attr_source_list = UniqueList()
         # do not override/overwrite these private attributes below!
+        self._cache: dict[str, Any] = {}  # storage dict for cached properties
         self._player_id = player_id
         self._provider = provider
         self.mass.config.create_default_player_config(
@@ -157,8 +158,6 @@ class Player(ABC):
             supported_features=self.supported_features,
             playback_state=self.playback_state,
         )
-        # storage dict for cached properties
-        self._cache: dict[str, Any] = {}
 
     @property
     def type(self) -> PlayerType:
