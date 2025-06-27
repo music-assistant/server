@@ -1230,14 +1230,10 @@ class PlayerController(CoreController):
 
         # update/signal group player(s) child's when group updates
         for child_player in self.iter_group_members(player, exclude_self=True):
-            self.mass.loop.call_soon(
-                child_player.update_state, child_player.player_id, skip_forward=True
-            )
+            self.mass.loop.call_soon(child_player.update_state, True)
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
-            self.mass.loop.call_soon(
-                group_player.update_state, group_player.player_id, skip_forward=True
-            )
+            self.mass.loop.call_soon(group_player.update_state, True)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
