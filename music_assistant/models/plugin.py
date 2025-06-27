@@ -16,7 +16,7 @@ from .provider import Provider
 # ruff: noqa: ARG001, ARG002
 
 
-@dataclass()
+@dataclass
 class PluginSource(PlayerSource):
     """
     Model for a PluginSource, which is a player (audio)source provided by a plugin.
