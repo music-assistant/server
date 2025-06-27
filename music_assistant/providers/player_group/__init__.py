@@ -971,7 +971,7 @@ class PlayerGroupProvider(PlayerProvider):
                 x
                 for x in members
                 if (player := self.mass.players.get(x))
-                and player.provider == player_provider.instance_id
+                and player.provider.instance_id == player_provider.instance_id
             ]
         # cleanup members - filter out impossible choices
         syncgroup_childs: list[str] = []

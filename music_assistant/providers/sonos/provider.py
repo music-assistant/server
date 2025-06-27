@@ -199,10 +199,7 @@ class SonosPlayerProvider(PlayerProvider):
         ):
             # edge case: we switched from airplay mode to sonos mode (or vice versa)
             # we need to make sure that playback gets stopped on the airplay player
-            if airplay_prov := self.mass.get_provider(airplay_player.provider):
-                airplay_player.active_source = None
-                await airplay_prov.cmd_stop(airplay_player.player_id)
-                airplay_player.active_source = None
+            await airplay_player.stop()
 
         # async def cmd_stop(self, player_id: str) -> None:
         #     """Send STOP command to given player."""

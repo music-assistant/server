@@ -498,14 +498,14 @@ def get_stream_dsp_details(
     output_format = None
     is_external_group = False
 
-    if player.provider.startswith("player_group"):
+    if player.type == PlayerType.GROUP and player.provider.domain == "player_group":
         if group_preventing_dsp:
             try:
                 # We need a bit of a hack here since only the leader knows the correct output format
-                provider = mass.get_provider(player.provider)
+                group_player_provider = player.provider
                 if TYPE_CHECKING:  # avoid circular import
-                    assert isinstance(provider, PlayerGroupProvider)
-                if provider and (sync_leader := provider._get_sync_leader(player)):
+                    assert isinstance(group_player_provider, PlayerGroupProvider)
+                if sync_leader := group_player_provider._get_sync_leader(player):
                     output_format = sync_leader.extra_data.get("output_format", None)
             except RuntimeError:
                 # _get_sync_leader will raise a RuntimeError if this group has no players
@@ -1425,7 +1425,7 @@ def is_grouping_preventing_dsp(player: Player) -> bool:
     child_count = len(player.group_members) if player.group_members else 0
 
     is_multiple_devices: bool
-    if player.provider.startswith("player_group"):
+    if player.provider.domain == "player_group":
         # PlayerGroups have no leader, so having a child count of 1 means
         # the group actually contains only a single player.
         is_multiple_devices = child_count > 1
@@ -1476,7 +1476,7 @@ def get_player_filter_params(
             # We can not correctly apply DSP to a grouped player without multi-device DSP support,
             # so we disable it.
             dsp.enabled = False
-        elif player.provider.startswith("player_group") and (
+        elif player.provider.domain == "player_group" and (
             PlayerFeature.MULTI_DEVICE_DSP not in player.supported_features
         ):
             # This is a special case! We have a player group where:

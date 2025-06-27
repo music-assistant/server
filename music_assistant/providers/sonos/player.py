@@ -482,7 +482,7 @@ class SonosPlayer(Player):
                     x for x in airplay_player._attr_group_members if x != airplay_player.player_id
                 ]
                 self._attr_group_members.extend(airplay_childs)
-                airplay_prov = self.mass.get_provider(airplay_player.provider)
+                airplay_prov = airplay_player.provider
                 self._attr_can_group_with.update(
                     x.player_id
                     for x in airplay_prov.players

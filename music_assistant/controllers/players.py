@@ -20,7 +20,7 @@ import asyncio
 import functools
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
@@ -167,7 +167,7 @@ class PlayerController(CoreController):
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
-            and (provider_filter is None or player.provider_id == provider_filter)
+            and (provider_filter is None or player.provider.instance_id == provider_filter)
         ]
 
     @api_command("players/all")
@@ -934,7 +934,7 @@ class PlayerController(CoreController):
             # check if player can be synced/grouped with the target player
             if not (
                 child_player_id in parent_player.can_group_with
-                or child_player.provider in parent_player.can_group_with
+                or child_player.provider.instance_id in parent_player.can_group_with
                 or "*" in parent_player.can_group_with
             ):
                 raise UnsupportedFeaturedException(
@@ -1042,11 +1042,6 @@ class PlayerController(CoreController):
             msg = f"Player {player_id} is already registered!"
             raise AlreadyRegisteredError(msg)
 
-        # make sure that the player's provider is set to the lookup_key
-        prov = self.mass.get_provider(player.provider)
-        if not prov or prov.lookup_key != player.provider:
-            raise RuntimeError(f"Invalid provider ID given: {player.provider}")
-
         # ignore disabled players
         if not player.enabled:
             return
@@ -1139,14 +1134,11 @@ class PlayerController(CoreController):
         """
         player = self.get(player_id, True)
         assert player is not None  # for type checker
-        player_provider = self.mass.get_provider(player.provider)
-        if not player_provider:
-            raise PlayerCommandFailed(f"Player provider {player.provider} not found")
-        if ProviderFeature.REMOVE_PLAYER not in player_provider.supported_features:
+        if ProviderFeature.REMOVE_PLAYER not in player.provider.supported_features:
             raise UnsupportedFeaturedException(
-                f"Provider {player_provider.name} does not support removing players"
+                f"Provider {player.provider.name} does not support removing players"
             )
-        await player_provider.remove_player(player_id)
+        await player.provider.remove_player(player_id)
 
     def signal_player_state_update(
         self,
@@ -1190,7 +1182,7 @@ class PlayerController(CoreController):
             prev_group_members: list[str] = changed_values[ATTR_GROUP_MEMBERS][0] or []
             prev_child_count = len(prev_group_members)
             new_child_count = len(new_group_members)
-            is_player_group = player.provider.startswith("player_group")
+            is_player_group = player.type == PlayerType.GROUP
 
             # handle special case for PlayerGroups: since there are no leaders,
             # DSP still always work with a single player in the group.
@@ -1303,8 +1295,8 @@ class PlayerController(CoreController):
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
         player = self._players[player_id]
-        player_provider = self.mass.get_provider(player.provider)
-        return cast("PlayerProvider", player_provider)
+        assert player  # for type checker
+        return player.provider
 
     def get_active_queue(self, player: Player) -> PlayerQueue | None:
         """Return the current active queue for a player (if any)."""

@@ -304,7 +304,7 @@ class ConfigController:
         if existing["type"] == "player":
             # cleanup entries in player manager
             for player in list(self.mass.players):
-                if player.provider != instance_id:
+                if player.provider.instance_id != instance_id:
                     continue
                 self.mass.players.remove(player.player_id, cleanup_config=True)
             # cleanup remaining player configs
@@ -346,7 +346,7 @@ class ConfigController:
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
-                raw_conf["provider"] = player.provider
+                raw_conf["provider"] = player.provider.lookup_key
                 conf_entries = await player.get_config_entries(player_id)
             else:
                 # handle unavailable player and/or provider
@@ -436,23 +436,24 @@ class ConfigController:
             msg = f"Player configuration for {player_id} does not exist"
             raise KeyError(msg)
         player = self.mass.players.get(player_id)
-        player_prov = player.provider if player else existing["provider"]
-        player_provider = self.mass.get_provider(player_prov)
+        player_provider = player.provider
         if player_provider and ProviderFeature.REMOVE_PLAYER in player_provider.supported_features:
             # provider supports removal of player (e.g. group player)
             await player_provider.remove_player(player_id)
         elif player and player_provider and player.available:
             # removing a player config while it is active is not allowed
-            # unless the provider repoirts it has the remove_player feature (e.g. group player)
+            # unless the provider reports it has the remove_player feature (e.g. group player)
             raise ActionUnavailable("Can not remove config for an active player!")
         # check for group memberships that need to be updated
-        if player and player.active_group and player_provider:
+        if (
+            player
+            and player.active_group
+            and (group_player := self.mass.players.get(player.active_group))
+        ):
             # try to remove from the group
-            group_player = self.mass.players.get(player.active_group)
             with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await player_provider.set_members(
-                    player.active_group,
-                    [x for x in group_player.group_childs if x != player.player_id],
+                await group_player.set_members(
+                    player_ids_to_remove=[player_id],
                 )
         # tell the player manager to remove the player if its lingering around
         # set cleanup_flag to false otherwise we end up in an infinite loop
@@ -950,7 +951,7 @@ class ConfigController:
             if config.type == ProviderType.PLAYER:
                 # cleanup entries in player manager
                 for player in self.mass.players.all(return_unavailable=True, return_disabled=True):
-                    if player.provider != instance_id:
+                    if player.provider.instance_id != instance_id:
                         continue
                     self.mass.players.remove(player.player_id, cleanup_config=False)
         return config
