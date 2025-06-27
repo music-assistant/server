@@ -1,7 +1,7 @@
 """
-DUMMY/TEST/DEMO/TEMPLATE Player Provider for Music Assistant.
+DEMO/TEST/DUMMY/TEMPLATE Player Provider for Music Assistant.
 
-This is an empty player provider with a dummy/demo implementation.
+This is an empty player provider with a test/demo implementation.
 Its meant to get started developing a new player provider for Music Assistant.
 
 Use it as a reference to discover what methods exists and what they should return.
@@ -67,7 +67,7 @@ async def setup(
     # setup is called when the user wants to setup a new provider instance.
     # you are free to do any preflight checks here and but you must return
     # an instance of your provider.
-    return DummyPlayerprovider(mass, manifest, config)
+    return DemoPlayerprovider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -98,12 +98,12 @@ async def get_config_entries(
             label="Number of Players",
             required=True,
             default_value="2",
-            description="Number of dummy players to create.",
+            description="Number of demo players to create.",
         ),
     )
 
 
-class DummyPlayerprovider(PlayerProvider):
+class DemoPlayerprovider(PlayerProvider):
     """
     Example/demo Player provider.
 
@@ -137,7 +137,7 @@ class DummyPlayerprovider(PlayerProvider):
         # it will be called when the provider is initialized in Music Assistant.
         # you can use this to do any async initialization of the provider,
         # such as loading configuration, setting up connections, etc.
-        self.logger.info("Initializing DummyPlayerProvider with config: %s", self.config)
+        self.logger.info("Initializing DemoPlayerProvider with config: %s", self.config)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -147,7 +147,7 @@ class DummyPlayerprovider(PlayerProvider):
         # it will be called after the provider has been fully loaded into Music Assistant.
         # you can use this for instance to trigger custom (non-mdns) discovery of players
         # or any other logic that needs to run after the provider is fully loaded.
-        self.logger.info("DummyPlayerProvider loaded")
+        self.logger.info("DemoPlayerProvider loaded")
         await self.discover_players()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -296,13 +296,13 @@ class DummyPlayerprovider(PlayerProvider):
         # network and you do not use mdns discovery.
         number_of_players = int(self.config.get_value(CONF_NUMBER_OF_PLAYERS))
         self.logger.info(
-            "Discovering %s dummy players",
+            "Discovering %s demo players",
             number_of_players,
         )
         for i in range(number_of_players):
-            player = DummyPlayer(
+            player = DemoPlayer(
                 provider=self,
-                player_id=f"dummy_{i}",
+                player_id=f"demo_{i}",
             )
             # register the player with the player manager
             await self.mass.players.register(player)
@@ -313,8 +313,8 @@ class DummyPlayerprovider(PlayerProvider):
             # player.update_state()
 
 
-class DummyPlayer(Player):
-    """DummyPlayer in Music Assistant."""
+class DemoPlayer(Player):
+    """DemoPlayer in Music Assistant."""
 
     @property
     def type(self) -> PlayerType:
@@ -390,14 +390,14 @@ class DummyPlayer(Player):
         # this method should send a power on/off command to the given player.
         logger = self.provider.logger.getChild(self.name)
         if powered:
-            # In this dummy implementation we just set the power state to ON
+            # In this demo implementation we just set the power state to ON
             # and optimistically update the state.
             # In a real implementation you would read the actual value from the player
             # either from a callback or by polling the player.
             logger.info("Received POWER ON command on player %s", self.name)
             self._attr_powered = True
         else:
-            # In this dummy implementation we just set the power state to OFF
+            # In this demo implementation we just set the power state to OFF
             # and optimistically update the state.
             # In a real implementation you would read the actual value from the player
             # either from a callback or by polling the player.
@@ -411,7 +411,7 @@ class DummyPlayer(Player):
         # OPTIONAL - required only if you specified PlayerFeature.VOLUME_SET
         # this method should send a volume set command to the given player.
 
-        # In this dummy implementation we just set the volume level
+        # In this demo implementation we just set the volume level
         # and optimistically update the state.
         # In a real implementation you would send a command to the actual player and
         # get the actual value from the player either from a callback or by polling the player.
@@ -440,7 +440,7 @@ class DummyPlayer(Player):
         # normally this is the point where you would resume playback
         # on your actual player device.
 
-        # In this dummy implementation we just set the playback state to PLAYING
+        # In this demo implementation we just set the playback state to PLAYING
         # and optimistically set the playback state to PLAYING.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
@@ -457,7 +457,7 @@ class DummyPlayer(Player):
         # normally this is the point where you would stop playback
         # on your actual player device.
 
-        # In this dummy implementation we just set the playback state to IDLE
+        # In this demo implementation we just set the playback state to IDLE
         # and optimistically set the playback state to IDLE.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
@@ -471,7 +471,7 @@ class DummyPlayer(Player):
         # OPTIONAL - required only if you specified PlayerFeature.PAUSE
         # this method should send a pause command to the given player.
 
-        # In this dummy implementation we just set the playback state to PAUSED
+        # In this demo implementation we just set the playback state to PAUSED
         # and optimistically set the playback state to PAUSED.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
@@ -532,7 +532,7 @@ class DummyPlayer(Player):
         # Examples of player providers that natively support enqueuing of items are Sonos,
         # Slimproto and Google Cast.
 
-        # In this dummy implementation we just optimistically set the state.
+        # In this demo implementation we just optimistically set the state.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
         logger = self.provider.logger.getChild(self.name)
@@ -604,12 +604,12 @@ class DummyPlayer(Player):
             # you can also override a default entry by specifying the same key
             # as a default entry, but with a different type or default value.
             ConfigEntry(
-                key="dummy_player_setting",
+                key="demo_player_setting",
                 type=ConfigEntryType.STRING,
-                label="Dummy Player Setting",
+                label="Demo Player Setting",
                 required=False,
                 default_value="default_value",
-                description="This is a dummy player setting.",
+                description="This is a demo player setting.",
             ),
         ]
 
@@ -625,7 +625,7 @@ class DummyPlayer(Player):
         """Initialize the Player."""
         super().__init__(provider, player_id)
         # init some static variables
-        self._attr_name = f"Dummy Player {player_id}"
+        self._attr_name = f"Demo Player {player_id}"
         self._set_attributes()
 
     def _set_attributes(self) -> None:
