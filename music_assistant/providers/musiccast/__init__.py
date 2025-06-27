@@ -12,8 +12,18 @@ from aiohttp.client_exceptions import ServerDisconnectedError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.musiccast_device import MusicCastDevice
 from aiomusiccast.pyamaha import MusicCastConnectionException
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-from music_assistant_models.enums import PlaybackState, PlayerFeature, ProviderFeature
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+    ProviderConfig,
+)
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    PlaybackState,
+    PlayerFeature,
+    ProviderFeature,
+)
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from music_assistant_models.provider import ProviderManifest
 from zeroconf import ServiceStateChange
@@ -46,6 +56,7 @@ from music_assistant.providers.musiccast.constants import (
     MC_POLL_INTERVAL,
     MC_SOURCE_MAIN_SYNC,
     MC_SOURCE_MC_LINK,
+    PLAYER_CONFIG_ENTRIES,
     PLAYER_ZONE_SPLITTER,
 )
 from music_assistant.providers.musiccast.musiccast import (
@@ -330,10 +341,7 @@ class MusicCastPlayer(Player):
             self._attr_synced_to = None
             self._attr_active_group = None
 
-        try:
-            self.update_state()
-        except Exception as exc:
-            self.logger.error(exc)
+        self.update_state()
 
     async def _cmd_run(self, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
         """Help function for all player cmds."""
@@ -455,11 +463,11 @@ class MusicCastPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Volume set command."""
-        return await super().volume_set(volume_level)
+        await self._cmd_run(self.zone_device.volume_set, volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """Volume mute command."""
-        return await super().volume_mute(muted)
+        await self._cmd_run(self.zone_device.volume_mute, muted)
 
     async def play(self) -> None:
         """Play command."""
@@ -506,7 +514,6 @@ class MusicCastPlayer(Player):
                     continue
                 if dev.is_netusb:
                     await self._handle_zone_grouping(dev)
-        device_id, _ = self.player_id.split(PLAYER_ZONE_SPLITTER)
         async with self.update_lock:
             # just in case
             if self.zone_device.source_id != "server":
@@ -564,17 +571,57 @@ class MusicCastPlayer(Player):
         We can ignore removed devices, these are handled via ungroup individually.
         """
 
-    # async def poll(self) -> None:
-    #     """Poll player."""
-    #     return await super().poll()
+    def _get_zone_player(self, player_id: str) -> MusicCastZoneDevice | None:
+        """Get music cast zone entity based on player id."""
+        device_id, zone = player_id.split(PLAYER_ZONE_SPLITTER)
+        mc_player = self.provider.musiccast_player_helpers.get(device_id)
+        if mc_player is None:
+            return None
+        return mc_player.physical_device.zone_devices.get(zone)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""
-        return await super().get_config_entries()
+        base_entries = await super().get_config_entries()
 
-    # async def on_unload(self) -> None:
-    #     """Unload player."""
-    #     return super().on_unload()
+        zone_entries: list[ConfigEntry] = []
+        if len(self.physical_device.zone_devices) > 1:
+            source_options: list[ConfigValueOption] = []
+            allowed_sources = self._get_allowed_sources_zone_switch(self.zone_device)
+            for (
+                source_id,
+                source_name,
+            ) in self.zone_device.source_mapping.items():
+                if source_id in allowed_sources:
+                    source_options.append(ConfigValueOption(title=source_name, value=source_id))
+            if len(source_options) == 0:
+                # this should never happen
+                self.logger.error(
+                    "The player %s has multiple zones, but lacks a non-net source to switch to."
+                    " Please report this on github or discord.",
+                    self.display_name or self.name,
+                )
+                zone_entries = []
+            else:
+                zone_entries = [
+                    ConfigEntry(
+                        key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
+                        label="Switch to this non-net source when leaving a group.",
+                        type=ConfigEntryType.STRING,
+                        options=source_options,
+                        default_value=source_options[0].value,
+                        description="The zone will switch to this source when leaving a  group."
+                        " It must be an input which doesn't require network connectivity.",
+                    ),
+                    ConfigEntry(
+                        key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
+                        type=ConfigEntryType.BOOLEAN,
+                        label="Turn off the zone when it leaves a group.",
+                        default_value=False,
+                        description="Turn off the zone when it leaves a group.",
+                    ),
+                ]
+
+        return base_entries + zone_entries + PLAYER_CONFIG_ENTRIES
 
 
 @dataclass(kw_only=True)
