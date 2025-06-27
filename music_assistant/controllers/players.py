@@ -1069,7 +1069,7 @@ class PlayerController(CoreController):
         player_config = await self.mass.config.get_player_config(player_id)
         player.config = player_config
         # always call update to fix special attributes like display name, group volume etc.
-        player.update_state(skip_forward=True)
+        player.update_state()
 
         self.logger.info(
             "Player registered: %s/%s",

@@ -347,7 +347,7 @@ class ConfigController:
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
                 raw_conf["provider"] = player.provider.lookup_key
-                conf_entries = await player.get_config_entries(player_id)
+                conf_entries = await player.get_config_entries()
             else:
                 # handle unavailable player and/or provider
                 conf_entries = []
