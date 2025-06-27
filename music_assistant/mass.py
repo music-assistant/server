@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pathlib
 import threading
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast
@@ -126,8 +127,9 @@ class MusicAssistant:
         self.closing = False
         self.running_as_hass_addon: bool = False
         self.version: str = "0.0.0"
-        self.debug_enabled = os.environ.get("PYTHONDEVMODE") == "1" or LOGGER.isEnabledFor(
-            logging.DEBUG
+        self.dev_mode = (
+            os.environ.get("PYTHONDEVMODE") == "1"
+            or pathlib.Path(__file__).parent.resolve().parent.resolve().joinpath(".venv").exists()
         )
 
     async def start(self) -> None:
@@ -700,7 +702,7 @@ class MusicAssistant:
         async def load_provider_manifest(provider_domain: str, provider_path: str) -> None:
             """Preload all available provider manifest files."""
             # get files in subdirectory
-            for file_str in os.listdir(provider_path):  # noqa: PTH208, RUF100
+            for file_str in await asyncio.to_thread(os.listdir, provider_path):  # noqa: PTH208, RUF100
                 file_path = os.path.join(provider_path, file_str)
                 if not await isfile(file_path):
                     continue
@@ -733,11 +735,13 @@ class MusicAssistant:
                     )
 
         async with TaskManager(self) as tg:
-            for dir_str in os.listdir(PROVIDERS_PATH):  # noqa: PTH208, RUF100
-                if dir_str.startswith(("_", ".")):
+            for dir_str in await asyncio.to_thread(os.listdir, PROVIDERS_PATH):  # noqa: PTH208, RUF100
+                if dir_str.startswith("."):
+                    # skip hidden directories
                     continue
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)
-                if dir_str == "test" and not self.debug_enabled:
+                if dir_str.startswith("_") and not self.dev_mode:
+                    # only load demo/test providers if debug mode is enabled (e.g. for development)
                     continue
                 if not await isdir(dir_path):
                     continue
