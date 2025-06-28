@@ -107,12 +107,10 @@ class SonosPlayer(Player):
             self.discovery_info["device"]["name"]
             or self.discovery_info["device"]["modelDisplayName"]
         )
-        self._attr_device_info = (
-            DeviceInfo(
-                model=self.discovery_info["device"]["modelDisplayName"],
-                manufacturer=self._provider.manifest.name,
-                ip_address=self.ip_address,
-            ),
+        self._attr_device_info = DeviceInfo(
+            model=self.discovery_info["device"]["modelDisplayName"],
+            manufacturer=self._provider.manifest.name,
+            ip_address=self.ip_address,
         )
         self._attr_can_group_with = {self._provider.instance_id}
 
@@ -638,7 +636,7 @@ class SonosPlayer(Player):
                     # this should simply try to reconnect once and if that fails
                     # we rely on mdns to pick it up again later
                     await self._disconnect()
-                    self._attr_available.available = False
+                    self._attr_available = False
                     self.mass.players.update(self.player_id)
                     self.reconnect(5)
 

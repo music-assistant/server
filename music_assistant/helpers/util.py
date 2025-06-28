@@ -342,7 +342,9 @@ def get_changed_keys(
     recursive: bool = False,
 ) -> set[str]:
     """Compare 2 dicts and return set of changed keys."""
-    return set(get_changed_dict_values(dict1, dict2, ignore_keys, recursive).keys())
+    # TODO: Check with Marcel whether we should calculate new dicts based on ignore_keys
+    return set(get_changed_dict_values(dict1, dict2, recursive).keys())
+    # return set(get_changed_dict_values(dict1, dict2, ignore_keys, recursive).keys())
 
 
 def get_changed_dict_values(
@@ -367,6 +369,9 @@ def get_changed_dict_values(
             changed_subvalues = get_changed_dict_values(dict1[key], value, recursive)
             for subkey, subvalue in changed_subvalues.items():
                 changed_values[f"{key}.{subkey}"] = subvalue
+            continue
+        if key not in dict1:
+            changed_values[key] = (None, value)
             continue
         if dict1[key] != value:
             changed_values[key] = (dict1[key], value)

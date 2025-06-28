@@ -28,7 +28,6 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
-from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
 from .const import CONF_AIRPLAY_MODE
@@ -111,12 +110,16 @@ class SonosPlayerProvider(PlayerProvider):
         player_id = info.decoded_properties["uuid"]
         # handle update for existing device
         if sonos_player := self.mass.players.get(player_id):
-            assert isinstance(sonos_player, SonosPlayer), "Player ID already exists but is not a SonosPlayer"
+            assert isinstance(sonos_player, SonosPlayer), (
+                "Player ID already exists but is not a SonosPlayer"
+            )
             # if mass_player := sonos_player.mass_player:
             cur_address = get_primary_ip_address(info)
             if cur_address and cur_address != sonos_player.device_info.ip_address:
                 sonos_player.logger.debug(
-                    "Address updated from %s to %s", sonos_player.device_info.ip_address, cur_address
+                    "Address updated from %s to %s",
+                    sonos_player.device_info.ip_address,
+                    cur_address,
                 )
                 sonos_player.device_info.ip_address = cur_address
                 # mass_player.device_info = DeviceInfo(
@@ -129,7 +132,7 @@ class SonosPlayerProvider(PlayerProvider):
                 sonos_player.client.player_ip = cur_address
                 # schedule reconnect
                 sonos_player.reconnect()
-            self.mass.players.update(player_id)
+            self.mass.players.trigger_player_update(player_id)
             return
         # handle new player setup in a delayed task because mdns announcements
         # can arrive in (duplicated) bursts
@@ -375,7 +378,8 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        assert player_id not in self.sonos_players
+        # assert player_id not in self.sonos_players
+        # TODO: Check if above assert is needed
         address = get_primary_ip_address(info)
         if address is None:
             return
