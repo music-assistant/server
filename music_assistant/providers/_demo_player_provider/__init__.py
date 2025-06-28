@@ -356,33 +356,33 @@ class DemoPlayer(Player):
             PlayerFeature.PLAY_ANNOUNCEMENT,
         }
 
-    # @property
-    # def source_list(self) -> list[PlayerSource]:
-    #     """Return list of available (native) sources for this player."""
-    #     # OPTIONAL - required only if you specified PlayerFeature.SELECT_SOURCE
-    #     # this is an optional property that you can implement if your
-    #     # player supports (external) source control (aux, HDMI, etc.).
-    #     # If your player does not support sources, you can leave this out completely.
-    #     return [
-    #         PlayerSource(
-    #             id="line_in",
-    #             name="Line-In",
-    #             passive=False,
-    #             can_play_pause=False,
-    #             can_next_previous=False,
-    #             can_seek=False,
-    #         ),
-    #         PlayerSource(
-    #             id="spotify_connect",
-    #             name="Spotify",
-    #             # by specifying passive=True, we indicate that this source
-    #             # is not actively selectable by the user from the UI.
-    #             passive=True,
-    #             can_play_pause=True,
-    #             can_next_previous=True,
-    #             can_seek=True,
-    #         ),
-    #     ]
+    @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return list of available (native) sources for this player."""
+        # OPTIONAL - required only if you specified PlayerFeature.SELECT_SOURCE
+        # this is an optional property that you can implement if your
+        # player supports (external) source control (aux, HDMI, etc.).
+        # If your player does not support sources, you can leave this out completely.
+        return [
+            PlayerSource(
+                id="line_in",
+                name="Line-In",
+                passive=False,
+                can_play_pause=False,
+                can_next_previous=False,
+                can_seek=False,
+            ),
+            PlayerSource(
+                id="spotify_connect",
+                name="Spotify",
+                # by specifying passive=True, we indicate that this source
+                # is not actively selectable by the user from the UI.
+                passive=True,
+                can_play_pause=True,
+                can_next_previous=True,
+                can_seek=True,
+            ),
+        ]
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
