@@ -110,25 +110,26 @@ class SonosPlayerProvider(PlayerProvider):
         name = name.split("@", 1)[1] if "@" in name else name
         player_id = info.decoded_properties["uuid"]
         # handle update for existing device
-        if sonos_player := self.sonos_players.get(player_id):
-            if mass_player := sonos_player.mass_player:
-                cur_address = get_primary_ip_address(info)
-                if cur_address and cur_address != sonos_player.ip_address:
-                    sonos_player.logger.debug(
-                        "Address updated from %s to %s", sonos_player.ip_address, cur_address
-                    )
-                    sonos_player.ip_address = cur_address
-                    mass_player.device_info = DeviceInfo(
-                        model=mass_player.device_info.model,
-                        manufacturer=mass_player.device_info.manufacturer,
-                        ip_address=str(cur_address),
-                    )
-                if not sonos_player.connected:
-                    self.logger.debug("Player back online: %s", mass_player.display_name)
-                    sonos_player.client.player_ip = cur_address
-                    # schedule reconnect
-                    sonos_player.reconnect()
-                self.mass.players.update(player_id)
+        if sonos_player := self.mass.players.get(player_id):
+            assert isinstance(sonos_player, SonosPlayer), "Player ID already exists but is not a SonosPlayer"
+            # if mass_player := sonos_player.mass_player:
+            cur_address = get_primary_ip_address(info)
+            if cur_address and cur_address != sonos_player.device_info.ip_address:
+                sonos_player.logger.debug(
+                    "Address updated from %s to %s", sonos_player.device_info.ip_address, cur_address
+                )
+                sonos_player.device_info.ip_address = cur_address
+                # mass_player.device_info = DeviceInfo(
+                #     model=mass_player.device_info.model,
+                #     manufacturer=mass_player.device_info.manufacturer,
+                #     ip_address=str(cur_address),
+                # )
+            if not sonos_player.connected:
+                self.logger.debug("Player back online: %s", sonos_player.display_name)
+                sonos_player.client.player_ip = cur_address
+                # schedule reconnect
+                sonos_player.reconnect()
+            self.mass.players.update(player_id)
             return
         # handle new player setup in a delayed task because mdns announcements
         # can arrive in (duplicated) bursts

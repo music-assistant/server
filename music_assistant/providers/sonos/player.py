@@ -84,7 +84,7 @@ class SonosPlayer(Player):
             self.airplay_mode_enabled
             and self.client.player.is_coordinator
             and (airplay_player := self.get_linked_airplay_player(False))
-            and airplay_player.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            and airplay_player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         )
 
     async def setup(self) -> None:
@@ -181,7 +181,7 @@ class SonosPlayer(Player):
         await self.client.player.set_volume(volume_level)
         # sync volume level with airplay player
         if airplay := self.get_linked_airplay_player(False):
-            if airplay.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            if airplay.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
                 airplay.volume_level = volume_level
 
     async def volume_mute(self, muted: bool) -> None:
@@ -441,7 +441,7 @@ class SonosPlayer(Player):
             if airplay_child_ids:
                 if (
                     airplay_player.active_source != target_player._attr_active_source
-                    and airplay_player.state == PlaybackState.PLAYING
+                    and airplay_player.state.playback_state == PlaybackState.PLAYING
                 ):
                     # edge case player is not playing a MA queue - fail this request
                     raise PlayerCommandFailed("Player is not playing a Music Assistant queue.")
@@ -473,7 +473,7 @@ class SonosPlayer(Player):
             # player is group coordinator
             active_group = self.client.player.group
             if len(self.client.player.group_members) > 1:
-                self._attr_group_members.set(self.client.player.group_members)
+                self._attr_group_members = self.client.player.group_members
             else:
                 self._attr_group_members.clear()
             # append airplay child's to group childs
@@ -505,7 +505,7 @@ class SonosPlayer(Player):
             self._attr_active_source = active_group.coordinator_id
 
         # map playback state
-        self._state = PLAYBACK_STATE_MAP[active_group.playback_state]
+        self._state.playback_state = PLAYBACK_STATE_MAP[active_group.playback_state]
         self._attr_elapsed_time = active_group.position
 
         # figure out the active source based on the container
@@ -736,7 +736,7 @@ class SonosPlayer(Player):
         mass_player = self.mass.players.get(player_id)
         mass_player.active_source = airplay_player.active_source
         if (
-            airplay_player.state == PlaybackState.PLAYING
+            airplay_player.state.playback_state == PlaybackState.PLAYING
             and airplay_player.active_source == media.queue_id
         ):
             # if the airplay player is already playing,

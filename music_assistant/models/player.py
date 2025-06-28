@@ -168,6 +168,18 @@ class Player(ABC):
     def available(self) -> bool:
         """Return if the player is available."""
         return self._attr_available
+    
+    @available.setter
+    def available(self, value: bool) -> None:
+        """
+        Set the availability of the player.
+
+        :param value: bool if the player is available or not.
+        """
+        if self._attr_available != value:
+            self._attr_available = value
+            # also update the state
+            self._state.available = value
 
     @property
     def name(self) -> str | None:
