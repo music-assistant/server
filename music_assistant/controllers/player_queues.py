@@ -598,6 +598,7 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
+        queue_player: Player = self.mass.players.get(queue_id, True)
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = queue.corrected_elapsed_time
@@ -648,18 +649,18 @@ class PlayerQueuesController(CoreController):
         async def _watch_pause() -> None:
             count = 0
             # wait for pause
-            while count < 5 and queue_player.state == PlaybackState.PLAYING:
+            while count < 5 and queue_player.playback_state == PlaybackState.PLAYING:
                 count += 1
                 await asyncio.sleep(1)
             # wait for unpause
             if queue_player.state != PlaybackState.PAUSED:
                 return
             count = 0
-            while count < 30 and queue_player.state == PlaybackState.PAUSED:
+            while count < 30 and queue_player.playback_state == PlaybackState.PAUSED:
                 count += 1
                 await asyncio.sleep(1)
             # if player is still paused when the limit is reached, send stop
-            if queue_player.state == PlaybackState.PAUSED:
+            if queue_player.playback_state == PlaybackState.PAUSED:
                 await queue_player.stop()
 
         # we auto stop a player from paused when its paused for 30 seconds
@@ -775,7 +776,7 @@ class PlayerQueuesController(CoreController):
             queue_player = self.mass.players.get(queue_id)
             if (
                 fade_in is None
-                and queue_player.state == PlaybackState.IDLE
+                and queue_player.playback_state == PlaybackState.IDLE
                 and (time.time() - queue.elapsed_time_last_updated) > 60
             ):
                 # enable fade in effect if the player is idle for a while
@@ -1732,7 +1733,11 @@ class PlayerQueuesController(CoreController):
         queue.available = player.available
         queue.items = len(self._queue_items[queue_id])
 
-        queue.state = player.state or PlaybackState.IDLE if queue.active else PlaybackState.IDLE
+        queue.state = (
+            player.playback_state or PlaybackState.IDLE
+            if queue.active
+            else PlaybackState.IDLE
+        )
         # update current item/index from player report
         if queue.active and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             # NOTE: If the queue is not playing (yet) we will not update the current index
@@ -1922,7 +1927,7 @@ class PlayerQueuesController(CoreController):
                     track_sec_skipped = 0
                 track_time = elapsed_time_queue_total + track_sec_skipped - played_time
                 break
-        if player.state != PlaybackState.PLAYING:
+        if player.state.playback_state != PlaybackState.PLAYING:
             # if the player is not playing, we can't be sure that the elapsed time is correct
             # so we just return the queue index and the elapsed time
             return queue.current_index, queue.elapsed_time
