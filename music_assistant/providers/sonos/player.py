@@ -256,11 +256,10 @@ class SonosPlayer(Player):
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        if airplay := self.get_linked_airplay_player(True):
+        if airplay_player := self.get_linked_airplay_player(True):
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting PLAY command to linked airplay player.")
-            if player_provider := self.mass.get_provider(airplay.provider):
-                await player_provider.cmd_play(airplay.player_id)
+            await airplay_player.play()
             return
         await self.client.player.group.play()
 
@@ -300,10 +299,10 @@ class SonosPlayer(Player):
             # https://github.com/music-assistant/support/issues/3758
             # TODO: revisit this later once we implemented support for range requests
             # as I have the feeling the pause issue is related to seek support (=range requests)
-            await self.cmd_stop()
+            await self.stop()
             return
         if not self.client.player.group.playback_actions.can_pause:
-            await self.cmd_stop()
+            await self.stop()
             return
         await self.client.player.group.pause()
 
@@ -414,7 +413,7 @@ class SonosPlayer(Player):
             await self.client.player.load_home_theater_playback()
         else:
             # unsupported source - try to clear the queue/player
-            await self.cmd_stop()
+            await self.stop()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """
