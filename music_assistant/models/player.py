@@ -57,6 +57,7 @@ from music_assistant.constants import (
     CONF_ENTRY_HIDE_PLAYER_IN_UI,
     CONF_ENTRY_HIDE_PLAYER_IN_UI_ALWAYS_DEFAULT,
     CONF_ENTRY_HIDE_PLAYER_IN_UI_GROUP_PLAYER,
+    CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_OUTPUT_LIMITER,
@@ -89,6 +90,7 @@ BASE_CONFIG_ENTRIES = [
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_HTTP_PROFILE,
 ]
 
 
@@ -168,7 +170,7 @@ class Player(ABC):
     def available(self) -> bool:
         """Return if the player is available."""
         return self._attr_available
-    
+
     @available.setter
     def available(self, value: bool) -> None:
         """
