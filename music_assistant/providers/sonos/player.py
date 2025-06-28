@@ -10,7 +10,10 @@ from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
 from aiosonos.exceptions import ConnectionFailed, FailedCommand
+from music_assistant.constants import CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED, CONF_ENTRY_HTTP_PROFILE_DEFAULT_2, CONF_ENTRY_OUTPUT_CODEC, create_sample_rates_config_entry
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
     MediaType,
     PlaybackState,
@@ -46,6 +49,7 @@ SUPPORTED_FEATURES = {
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.SELECT_SOURCE,
+    PlayerFeature.ENQUEUE
 }
 
 
@@ -84,7 +88,7 @@ class SonosPlayer(Player):
             self.airplay_mode_enabled
             and self.client.player.is_coordinator
             and (airplay_player := self.get_linked_airplay_player(False))
-            and airplay_player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            and airplay_player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         )
 
     async def setup(self) -> None:
@@ -157,6 +161,61 @@ class SonosPlayer(Player):
                 (EventType.QUEUE_UPDATED, EventType.QUEUE_ITEMS_UPDATED),
             )
         )
+
+    async def get_config_entries(
+        self,
+    ) -> list[ConfigEntry
+              ]:
+        """Return all (provider/player specific) Config Entries for the player."""
+        base_entries = (
+            *await super().get_config_entries(),
+            CONF_ENTRY_OUTPUT_CODEC,
+            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+            create_sample_rates_config_entry(
+                # set safe max bit depth to 16 bits because the older Sonos players
+                # do not support 24 bit playback (e.g. Play:1)
+                max_sample_rate=48000,
+                max_bit_depth=24,
+                safe_max_bit_depth=16,
+                hidden=False,
+            ),
+        )
+        # if not (sonos_player := self.mass.players.get(player_id)):
+        #     # most probably the player is not yet discovered
+        #     return base_entries
+        return (
+            *base_entries,
+            ConfigEntry(
+                key="airplay_detected",
+                type=ConfigEntryType.BOOLEAN,
+                label="airplay_detected",
+                hidden=True,
+                required=False,
+                default_value=self.get_linked_airplay_player(False) is not None,
+            ),
+            ConfigEntry(
+                key=CONF_AIRPLAY_MODE,
+                type=ConfigEntryType.BOOLEAN,
+                label="Enable AirPlay mode",
+                description="Almost all newer Sonos speakers have AirPlay support. "
+                "If you have the AirPlay provider enabled in Music Assistant, "
+                "your Sonos speaker will also be detected as a AirPlay speaker, meaning "
+                "you can group them with other AirPlay speakers.\n\n"
+                "By default, Music Assistant uses the Sonos protocol for playback but with this "
+                "feature enabled, it will use the AirPlay protocol instead by redirecting "
+                "the playback related commands to the linked AirPlay player in Music Assistant, "
+                "allowing you to mix and match Sonos speakers with AirPlay speakers. \n\n"
+                "NOTE: You need to have the AirPlay provider enabled as well as "
+                "the AirPlay version of this player.",
+                required=False,
+                default_value=False,
+                depends_on="airplay_detected",
+                hidden=SonosCapability.AIRPLAY
+                not in self.discovery_info["device"]["capabilities"],
+            ),
+        )
+
 
     def get_linked_airplay_player(self, enabled_only: bool = True) -> Player | None:
         """Return the linked airplay player if available/enabled."""
@@ -439,7 +498,7 @@ class SonosPlayer(Player):
             if airplay_child_ids:
                 if (
                     airplay_player.active_source != target_player._attr_active_source
-                    and airplay_player.state.playback_state == PlaybackState.PLAYING
+                    and airplay_player.playback_state == PlaybackState.PLAYING
                 ):
                     # edge case player is not playing a MA queue - fail this request
                     raise PlayerCommandFailed("Player is not playing a Music Assistant queue.")
@@ -604,6 +663,15 @@ class SonosPlayer(Player):
 
         self._attr_current_media = current_media
 
+    def update_elapsed_time(self, elapsed_time: float | None = None) -> None:
+        """Update the elapsed time of the current media."""
+        if elapsed_time is not None:
+            self._attr_elapsed_time = elapsed_time
+            self._state.elapsed_time = elapsed_time
+        last_updated = time.time()
+        self._attr_elapsed_time_last_updated = last_updated
+        self._state.elapsed_time_last_updated = last_updated
+
     async def _connect(self, retry_on_fail: int = 0) -> None:
         """Connect to the Sonos player."""
         if self._listen_task and not self._listen_task.done():
@@ -734,7 +802,7 @@ class SonosPlayer(Player):
         mass_player = self.mass.players.get(player_id)
         mass_player.active_source = airplay_player.active_source
         if (
-            airplay_player.state.playback_state == PlaybackState.PLAYING
+            airplay_player.playback_state == PlaybackState.PLAYING
             and airplay_player.active_source == media.queue_id
         ):
             # if the airplay player is already playing,

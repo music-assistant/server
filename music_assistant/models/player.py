@@ -248,6 +248,16 @@ class Player(ABC):
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
         return self._attr_elapsed_time
 
+    @elapsed_time.setter
+    def elapsed_time(self, value: float | None) -> None:
+        """Set the elapsed time on the player."""
+        if self._attr_elapsed_time != value:
+            self._attr_elapsed_time = value
+            # also update the state
+            self._state.elapsed_time = value
+            # update the last updated time
+            self._attr_elapsed_time_last_updated = datetime.utcnow()
+
     @property
     def elapsed_time_last_updated(self) -> datetime | None:
         """
