@@ -287,7 +287,8 @@ class PlayerController(CoreController):
         return [
             plugin_prov.get_source()
             for plugin_prov in self.mass.get_providers(ProviderType.PLUGIN)
-            if ProviderFeature.AUDIO_SOURCE in plugin_prov.supported_features
+            if isinstance(plugin_prov, PluginProvider)
+            and ProviderFeature.AUDIO_SOURCE in plugin_prov.supported_features
         ]
 
     @api_command("players/plugin_source")
@@ -302,6 +303,7 @@ class PlayerController(CoreController):
         :return: PluginSource object or None.
         """
         for plugin_prov in self.mass.get_providers(ProviderType.PLUGIN):
+            assert isinstance(plugin_prov, PluginProvider)  # for type checking
             if ProviderFeature.AUDIO_SOURCE not in plugin_prov.supported_features:
                 continue
             if (source := plugin_prov.get_source()) and source.id == source_id:
@@ -454,6 +456,7 @@ class PlayerController(CoreController):
         - powered: bool if player should be powered on or off.
         """
         player = self.get(player_id, True)
+        assert player is not None  # for type checking
         player_state = player.state
 
         if player_state.powered == powered:
@@ -516,8 +519,10 @@ class PlayerController(CoreController):
                     f"Player control {control_name} is not available"
                 )
             if powered:
+                assert player_control.power_on is not None  # for type checking
                 await player_control.power_on()
             else:
+                assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
 
         # always optimistically set the power state to update the UI
@@ -525,10 +530,10 @@ class PlayerController(CoreController):
         player_state.powered = powered
         # reset active source on power off
         if not powered:
-            player.active_source = None
+            player_state.active_source = None
 
         if not skip_update:
-            self.update(player_id)
+            player.update_state()
 
         # handle 'auto play on power on' feature
         if (
@@ -569,7 +574,7 @@ class PlayerController(CoreController):
             # and store the state in the cache
             player.extra_data[ATTR_FAKE_VOLUME] = volume_level
             # trigger update
-            self.update(player_id)
+            player.update_state()
             return
         # else: handle external player control
         player_control = self._controls.get(player.volume_control)
@@ -578,6 +583,7 @@ class PlayerController(CoreController):
         if not player_control or not player_control.supports_volume:
             raise UnsupportedFeaturedException(f"Player control {control_name} is not available")
         async with self._player_throttlers[player_id]:
+            assert player_control.volume_set is not None
             await player_control.volume_set(volume_level)
 
     @api_command("players/cmd/volume_up")
@@ -713,7 +719,7 @@ class PlayerController(CoreController):
                 player.extra_data[ATTR_FAKE_MUTE] = True
                 await self.cmd_volume_set(player_id, 0)
             else:
-                player.volume_muted = False
+                player._attr_volume_muted = False
                 prev_volume = player.extra_data.get(ATTR_PREVIOUS_VOLUME, 1)
                 player.extra_data[ATTR_FAKE_MUTE] = False
                 await self.cmd_volume_set(player_id, prev_volume)
@@ -727,6 +733,7 @@ class PlayerController(CoreController):
                     f"Player control {control_name} is not available"
                 )
             async with self._player_throttlers[player_id]:
+                assert player_control.mute_set is not None
                 await player_control.mute_set(muted)
 
     @api_command("players/cmd/play_announcement")
@@ -739,6 +746,7 @@ class PlayerController(CoreController):
     ) -> None:
         """Handle playback of an announcement (url) on given player."""
         player = self.get(player_id, True)
+        assert player is not None  # for type checking
         if not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
         # prevent multiple announcements at the same time to the same player with a lock
@@ -826,6 +834,7 @@ class PlayerController(CoreController):
         - source: The ID of the source that needs to be activated/selected.
         """
         player = self.get(player_id, True)
+        assert player is not None  # for type checking
         if player.synced_to or player.active_group:
             raise PlayerCommandFailed(f"Player {player.display_name} is currently grouped")
         # check if player is already playing and source is different
@@ -835,8 +844,8 @@ class PlayerController(CoreController):
             if player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(player_id)
                 await asyncio.sleep(0.5)  # small delay to allow stop to process
-            player.active_source = None
-            player.current_media = None
+            player._attr_active_source = None
+            player._attr_current_media = None
         # check if source is a pluginsource
         # in that case the source id is the instance_id of the plugin provider
         if plugin_prov := self.mass.get_provider(source):
@@ -870,6 +879,7 @@ class PlayerController(CoreController):
         :raises PlayerUnavailableError: if the player is not available.
         """
         player = self.get(player_id, raise_unavailable=True)
+        assert player is not None  # for type checking
         if PlayerFeature.ENQUEUE not in player.supported_features:
             raise UnsupportedFeaturedException(
                 f"Player {player.display_name} does not support enqueueing"
@@ -910,7 +920,8 @@ class PlayerController(CoreController):
         :raises PlayerCommandFailed: if the target player is already synced to another player.
         :raises PlayerUnavailableError: if the target player is not available.
         """
-        parent_player: Player = self.get(target_player, True)
+        parent_player: Player | None = self.get(target_player, True)
+        assert parent_player is not None  # for type checking
         if PlayerFeature.SET_MEMBERS not in parent_player.supported_features:
             msg = f"Player {parent_player.name} does not support group commands"
             raise UnsupportedFeaturedException(msg)
@@ -1278,7 +1289,7 @@ class PlayerController(CoreController):
         # update all players that are using this control
         for player in self._players.values():
             if control_id in (player.power_control, player.volume_control, player.mute_control):
-                self.mass.loop.call_soon(player.update_state, player.player_id)
+                self.mass.loop.call_soon(player.update_state)
 
     def remove_player_control(self, control_id: str) -> None:
         """Remove a player_control from the player manager."""
@@ -1321,7 +1332,7 @@ class PlayerController(CoreController):
         ):
             if child_player.volume_control == PLAYER_CONTROL_NONE:
                 continue
-            cur_child_volume = child_player.volume_level
+            cur_child_volume = child_player.volume_level or 0
             new_child_volume = int(cur_child_volume + volume_dif)
             new_child_volume = max(0, new_child_volume)
             new_child_volume = min(100, new_child_volume)
@@ -1441,6 +1452,7 @@ class PlayerController(CoreController):
         player_disabled = "enabled" in changed_keys and not config.enabled
         # signal player provider that the player got enabled/disabled
         if player_provider := self.mass.get_provider(config.provider):
+            assert isinstance(player_provider, PlayerProvider)  # for type checking
             if "enabled" in changed_keys and not config.enabled:
                 player_provider.on_player_disabled(config.player_id)
             elif "enabled" in changed_keys and config.enabled:
@@ -1450,6 +1462,7 @@ class PlayerController(CoreController):
             return  # guard against player not being registered (yet)
         player.config = config
         player.update_state()
+        assert player.active_source is not None  # for type checking
         resume_queue: PlayerQueue | None = self.mass.player_queues.get(player.active_source)
         if player_disabled:
             # edge case: ensure that the player is powered off if the player gets disabled
@@ -1468,6 +1481,7 @@ class PlayerController(CoreController):
         if player_disabled and player.active_group and player_provider:
             # try to remove from the group
             group_player = self.get(player.active_group)
+            assert group_player is not None  # for type checking
             with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
                 await group_player.set_members(player_ids_to_remove=[player.player_id])
 
@@ -1484,11 +1498,12 @@ class PlayerController(CoreController):
                 return
             # if the player is not using a queue, we need to stop and start playback
             await self.cmd_stop(player_id)
-            await self.cmd_play(player_id, player.current_media)
+            await self.cmd_play(player_id)
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
         player = self.get(player_id, True)
+        assert player is not None  # for type checking
         if player.synced_to and (sync_leader := self.get(player.synced_to)):
             self.logger.info(
                 "Player %s is synced to %s and can not accept "
@@ -1656,8 +1671,8 @@ class PlayerController(CoreController):
             for volume_player_id, prev_volume in prev_volumes.items():
                 tg.create_task(self.cmd_volume_set(volume_player_id, prev_volume))
         await asyncio.sleep(0.2)
-        player.current_media = prev_media
-        player.active_source = prev_source
+        player._attr_current_media = prev_media
+        player._attr_active_source = prev_source
         # either power off the player or resume playing
         if not prev_power and player.power_control != PLAYER_CONTROL_NONE:
             await self.cmd_power(player.player_id, False)
@@ -1692,7 +1707,7 @@ class PlayerController(CoreController):
                     break
             else:
                 # no source found, try to resume the previous media
-                await self.cmd_play(player.player_id, prev_media)
+                await self.cmd_play(player.player_id)
 
     async def _poll_players(self) -> None:
         """Background task that polls players for updates."""
