@@ -802,7 +802,7 @@ class Player(ABC):
         """Return the corrected/realtime elapsed time."""
         if self.elapsed_time is None or self.elapsed_time_last_updated is None:
             return None
-        if self.state == PlaybackState.PLAYING:
+        if self.playback_state == PlaybackState.PLAYING:
             return self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
         return self.elapsed_time
 
@@ -1151,7 +1151,7 @@ class Player(ABC):
         # This is because some players/providers do not accurately update this info
         # for the sync child's.
         if self._state.synced_to and (sync_leader := self.mass.players.get(self._state.synced_to)):
-            self._state.playback_state = sync_leader.state
+            self._state.playback_state = sync_leader.playback_state
             self._state.elapsed_time = sync_leader.elapsed_time
             self._state.elapsed_time_last_updated = sync_leader.elapsed_time_last_updated
 
