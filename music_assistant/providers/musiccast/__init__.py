@@ -469,14 +469,20 @@ class MusicCastPlayer(Player):
             await self._cmd_run(self.zone_device.turn_on)
         else:
             await self._cmd_run(self.zone_device.turn_off)
+        self._attr_powered = powered
+        self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Volume set command."""
         await self._cmd_run(self.zone_device.volume_set, volume_level)
+        self._attr_volume_level = volume_level
+        self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
         """Volume mute command."""
         await self._cmd_run(self.zone_device.volume_mute, muted)
+        self._attr_volume_muted = muted
+        self.update_state()
 
     async def play(self) -> None:
         """Play command."""
@@ -484,6 +490,8 @@ class MusicCastPlayer(Player):
             await avt_play(self.mass.http_session, self.physical_device)
         else:
             await self._cmd_run(self.zone_device.play)
+        self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
 
     async def stop(self) -> None:
         """Stop command."""
@@ -491,6 +499,8 @@ class MusicCastPlayer(Player):
             await avt_stop(self.mass.http_session, self.physical_device)
         else:
             await self._cmd_run(self.zone_device.stop)
+        self._attr_playback_state = PlaybackState.IDLE
+        self.update_state()
 
     async def pause(self) -> None:
         """Pause command."""
@@ -498,6 +508,8 @@ class MusicCastPlayer(Player):
             await avt_pause(self.mass.http_session, self.physical_device)
         else:
             await self._cmd_run(self.zone_device.pause)
+        self._attr_playback_state = PlaybackState.PAUSED
+        self.update_state()
 
     async def next_track(self) -> None:
         """Next command."""
@@ -536,8 +548,10 @@ class MusicCastPlayer(Player):
                 current_uri=media.uri,
             )
 
-            # do I need these two lines still?
-            self.set_current_media(uri=media.uri, clear_all=True)
+            self._attr_current_media = media
+            self._attr_playback_state = PlaybackState.PLAYING
+
+            self.update_state()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Enqueue next command."""
@@ -551,6 +565,8 @@ class MusicCastPlayer(Player):
     async def select_source(self, source: str) -> None:
         """Select source command."""
         await self._cmd_run(self.zone_device.select_source, source)
+        self._attr_active_source = source
+        self.update_state()
 
     async def group_with(self, target_player_id: str) -> None:
         """Group command.
