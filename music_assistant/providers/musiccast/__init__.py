@@ -129,9 +129,9 @@ class MusicCastPlayer(Player):
 
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
-        self.set_static_properties()
+        self.set_static_attributes()
 
-    def set_static_properties(self) -> None:
+    def set_static_attributes(self) -> None:
         """Set static properties."""
         self._attr_supported_features = {
             PlayerFeature.VOLUME_SET,
@@ -164,7 +164,7 @@ class MusicCastPlayer(Player):
 
         self._attr_available = True
 
-    async def update_player_attributes(self) -> None:
+    async def set_dynamic_attributes(self) -> None:
         """Update Player attributes."""
         # ruff: noqa: PLR0915
         self._attr_available = True
@@ -265,8 +265,8 @@ class MusicCastPlayer(Player):
             self.set_current_media(uri=self.upnp_update_helper.current_uri, clear_all=True)
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
-            _server_id = self._get_player_id_from_mc_zone_player(_server)
-            _server_player: MusicCastPlayer | None = self.mass.players.get(_server_id)
+            _server_id = self._get_player_id_from_zone_device(_server)
+            _server_player = cast("MusicCastPlayer | None", self.mass.players.get(_server_id))
             _server_update_helper: None | UpnpUpdateHelper = None
             if _server_player is not None:
                 _server_update_helper = _server_player.upnp_update_helper
@@ -301,8 +301,8 @@ class MusicCastPlayer(Player):
             self._attr_active_source = self.zone_device.source_id
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
-            _server_id = self._get_player_id_from_mc_zone_player(_server)
-            _server_player: MusicCastPlayer | None = self.mass.players.get(_server_id)
+            _server_id = self._get_player_id_from_zone_device(_server)
+            _server_player = cast("MusicCastPlayer | None", self.mass.players.get(_server_id))
             if _server_player is not None and _server_player.upnp_update_helper is not None:
                 self._attr_active_source = (
                     self.zone_device.source_id
@@ -329,14 +329,14 @@ class MusicCastPlayer(Player):
             self._attr_active_group = None
 
         elif self.zone_device.is_client:
-            _synced_to_id = self._get_player_id_from_mc_zone_player(self.zone_device.group_server)
+            _synced_to_id = self._get_player_id_from_zone_device(self.zone_device.group_server)
             self._attr_group_members.clear()
             self._attr_synced_to = _synced_to_id
             self._attr_active_group = _synced_to_id
 
         elif self.zone_device.is_server:
             self._attr_group_members = [
-                self._get_player_id_from_mc_zone_player(x) for x in self.zone_device.musiccast_group
+                self._get_player_id_from_zone_device(x) for x in self.zone_device.musiccast_group
             ]
             self._attr_synced_to = None
             self._attr_active_group = None
@@ -365,7 +365,7 @@ class MusicCastPlayer(Player):
         This methods targets another zone of this players physical device!
         """
         # this is not this player's id
-        player_id = self._get_player_id_from_mc_zone_player(zone_player)
+        player_id = self._get_player_id_from_zone_device(zone_player)
         assert player_id is not None  # for TYPE_CHECKING
         _source = str(
             await self.mass.config.get_player_config_value(
@@ -395,7 +395,7 @@ class MusicCastPlayer(Player):
             await asyncio.sleep(2)
             await mass_player.power(powered=False)
 
-    def _get_player_id_from_mc_zone_player(self, zone_player: MusicCastZoneDevice) -> str:
+    def _get_player_id_from_zone_device(self, zone_player: MusicCastZoneDevice) -> str:
         device_id = zone_player.physical_device.device.data.device_id
         assert device_id is not None
         return f"{device_id}{PLAYER_ZONE_SPLITTER}{zone_player.zone_name}"
@@ -417,15 +417,24 @@ class MusicCastPlayer(Player):
         assert self.zone_device.zone_name == "main", "Call only from main player!"
 
         device_id, _ = self.player_id.split(PLAYER_ZONE_SPLITTER)
-        player_helper = self.provider.musiccast_player_helpers.get(device_id)
-        if player_helper is None:
-            return
-        player_helper.physical_device.remove()
-        for player in player_helper.get_all_players():
-            # disable zones as well.
-            player._attr_available = False
-            async with player.update_lock:
-                player.update_state()
+        assert isinstance(self.provider, MusicCastProvider)  # for type checking
+
+        # disable polling
+        self.physical_device.remove()
+
+        async with self.update_lock:
+            self._attr_available = False
+            self.update_state()
+
+        # set other zone unavailable
+        for zone_device in self.zone_device.other_zones:
+            if zone_device_player := self.mass.players.get(
+                self._get_player_id_from_zone_device(zone_device)
+            ):
+                assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
+                async with zone_device_player.update_lock:
+                    zone_device_player._attr_available = False
+                    zone_device_player.update_state()
 
     async def poll(self) -> None:
         """Poll player."""
@@ -444,7 +453,7 @@ class MusicCastPlayer(Player):
                 return
             except ServerDisconnectedError:
                 return
-            await self.update_player_attributes()
+            await self.set_dynamic_attributes()
 
     def _non_async_udp_callback(self, physical_device: MusicCastPhysicalDevice) -> None:
         """Call on UDP updates."""
@@ -452,7 +461,7 @@ class MusicCastPlayer(Player):
 
     async def _async_udp_callback(self) -> None:
         async with self.update_lock:
-            await self.update_player_attributes()
+            await self.set_dynamic_attributes()
 
     async def power(self, powered: bool) -> None:
         """Power command."""
@@ -570,46 +579,38 @@ class MusicCastPlayer(Player):
         If we are a server, this is called.
         We can ignore removed devices, these are handled via ungroup individually.
         """
-        children: set[MusicCastZoneDevice] = set()
-        children_zones: list[MusicCastZoneDevice] = []
+        children: set[str] = set()  # set[ma_player_id]
+        children_zones: list[str] = []  # list[ma_player_id]
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
         for child_id in player_ids_to_add:
-            if child := self._get_zone_player(child_id):
+            if child_player := self.mass.players.get(child_id):
+                assert isinstance(child_player, MusicCastPlayer)  # for type checking
                 _other_zone_mc: MusicCastZoneDevice | None = None
-                for x in child.other_zones:
+                for x in child_player.zone_device.other_zones:
                     if x.is_netusb:
                         _other_zone_mc = x
-                if _other_zone_mc and _other_zone_mc != child:
+                if _other_zone_mc and _other_zone_mc != child_player.zone_device:
                     # of the same device, we use main_sync as input
                     if _other_zone_mc.zone_name == "main":
-                        children_zones.append(child)
+                        children_zones.append(child_id)
                     else:
                         self.logger.warning(
                             "It is impossible to join as a normal zone to another zone of the same "
                             "device. Only joining to main is possible. Please refer to the docs."
                         )
                 else:
-                    children.add(child)
+                    children.add(child_id)
 
-        for child in children_zones:
-            child_player_id = self._get_player_id_from_mc_zone_player(child)
-            child_player = self.mass.players.get(child_player_id)
+        for child_id in children_zones:
+            child_player = self.mass.players.get(child_id)
             assert child_player is not None
-            if child.state == MusicCastPlayerState.OFF:
+            if child_player.state == MusicCastPlayerState.OFF:
                 await child_player.power(powered=True)
-            await self.select_source(child_player_id, MC_SOURCE_MAIN_SYNC)
+            await child_player.select_source(MC_SOURCE_MAIN_SYNC)
         if not children:
             return
 
         await self._cmd_run(self.zone_device.join_players, list(children))
-
-    def _get_zone_player(self, player_id: str) -> MusicCastZoneDevice | None:
-        """Get music cast zone entity based on player id."""
-        device_id, zone = player_id.split(PLAYER_ZONE_SPLITTER)
-        mc_player = self.provider.musiccast_player_helpers.get(device_id)
-        if mc_player is None:
-            return None
-        return mc_player.physical_device.zone_devices.get(zone)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""
