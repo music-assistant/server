@@ -27,9 +27,7 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE,
-    CONF_IP_ADDRESS,
     CONF_PASSWORD,
-    CONF_PORT,
     CONF_USERNAME,
 )
 from music_assistant.helpers.auth import AuthenticationHelper
