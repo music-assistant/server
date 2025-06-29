@@ -123,7 +123,12 @@ async def get_config_entries(
 
             try:
                 await auth_helper.authenticate(proxy_url)
-                await save_cookie(login, str(values[CONF_USERNAME]), mass)
+                if await login.test_loggedin():
+                    await save_cookie(login, str(values[CONF_USERNAME]), mass)
+                else:
+                    raise LoginFailed(
+                        "Authentication login failed, please provide logs to the discussion #431."
+                    )
             except KeyError:
                 # no URL param was found so user probably cancelled the auth
                 pass
@@ -401,6 +406,8 @@ class AlexaProvider(PlayerProvider):
         device_object = self.devices[player_id]
         api = AlexaAPI(device_object, self.login)
         await api.run_custom("Ask music assistant to play audio")
+
+        await api.get_state()
 
         player.current_media = media
         player.elapsed_time = 0
