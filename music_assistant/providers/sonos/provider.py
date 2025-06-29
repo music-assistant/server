@@ -7,34 +7,27 @@ https://github.com/music-assistant/aiosonos
 
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
 from aiosonos.utils import get_discovery_info
-from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, ProviderFeature
+from music_assistant_models.enums import PlaybackState, ProviderFeature
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
-    CONF_ENTRY_OUTPUT_CODEC,
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
-    create_sample_rates_config_entry,
 )
 from music_assistant.models.player_provider import PlayerProvider
 
-from .const import CONF_AIRPLAY_MODE
 from .helpers import get_primary_ip_address
 from .player import SonosPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import PlayerConfig
     from music_assistant_models.queue_item import QueueItem
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -77,14 +70,12 @@ class SonosPlayerProvider(PlayerProvider):
                 )
                 continue
             player_id = discovery_info["device"]["id"]
-            sonos_player = SonosPlayer(
-                self, player_id, discovery_info=discovery_info
-            )
+            sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
             sonos_player.device_info.ip_address = ip_address
             await sonos_player.setup()
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle close/cleanup of the provider."""        
+        """Handle close/cleanup of the provider."""
         self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/itemWindow")
         self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/version")
         self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/context")
@@ -117,11 +108,6 @@ class SonosPlayerProvider(PlayerProvider):
                     cur_address,
                 )
                 sonos_player.device_info.ip_address = cur_address
-                # mass_player.device_info = DeviceInfo(
-                #     model=mass_player.device_info.model,
-                #     manufacturer=mass_player.device_info.manufacturer,
-                #     ip_address=str(cur_address),
-                # )
             if not sonos_player.connected:
                 self.logger.debug("Player back online: %s", sonos_player.display_name)
                 sonos_player.client.player_ip = cur_address
@@ -148,8 +134,7 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        # assert player_id not in self.sonos_players
-        # TODO: Check if above assert is needed
+        assert not self.mass.players.get(player_id)
         address = get_primary_ip_address(info)
         if address is None:
             return
@@ -169,9 +154,7 @@ class SonosPlayerProvider(PlayerProvider):
             )
             return
         self.logger.debug("Discovered Sonos device %s on %s", name, address)
-        sonos_player = SonosPlayer(
-            self, player_id, discovery_info=discovery_info
-        )
+        sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
         sonos_player.device_info.ip_address = address
         await sonos_player.setup()
         # # trigger update on all existing players to update the group status
@@ -364,84 +347,3 @@ class SonosPlayerProvider(PlayerProvider):
                 else None,
             },
         }
-
-    # async def _play_media_legacy(
-    #     self,
-    #     sonos_player: SonosPlayer,
-    #     media: PlayerMedia,
-    # ) -> None:
-    #     """Handle PLAY MEDIA using the legacy upnp api."""
-    #     xml_data, soap_action = get_xml_soap_set_url(media)
-    #     player_ip = sonos_player.mass_player.device_info.ip_address
-    #     async with self.mass.http_session.post(
-    #         f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
-    #         headers={
-    #             "SOAPACTION": soap_action,
-    #             "Content-Type": "text/xml; charset=utf-8",
-    #             "Connection": "close",
-    #         },
-    #         data=xml_data,
-    #     ) as resp:
-    #         if resp.status != 200:
-    #             raise PlayerCommandFailed(
-    #                 f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
-    #             )
-    #         await self.cmd_play(sonos_player.player_id)
-    #         return
-
-    # async def _enqueue_next_media_legacy(
-    #     self, sonos_player: SonosPlayer, media: PlayerMedia
-    # ) -> None:
-    #     """Handle enqueuing of the next queue item using the legacy unpnp api."""
-    #     xml_data, soap_action = get_xml_soap_set_next_url(media)
-    #     player_ip = sonos_player.mass_player.device_info.ip_address
-    #     async with self.mass.http_session.post(
-    #         f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
-    #         headers={
-    #             "SOAPACTION": soap_action,
-    #             "Content-Type": "text/xml; charset=utf-8",
-    #             "Connection": "close",
-    #         },
-    #         data=xml_data,
-    #     ) as resp:
-    #         if resp.status != 200:
-    #             raise PlayerCommandFailed(
-    #                 f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
-    #             )
-
-    #     # disable crossfade mode if needed
-    #     # crossfading is handled by our streams controller
-    #     if sonos_player.client.player.group.play_modes.crossfade:
-    #         await sonos_player.client.player.group.set_play_modes(crossfade=False)
-
-    # async def _play_media_airplay(
-    #     self,
-    #     sonos_player: SonosPlayer,
-    #     airplay_player: Player,
-    #     media: PlayerMedia,
-    # ) -> None:
-    #     """Handle PLAY MEDIA using the legacy upnp api."""
-    #     player_id = sonos_player.player_id
-    #     mass_player = self.mass.players.get(player_id)
-    #     mass_player.active_source = airplay_player.active_source
-    #     if (
-    #         airplay_player.state == PlaybackState.PLAYING
-    #         and airplay_player.active_source == media.queue_id
-    #     ):
-    #         # if the airplay player is already playing,
-    #         # the stream will be reused so no need to do the whole grouping thing below
-    #         await self.mass.players.play_media(airplay_player.player_id, media)
-    #         return
-
-    #     # Sonos has an annoying bug (for years already, and they dont seem to care),
-    #     # where it looses its sync childs when airplay playback is (re)started.
-    #     # Try to handle it here with this workaround.
-    #     group_childs = [x for x in sonos_player.client.player.group.player_ids if x != player_id]
-    #     if group_childs:
-    #         await self.mass.players.cmd_ungroup_many(group_childs)
-    #     await self.mass.players.play_media(airplay_player.player_id, media)
-    #     if group_childs:
-    #         # ensure master player is first in the list
-    #         group_childs = [sonos_player.player_id, *group_childs]
-    #         await asyncio.sleep(5)
-    #         await sonos_player.client.player.group.set_group_members(group_childs)

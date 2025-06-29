@@ -1,3 +1,12 @@
+"""
+Sonos Player provider for Music Assistant for speakers running the S2 firmware.
+
+Based on the aiosonos library, which leverages the new websockets API of the Sonos S2 firmware.
+https://github.com/music-assistant/aiosonos
+
+SonosPlayer: Holds the details of the (discovered) Sonosplayer.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +19,6 @@ from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
 from aiosonos.exceptions import ConnectionFailed, FailedCommand
-from music_assistant.constants import CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED, CONF_ENTRY_HTTP_PROFILE_DEFAULT_2, CONF_ENTRY_OUTPUT_CODEC, create_sample_rates_config_entry
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -21,8 +29,14 @@ from music_assistant_models.enums import (
     RepeatMode,
 )
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.player import DeviceInfo, PlayerMedia
+from music_assistant_models.player import PlayerMedia
 
+from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+    CONF_ENTRY_OUTPUT_CODEC,
+    create_sample_rates_config_entry,
+)
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.upnp import get_xml_soap_set_url
 from music_assistant.models.player import Player
@@ -50,11 +64,13 @@ SUPPORTED_FEATURES = {
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.ENQUEUE,
-    PlayerFeature.SET_MEMBERS
+    PlayerFeature.SET_MEMBERS,
 }
 
 
 class SonosPlayer(Player):
+    """Holds the details of the (discovered) Sonosplayer."""
+
     def __init__(
         self,
         prov: SonosPlayerProvider,
@@ -160,8 +176,7 @@ class SonosPlayer(Player):
 
     async def get_config_entries(
         self,
-    ) -> list[ConfigEntry
-              ]:
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = (
             *await super().get_config_entries(),
@@ -207,8 +222,7 @@ class SonosPlayer(Player):
                 required=False,
                 default_value=False,
                 depends_on="airplay_detected",
-                hidden=SonosCapability.AIRPLAY
-                not in self.discovery_info["device"]["capabilities"],
+                hidden=SonosCapability.AIRPLAY not in self.discovery_info["device"]["capabilities"],
             ),
         )
 
@@ -262,7 +276,7 @@ class SonosPlayer(Player):
         else:
             await self.client.player.group.play()
         self._attr_playback_state = PlaybackState.PLAYING
-        self.update_state()      
+        self.update_state()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
@@ -273,7 +287,7 @@ class SonosPlayer(Player):
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting STOP command to linked airplay player.")
             if player_provider := self.mass.get_provider(airplay.provider):
-                await player_provider.cmd_stop(airplay.player_id)            
+                await player_provider.cmd_stop(airplay.player_id)
         else:
             await self.client.player.group.stop()
         self._attr_playback_state = PlaybackState.IDLE
@@ -285,6 +299,7 @@ class SonosPlayer(Player):
 
         Will only be called if the player reports PlayerFeature.PAUSE is supported.
         """
+
         def _update_state() -> None:
             self._attr_playback_state = PlaybackState.PAUSED
             self.update_state()
@@ -363,6 +378,7 @@ class SonosPlayer(Player):
 
         :param media: Details of the item that needs to be played on the player.
         """
+
         def _update_state() -> None:
             self._attr_current_media = media
             self._attr_playback_state = PlaybackState.PLAYING
@@ -743,11 +759,6 @@ class SonosPlayer(Player):
         if self.client:
             await self.client.disconnect()
         self.logger.debug("Disconnected from player API")
-
-    def on_player_event(self, event: SonosEvent | None) -> None:
-        """Handle incoming event from player."""
-        self.update_attributes()
-        self.update_state()
 
     def _on_airplay_player_event(self, event: MassEvent) -> None:
         """Handle incoming event from linked airplay player."""
