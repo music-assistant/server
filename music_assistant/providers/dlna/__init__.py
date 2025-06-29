@@ -311,7 +311,9 @@ class DLNAPlayer(Player):
             # only update elapsed_time if the device actually reports it
             self._attr_elapsed_time = float(self.device.media_position)
             if self.device.media_position_updated_at is not None:
-                self._attr_elapsed_time_last_updated = self.device.media_position_updated_at
+                self._attr_elapsed_time_last_updated = (
+                    self.device.media_position_updated_at.timestamp()
+                )
 
     def _get_playback_state(self) -> PlaybackState | None:
         """Return current PlaybackState of the player."""
@@ -383,7 +385,7 @@ class DLNAPlayer(Player):
         # optimistically set this timestamp to help in case of a player
         # that does not report the progress
         self._attr_elapsed_time = 0
-        self._attr_elapsed_time_last_updated = datetime.now()
+        self._attr_elapsed_time_last_updated = time.time()
         await self.device.async_play()
         # force poll the device
         for sleep in (1, 2):
