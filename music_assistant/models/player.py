@@ -114,7 +114,7 @@ class Player(ABC):
     _attr_volume_level: int | None = None
     _attr_volume_muted: bool | None = None
     _attr_elapsed_time: float | None = None
-    _attr_elapsed_time_last_updated: datetime | None = None
+    _attr_elapsed_time_last_updated: float | None = None
     _attr_synced_to: str | None = None
     _attr_active_source: str | None = None
     _attr_current_media: PlayerMedia | None = None
@@ -258,10 +258,10 @@ class Player(ABC):
             # also update the state
             self._state.elapsed_time = value
             # update the last updated time
-            self._attr_elapsed_time_last_updated = datetime.utcnow()
+            self._attr_elapsed_time_last_updated = time.time()
 
     @property
-    def elapsed_time_last_updated(self) -> datetime | None:
+    def elapsed_time_last_updated(self) -> float | None:
         """
         Return when the elapsed time was last updated.
 
