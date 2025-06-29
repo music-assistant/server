@@ -200,7 +200,12 @@ class MusicCastPlayer(Player):
             case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
                 self._attr_playback_state = PlaybackState.IDLE
         self._attr_elapsed_time = self.zone_device.media_position
-        self._attr_elapsed_time_last_updated = self.zone_device.media_position_updated_at
+        if self.zone_device.media_position_updated_at is not None:
+            self._attr_elapsed_time_last_updated = (
+                self.zone_device.media_position_updated_at.timestamp()
+            )
+        else:
+            self._attr_elapsed_time_last_updated = None
 
         # SOURCES
         # source_list: list[PlayerSource] = []
@@ -246,6 +251,7 @@ class MusicCastPlayer(Player):
                     and self.mass.streams.base_url in _player_current_url
                     and self.zone_device.source_id == "server"
                 )
+            self.logger.debug(f"{controlled_by_mass} {self.display_name}")
 
             self.upnp_update_helper = UpnpUpdateHelper(
                 last_poll=now,
@@ -262,6 +268,9 @@ class MusicCastPlayer(Player):
             self.upnp_update_helper.current_uri is not None
             and self.upnp_update_helper.controlled_by_mass
         ):
+            self.logger.debug(
+                f"{self.display_name} {self.upnp_update_helper.current_uri} Setting..."
+            )
             self.set_current_media(uri=self.upnp_update_helper.current_uri, clear_all=True)
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
@@ -275,9 +284,7 @@ class MusicCastPlayer(Player):
                 and _server_update_helper.current_uri is not None
                 and _server_update_helper.controlled_by_mass
             ):
-                self.set_current_media(
-                    uri=_server_update_helper.current_uri,
-                )
+                self.set_current_media(uri=_server_update_helper.current_uri, clear_all=True)
             else:
                 self.set_current_media(
                     uri=f"{_server_id}_{_server.source_id}",
@@ -296,7 +303,7 @@ class MusicCastPlayer(Player):
             )
 
         # SOURCE
-        self._attr_active_source = None  # means the player controller will figure it out
+        self._attr_active_source = self.player_id
         if not self.zone_device.is_client and not self.upnp_update_helper.controlled_by_mass:
             self._attr_active_source = self.zone_device.source_id
         elif self.zone_device.is_client:
@@ -342,6 +349,7 @@ class MusicCastPlayer(Player):
             self._attr_active_group = None
 
         self.update_state()
+        await self.mass.players.register_or_update(self)
 
     async def _cmd_run(self, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
         """Help function for all player cmds."""
@@ -548,6 +556,7 @@ class MusicCastPlayer(Player):
                 current_uri=media.uri,
             )
 
+            self._attr_active_source = self.player_id
             self._attr_current_media = media
             self._attr_playback_state = PlaybackState.PLAYING
 
@@ -735,6 +744,12 @@ class MusicCastProvider(PlayerProvider):
         super().__init__(mass, manifest, config)
         # str is device_id here:
         self.musiccast_player_helpers: dict[str, MusicCastPlayerHelper] = {}
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Call on unload."""
+        for mc_player in self.mass.players.all(provider_filter=self.lookup_key):
+            assert isinstance(mc_player, MusicCastPlayer)  # for type checking
+            mc_player.physical_device.remove()
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
