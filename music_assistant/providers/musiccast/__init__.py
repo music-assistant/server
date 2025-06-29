@@ -164,6 +164,21 @@ class MusicCastPlayer(Player):
 
         self._attr_available = True
 
+        # SOURCES
+        # for source_id, source_name in self.zone_device.source_mapping.items():
+        #     control = source_id in MC_CONTROL_SOURCE_IDS
+        #     passive = source_id in MC_PASSIVE_SOURCE_IDS
+        #     self._attr_source_list.append(
+        #         PlayerSource(
+        #             id=source_id,
+        #             name=source_name,
+        #             passive=passive,
+        #             can_play_pause=control,
+        #             can_seek=False,
+        #             can_next_previous=control,
+        #         )
+        #     )
+
     async def set_dynamic_attributes(self) -> None:
         """Update Player attributes."""
         # ruff: noqa: PLR0915
@@ -207,23 +222,6 @@ class MusicCastPlayer(Player):
         else:
             self._attr_elapsed_time_last_updated = None
 
-        # SOURCES
-        # source_list: list[PlayerSource] = []
-        # for source_id, source_name in self.zone_device.source_mapping.items():
-        #     control = source_id in MC_CONTROL_SOURCE_IDS
-        #     passive = source_id in MC_PASSIVE_SOURCE_IDS
-        #     source_list.append(
-        #         PlayerSource(
-        #             id=source_id,
-        #             name=source_name,
-        #             passive=passive,
-        #             can_play_pause=control,
-        #             can_seek=False,
-        #             can_next_previous=control,
-        #         )
-        #     )
-        # self._attr_source_list = source_list
-
         # UPDATE UPNP HELPER
         now = time.time()
         if self.upnp_update_helper is None or now - self.upnp_update_helper.last_poll > 5:
@@ -251,7 +249,6 @@ class MusicCastPlayer(Player):
                     and self.mass.streams.base_url in _player_current_url
                     and self.zone_device.source_id == "server"
                 )
-            self.logger.debug(f"{controlled_by_mass} {self.display_name}")
 
             self.upnp_update_helper = UpnpUpdateHelper(
                 last_poll=now,
@@ -268,9 +265,6 @@ class MusicCastPlayer(Player):
             self.upnp_update_helper.current_uri is not None
             and self.upnp_update_helper.controlled_by_mass
         ):
-            self.logger.debug(
-                f"{self.display_name} {self.upnp_update_helper.current_uri} Setting..."
-            )
             self.set_current_media(uri=self.upnp_update_helper.current_uri, clear_all=True)
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
@@ -349,7 +343,6 @@ class MusicCastPlayer(Player):
             self._attr_active_group = None
 
         self.update_state()
-        await self.mass.players.register_or_update(self)
 
     async def _cmd_run(self, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
         """Help function for all player cmds."""
@@ -635,7 +628,14 @@ class MusicCastPlayer(Player):
         if not children:
             return
 
-        await self._cmd_run(self.zone_device.join_players, list(children))
+        child_player_zone_devices: list[MusicCastZoneDevice] = []
+        for child_id in children:
+            child_player = self.mass.players.get(child_id)
+            assert child_player is not None
+            assert isinstance(child_player, MusicCastPlayer)
+            child_player_zone_devices.append(child_player.zone_device)
+
+        await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""
