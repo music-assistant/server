@@ -60,14 +60,11 @@ class SonosPlayer(Player):
         prov: SonosPlayerProvider,
         player_id: str,
         discovery_info: SonosDiscoveryInfo,
-        ip_address: str,
     ) -> None:
         """Initialize the SonosPlayer."""
         super().__init__(prov, player_id)
         self.discovery_info = discovery_info
-        self.ip_address = ip_address
         self.connected: bool = False
-        self.client = SonosLocalApiClient(self.ip_address, self.mass.http_session)
         self._listen_task: asyncio.Task | None = None
         # Sonos speakers can optionally have airplay (most S2 speakers do)
         # and this airplay player can also be a player within MA.
@@ -95,6 +92,7 @@ class SonosPlayer(Player):
     async def setup(self) -> None:
         """Handle setup of the player."""
         # connect the player first so we can fail early
+        self.client = SonosLocalApiClient(self.device_info.ip_address, self.mass.http_session)
         await self._connect(False)
 
         # collect supported features
@@ -112,11 +110,8 @@ class SonosPlayer(Player):
             self.discovery_info["device"]["name"]
             or self.discovery_info["device"]["modelDisplayName"]
         )
-        self._attr_device_info = DeviceInfo(
-            model=self.discovery_info["device"]["modelDisplayName"],
-            manufacturer=self._provider.manifest.name,
-            ip_address=self.ip_address,
-        )
+        self._attr_device_info.model = self.discovery_info["device"]["modelDisplayName"]
+        self._attr_device_info.manufacturer = self._provider.manifest.name
         self._attr_can_group_with = {self._provider.instance_id}
 
         if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
@@ -546,7 +541,7 @@ class SonosPlayer(Player):
             self._attr_volume_level = 100
         else:
             self._attr_volume_level = self.client.player.volume_level or 0
-        self._attr_volume_level = self.client.player.volume_muted
+        self._attr_volume_muted = self.client.player.volume_muted
 
         group_parent = None
         airplay_player = self.get_linked_airplay_player(False)
@@ -586,7 +581,7 @@ class SonosPlayer(Player):
             self._attr_active_source = active_group.coordinator_id
 
         # map playback state
-        self._state.playback_state = PLAYBACK_STATE_MAP[active_group.playback_state]
+        self._playback_state = PLAYBACK_STATE_MAP[active_group.playback_state]
         self._attr_elapsed_time = active_group.position
 
         # figure out the active source based on the container
@@ -691,10 +686,8 @@ class SonosPlayer(Player):
         """Update the elapsed time of the current media."""
         if elapsed_time is not None:
             self._attr_elapsed_time = elapsed_time
-            self._state.elapsed_time = elapsed_time
         last_updated = time.time()
         self._attr_elapsed_time_last_updated = last_updated
-        self._state.elapsed_time_last_updated = last_updated
         self.update_state()
 
     async def _connect(self, retry_on_fail: int = 0) -> None:
