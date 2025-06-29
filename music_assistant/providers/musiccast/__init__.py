@@ -165,19 +165,19 @@ class MusicCastPlayer(Player):
         self._attr_available = True
 
         # SOURCES
-        # for source_id, source_name in self.zone_device.source_mapping.items():
-        #     control = source_id in MC_CONTROL_SOURCE_IDS
-        #     passive = source_id in MC_PASSIVE_SOURCE_IDS
-        #     self._attr_source_list.append(
-        #         PlayerSource(
-        #             id=source_id,
-        #             name=source_name,
-        #             passive=passive,
-        #             can_play_pause=control,
-        #             can_seek=False,
-        #             can_next_previous=control,
-        #         )
-        #     )
+        for source_id, source_name in self.zone_device.source_mapping.items():
+            control = source_id in MC_CONTROL_SOURCE_IDS
+            passive = source_id in MC_PASSIVE_SOURCE_IDS
+            self._attr_source_list.append(
+                PlayerSource(
+                    id=source_id,
+                    name=source_name,
+                    passive=passive,
+                    can_play_pause=control,
+                    can_seek=False,
+                    can_next_previous=control,
+                )
+            )
 
     async def set_dynamic_attributes(self) -> None:
         """Update Player attributes."""
