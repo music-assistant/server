@@ -416,10 +416,18 @@ class AlexaProvider(PlayerProvider):
         api = AlexaAPI(device_object, self.login)
         await api.run_custom("Ask music assistant to play audio")
 
-        await api.get_state()
+        state = await api.get_state()
+        if state:
+            state = state.get("playerInfo", None)
 
-        player.current_media = media
-        player.elapsed_time = 0
-        player.elapsed_time_last_updated = time.time()
-        player.state = PlayerState.PLAYING
+        if state:
+            device_media = state.get("infoText")
+            if device_media:
+                media.title = device_media.get("title")
+                media.artist = device_media.get("subText1")
+                player.current_media = media
+            player.elapsed_time = 0
+            player.elapsed_time_last_updated = time.time()
+            if state.get("playbackState") == "PLAYING":
+                player.state = PlayerState.PLAYING
         self.mass.players.update(player_id)
