@@ -715,7 +715,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         query_parts: list[str] = extra_query_parts or []
         join_parts: list[str] = extra_join_parts or []
         # create special performant random query
-        if not search and order_by and order_by.startswith("random"):
+        if not search and not favorite and order_by and order_by.startswith("random"):
             query_parts.append(
                 f"{self.db_table}.item_id in "
                 f"(SELECT item_id FROM {self.db_table} ORDER BY RANDOM() LIMIT {limit})"
