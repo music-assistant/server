@@ -13,6 +13,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast, final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, PlayerConfig
@@ -760,19 +761,18 @@ class Player(ABC):
 
     @cached_property
     @final
-    def source_list_state(self) -> list[PlayerSource]:
+    def source_list_state(self) -> UniqueList[PlayerSource]:
         """
         Return the FINAL source list of the player.
 
         This is a convenience property which calculates the final source list
         based on any group memberships or source plugins that can be active.
         """
-        source_ids = {x.id for x in self.source_list}
-        # we cannot use a UniqueList here
-        sources = []  # unique source list
-
+        sources = UniqueList(self.source_list)
         # always ensure the Music Assistant Queue is in the source list
-        if self.player_id not in source_ids:
+        mass_source = next((x for x in sources if x.id == self.player_id), None)
+        if mass_source is None:
+            # if the MA queue is not in the source list, add it
             mass_source = PlayerSource(
                 id=self.player_id,
                 name="Music Assistant Queue",
@@ -783,12 +783,6 @@ class Player(ABC):
                 can_next_previous=True,
             )
             sources.append(mass_source)
-
-        for source in self.source_list:
-            if source.id in source_ids:
-                sources.append(source)
-                source_ids.remove(source.id)
-
         # if the player is grouped/synced, add the active source list of the group/parent player
         if parent_player_id := (self.synced_to or self.active_group):
             if parent_player := self.mass.players.get(parent_player_id):
