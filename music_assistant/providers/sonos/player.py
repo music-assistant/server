@@ -178,7 +178,7 @@ class SonosPlayer(Player):
         self,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = (
+        base_entries = [
             *await super().get_config_entries(),
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
@@ -191,11 +191,8 @@ class SonosPlayer(Player):
                 safe_max_bit_depth=16,
                 hidden=False,
             ),
-        )
-        # if not (sonos_player := self.mass.players.get(player_id)):
-        #     # most probably the player is not yet discovered
-        #     return base_entries
-        return (
+        ]
+        return [
             *base_entries,
             ConfigEntry(
                 key="airplay_detected",
@@ -224,7 +221,7 @@ class SonosPlayer(Player):
                 depends_on="airplay_detected",
                 hidden=SonosCapability.AIRPLAY not in self.discovery_info["device"]["capabilities"],
             ),
-        )
+        ]
 
     def get_linked_airplay_player(self, enabled_only: bool = True) -> Player | None:
         """Return the linked airplay player if available/enabled."""
@@ -246,11 +243,9 @@ class SonosPlayer(Player):
         """
         await self.client.player.set_volume(volume_level)
         # sync volume level with airplay player
-        if airplay := self.get_linked_airplay_player(False):
-            if airplay.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-                airplay.volume_level = volume_level
-        self._attr_volume_level = volume_level
-        self.update_state()
+        if airplay_player := self.get_linked_airplay_player(False):
+            if airplay_player.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                airplay_player._attr_volume_level = volume_level
 
     async def volume_mute(self, muted: bool) -> None:
         """
@@ -261,8 +256,6 @@ class SonosPlayer(Player):
         :param muted: bool if player should be muted.
         """
         await self.client.player.set_volume(muted=muted)
-        self._attr_volume_muted = muted
-        self.update_state()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
@@ -275,19 +268,16 @@ class SonosPlayer(Player):
             await airplay_player.play()
         else:
             await self.client.player.group.play()
-        self._attr_playback_state = PlaybackState.PLAYING
-        self.update_state()
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        if (airplay := self.get_linked_airplay_player(True)) and self.airplay_mode_active:
+        if (airplay_player := self.get_linked_airplay_player(True)) and self.airplay_mode_active:
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting STOP command to linked airplay player.")
-            if player_provider := self.mass.get_provider(airplay.provider):
-                await player_provider.cmd_stop(airplay.player_id)
+            await airplay_player.stop()
         else:
             await self.client.player.group.stop()
         self._attr_playback_state = PlaybackState.IDLE
@@ -307,11 +297,10 @@ class SonosPlayer(Player):
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        if (airplay := self.get_linked_airplay_player(True)) and self.airplay_mode_active:
+        if (airplay_player := self.get_linked_airplay_player(True)) and self.airplay_mode_active:
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting PAUSE command to linked airplay player.")
-            if player_provider := self.mass.get_provider(airplay.provider):
-                await player_provider.cmd_pause(airplay.player_id)
+            await airplay_player.pause()
             _update_state()
             return
         active_source = self._attr_active_source
@@ -360,9 +349,6 @@ class SonosPlayer(Player):
 
         :param position: The position to seek to, in seconds.
         """
-        if self.client.player.is_passive:
-            self.logger.debug("Ignore STOP command: Player is synced to another player.")
-            return
         await self.client.player.group.seek(position)
 
     async def play_media(
