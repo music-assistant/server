@@ -38,6 +38,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     AlreadyRegisteredError,
+    MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
     UnsupportedFeaturedException,
@@ -1042,6 +1043,69 @@ class PlayerController(CoreController):
         """Handle UNGROUP command for all the given players."""
         for player_id in list(player_ids):
             await self.cmd_ungroup(player_id)
+
+    @api_command("players/add_currently_playing_to_favorites")
+    async def add_currently_playing_to_favorites(self, player_id: str) -> None:
+        """
+        Add the currently playing item/track on given player to the favorites.
+
+        This tries to resolve the currently playing media to an actual media item
+        and add that to the favorites in the library.
+
+        Will raise an error if the player is not currently playing anything
+        or if the currently playing media can not be resolved to a media item.
+        """
+        player = self._get_player_with_redirect(player_id)
+        # handle mass player queue active
+        if mass_queue := self.get_active_queue(player):
+            if not (current_item := mass_queue.current_item) or not current_item.media_item:
+                raise PlayerCommandFailed("No current item to add to favorites")
+            # if we're playing a radio station, try to resolve the currently playing track
+            if current_item.media_item.media_type == MediaType.RADIO:
+                if not (
+                    (streamdetails := mass_queue.current_item.streamdetails)
+                    and (stream_title := streamdetails.stream_title)
+                    and " - " in stream_title
+                ):
+                    # no stream title available, so we can't resolve the track
+                    # this can happen if the radio station does not provide metadata
+                    # or there's a commercial break
+                    # Possible future improvement could be to actually detect the song with a
+                    # shazam-like approach.
+                    raise PlayerCommandFailed("No current item to add to favorites")
+                # send the streamtitle into a global search query
+                search_artist, search_title_title = stream_title.split(" - ", 1)
+                if track := await self.mass.music.get_track_by_name(
+                    search_title_title, search_artist
+                ):
+                    # we found a track, so add it to the favorites
+                    await self.mass.music.add_item_to_favorites(track)
+                    return
+            # any other media item, just add it to the favorites directly
+            await self.mass.music.add_item_to_favorites(current_item.media_item)
+            return
+        # guard for player with no active source
+        if not player.active_source:
+            raise PlayerCommandFailed("Player has no active source")
+        # handle other source active using the current_media with uri
+        if current_media := player.current_media:
+            # prefer the uri of the current media item
+            if current_media.uri:
+                with suppress(MusicAssistantError):
+                    await self.mass.music.add_item_to_favorites(current_media.uri)
+                    return
+            # fallback to search based on artist and title (and album if available)
+            if current_media.artist and current_media.title:
+                if track := await self.mass.music.get_track_by_name(
+                    current_media.title,
+                    current_media.artist,
+                    current_media.album,
+                ):
+                    # we found a track, so add it to the favorites
+                    await self.mass.music.add_item_to_favorites(track)
+                    return
+        # if we reach here, we could not resolve the currently playing item
+        raise PlayerCommandFailed("No current item to add to favorites")
 
     async def register(self, player: Player) -> None:
         """Register a player on the Player Controller."""
