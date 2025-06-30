@@ -715,9 +715,20 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         query_parts: list[str] = extra_query_parts or []
         join_parts: list[str] = extra_join_parts or []
         already_filtered_favorites = False
+        already_filtered_search = False
+
+        # handle search preprocessing
+        if search:
+            search = create_safe_string(search, True, True)
+            query_params["search"] = f"%{search}%"
+
         # create special performant random query
-        if not search and order_by and order_by.startswith("random"):
+        if order_by and order_by.startswith("random"):
             sub_query_parts = []
+            # Add search filter to subquery if present
+            if search:
+                sub_query_parts.append(f"{self.db_table}.search_name LIKE :search")
+                already_filtered_search = True
             # If favorite filter is active, add it to the subquery so
             if favorite is not None:
                 sub_query_parts.append(f"{self.db_table}.favorite = :favorite")
@@ -729,9 +740,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             sub_query += f" ORDER BY RANDOM() LIMIT {limit}"
             query_parts.append(f"{self.db_table}.item_id in ({sub_query})")
         # handle search
-        if search:
-            search = create_safe_string(search, True, True)
-            query_params["search"] = f"%{search}%"
+        if search and not already_filtered_search:
             query_parts.append(f"{self.db_table}.search_name LIKE :search")
         # handle favorite filter
         if favorite is not None and not already_filtered_favorites:
