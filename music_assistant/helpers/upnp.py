@@ -111,6 +111,19 @@ def get_xml_soap_set_next_url(player_media: PlayerMedia) -> tuple[str, str]:
 # DIDL-LITE
 def create_didl_metadata(media: PlayerMedia) -> str:
     """Create DIDL metadata string from url and PlayerMedia."""
+
+    def escape_non_ascii(data: str) -> str:
+        """Escape non-ascii to decimal code."""
+        result = ""
+        for char in data:
+            unicode_code = ord(char)
+            if unicode_code < 128:
+                # ascii
+                result += char
+            else:
+                result += f"&#{unicode_code};"
+        return result
+
     ext = media.uri.split(".")[-1].split("?")[0]
     image_url = media.image_url or MASS_LOGO_ONLINE
     if media.media_type in (MediaType.FLOW_STREAM, MediaType.RADIO) or not media.duration:
@@ -119,7 +132,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
             f'<item id="flowmode" parentID="0" restricted="1">'
-            f"<dc:title>{xmlescape(title)}</dc:title>"
+            f"<dc:title>{escape_non_ascii(xmlescape(title))}</dc:title>"
             f"<upnp:albumArtURI>{xmlescape(image_url)}</upnp:albumArtURI>"
             f"<dc:queueItemId>{media.uri}</dc:queueItemId>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
@@ -135,10 +148,10 @@ def create_didl_metadata(media: PlayerMedia) -> str:
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">'
         f'<item id="{media.queue_item_id or xmlescape(media.uri)}" restricted="true" parentID="{media.queue_id or ""}">'
-        f"<dc:title>{xmlescape(media.title or media.uri)}</dc:title>"
-        f"<dc:creator>{xmlescape(media.artist or '')}</dc:creator>"
-        f"<upnp:album>{xmlescape(media.album or '')}</upnp:album>"
-        f"<upnp:artist>{xmlescape(media.artist or '')}</upnp:artist>"
+        f"<dc:title>{escape_non_ascii(xmlescape(media.title or media.uri))}</dc:title>"
+        f"<dc:creator>{escape_non_ascii(xmlescape(media.artist or ''))}</dc:creator>"
+        f"<upnp:album>{escape_non_ascii(xmlescape(media.album or ''))}</upnp:album>"
+        f"<upnp:artist>{escape_non_ascii(xmlescape(media.artist or ''))}</upnp:artist>"
         f"<upnp:duration>{int(media.duration or 0)}</upnp:duration>"
         f"<dc:queueItemId>{xmlescape(media.queue_item_id)}</dc:queueItemId>"
         f"<dc:description>Music Assistant</dc:description>"
