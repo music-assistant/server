@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from pychromecast.socket_client import ConnectionStatus
     from zeroconf import ServiceInfo, Zeroconf
 
-    from . import CastPlayer, ChromecastProvider
+    from . import ChromecastPlayer, ChromecastProvider
 
 DEFAULT_PORT = 8009
 
@@ -129,7 +129,7 @@ class CastStatusListener:
     def __init__(
         self,
         prov: ChromecastProvider,
-        castplayer: CastPlayer,
+        castplayer: ChromecastPlayer,
         mz_mgr: MultizoneManager,
         mz_only=False,
     ) -> None:
@@ -180,16 +180,19 @@ class CastStatusListener:
         """Handle the cast removed from a group."""
         if not self._valid:
             return
-        if group_uuid == self.castplayer.player.active_source:
-            self.castplayer.player.active_source = None
+        if group_uuid == self.castplayer.active_source:
+            self.castplayer._attr_active_source = None
+            self.prov.mass.loop.call_soon(self.castplayer.update_state)
         self.prov.logger.debug(
-            "%s is removed from multizone: %s", self.castplayer.player.display_name, group_uuid
+            "%s is removed from multizone: %s", self.castplayer.display_name, group_uuid
         )
         self.new_cast_status(self.castplayer.cc.status)
 
     def multizone_new_cast_status(self, group_uuid, cast_status) -> None:
         """Handle reception of a new CastStatus for a group."""
-        if group_player := self.prov.castplayers.get(group_uuid):
+        if group_player := self.prov.mass.players.get(group_uuid):
+            if TYPE_CHECKING:
+                assert isinstance(group_player, ChromecastPlayer)
             if group_player.cc.media_controller.is_active:
                 self.castplayer.active_group = group_uuid
             elif group_uuid == self.castplayer.active_group:
@@ -210,7 +213,7 @@ class CastStatusListener:
         self.prov.logger.log(
             VERBOSE_LOG_LEVEL,
             "%s got new media_status for group: %s",
-            self.castplayer.player.display_name,
+            self.castplayer.display_name,
             group_uuid,
         )
         self.prov.on_new_media_status(self.castplayer, media_status)
