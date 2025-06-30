@@ -714,7 +714,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         query_params = extra_query_params or {}
         query_parts: list[str] = extra_query_parts or []
         join_parts: list[str] = extra_join_parts or []
-        already_filtered_favorites = False
+        already_filtered_favorite = False
         already_filtered_search = False
 
         # handle search preprocessing
@@ -725,15 +725,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # create special performant random query
         if order_by and order_by.startswith("random"):
             sub_query_parts = []
-            # Add search filter to subquery if present
+            # If favorite or search filter is active, add it to the subquery so we limit the number
+            # of results to the correct amount
             if search:
                 sub_query_parts.append(f"{self.db_table}.search_name LIKE :search")
                 already_filtered_search = True
-            # If favorite filter is active, add it to the subquery so
             if favorite is not None:
                 sub_query_parts.append(f"{self.db_table}.favorite = :favorite")
                 query_params["favorite"] = favorite
-                already_filtered_favorites = True
+                already_filtered_favorite = True
             sub_query = f"SELECT item_id FROM {self.db_table}"
             if sub_query_parts:
                 sub_query += " WHERE " + " AND ".join(sub_query_parts)
@@ -743,7 +743,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if search and not already_filtered_search:
             query_parts.append(f"{self.db_table}.search_name LIKE :search")
         # handle favorite filter
-        if favorite is not None and not already_filtered_favorites:
+        if favorite is not None and not already_filtered_favorite:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             query_params["favorite"] = favorite
         # handle provider filter
