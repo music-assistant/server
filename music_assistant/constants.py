@@ -11,7 +11,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import ConfigEntryType, ContentType, HidePlayerOption
 from music_assistant_models.media_items import AudioFormat
 
-API_SCHEMA_VERSION: Final[int] = 26
+API_SCHEMA_VERSION: Final[int] = 27
 MIN_SCHEMA_VERSION: Final[int] = 24
 
 
