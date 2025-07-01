@@ -395,7 +395,7 @@ class ResonatePlayerProvider(PlayerProvider):
 
     async def _handle_player_ws_connect(self, request: web.Request) -> web.WebSocketResponse:
         """Handle incoming WebSocket connection request."""
-        instance = PlayerInstance(self, request=request)
+        instance = PlayerInstance(self, request=request, url=None, wsock_client=None)
         try:
             self.instances.add(instance)
             return await instance.handle_client()
