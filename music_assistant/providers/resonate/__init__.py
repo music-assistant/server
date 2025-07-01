@@ -35,9 +35,10 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
+INITIAL_PLAYBACK_DELAY_US = 1_000_000
 BUFFER_DURATION_US = 2_000_000
 MAX_PENDING_MSG = 512
-TARGET_CHUNK_DURATION_MS = 50
+TARGET_CHUNK_DURATION_MS = 25
 
 # TODO: make dynamic
 STREAM_CODEC = "pcm"
@@ -271,8 +272,9 @@ class PlayerInstance:
                     )
                     now = int(self.prov.time() * 1_000_000)
                     if timestamp_us - now < 0:
-                        logger.error("Sending audio chunk after it needs to be played")
-                    elif timestamp_us - now < 250_000:
+                        logger.error("Audio chunk after should have played already, skipping it")
+                        continue
+                    if timestamp_us - now < 500_000:
                         logger.warning(
                             "sending audio chunk that needs to be played very soon (in %d us)",
                             (timestamp_us - now),
@@ -466,7 +468,7 @@ class ResonatePlayerProvider(PlayerProvider):
                 child_instance.send_message(session_start_msg)
 
         instance.stream_task = self.mass.create_task(
-            self._stream_audio(player_id, session_info.now + BUFFER_DURATION_US, media)
+            self._stream_audio(player_id, session_info.now + INITIAL_PLAYBACK_DELAY_US, media)
         )
 
     async def cmd_group(self, player_id: str, target_player: str) -> None:
