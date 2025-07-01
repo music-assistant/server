@@ -450,7 +450,7 @@ class BuiltinPlayerProvider(PlayerProvider):
             channels=DEFAULT_PCM_FORMAT.channels,
         )
 
-        if "Safari" in request.headers["User-Agent"]:
+        if (user_agent := request.headers.get("User-Agent")) and "Safari" in user_agent:
             # This is possibly an iPhone or iPad. Since Apple ignores "Accept-Ranges=none" on iOS
             # and iPadOS for some reason, we need to slowly feed the music to avoid Safari
             # stopping and later restarting the audio stream (from a wrong position!).
