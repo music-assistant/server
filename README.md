@@ -32,6 +32,12 @@ See here https://music-assistant.io/installation/
 
 Note that although Music Assistant's main code is written in python, it has multiple dependencies on external/OS components such as ffmpeg and custom binaries and it is therefore not possible to run it as standalone pypi package. The only available installation method to run the Music Assistant server is by running the Docker container or the Home Assistant add-on.
 
+## Development and Utilities
+
+For development setup and utility scripts, see:
+- [Development Guide](DEVELOPMENT.md) - Complete development setup and contribution guidelines
+- [Scripts](scripts/README.md) - Utility scripts including Apple Music token extraction
+
 ---
 
 [![A project from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-project.png)](https://www.openhomefoundation.org/)
