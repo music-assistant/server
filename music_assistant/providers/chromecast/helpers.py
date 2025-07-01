@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import urllib.error
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Self
@@ -182,7 +183,9 @@ class CastStatusListener:
             return
         if group_uuid == self.castplayer.active_source:
             self.castplayer._attr_active_source = None
-            self.prov.mass.loop.call_soon(self.castplayer.update_state)
+            asyncio.run_coroutine_threadsafe(
+                self.prov.mass.players.register_or_update(self.castplayer), loop=self.prov.mass.loop
+            )
         self.prov.logger.debug(
             "%s is removed from multizone: %s", self.castplayer.display_name, group_uuid
         )

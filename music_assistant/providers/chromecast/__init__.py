@@ -659,9 +659,13 @@ class ChromecastProvider(PlayerProvider):
                     # FIXME: active group
                     child.active_group = None
                     child._attr_active_source = None
-                    child.update_state()
+                    asyncio.run_coroutine_threadsafe(
+                        self.mass.players.register_or_update(child), loop=self.mass.loop
+                    )
         castplayer._attr_powered = new_powered
-        self.mass.loop.call_soon(castplayer.update_state)
+        asyncio.run_coroutine_threadsafe(
+            self.mass.players.register_or_update(castplayer), loop=self.mass.loop
+        )
 
     def on_new_media_status(self, castplayer: ChromecastPlayer, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
@@ -743,9 +747,13 @@ class ChromecastProvider(PlayerProvider):
                     # fixme: active group
                     child.active_group = castplayer.active_group
 
-                    self.mass.loop.call_soon(child.update_state)
+                    asyncio.run_coroutine_threadsafe(
+                        self.mass.players.register_or_update(child), loop=self.mass.loop
+                    )
 
-        self.mass.loop.call_soon(castplayer.update_state)
+        asyncio.run_coroutine_threadsafe(
+            self.mass.players.register_or_update(castplayer), loop=self.mass.loop
+        )
 
     def on_new_connection_status(
         self, castplayer: ChromecastPlayer, status: ConnectionStatus
@@ -760,7 +768,9 @@ class ChromecastProvider(PlayerProvider):
 
         if status.status == CONNECTION_STATUS_DISCONNECTED:
             castplayer._attr_available = False
-            self.mass.loop.call_soon(castplayer.update_state)
+            asyncio.run_coroutine_threadsafe(
+                self.mass.players.register_or_update(castplayer), loop=self.mass.loop
+            )
             return
 
         new_available = status.status == CONNECTION_STATUS_CONNECTED
@@ -776,7 +786,9 @@ class ChromecastProvider(PlayerProvider):
                 ip_address=f"{castplayer.cast_info.host}:{castplayer.cast_info.port}",
                 manufacturer=castplayer.cast_info.manufacturer or "",
             )
-            self.mass.loop.call_soon(castplayer.update_state)
+            asyncio.run_coroutine_threadsafe(
+                self.mass.players.register_or_update(castplayer), loop=self.mass.loop
+            )
 
             if new_available and castplayer.type == PlayerType.PLAYER:
                 # Poll current group status
