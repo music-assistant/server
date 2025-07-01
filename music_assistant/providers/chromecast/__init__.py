@@ -152,7 +152,7 @@ class ChromecastPlayer(Player):
 
         self.flow_meta_checksum: str | None = None
 
-    def setup(
+    async def setup(
         self, player_type: PlayerType, enabled_by_default: bool, status_listener: CastStatusListener
     ) -> None:
         """Set features."""
@@ -177,7 +177,8 @@ class ChromecastPlayer(Player):
             ip_address=f"{self.cast_info.host}:{self.cast_info.port}",
             manufacturer=self.cast_info.manufacturer or "",
         )
-        self.update_state()
+        # the setup function is called as part of the _on_chromecast_discovered callback
+        # and needs to run within MA's loop. We cannot use self.update_state here.
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -216,8 +217,8 @@ class ChromecastPlayer(Player):
         if powered:
             await self._launch_app()
         else:
-            # FIXME: not in _attr
-            self.active_group = None
+            # old provider active group
+            # self.active_group = None
             self._attr_active_source = None
             await asyncio.to_thread(self.cc.quit_app)
             self.update_state()
@@ -586,10 +587,16 @@ class ChromecastProvider(PlayerProvider):
             )
 
             status_listener = CastStatusListener(self, castplayer, self.mz_mgr)
-            castplayer.setup(
-                player_type=player_type,
-                enabled_by_default=enabled_by_default,
-                status_listener=status_listener,
+            asyncio.run_coroutine_threadsafe(
+                self.mass.players.register_or_update(castplayer), loop=self.mass.loop
+            )
+            asyncio.run_coroutine_threadsafe(
+                castplayer.setup(
+                    player_type=player_type,
+                    enabled_by_default=enabled_by_default,
+                    status_listener=status_listener,
+                ),
+                loop=self.mass.loop,
             )
 
             if player_type == PlayerType.GROUP:
@@ -656,8 +663,8 @@ class ChromecastProvider(PlayerProvider):
             for child_id in castplayer.group_members:
                 if child := self.mass.players.get(child_id):
                     child._attr_powered = False
-                    # FIXME: active group
-                    child.active_group = None
+                    # old provider active group
+                    # child.active_group = None
                     child._attr_active_source = None
                     asyncio.run_coroutine_threadsafe(
                         self.mass.players.register_or_update(child), loop=self.mass.loop
@@ -709,8 +716,8 @@ class ChromecastProvider(PlayerProvider):
         # active source
         if group_player:
             castplayer._attr_active_source = group_player.active_source or group_player.player_id
-            # FIXME: active group
-            castplayer.active_group = group_player.active_group or group_player.player_id
+            # old provider active group
+            # castplayer.active_group = group_player.active_group or group_player.player_id
         elif castplayer.cc.app_id in (MASS_APP_ID, APP_MEDIA_RECEIVER):
             castplayer._attr_active_source = castplayer.player_id
         else:
@@ -744,8 +751,8 @@ class ChromecastProvider(PlayerProvider):
                     child._attr_elapsed_time = castplayer.elapsed_time
                     child._attr_elapsed_time_last_updated = castplayer.elapsed_time_last_updated
                     child._attr_active_source = castplayer.active_source
-                    # fixme: active group
-                    child.active_group = castplayer.active_group
+                    # old provider active group
+                    # child.active_group = castplayer.active_group
 
                     asyncio.run_coroutine_threadsafe(
                         self.mass.players.register_or_update(child), loop=self.mass.loop
