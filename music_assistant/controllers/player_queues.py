@@ -1734,9 +1734,7 @@ class PlayerQueuesController(CoreController):
         queue.items = len(self._queue_items[queue_id])
 
         queue.state = (
-            player.playback_state or PlaybackState.IDLE
-            if queue.active
-            else PlaybackState.IDLE
+            player.playback_state or PlaybackState.IDLE if queue.active else PlaybackState.IDLE
         )
         # update current item/index from player report
         if queue.active and queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
@@ -1817,7 +1815,8 @@ class PlayerQueuesController(CoreController):
             ),
             output_formats=output_formats,
         )
-        changed_keys = get_changed_keys(prev_state, new_state, ["next_item"])
+        changed_keys = get_changed_keys(prev_state, new_state)
+        changed_keys.pop("next_item", None)
         # return early if nothing changed
         if len(changed_keys) == 0:
             return

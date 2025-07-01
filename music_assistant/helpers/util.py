@@ -338,7 +338,6 @@ async def get_folder_size(folderpath: str) -> float:
 def get_changed_keys(
     dict1: dict[str, Any],
     dict2: dict[str, Any],
-    ignore_keys: list[str] | None = None,
     recursive: bool = False,
 ) -> set[str]:
     """Compare 2 dicts and return set of changed keys."""
