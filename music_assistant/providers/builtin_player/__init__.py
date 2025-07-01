@@ -392,6 +392,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         format_str = request.path.rsplit(".")[-1]
         # bitrate = request.query.get("bitrate")
         queue = self.mass.player_queues.get(player_id)
+        self.logger.debug("Serving audio stream to %s", player_id)
 
         if not (player := self.mass.players.get(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
