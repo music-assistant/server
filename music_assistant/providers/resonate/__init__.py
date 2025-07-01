@@ -9,7 +9,7 @@ from contextlib import suppress
 from dataclasses import field
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import WSMsgType, web
+from aiohttp import ClientSession, ClientWebSocketResponse, WSMsgType, web
 from music_assistant_models.enums import (
     ContentType,
     PlayerFeature,
@@ -23,6 +23,10 @@ from music_assistant_models.player import DeviceInfo, Player
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENTRY_FLOW_MODE_ENFORCED
+from music_assistant.helpers.util import (
+    get_port_from_zeroconf,
+    get_primary_ip_address_from_zeroconf,
+)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player_provider import PlayerProvider
@@ -80,7 +84,8 @@ class PlayerInstance:
 
     prov: ResonatePlayerProvider
     request: web.Request
-    wsock: web.WebSocketResponse = field(init=False)
+    wsock: web.WebSocketResponse | ClientWebSocketResponse = field(init=False)
+    url: str | None = None
     player_id: str | None = None
     player_info: resonate_models.PlayerInfo | None = None
     # Task responsible for handling messages from the player
@@ -92,11 +97,21 @@ class PlayerInstance:
     _to_write: asyncio.Queue[resonate_models.ServerMessages | str | bytes]
     session_info: resonate_models.SessionInfo | None = None
 
-    def __init__(self, prov: ResonatePlayerProvider, request: web.Request):
+    def __init__(
+        self,
+        prov: ResonatePlayerProvider,
+        request: web.Request | None,
+        url: str | None,
+        wsock_client: ClientWebSocketResponse | None,
+    ):
         """Init a new player instance."""
         self.prov = prov
-        self.request = request
-        self.wsock = web.WebSocketResponse(heartbeat=55)
+        if request is not None:
+            self.request = request
+            self.wsock = web.WebSocketResponse(heartbeat=55)
+        elif url is not None:
+            self.url = url
+            self.wsock = wsock_client
         self._to_write = asyncio.Queue(maxsize=MAX_PENDING_MSG)
 
     async def disconnect(self) -> None:
@@ -127,19 +142,23 @@ class PlayerInstance:
 
         self.prov.logger.info("Client %s disconnected", self.player_id or self.request.remote)
 
-    async def handle_client(self) -> web.WebSocketResponse:
+    async def handle_client(self) -> web.WebSocketResponse | ClientWebSocketResponse:
         """Handle the websocket connection."""
-        remote_addr = self.request.remote or "Unknown"
         wsock = self.wsock
         logger = self.prov.logger
-        try:
-            async with asyncio.timeout(10):
-                _ = await self.wsock.prepare(self.request)
-        except TimeoutError:
-            self.prov.logger.warning("Timeout preparing request from %s", remote_addr)
-            return self.wsock
+        if self.url is None:
+            remote_addr = self.request.remote or "Unknown"
+            try:
+                async with asyncio.timeout(10):
+                    _ = await self.wsock.prepare(self.request)
+            except TimeoutError:
+                self.prov.logger.warning("Timeout preparing request from %s", remote_addr)
+                return self.wsock
+        else:
+            remote_addr = self.url
 
-        self.prov.logger.info("Connection established from %s", remote_addr)
+        logger.info("Connection established with %s", remote_addr)
+
         self._handle_task = asyncio.current_task()
         self._writer_task = self.prov.mass.create_task(self._writer())
 
@@ -350,12 +369,33 @@ class ResonatePlayerProvider(PlayerProvider):
         if not info:
             return
         name = name.split("@", 1)[1] if "@" in name else name
+        if path := info.properties.get(b"path"):
+            url = (
+                "ws://"
+                + get_primary_ip_address_from_zeroconf(info)
+                + ":"
+                + str(get_port_from_zeroconf(info))
+                + path.decode()
+            )
+
+            await self._connect_player_ws_server(url)
         # player_id = info.decoded_properties["player_id"]
         # TODO add player discovery handling here
 
+    async def _connect_player_ws_server(self, url: str) -> ClientWebSocketResponse:
+        # TODO catch any exceptions from ws_connect
+        async with ClientSession() as session:
+            wsock = await session.ws_connect(url)
+            instance = PlayerInstance(self, request=None, url=url, wsock_client=wsock)
+            try:
+                self.instances.add(instance)
+                return await instance.handle_client()
+            finally:
+                self.instances.remove(instance)
+
     async def _handle_player_ws_connect(self, request: web.Request) -> web.WebSocketResponse:
         """Handle incoming WebSocket connection request."""
-        instance = PlayerInstance(self, request)
+        instance = PlayerInstance(self, request=request)
         try:
             self.instances.add(instance)
             return await instance.handle_client()
