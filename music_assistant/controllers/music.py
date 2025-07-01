@@ -63,6 +63,7 @@ from music_assistant.helpers.compare import compare_strings, compare_version, cr
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
@@ -1002,9 +1003,33 @@ class MusicController(CoreController):
                 ):
                     # no album match found: abort
                     continue
-                # if we reach this, we found a match
+                    # if we reach this, we found a match
+                if not isinstance(search_track, Track):
+                    # ensure we return an actual Track object
+                    return await self.mass.music.tracks.get(
+                        item_id=search_track.item_id,
+                        provider_instance_id_or_domain=search_track.provider,
+                    )
                 return search_track
 
+        # try to handle case where something is appended to the title
+        for splitter in ("•", "-", "|", "(", "["):
+            if splitter in track_name:
+                return await self.get_track_by_name(
+                    track_name=track_name.split(splitter)[0].strip(),
+                    artist_name=artist_name,
+                    album_name=None,
+                    track_version=track_version,
+                )
+        # try to handle case where multiple artists are given as single string
+        if artist_name and (artists := split_artists(artist_name, True)) and len(artists) > 1:
+            for artist in artists:
+                return await self.get_track_by_name(
+                    track_name=track_name,
+                    artist_name=artist.split(splitter)[0].strip(),
+                    album_name=None,
+                    track_version=track_version,
+                )
         # allow non-exact album match as fallback
         if album_name:
             return await self.get_track_by_name(

@@ -1081,9 +1081,13 @@ class PlayerController(CoreController):
                     # we found a track, so add it to the favorites
                     await self.mass.music.add_item_to_favorites(track)
                     return
-            # any other media item, just add it to the favorites directly
+                # we could not resolve the track, so raise an error
+                raise PlayerCommandFailed("No current item to add to favorites")
+
+            # else: any other media item, just add it to the favorites directly
             await self.mass.music.add_item_to_favorites(current_item.media_item)
             return
+
         # guard for player with no active source
         if not player.active_source:
             raise PlayerCommandFailed("Player has no active source")
