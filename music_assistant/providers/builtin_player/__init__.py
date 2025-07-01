@@ -412,6 +412,18 @@ class BuiltinPlayerProvider(PlayerProvider):
         if request.method != "GET":
             return resp
 
+        # Check for a client probe request (from an iPhone/iPad)
+        if (range_header := request.headers.get("Range")) and range_header == "bytes=0-1":
+            self.logger.debug("Client is probing the stream.")
+
+            # Avoids us to staring multiple ffmpeg instances for probe requests
+            return web.Response(
+                status=206,  # Partial Content
+                headers=headers,
+                # Just send something
+                body=b"\x00\x00",
+            )
+
         media = player.current_media
         if queue is None or media is None:
             raise web.HTTPNotFound(reason="No active queue or media found!")
