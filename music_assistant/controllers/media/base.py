@@ -714,19 +714,36 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         query_params = extra_query_params or {}
         query_parts: list[str] = extra_query_parts or []
         join_parts: list[str] = extra_join_parts or []
-        # create special performant random query
-        if not search and order_by and order_by.startswith("random"):
-            query_parts.append(
-                f"{self.db_table}.item_id in "
-                f"(SELECT item_id FROM {self.db_table} ORDER BY RANDOM() LIMIT {limit})"
-            )
-        # handle search
+        already_filtered_favorite = False
+        already_filtered_search = False
+
+        # handle search preprocessing
         if search:
             search = create_safe_string(search, True, True)
             query_params["search"] = f"%{search}%"
+
+        # create special performant random query
+        if order_by and order_by.startswith("random"):
+            sub_query_parts = []
+            # If favorite or search filter is active, add it to the subquery so we limit the number
+            # of results to the correct amount
+            if search:
+                sub_query_parts.append(f"{self.db_table}.search_name LIKE :search")
+                already_filtered_search = True
+            if favorite is not None:
+                sub_query_parts.append(f"{self.db_table}.favorite = :favorite")
+                query_params["favorite"] = favorite
+                already_filtered_favorite = True
+            sub_query = f"SELECT item_id FROM {self.db_table}"
+            if sub_query_parts:
+                sub_query += " WHERE " + " AND ".join(sub_query_parts)
+            sub_query += f" ORDER BY RANDOM() LIMIT {limit}"
+            query_parts.append(f"{self.db_table}.item_id in ({sub_query})")
+        # handle search
+        if search and not already_filtered_search:
             query_parts.append(f"{self.db_table}.search_name LIKE :search")
         # handle favorite filter
-        if favorite is not None:
+        if favorite is not None and not already_filtered_favorite:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             query_params["favorite"] = favorite
         # handle provider filter
