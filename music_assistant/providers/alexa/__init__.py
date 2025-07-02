@@ -104,6 +104,7 @@ async def get_config_entries(
                     # Notify the callback URL
                     async with aiohttp.ClientSession() as session:
                         await session.get(auth_helper.callback_url)
+                        _LOGGER.info("Alexa Callback URL: %s", auth_helper.callback_url)
                     return web.Response(
                         text="""
                         <html>
