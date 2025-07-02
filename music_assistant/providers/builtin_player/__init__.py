@@ -450,15 +450,6 @@ class BuiltinPlayerProvider(PlayerProvider):
             channels=DEFAULT_PCM_FORMAT.channels,
         )
 
-        if (user_agent := request.headers.get("User-Agent")) and "Safari" in user_agent:
-            # This is possibly an iPhone or iPad. Since Apple ignores "Accept-Ranges=none" on iOS
-            # and iPadOS for some reason, we need to slowly feed the music to avoid Safari
-            # stopping and later restarting the audio stream (from a wrong position!).
-            extra_input_args = ["-readrate", "1.0", "-readrate_initial_burst", "15"]
-            self.logger.debug("Safari detected, limiting readrate")
-        else:
-            extra_input_args = None
-
         async for chunk in get_ffmpeg_stream(
             audio_input=self.mass.streams.get_queue_flow_stream(
                 queue=queue,
@@ -467,7 +458,10 @@ class BuiltinPlayerProvider(PlayerProvider):
             ),
             input_format=pcm_format,
             output_format=stream_format,
-            extra_input_args=extra_input_args,
+            # Apple ignores "Accept-Ranges=none" on iOS and iPadOS for some reason,
+            # so we need to slowly feed the music to avoid the Browser stopping and later
+            # restarting the audio stream (from a wrong position!) by keeping the buffer short.
+            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "15"],
             filter_params=get_player_filter_params(self.mass, player_id, pcm_format, stream_format),
         ):
             try:
