@@ -112,8 +112,10 @@ def get_xml_soap_set_next_url(player_media: PlayerMedia) -> tuple[str, str]:
 def create_didl_metadata(media: PlayerMedia) -> str:
     """Create DIDL metadata string from url and PlayerMedia."""
 
-    def escape_non_ascii(data: str) -> str:
-        """Escape non-ascii to decimal code."""
+    def escape_metadata(data: str) -> str:
+        """Escape didl metadata."""
+        data = xmlescape(data)
+        # Escape non-ascii to decimal code.
         result = ""
         for char in data:
             unicode_code = ord(char)
@@ -132,12 +134,12 @@ def create_didl_metadata(media: PlayerMedia) -> str:
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
             f'<item id="flowmode" parentID="0" restricted="1">'
-            f"<dc:title>{escape_non_ascii(xmlescape(title))}</dc:title>"
-            f"<upnp:albumArtURI>{xmlescape(image_url)}</upnp:albumArtURI>"
-            f"<dc:queueItemId>{media.uri}</dc:queueItemId>"
+            f"<dc:title>{escape_metadata(title)}</dc:title>"
+            f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
+            f"<dc:queueItemId>{escape_metadata(media.uri)}</dc:queueItemId>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
             f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
-            f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{xmlescape(media.uri)}</res>'
+            f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_metadata(media.uri)}</res>'
             "</item>"
             "</DIDL-Lite>"
         )
@@ -148,17 +150,17 @@ def create_didl_metadata(media: PlayerMedia) -> str:
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">'
         f'<item id="{media.queue_item_id or xmlescape(media.uri)}" restricted="true" parentID="{media.queue_id or ""}">'
-        f"<dc:title>{escape_non_ascii(xmlescape(media.title or media.uri))}</dc:title>"
-        f"<dc:creator>{escape_non_ascii(xmlescape(media.artist or ''))}</dc:creator>"
-        f"<upnp:album>{escape_non_ascii(xmlescape(media.album or ''))}</upnp:album>"
-        f"<upnp:artist>{escape_non_ascii(xmlescape(media.artist or ''))}</upnp:artist>"
+        f"<dc:title>{escape_metadata(media.title or media.uri)}</dc:title>"
+        f"<dc:creator>{escape_metadata(media.artist or '')}</dc:creator>"
+        f"<upnp:album>{escape_metadata(media.album or '')}</upnp:album>"
+        f"<upnp:artist>{escape_metadata(media.artist or '')}</upnp:artist>"
         f"<upnp:duration>{int(media.duration or 0)}</upnp:duration>"
-        f"<dc:queueItemId>{xmlescape(media.queue_item_id)}</dc:queueItemId>"
+        f"<dc:queueItemId>{escape_metadata(media.queue_item_id)}</dc:queueItemId>"
         f"<dc:description>Music Assistant</dc:description>"
-        f"<upnp:albumArtURI>{xmlescape(image_url)}</upnp:albumArtURI>"
+        f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
         "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
         f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
-        f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{xmlescape(media.uri)}</res>'
+        f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_metadata(media.uri)}</res>'
         '<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">RINCON_AssociatedZPUDN</desc>'
         "</item>"
         "</DIDL-Lite>"
