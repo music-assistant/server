@@ -152,7 +152,7 @@ class ChromecastPlayer(Player):
 
         self.flow_meta_checksum: str | None = None
 
-    async def setup(
+    def setup(
         self, player_type: PlayerType, enabled_by_default: bool, status_listener: CastStatusListener
     ) -> None:
         """Set features."""
@@ -221,7 +221,7 @@ class ChromecastPlayer(Player):
             # self.active_group = None
             self._attr_active_source = None
             await asyncio.to_thread(self.cc.quit_app)
-            self.update_state()
+            self.mass.loop.call_soon_threadsafe(self.update_state)
         # optimistically update the group childs
         if self.type == PlayerType.GROUP:
             active_group = self.active_group or self.player_id
@@ -229,7 +229,7 @@ class ChromecastPlayer(Player):
                 if child := self.mass.players.get(child_id):
                     child._attr_powered = powered
                     child.active_group = active_group if powered else None
-                    child.update_state()
+                    self.mass.loop.call_soon_threadsafe(child.update_state)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -587,16 +587,10 @@ class ChromecastProvider(PlayerProvider):
             )
 
             status_listener = CastStatusListener(self, castplayer, self.mz_mgr)
-            asyncio.run_coroutine_threadsafe(
-                self.mass.players.register_or_update(castplayer), loop=self.mass.loop
-            )
-            asyncio.run_coroutine_threadsafe(
-                castplayer.setup(
-                    player_type=player_type,
-                    enabled_by_default=enabled_by_default,
-                    status_listener=status_listener,
-                ),
-                loop=self.mass.loop,
+            castplayer.setup(
+                player_type=player_type,
+                enabled_by_default=enabled_by_default,
+                status_listener=status_listener,
             )
 
             if player_type == PlayerType.GROUP:
@@ -605,6 +599,7 @@ class ChromecastProvider(PlayerProvider):
                 castplayer.mz_controller = mz_controller
 
             castplayer.cc.start()
+            # register new found player
             asyncio.run_coroutine_threadsafe(
                 self.mass.players.register_or_update(castplayer), loop=self.mass.loop
             )
@@ -666,13 +661,9 @@ class ChromecastProvider(PlayerProvider):
                     # old provider active group
                     # child.active_group = None
                     child._attr_active_source = None
-                    asyncio.run_coroutine_threadsafe(
-                        self.mass.players.register_or_update(child), loop=self.mass.loop
-                    )
+                    self.mass.loop.call_soon_threadsafe(child.update_state)
         castplayer._attr_powered = new_powered
-        asyncio.run_coroutine_threadsafe(
-            self.mass.players.register_or_update(castplayer), loop=self.mass.loop
-        )
+        self.mass.loop.call_soon_threadsafe(castplayer.update_state)
 
     def on_new_media_status(self, castplayer: ChromecastPlayer, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
@@ -754,13 +745,8 @@ class ChromecastProvider(PlayerProvider):
                     # old provider active group
                     # child.active_group = castplayer.active_group
 
-                    asyncio.run_coroutine_threadsafe(
-                        self.mass.players.register_or_update(child), loop=self.mass.loop
-                    )
-
-        asyncio.run_coroutine_threadsafe(
-            self.mass.players.register_or_update(castplayer), loop=self.mass.loop
-        )
+                    self.mass.loop.call_soon_threadsafe(child.update_state)
+        self.mass.loop.call_soon_threadsafe(castplayer.update_state)
 
     def on_new_connection_status(
         self, castplayer: ChromecastPlayer, status: ConnectionStatus
@@ -775,9 +761,7 @@ class ChromecastProvider(PlayerProvider):
 
         if status.status == CONNECTION_STATUS_DISCONNECTED:
             castplayer._attr_available = False
-            asyncio.run_coroutine_threadsafe(
-                self.mass.players.register_or_update(castplayer), loop=self.mass.loop
-            )
+            self.mass.loop.call_soon_threadsafe(castplayer.update_state)
             return
 
         new_available = status.status == CONNECTION_STATUS_CONNECTED
@@ -793,9 +777,7 @@ class ChromecastProvider(PlayerProvider):
                 ip_address=f"{castplayer.cast_info.host}:{castplayer.cast_info.port}",
                 manufacturer=castplayer.cast_info.manufacturer or "",
             )
-            asyncio.run_coroutine_threadsafe(
-                self.mass.players.register_or_update(castplayer), loop=self.mass.loop
-            )
+            self.mass.loop.call_soon_threadsafe(castplayer.update_state)
 
             if new_available and castplayer.type == PlayerType.PLAYER:
                 # Poll current group status
