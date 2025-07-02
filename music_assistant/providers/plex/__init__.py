@@ -827,9 +827,23 @@ class PlexProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Plex Music."""
-        tracks_obj = await self._search_track(None, limit=99999)
-        for track in tracks_obj:
-            yield await self._parse_track(track)
+        page_size = 500
+        offset = 0
+        while True:
+            batch = cast(
+                "list[PlexTrack]",
+                await self._run_async(
+                    self._plex_library.searchTracks,
+                    title=None,
+                    limit=page_size,
+                    offset=offset,
+                ),
+            )
+            if not batch:
+                break
+            for plex_track in batch:
+                yield await self._parse_track(plex_track)
+            offset += page_size
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""

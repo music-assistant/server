@@ -392,6 +392,7 @@ class BuiltinPlayerProvider(PlayerProvider):
         format_str = request.path.rsplit(".")[-1]
         # bitrate = request.query.get("bitrate")
         queue = self.mass.player_queues.get(player_id)
+        self.logger.debug("Serving audio stream to %s", player_id)
 
         if not (player := self.mass.players.get(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
@@ -410,6 +411,18 @@ class BuiltinPlayerProvider(PlayerProvider):
         # return early if this is not a GET request
         if request.method != "GET":
             return resp
+
+        # Check for a client probe request (from an iPhone/iPad)
+        if (range_header := request.headers.get("Range")) and range_header == "bytes=0-1":
+            self.logger.debug("Client is probing the stream.")
+
+            # Avoids us to staring multiple ffmpeg instances for probe requests
+            return web.Response(
+                status=206,  # Partial Content
+                headers=headers,
+                # Just send something
+                body=b"\x00\x00",
+            )
 
         media = player.current_media
         if queue is None or media is None:
@@ -445,6 +458,10 @@ class BuiltinPlayerProvider(PlayerProvider):
             ),
             input_format=pcm_format,
             output_format=stream_format,
+            # Apple ignores "Accept-Ranges=none" on iOS and iPadOS for some reason,
+            # so we need to slowly feed the music to avoid the Browser stopping and later
+            # restarting the audio stream (from a wrong position!) by keeping the buffer short.
+            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "15"],
             filter_params=get_player_filter_params(self.mass, player_id, pcm_format, stream_format),
         ):
             try:
