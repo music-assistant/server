@@ -397,12 +397,12 @@ class AlexaProvider(PlayerProvider):
         if not (player := self.mass.players.get(player_id)):
             return
 
-        username = str(self.config.get_value(CONF_API_BASIC_AUTH_USERNAME))
-        password = str(self.config.get_value(CONF_API_BASIC_AUTH_PASSWORD))
+        username = self.config.get_value(CONF_API_BASIC_AUTH_USERNAME)
+        password = self.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
 
         auth = None
-        if username and password:
-            auth = BasicAuth(username, password)
+        if username is not None and password is not None:
+            auth = BasicAuth(str(username), str(password))
 
         async with aiohttp.ClientSession() as session:
             try:
