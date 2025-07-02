@@ -183,18 +183,21 @@ async def get_config_entries(
             label="API Url",
             default_value="http://localhost:3000",
             required=True,
+            value=values.get(CONF_API_URL) if values else None,
         ),
         ConfigEntry(
             key=CONF_API_BASIC_AUTH_USERNAME,
             type=ConfigEntryType.STRING,
             label="API Basic Auth Username",
             required=False,
+            value=values.get(CONF_API_BASIC_AUTH_USERNAME) if values else None,
         ),
         ConfigEntry(
             key=CONF_API_BASIC_AUTH_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
             label="API Basic Auth Password",
             required=False,
+            value=values.get(CONF_API_BASIC_AUTH_PASSWORD) if values else None,
         ),
     )
 
