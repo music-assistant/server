@@ -1919,10 +1919,10 @@ class MusicController(CoreController):
             await self.database.execute(
                 f"""
                 CREATE TRIGGER IF NOT EXISTS update_{db_table}_timestamp
-                AFTER UPDATE ON {db_table} FOR EACH ROW
+                AFTER UPDATE ON {db_table}
                 BEGIN
-                    UPDATE {db_table} set timestamp_modified=cast(strftime('%s','now') as int)
-                    WHERE item_id=OLD.item_id;
+                    UPDATE {db_table} SET timestamp_modified=cast(strftime('%s','now') as int)
+                    WHERE rowid = new.rowid;
                 END;
                 """
             )
