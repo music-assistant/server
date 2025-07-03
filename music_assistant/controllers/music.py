@@ -40,7 +40,6 @@ from music_assistant_models.provider import SyncTask
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_MUSIC_SEARCH,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -57,6 +56,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
+from music_assistant.controllers.cache import CacheCategory
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.database import DatabaseConnection
@@ -370,7 +370,7 @@ class MusicController(CoreController):
 
         # prefer cache items (if any)
         media_types_str = ",".join(media_types)
-        cache_category = CACHE_CATEGORY_MUSIC_SEARCH
+        cache_category = CacheCategory.MUSIC_SEARCH
         cache_base_key = prov.lookup_key
         cache_key = f"{search_query}.{limit}.{media_types_str}"
 

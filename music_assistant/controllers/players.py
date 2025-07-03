@@ -40,7 +40,6 @@ from music_assistant_models.player import Player, PlayerMedia
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_PLAYERS,
     CACHE_KEY_PLAYER_POWER,
     CONF_AUTO_PLAY,
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -56,6 +55,7 @@ from music_assistant.constants import (
     CONF_TTS_PRE_ANNOUNCE,
     CONF_VOLUME_CONTROL,
 )
+from music_assistant.controllers.cache import CacheCategory
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
@@ -380,7 +380,7 @@ class PlayerController(CoreController):
             # user wants to use fake power control - so we (optimistically) update the state
             # and store the state in the cache
             await self.mass.cache.set(
-                player_id, powered, category=CACHE_CATEGORY_PLAYERS, base_key=CACHE_KEY_PLAYER_POWER
+                player_id, powered, category=CacheCategory.PLAYERS, base_key=CACHE_KEY_PLAYER_POWER
             )
             # short sleep: allow the stop command to process and prevent race conditions
             await asyncio.sleep(0.2)
@@ -1475,7 +1475,7 @@ class PlayerController(CoreController):
             player.powered = await self.mass.cache.get(
                 player.player_id,
                 default=False,
-                category=CACHE_CATEGORY_PLAYERS,
+                category=CacheCategory.PLAYERS,
                 base_key=CACHE_KEY_PLAYER_POWER,
             )
         player.volume_control = config.get_value(CONF_VOLUME_CONTROL)

@@ -50,7 +50,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CACHE_CATEGORY_DEFAULT, CACHE_CATEGORY_RECOMMENDATIONS
+from music_assistant.controllers.cache import CacheCategory
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
 
@@ -1017,7 +1017,7 @@ class TidalProvider(MusicProvider):
         # Check cache first
         cache_key = f"tidal_recommendations_{self.lookup_key}"
         cached_recommendations: list[RecommendationFolder] = await self.mass.cache.get(
-            cache_key, category=CACHE_CATEGORY_RECOMMENDATIONS, base_key=self.lookup_key
+            cache_key, category=CacheCategory.RECOMMENDATIONS, base_key=self.lookup_key
         )
 
         if cached_recommendations:
@@ -1051,7 +1051,7 @@ class TidalProvider(MusicProvider):
             await self.mass.cache.set(
                 cache_key,
                 results,
-                category=CACHE_CATEGORY_RECOMMENDATIONS,
+                category=CacheCategory.RECOMMENDATIONS,
                 base_key=self.lookup_key,
                 expiration=3600,
             )
@@ -1288,7 +1288,7 @@ class TidalProvider(MusicProvider):
         # Try to get from cache first
         cache_key = f"isrc_map_{item_id}"
         cached_track_id = await self.mass.cache.get(
-            cache_key, category=CACHE_CATEGORY_DEFAULT, base_key=self.lookup_key
+            cache_key, category=CacheCategory.DEFAULT, base_key=self.lookup_key
         )
 
         if cached_track_id:
@@ -1300,7 +1300,7 @@ class TidalProvider(MusicProvider):
             except MediaNotFoundError:
                 # Track no longer exists, invalidate cache
                 await self.mass.cache.delete(
-                    cache_key, category=CACHE_CATEGORY_DEFAULT, base_key=self.lookup_key
+                    cache_key, category=CacheCategory.DEFAULT, base_key=self.lookup_key
                 )
 
         # Lookup by ISRC if no cache or cached track not found
@@ -1343,7 +1343,7 @@ class TidalProvider(MusicProvider):
         await self.mass.cache.set(
             cache_key,
             track_id,
-            category=CACHE_CATEGORY_DEFAULT,
+            category=CacheCategory.DEFAULT,
             base_key=self.lookup_key,
         )
 
@@ -1406,7 +1406,7 @@ class TidalProvider(MusicProvider):
             await self.mass.cache.set(
                 cache_key,
                 cache_data,
-                category=CACHE_CATEGORY_RECOMMENDATIONS,
+                category=CacheCategory.RECOMMENDATIONS,
                 base_key=self.lookup_key,
                 expiration=self.page_cache_ttl,
             )

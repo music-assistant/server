@@ -9,6 +9,7 @@ import os
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, MutableMapping
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -25,6 +26,25 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
 DB_SCHEMA_VERSION = 5
+
+
+# CACHE categories
+class CacheCategory(IntEnum):
+    """Enum class for cache categories."""
+
+    DEFAULT = 0
+    MUSIC_SEARCH = 1
+    ALBUM_TRACKS = 2
+    MUSIC_ARTIST_TRACKS = 3
+    MUSIC_ARTIST_ALBUMS = 4
+    MUSIC_PLAYLIST_TRACKS = 5
+    MUSIC_PROVIDER_ITEM = 6
+    PLAYER_QUEUE_STATE = 7
+    MEDIA_INFO = 8
+    LIBRARY_ITEMS = 9
+    PLAYERS = 10
+    RECOMMENDATIONS = 11
+    OPEN_SUBSONIC = 12
 
 
 class CacheController(CoreController):

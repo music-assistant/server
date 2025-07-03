@@ -38,13 +38,13 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_OPEN_SUBSONIC,
     CONF_PASSWORD,
     CONF_PATH,
     CONF_PORT,
     CONF_USERNAME,
     UNKNOWN_ARTIST,
 )
+from music_assistant.controllers.cache import CacheCategory
 from music_assistant.models.music_provider import MusicProvider
 
 from .parsers import (
@@ -788,7 +788,7 @@ class OpenSonicProvider(MusicProvider):
             data=chan[0],
             base_key=base_key,
             expiration=600,
-            category=CACHE_CATEGORY_OPEN_SUBSONIC,
+            category=CacheCategory.OPEN_SUBSONIC,
         )
 
     async def _podcast_recommendations(self) -> RecommendationFolder:
@@ -811,7 +811,7 @@ class OpenSonicProvider(MusicProvider):
 
         for ep in sonic_episodes:
             chan = await self.mass.cache.get(
-                key=ep.channel_id, base_key=chan_base_key, category=CACHE_CATEGORY_OPEN_SUBSONIC
+                key=ep.channel_id, base_key=chan_base_key, category=CacheCategory.OPEN_SUBSONIC
             )
             if not chan:
                 continue

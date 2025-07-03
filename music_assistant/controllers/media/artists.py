@@ -15,15 +15,13 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Track, UniqueList
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_MUSIC_ARTIST_ALBUMS,
-    CACHE_CATEGORY_MUSIC_ARTIST_TRACKS,
-    CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ARTISTS,
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.controllers.cache import CacheCategory
 from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.helpers.compare import compare_artist, compare_strings, create_safe_string
 from music_assistant.helpers.json import serialize_to_json
@@ -211,7 +209,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if prov is None:
             return []
         # prefer cache items (if any) - for streaming providers
-        cache_category = CACHE_CATEGORY_MUSIC_ARTIST_TRACKS
+        cache_category = CacheCategory.MUSIC_ARTIST_TRACKS
         cache_base_key = prov.lookup_key
         cache_key = item_id
         if (
@@ -234,7 +232,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     await self.mass.cache.set(
                         f"track.{item_id}",
                         item.to_dict(),
-                        category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
+                        category=CacheCategory.MUSIC_PROVIDER_ITEM,
                         base_key=prov.lookup_key,
                     )
         else:
@@ -284,7 +282,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if prov is None:
             return []
         # prefer cache items (if any)
-        cache_category = CACHE_CATEGORY_MUSIC_ARTIST_ALBUMS
+        cache_category = CacheCategory.MUSIC_ARTIST_ALBUMS
         cache_base_key = prov.lookup_key
         cache_key = item_id
         if (

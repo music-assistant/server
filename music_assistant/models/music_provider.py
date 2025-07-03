@@ -28,7 +28,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.constants import CACHE_CATEGORY_LIBRARY_ITEMS
+from music_assistant.controllers.cache import CacheCategory
 
 from .provider import Provider
 
@@ -461,7 +461,7 @@ class MusicProvider(Provider):
         if subpath == "artists":
             library_item_ids = await self.mass.cache.get(
                 "artist",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
+                category=CacheCategory.LIBRARY_ITEMS,
                 base_key=self.instance_id,
             )
             if not library_item_ids:
@@ -477,7 +477,7 @@ class MusicProvider(Provider):
         if subpath == "albums":
             library_item_ids = await self.mass.cache.get(
                 "album",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
+                category=CacheCategory.LIBRARY_ITEMS,
                 base_key=self.instance_id,
             )
             if not library_item_ids:
@@ -491,7 +491,7 @@ class MusicProvider(Provider):
         if subpath == "tracks":
             library_item_ids = await self.mass.cache.get(
                 "track",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
+                category=CacheCategory.LIBRARY_ITEMS,
                 base_key=self.instance_id,
             )
             if not library_item_ids:
@@ -505,7 +505,7 @@ class MusicProvider(Provider):
         if subpath == "radios":
             library_item_ids = await self.mass.cache.get(
                 "radio",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
+                category=CacheCategory.LIBRARY_ITEMS,
                 base_key=self.instance_id,
             )
             if not library_item_ids:
@@ -519,7 +519,7 @@ class MusicProvider(Provider):
         if subpath == "playlists":
             library_item_ids = await self.mass.cache.get(
                 "playlist",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
+                category=CacheCategory.LIBRARY_ITEMS,
                 base_key=self.instance_id,
             )
             if not library_item_ids:
@@ -533,7 +533,7 @@ class MusicProvider(Provider):
         if subpath == "audiobooks":
             library_item_ids = await self.mass.cache.get(
                 "audiobook",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
+                category=CacheCategory.LIBRARY_ITEMS,
                 base_key=self.instance_id,
             )
             if not library_item_ids:
@@ -547,7 +547,7 @@ class MusicProvider(Provider):
         if subpath == "podcasts":
             library_item_ids = await self.mass.cache.get(
                 "podcast",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
+                category=CacheCategory.LIBRARY_ITEMS,
                 base_key=self.instance_id,
             )
             if not library_item_ids:
@@ -801,7 +801,7 @@ class MusicProvider(Provider):
                 )
 
         # process deletions (= no longer in library)
-        cache_category = CACHE_CATEGORY_LIBRARY_ITEMS
+        cache_category = CacheCategory.LIBRARY_ITEMS
         cache_base_key = self.instance_id
 
         prev_library_items: list[int] | None
