@@ -85,7 +85,7 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 17
+DB_SCHEMA_VERSION: Final[int] = 18
 
 
 class MusicController(CoreController):
@@ -1176,7 +1176,7 @@ class MusicController(CoreController):
                 translation_key="recent_favorite_tracks",
                 icon="mdi-file-music",
                 items=await self.tracks.library_items(
-                    favorite=True, limit=10, order_by="timestamp_added"
+                    favorite=True, limit=10, order_by="timestamp_modified_desc"
                 ),
             ),
             RecommendationFolder(
@@ -1559,6 +1559,20 @@ class MusicController(CoreController):
                             },
                         )
 
+        if prev_version <= 17:
+            # migrate triggers to auto update timestamps
+            # it had an error in the previous version where it was not created
+            for db_table in (
+                "artists",
+                "albums",
+                "tracks",
+                "playlists",
+                "radios",
+                "audiobooks",
+                "podcasts",
+            ):
+                await self.database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
+
         # save changes
         await self.database.commit()
 
@@ -1906,7 +1920,6 @@ class MusicController(CoreController):
                 f"""
                 CREATE TRIGGER IF NOT EXISTS update_{db_table}_timestamp
                 AFTER UPDATE ON {db_table} FOR EACH ROW
-                WHEN NEW.timestamp_modified <= OLD.timestamp_modified
                 BEGIN
                     UPDATE {db_table} set timestamp_modified=cast(strftime('%s','now') as int)
                     WHERE item_id=OLD.item_id;
