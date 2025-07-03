@@ -13,7 +13,7 @@ from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PORT, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.process import check_output
+from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
 from .multi_client_stream import MultiClientStream
@@ -54,7 +54,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         # setup slimproto server
         port = self.config.get_value(CONF_PORT)
-        if not await self._check_port_available(port):
+        if await is_port_in_use(port):
             msg = f"Port {port} is not available"
             raise SetupFailedError(msg)
 
@@ -73,18 +73,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
         """Handle unload/close of the provider."""
         if self.slimproto:
             await self.slimproto.stop()
-
-    async def _check_port_available(self, port: int) -> bool:
-        """Check if port is available."""
-        try:
-            result = await check_output(f"lsof -i :{port}")
-            if result:
-                self.logger.warning("Port %s is already in use", port)
-                return False
-        except Exception:
-            # lsof not available or port is free
-            pass
-        return True
 
     async def _player_join(self, slimplayer: SlimClient) -> None:
         """Handle player joining the slimproto server."""

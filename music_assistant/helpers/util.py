@@ -288,7 +288,12 @@ async def is_port_in_use(port: int) -> bool:
                 return True
         return False
 
-    return await asyncio.to_thread(_is_port_in_use)
+    try:
+        if await check_output(f"lsof -i :{port}"):
+            return True
+    except Exception:
+        # lsof not available (or some other error), fallback to socket check
+        return await asyncio.to_thread(_is_port_in_use)
 
 
 async def select_free_port(range_start: int, range_end: int) -> int:
