@@ -7,26 +7,13 @@ Requires the Home Assistant Plugin.
 
 from __future__ import annotations
 
-import asyncio
-import time
 from typing import TYPE_CHECKING, Any
 
-from hass_client.exceptions import FailedCommand
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
-
-from music_assistant.helpers.datetime import from_iso_string
-from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.hass.constants import (
-    OFF_STATES,
-    UNAVAILABLE_STATES,
-    MediaPlayerEntityFeature,
-    StateMap,
-)
 
 from .constants import CONF_PLAYERS
 from .helpers import get_esphome_supported_audio_formats, get_hass_media_players
+from .player import HomeAssistantPlayer
 
 if TYPE_CHECKING:
     from hass_client.models import CompressedState, EntityStateEvent
@@ -76,191 +63,6 @@ class HomeAssistantPlayerProvider(PlayerProvider):
             for callback in self.on_unload_callbacks:
                 callback()
 
-    async def cmd_stop(self, player_id: str) -> None:
-        """Send STOP command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        """
-        try:
-            await self.hass_prov.hass.call_service(
-                domain="media_player",
-                service="media_stop",
-                target={"entity_id": player_id},
-            )
-        except FailedCommand as exc:
-            # some HA players do not support STOP
-            if "does not support this service" not in str(exc):
-                raise
-            if player := self.mass.players.get(player_id):
-                if PlayerFeature.PAUSE in player.supported_features:
-                    await self.cmd_pause(player_id)
-
-    async def cmd_play(self, player_id: str) -> None:
-        """Send PLAY (unpause) command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        """
-        await self.hass_prov.hass.call_service(
-            domain="media_player", service="media_play", target={"entity_id": player_id}
-        )
-
-    async def cmd_pause(self, player_id: str) -> None:
-        """Send PAUSE command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        """
-        await self.hass_prov.hass.call_service(
-            domain="media_player",
-            service="media_pause",
-            target={"entity_id": player_id},
-        )
-
-    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
-        """Handle PLAY MEDIA on given player."""
-        player = self.mass.players.get(player_id, True)
-        assert player
-        extra_data = {
-            # passing metadata to the player
-            # so far only supported by google cast, but maybe others can follow
-            "metadata": {
-                "title": media.title,
-                "artist": media.artist,
-                "metadataType": 3,
-                "album": media.album,
-                "albumName": media.album,
-                "images": [{"url": media.image_url}] if media.image_url else None,
-                "imageUrl": media.image_url,
-            },
-        }
-        if player.extra_data.get("hass_domain") == "esphome":
-            # tell esphome mediaproxy to bypass the proxy,
-            # as MA already delivers an optimized stream
-            extra_data["bypass_proxy"] = True
-
-        # stop the player if it is already playing
-        if player.state == PlaybackState.PLAYING:
-            await self.cmd_stop(player_id)
-
-        await self.hass_prov.hass.call_service(
-            domain="media_player",
-            service="play_media",
-            service_data={
-                "media_content_id": media.uri,
-                "media_content_type": "music",
-                "enqueue": "replace",
-                "extra": extra_data,
-            },
-            target={"entity_id": player_id},
-        )
-        # optimistically set the elapsed_time as some HA players do not report this
-        if player := self.mass.players.get(player_id):
-            player.elapsed_time = 0
-            player.elapsed_time_last_updated = time.time()
-            player.current_media = media
-
-    async def play_announcement(
-        self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
-    ) -> None:
-        """Handle (provider native) playback of an announcement on given player."""
-        player = self.mass.players.get(player_id, True)
-        self.logger.info(
-            "Playing announcement %s on %s",
-            announcement.uri,
-            player.display_name,
-        )
-        if volume_level is not None:
-            self.logger.warning(
-                "Announcement volume level is not supported for player %s",
-                player.display_name,
-            )
-        await self.hass_prov.hass.call_service(
-            domain="media_player",
-            service="play_media",
-            service_data={
-                "media_content_id": announcement.uri,
-                "media_content_type": "music",
-                "announce": True,
-            },
-            target={"entity_id": player_id},
-        )
-        # Wait until the announcement is finished playing
-        # This is helpful for people who want to play announcements in a sequence
-        media_info = await async_parse_tags(announcement.uri, require_duration=True)
-        duration = media_info.duration or 5
-        await asyncio.sleep(duration)
-        self.logger.debug(
-            "Playing announcement on %s completed",
-            player.display_name,
-        )
-
-    async def cmd_power(self, player_id: str, powered: bool) -> None:
-        """Send POWER command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        - powered: bool if player should be powered on or off.
-        """
-        await self.hass_prov.hass.call_service(
-            domain="media_player",
-            service="turn_on" if powered else "turn_off",
-            target={"entity_id": player_id},
-        )
-
-    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        - volume_level: volume level (0..100) to set on the player.
-        """
-        await self.hass_prov.hass.call_service(
-            domain="media_player",
-            service="volume_set",
-            service_data={"volume_level": volume_level / 100},
-            target={"entity_id": player_id},
-        )
-
-    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
-        """Send VOLUME MUTE command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        - muted: bool if player should be muted.
-        """
-        await self.hass_prov.hass.call_service(
-            domain="media_player",
-            service="volume_mute",
-            service_data={"is_volume_muted": muted},
-            target={"entity_id": player_id},
-        )
-
-    async def cmd_group(self, player_id: str, target_player: str) -> None:
-        """Handle GROUP command for given player.
-
-        Join/add the given player(id) to the given (master) player/sync group.
-
-            - player_id: player_id of the player to handle the command.
-            - target_player: player_id of the syncgroup master or group player.
-        """
-        # NOTE: not in use yet, as we do not support syncgroups in MA for HA players
-        await self.hass_prov.hass.call_service(
-            domain="media_player",
-            service="join",
-            service_data={"group_members": [player_id]},
-            target={"entity_id": target_player},
-        )
-
-    async def cmd_ungroup(self, player_id: str) -> None:
-        """Handle UNGROUP command for given player.
-
-        Remove the given player from any (sync)groups it currently is grouped to.
-
-            - player_id: player_id of the player to handle the command.
-        """
-        # NOTE: not in use yet, as we do not support syncgroups in MA for HA players
-        await self.hass_prov.hass.call_service(
-            domain="media_player",
-            service="unjoin",
-            target={"entity_id": player_id},
-        )
-
     async def _setup_player(
         self,
         state: HassState,
@@ -270,6 +72,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         """Handle setup of a Player from an hass entity."""
         hass_device: HassDevice | None = None
         hass_domain: str | None = None
+        # collect extra player data
         extra_player_data: dict[str, Any] = {}
         if entity_registry_entry := entity_registry.get(state["entity_id"]):
             hass_device = device_registry.get(entity_registry_entry["device_id"])
@@ -288,7 +91,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
                 extra_player_data["esphome_supported_audio_formats"] = (
                     esphome_supported_audio_formats
                 )
-
+        # collect device info
         dev_info: dict[str, Any] = {}
         if hass_device:
             extra_player_data["hass_device_id"] = hass_device["id"]
@@ -305,52 +108,23 @@ class HomeAssistantPlayerProvider(PlayerProvider):
                     if key == "mac":
                         dev_info["mac_address"] = value
 
-        player = Player(
+        # create the player
+        player = HomeAssistantPlayer(
+            provider=self,
             player_id=state["entity_id"],
-            provider=self.instance_id,
-            type=PlayerType.PLAYER,
-            name=state["attributes"]["friendly_name"],
-            available=state["state"] not in UNAVAILABLE_STATES,
-            device_info=DeviceInfo.from_dict(dev_info),
-            state=StateMap.get(state["state"], PlaybackState.IDLE),
-            extra_data=extra_player_data,
+            hass_state=state,
+            dev_info=dev_info,
+            extra_player_data=extra_player_data,
+            entity_registry=entity_registry,
         )
-        # work out supported features
-        hass_supported_features = MediaPlayerEntityFeature(
-            state["attributes"]["supported_features"]
-        )
-        if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
-            player.supported_features.add(PlayerFeature.PAUSE)
-        if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
-            player.supported_features.add(PlayerFeature.VOLUME_SET)
-        if MediaPlayerEntityFeature.VOLUME_MUTE in hass_supported_features:
-            player.supported_features.add(PlayerFeature.VOLUME_MUTE)
-        if MediaPlayerEntityFeature.MEDIA_ANNOUNCE in hass_supported_features:
-            player.supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
-        if hass_domain and MediaPlayerEntityFeature.GROUPING in hass_supported_features:
-            player.supported_features.add(PlayerFeature.SET_MEMBERS)
-            player.can_group_with = {
-                x["entity_id"]
-                for x in entity_registry.values()
-                if x["entity_id"].startswith("media_player") and x["platform"] == hass_domain
-            }
-        if (
-            MediaPlayerEntityFeature.TURN_ON in hass_supported_features
-            and MediaPlayerEntityFeature.TURN_OFF in hass_supported_features
-        ):
-            player.supported_features.add(PlayerFeature.POWER)
-            player.powered = state["state"] not in OFF_STATES
-        player.extra_data["hass_supported_features"] = hass_supported_features
-
-        await self.mass.players.register_or_update(player)
-        self._update_player_attributes(player, state["attributes"])
+        await self.mass.players.register(player)
 
     def _on_entity_state_update(self, event: EntityStateEvent) -> None:
         """Handle Entity State event."""
 
         def update_player_from_state_msg(entity_id: str, state: CompressedState) -> None:
             """Handle updating MA player with updated info in a HA CompressedState."""
-            player = self.mass.players.get(entity_id)
+            player: HomeAssistantPlayer | None = self.mass.players.get(entity_id)
             if player is None:
                 # edge case - one of our subscribed entities was not available at startup
                 # and now came available - we should still set it up
@@ -359,14 +133,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
                     return  # should not happen, but guard just in case
                 self.mass.create_task(self._late_add_player(entity_id))
                 return
-            if "s" in state:
-                player.state = StateMap.get(state["s"], PlaybackState.IDLE)
-                player.available = state["s"] not in UNAVAILABLE_STATES
-                if PlayerFeature.POWER in player.supported_features:
-                    player.powered = state["s"] not in OFF_STATES
-            if "a" in state:
-                self._update_player_attributes(player, state["a"])
-            self.mass.players.update(entity_id)
+            player.update_from_compressed_state(state)
 
         if entity_additions := event.get("a"):
             for entity_id, state in entity_additions.items():
@@ -376,43 +143,6 @@ class HomeAssistantPlayerProvider(PlayerProvider):
                 if "+" not in state_diff:
                     continue
                 update_player_from_state_msg(entity_id, state_diff["+"])
-
-    def _update_player_attributes(self, player: Player, attributes: dict[str, Any]) -> None:
-        """Update Player attributes from HA state attributes."""
-        for key, value in attributes.items():
-            if key == "media_position":
-                player.elapsed_time = value
-            if key == "media_position_updated_at":
-                player.elapsed_time_last_updated = from_iso_string(value).timestamp()
-            if key == "volume_level":
-                player.volume_level = int(value * 100)
-            if key == "volume_muted":
-                player.volume_muted = value
-            if key == "media_content_id":
-                player.current_item_id = value
-            if key == "group_members":
-                group_members: list[str] = (
-                    [
-                        # ignore integrations that incorrectly set the group members attribute
-                        # (e.g. linkplay)
-                        x
-                        for x in value
-                        if x.startswith("media_player.")
-                    ]
-                    if value
-                    else []
-                )
-                if group_members and group_members[0] == player.player_id:
-                    # first in the list is the group leader
-                    player.group_members.set(group_members)
-                    player.synced_to = None
-                elif group_members and group_members[0] != player.player_id:
-                    # this player is not the group leader
-                    player.group_members.clear()
-                    player.synced_to = group_members[0]
-                else:
-                    player.group_members.clear()
-                    player.synced_to = None
 
     async def _late_add_player(self, entity_id: str) -> None:
         """Handle setup of Player from HA entity that became available after startup."""

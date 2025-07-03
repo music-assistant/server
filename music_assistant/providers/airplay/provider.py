@@ -8,129 +8,24 @@ import time
 from random import randrange
 from typing import cast
 
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
-    ContentType,
-    MediaType,
     PlaybackState,
-    PlayerFeature,
-    PlayerType,
     ProviderFeature,
 )
-from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.media_items import AudioFormat
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.constants import (
-    CONF_ENTRY_DEPRECATED_EQ_BASS,
-    CONF_ENTRY_DEPRECATED_EQ_MID,
-    CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-    CONF_ENTRY_SYNC_ADJUST,
-    create_sample_rates_config_entry,
-)
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import get_ip_pton, lock, select_free_port
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.providers.airplay.raop import RaopStreamSession
-from music_assistant.providers.player_group import PlayerGroupProvider
 
-from .const import (
-    AIRPLAY_FLOW_PCM_FORMAT,
-    AIRPLAY_PCM_FORMAT,
-    CACHE_KEY_PREV_VOLUME,
-    CONF_ALAC_ENCODE,
-    CONF_ENCRYPTION,
-    CONF_PASSWORD,
-    CONF_READ_AHEAD_BUFFER,
-    FALLBACK_VOLUME,
-)
+from .const import CONF_IGNORE_VOLUME
 from .helpers import (
     convert_airplay_volume,
     get_cliraop_binary,
-    get_model_info,
     get_primary_ip_address,
-    is_broken_raop_model,
 )
 from .player import AirPlayPlayer
-
-CONF_IGNORE_VOLUME = "ignore_volume"
-
-PLAYER_CONFIG_ENTRIES = (
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_DEPRECATED_EQ_BASS,
-    CONF_ENTRY_DEPRECATED_EQ_MID,
-    CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-    CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-    ConfigEntry(
-        key=CONF_ENCRYPTION,
-        type=ConfigEntryType.BOOLEAN,
-        default_value=False,
-        label="Enable encryption",
-        description="Enable encrypted communication with the player, "
-        "some (3rd party) players require this.",
-        category="airplay",
-    ),
-    ConfigEntry(
-        key=CONF_ALAC_ENCODE,
-        type=ConfigEntryType.BOOLEAN,
-        default_value=True,
-        label="Enable compression",
-        description="Save some network bandwidth by sending the audio as "
-        "(lossless) ALAC at the cost of a bit CPU.",
-        category="airplay",
-    ),
-    CONF_ENTRY_SYNC_ADJUST,
-    ConfigEntry(
-        key=CONF_PASSWORD,
-        type=ConfigEntryType.SECURE_STRING,
-        default_value=None,
-        required=False,
-        label="Device password",
-        description="Some devices require a password to connect/play.",
-        category="airplay",
-    ),
-    ConfigEntry(
-        key=CONF_READ_AHEAD_BUFFER,
-        type=ConfigEntryType.INTEGER,
-        default_value=1000,
-        required=False,
-        label="Audio buffer (ms)",
-        description="Amount of buffer (in milliseconds), "
-        "the player should keep to absorb network throughput jitter. "
-        "If you experience audio dropouts, try increasing this value.",
-        category="airplay",
-        range=(500, 3000),
-    ),
-    # airplay has fixed sample rate/bit depth so make this config entry static and hidden
-    create_sample_rates_config_entry(
-        supported_sample_rates=[44100], supported_bit_depths=[16], hidden=True
-    ),
-    ConfigEntry(
-        key=CONF_IGNORE_VOLUME,
-        type=ConfigEntryType.BOOLEAN,
-        default_value=False,
-        label="Ignore volume reports sent by the device itself",
-        description="The AirPlay protocol allows devices to report their own volume level. \n"
-        "For some devices this is not reliable and can cause unexpected volume changes. \n"
-        "Enable this option to ignore these reports.",
-        category="airplay",
-    ),
-)
-
-BROKEN_RAOP_WARN = ConfigEntry(
-    key="broken_raop",
-    type=ConfigEntryType.ALERT,
-    default_value=None,
-    required=False,
-    label="This player is known to have broken AirPlay 1 (RAOP) support. "
-    "Playback may fail or simply be silent. There is no workaround for this issue at the moment.",
-)
 
 
 # TODO: AirPlay provider
@@ -204,35 +99,34 @@ class AirPlayProvider(PlayerProvider):
         player_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
-            if mass_player := self.mass.players.get(player_id):
-                if not mass_player.available:
+            if airplay_player := self._players.get(player_id):
+                if not airplay_player.available:
                     return
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", display_name)
-                mass_player.available = False
-                self.mass.players.update(player_id)
+                airplay_player._attr_available = False
+                airplay_player.update_state()
             return
         # handle update for existing device
         assert info is not None  # type guard
         if airplay_player := self._players.get(player_id):
-            if mass_player := self.mass.players.get(player_id):
-                cur_address = get_primary_ip_address(info)
-                if cur_address and cur_address != airplay_player.address:
-                    airplay_player.logger.debug(
-                        "Address updated from %s to %s", airplay_player.address, cur_address
-                    )
-                    airplay_player.address = cur_address
-                    mass_player.device_info = DeviceInfo(
-                        model=mass_player.device_info.model,
-                        manufacturer=mass_player.device_info.manufacturer,
-                        ip_address=str(cur_address),
-                    )
-                if not mass_player.available:
-                    self.logger.debug("Player back online: %s", display_name)
-                    mass_player.available = True
+            cur_address = get_primary_ip_address(info)
+            if cur_address and cur_address != airplay_player.address:
+                airplay_player.logger.debug(
+                    "Address updated from %s to %s", airplay_player.address, cur_address
+                )
+                airplay_player.address = cur_address
+                airplay_player._attr_device_info = DeviceInfo(
+                    model=airplay_player.device_info.model,
+                    manufacturer=airplay_player.device_info.manufacturer,
+                    ip_address=str(cur_address),
+                )
+            if not airplay_player.available:
+                self.logger.debug("Player back online: %s", display_name)
+                airplay_player._attr_available = True
             # always update the latest discovery info
             airplay_player.discovery_info = info
-            self.mass.players.update(player_id)
+            airplay_player.update_state()
             return
         # handle new player
         await self._setup_player(player_id, display_name, info)
@@ -241,157 +135,13 @@ class AirPlayProvider(PlayerProvider):
         """Handle unload/close of the provider."""
         # power off all players (will disconnect and close cliraop)
         for player in self._players.values():
-            await player.cmd_stop()
+            await player.stop()
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
         # shutdown DACP zeroconf service
         if self._dacp_info:
             await self.mass.aiozc.async_unregister_service(self._dacp_info)
-
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_player_config_entries(player_id)
-
-        if player := self.mass.players.get(player_id):
-            if is_broken_raop_model(player.device_info.manufacturer, player.device_info.model):
-                return (*base_entries, BROKEN_RAOP_WARN, *PLAYER_CONFIG_ENTRIES)
-        return (*base_entries, *PLAYER_CONFIG_ENTRIES)
-
-    async def cmd_stop(self, player_id: str) -> None:
-        """Send STOP command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        """
-        if airplay_player := self._players.get(player_id):
-            await airplay_player.cmd_stop()
-
-    async def cmd_play(self, player_id: str) -> None:
-        """Send PLAY (unpause) command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        """
-        if airplay_player := self._players.get(player_id):
-            await airplay_player.cmd_play()
-
-    async def cmd_pause(self, player_id: str) -> None:
-        """Send PAUSE command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        """
-        player = self.mass.players.get(player_id)
-        if not player:
-            return
-        if player.group_members:
-            # pause is not supported while synced, use stop instead
-            self.logger.debug("Player is synced, using STOP instead of PAUSE")
-            await self.cmd_stop(player_id)
-            return
-        airplay_player = self._players[player_id]
-        await airplay_player.cmd_pause()
-
-    @lock
-    async def play_media(
-        self,
-        player_id: str,
-        media: PlayerMedia,
-    ) -> None:
-        """Handle PLAY MEDIA on given player."""
-        if not (player := self.mass.players.get(player_id)):
-            # this should not happen, but guard anyways
-            raise PlayerUnavailableError
-        if player.synced_to:
-            # this should not happen, but guard anyways
-            raise RuntimeError("Player is synced")
-        if not (airplay_player := self._players.get(player_id)):
-            # this should not happen, but guard anyways
-            raise PlayerUnavailableError
-        # set the active source for the player to the media queue
-        # this accounts for syncgroups and linked players (e.g. sonos)
-        player.active_source = media.queue_id
-        player.current_media = media
-
-        # select audio source
-        if media.media_type == MediaType.ANNOUNCEMENT:
-            # special case: stream announcement
-            assert media.custom_data
-            input_format = AIRPLAY_PCM_FORMAT
-            audio_source = self.mass.streams.get_announcement_stream(
-                media.custom_data["url"],
-                output_format=AIRPLAY_PCM_FORMAT,
-                use_pre_announce=media.custom_data["use_pre_announce"],
-            )
-        elif media.media_type == MediaType.PLUGIN_SOURCE:
-            # special case: plugin source stream
-            input_format = AIRPLAY_PCM_FORMAT
-            assert media.custom_data
-            audio_source = self.mass.streams.get_plugin_source_stream(
-                plugin_source_id=media.custom_data["source_id"],
-                output_format=AIRPLAY_PCM_FORMAT,
-                # need to pass player_id from the PlayerMedia object
-                # because this could have been a group
-                player_id=media.custom_data["player_id"],
-            )
-        elif media.queue_id and media.queue_id.startswith("ugp_"):
-            # special case: UGP stream
-            ugp_provider = cast("PlayerGroupProvider", self.mass.get_provider("player_group"))
-            ugp_stream = ugp_provider.ugp_streams[media.queue_id]
-            input_format = ugp_stream.base_pcm_format
-            audio_source = ugp_stream.subscribe_raw()
-        elif media.queue_id and media.queue_item_id:
-            # regular queue (flow) stream request
-            input_format = AIRPLAY_FLOW_PCM_FORMAT
-            queue = self.mass.player_queues.get(media.queue_id)
-            assert queue
-            start_queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
-            assert start_queue_item
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=start_queue_item,
-                pcm_format=input_format,
-            )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            input_format = AIRPLAY_PCM_FORMAT
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                output_format=AIRPLAY_PCM_FORMAT,
-            )
-
-        # if an existing stream session is running, we could replace it with the new stream
-        if airplay_player.raop_stream and airplay_player.raop_stream.running:
-            # check if we need to replace the stream
-            if airplay_player.raop_stream.prevent_playback:
-                # player is in prevent playback mode, we need to stop the stream
-                await airplay_player.cmd_stop()
-            else:
-                await airplay_player.raop_stream.session.replace_stream(audio_source)
-                return
-
-        # setup RaopStreamSession for player (and its sync childs if any)
-        sync_clients = self._get_sync_clients(player_id)
-        raop_stream_session = RaopStreamSession(self, sync_clients, input_format, audio_source)
-        await raop_stream_session.start()
-
-    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        - volume_level: volume level (0..100) to set on the player.
-        """
-        airplay_player = self._players[player_id]
-        if airplay_player.raop_stream and airplay_player.raop_stream.running:
-            await airplay_player.raop_stream.send_cli_command(f"VOLUME={volume_level}\n")
-        mass_player = self.mass.players.get(player_id)
-        if not mass_player:
-            return
-        mass_player.volume_level = volume_level
-        mass_player.volume_muted = volume_level == 0
-        self.mass.players.update(player_id)
-        # store last state in cache
-        await self.mass.cache.set(player_id, volume_level, base_key=CACHE_KEY_PREV_VOLUME)
 
     @lock
     async def cmd_group(self, player_id: str, target_player: str) -> None:
@@ -415,7 +165,7 @@ class AirPlayProvider(PlayerProvider):
         if player_id in parent_player.group_childs:
             # nothing to do: player is already part of the group
             return
-        # ensure the child does not have an existing steam session active
+        # ensure the child does not have an existing stream session active
         if airplay_player := self._players.get(player_id):
             if airplay_player.raop_stream and airplay_player.raop_stream.running:
                 await airplay_player.raop_stream.session.remove_client(airplay_player)
@@ -464,10 +214,10 @@ class AirPlayProvider(PlayerProvider):
             group_leader.group_childs.remove(player_id)
         mass_player.synced_to = None
         mass_player.active_source = None
-        mass_player.state = PlayerState.IDLE
+        mass_player.state = PlaybackState.IDLE
         airplay_player = self._players.get(player_id)
         if airplay_player:
-            await airplay_player.cmd_stop()
+            await airplay_player.stop()
         # make sure that the player manager gets an update
         self.mass.players.update(mass_player.player_id, skip_forward=True)
         self.mass.players.update(group_leader.player_id, skip_forward=True)
@@ -489,64 +239,21 @@ class AirPlayProvider(PlayerProvider):
         self, player_id: str, display_name: str, info: AsyncServiceInfo
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        address = get_primary_ip_address(info)
-        if address is None:
-            return
-        self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
-
-        # prefer airplay mdns info as it has more details
-        # fallback to raop info if airplay info is not available
-        airplay_info = AsyncServiceInfo(
-            "_airplay._tcp.local.", info.name.split("@")[-1].replace("_raop", "_airplay")
+        # Create player using the new pattern
+        airplay_player = await AirPlayPlayer.create_from_discovery(
+            self, player_id, display_name, info
         )
-        if await airplay_info.async_request(self.mass.aiozc.zeroconf, 3000):
-            manufacturer, model = get_model_info(airplay_info)
-        else:
-            manufacturer, model = get_model_info(info)
-
-        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
-            self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
+        if airplay_player is None:
             return
 
-        if "apple tv" in model.lower():
-            # For now, we ignore the Apple TV until we implement the authentication.
-            # maybe we can simply use pyatv only for this part?
-            # the cliraop application has already been prepared to accept the secret.
-            self.logger.info(
-                "Ignoring %s in discovery because it is not yet supported.", display_name
-            )
-            return
+        self._players[player_id] = airplay_player
+        await self.mass.players.register_or_update(airplay_player)
 
-        # append airplay to the default display name for generic (non-apple) devices
-        # this makes it easier for users to distinguish between airplay and non-airplay devices
-        if manufacturer.lower() != "apple" and "airplay" not in display_name.lower():
-            display_name += " (AirPlay)"
-
-        self._players[player_id] = AirPlayPlayer(self, player_id, info, address)
-        if not (volume := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_VOLUME)):
-            volume = FALLBACK_VOLUME
-        mass_player = Player(
-            player_id=player_id,
-            provider=self.instance_id,
-            type=PlayerType.PLAYER,
-            name=display_name,
-            available=True,
-            device_info=DeviceInfo(
-                model=model,
-                manufacturer=manufacturer,
-                ip_address=address,
-            ),
-            supported_features={
-                PlayerFeature.PAUSE,
-                PlayerFeature.SET_MEMBERS,
-                PlayerFeature.MULTI_DEVICE_DSP,
-                PlayerFeature.VOLUME_SET,
-            },
-            volume_level=volume,
-            can_group_with={self.instance_id},
-            enabled_by_default=not is_broken_raop_model(manufacturer, model),
-        )
-        await self.mass.players.register_or_update(mass_player)
+    async def poll_player(self, player_id: str) -> None:
+        """Poll player for state updates."""
+        if player := self._players.get(player_id):
+            # Airplay players don't need regular polling as they send DACP events
+            pass
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -642,24 +349,11 @@ class AirPlayProvider(PlayerProvider):
                 # to prevent an endless pingpong of volume changes
                 raop_volume = float(path.split("dmcp.device-volume=", 1)[-1])
                 volume = convert_airplay_volume(raop_volume)
-                cur_volume = mass_player.volume_level or 0
-                if (
-                    abs(cur_volume - volume) > 3
-                    or (time.time() - airplay_player.last_command_sent) > 3
-                ):
-                    self.mass.create_task(self.cmd_volume_set(player_id, volume))
-                else:
-                    mass_player.volume_level = volume
-                    self.mass.players.update(player_id)
+                airplay_player.update_volume_from_device(volume)
             elif "dmcp.volume=" in path:
                 # volume change request from device (e.g. volume buttons)
                 volume = int(path.split("dmcp.volume=", 1)[-1])
-                cur_volume = mass_player.volume_level or 0
-                if (
-                    abs(cur_volume - volume) > 2
-                    or (time.time() - airplay_player.last_command_sent) > 3
-                ):
-                    self.mass.create_task(self.cmd_volume_set(player_id, volume))
+                airplay_player.update_volume_from_device(volume)
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
                 if raop_stream := airplay_player.raop_stream:

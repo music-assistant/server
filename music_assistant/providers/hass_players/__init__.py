@@ -7,25 +7,19 @@ Requires the Home Assistant Plugin.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.hass import DOMAIN as HASS_DOMAIN
-from music_assistant.providers.hass.constants import MediaPlayerEntityFeature
 
-from .constants import BLOCKLISTED_HASS_INTEGRATIONS, CONF_PLAYERS
+from .constants import CONF_PLAYERS
+from .helpers import get_hass_media_players
 from .provider import HomeAssistantPlayerProvider
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
-    from hass_client.models import CompressedState, EntityStateEvent
-    from hass_client.models import Device as HassDevice
-    from hass_client.models import Entity as HassEntity
-    from hass_client.models import State as HassState
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -63,7 +57,7 @@ async def get_config_entries(
     hass_prov: HomeAssistantProvider = mass.get_provider(HASS_DOMAIN)
     player_entities: list[ConfigValueOption] = []
     if hass_prov and hass_prov.hass.connected:
-        async for state in _get_hass_media_players(hass_prov):
+        async for state in get_hass_media_players(hass_prov):
             name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
             player_entities.append(ConfigValueOption(name, state["entity_id"]))
     return (
