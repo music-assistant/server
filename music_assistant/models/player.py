@@ -13,7 +13,6 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast, final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, PlayerConfig
@@ -265,7 +264,7 @@ class Player(ABC):
         """
         Return when the elapsed time was last updated.
 
-        return: The (UTC) datetime when the elapsed time was last updated,
+        return: The (UTC) timestamp when the elapsed time was last updated,
         or None if it was never updated (or unknown).
         """
         return self._attr_elapsed_time_last_updated
