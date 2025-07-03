@@ -639,16 +639,6 @@ class Player(ABC):
         """Return the config of the player."""
         return self._config
 
-    @config.setter
-    def config(self, config: PlayerConfig) -> None:
-        """
-        Set the player config.
-
-        May only be called by the PlayerController.
-        """
-        # TODO: validate that caller is the PlayerController ?
-        self._config = config
-
     @property
     @final
     def extra_attributes(self) -> dict[str, EXTRA_ATTRIBUTES_TYPES]:
@@ -1020,6 +1010,15 @@ class Player(ABC):
             self.current_media.queue_item_id = queue_item_id
         if custom_data:
             self.current_media.custom_data = custom_data
+
+    def set_config(self, config: PlayerConfig) -> None:
+        """
+        Set/update the player config.
+
+        May only be called by the PlayerController.
+        """
+        # TODO: validate that caller is the PlayerController ?
+        self._config = config
 
     def to_dict(self) -> dict[str, Any]:
         """Return the (serializable) dict representation of the Player."""

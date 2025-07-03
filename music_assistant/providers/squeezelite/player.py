@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterator
 
 from aioslimproto.client import PlayerState as SlimPlayerState
 from aioslimproto.client import SlimClient
 from aioslimproto.models import EventType as SlimEventType
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, PlayerConfig
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -19,9 +19,17 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SYNC_ADJUST,
     DEFAULT_PCM_FORMAT,
+    create_sample_rates_config_entry,
 )
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+
+from .constants import (
+    CONF_DISPLAY,
+    CONF_VISUALIZATION,
+    DEFAULT_VISUALIZATION,
+    SlimVisualisationType,
+)
 
 if TYPE_CHECKING:
     from .provider import SqueezelitePlayerProvider
@@ -35,22 +43,49 @@ STATE_MAP = {
     SlimPlayerState.STOPPED: PlaybackState.IDLE,
 }
 
+CONF_ENTRY_DISPLAY = ConfigEntry(
+    key=CONF_DISPLAY,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    required=False,
+    label="Enable display support",
+    description="Enable/disable native display support on squeezebox or squeezelite32 hardware.",
+    category="advanced",
+)
+CONF_ENTRY_VISUALIZATION = ConfigEntry(
+    key=CONF_VISUALIZATION,
+    type=ConfigEntryType.STRING,
+    default_value=DEFAULT_VISUALIZATION,
+    options=[
+        ConfigValueOption(title=x.name.replace("_", " ").title(), value=x.value)
+        for x in SlimVisualisationType
+    ],
+    required=False,
+    label="Visualization type",
+    description="The type of visualization to show on the display "
+    "during playback if the device supports this.",
+    category="advanced",
+    depends_on=CONF_DISPLAY,
+)
+
 
 class SqueezelitePlayer(Player):
     """Squeezelite Player implementation."""
+
+    _attr_type = PlayerType.PLAYER
 
     def __init__(
         self,
         provider: SqueezelitePlayerProvider,
         player_id: str,
-        slimplayer: SlimClient,
+        client: SlimClient,
     ) -> None:
         """Initialize the Squeezelite Player."""
         super().__init__(provider, player_id)
-        self.slimplayer = slimplayer
+        self.client = client
+        self.provider: SqueezelitePlayerProvider = provider
 
-        # Set player attributes
-        self._attr_type = PlayerType.PLAYER
+        # Set static player attributes
         self._attr_supported_features = {
             PlayerFeature.POWER,
             PlayerFeature.SET_MEMBERS,
@@ -61,15 +96,17 @@ class SqueezelitePlayer(Player):
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
         }
-        self._attr_name = slimplayer.name
+        self._attr_name = client.name
         self._attr_available = True
-        self._attr_powered = slimplayer.powered
+        self._attr_powered = client.powered
         self._attr_device_info = DeviceInfo(
-            model=slimplayer.device_model,
-            ip_address=slimplayer.device_address,
-            manufacturer=slimplayer.device_type,
+            model=client.device_model,
+            ip_address=client.device_address,
+            manufacturer=client.device_type,
         )
         self._attr_can_group_with = {provider.instance_id}
+
+
 
     async def setup(self) -> None:
         """Set up the player."""
@@ -77,29 +114,60 @@ class SqueezelitePlayer(Player):
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        return [
-            *await super().get_config_entries(),
-            CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-            CONF_ENTRY_OUTPUT_CODEC,
-            CONF_ENTRY_SYNC_ADJUST,
-            CONF_ENTRY_DEPRECATED_EQ_BASS,
-            CONF_ENTRY_DEPRECATED_EQ_MID,
-            CONF_ENTRY_DEPRECATED_EQ_TREBLE,
-        ]
+        base_entries = await super().get_config_entries())
+        max_sample_rate = int(self.client.max_sample_rate)
+        # create preset entries (for players that support it)
+        preset_entries = ()
+        presets = []
+        async for playlist in self.mass.music.playlists.iter_library_items(True):
+            presets.append(ConfigValueOption(playlist.name, playlist.uri))
+        async for radio in self.mass.music.radio.iter_library_items(True):
+            presets.append(ConfigValueOption(radio.name, radio.uri))
+        preset_count = 10
+        preset_entries = tuple(
+            ConfigEntry(
+                key=f"preset_{index}",
+                type=ConfigEntryType.STRING,
+                options=presets,
+                label=f"Preset {index}",
+                description="Assign a playable item to the player's preset. "
+                "Only supported on real squeezebox hardware or jive(lite) based emulators.",
+                category="presets",
+                required=False,
+            )
+            for index in range(1, preset_count + 1)
+        )
+        return (
+            base_entries
+            + preset_entries
+            + (
+                CONF_ENTRY_DEPRECATED_EQ_BASS,
+                CONF_ENTRY_DEPRECATED_EQ_MID,
+                CONF_ENTRY_DEPRECATED_EQ_TREBLE,
+                CONF_ENTRY_OUTPUT_CODEC,
+                CONF_ENTRY_SYNC_ADJUST,
+                CONF_ENTRY_DISPLAY,
+                CONF_ENTRY_VISUALIZATION,
+                CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+                create_sample_rates_config_entry(
+                    max_sample_rate=max_sample_rate, max_bit_depth=24, safe_max_bit_depth=24
+                ),
+            )
+        )
 
     async def handle_slim_event(self, event: SlimEventType) -> None:
         """Handle player update from slimproto server."""
         # Update player state from slim player
         self._attr_available = True
-        self._attr_name = self.slimplayer.name
-        self._attr_powered = self.slimplayer.powered
-        self._attr_playback_state = STATE_MAP[self.slimplayer.state]
-        self._attr_volume_level = self.slimplayer.volume_level
-        self._attr_volume_muted = self.slimplayer.muted
+        self._attr_name = self.client.name
+        self._attr_powered = self.client.powered
+        self._attr_playback_state = STATE_MAP[self.client.state]
+        self._attr_volume_level = self.client.volume_level
+        self._attr_volume_muted = self.client.muted
         self._attr_active_source = self.player_id
 
         # Update current media if available
-        if self.slimplayer.current_media and (metadata := self.slimplayer.current_media.metadata):
+        if self.client.current_media and (metadata := self.client.current_media.metadata):
             self._attr_current_media = PlayerMedia(
                 uri=metadata.get("item_id"),
                 title=metadata.get("title"),
@@ -118,35 +186,35 @@ class SqueezelitePlayer(Player):
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
         if powered:
-            await self.slimplayer.power_on()
+            await self.client.power_on()
         else:
-            await self.slimplayer.power_off()
+            await self.client.power_off()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        await self.slimplayer.volume_set(volume_level)
+        await self.client.volume_set(volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        await self.slimplayer.volume_mute(muted)
+        await self.client.volume_mute(muted)
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         async with TaskManager(self.mass) as tg:
-            for slimplayer in self.provider._get_sync_clients(self.player_id):
-                tg.create_task(slimplayer.stop())
+            for client in self.provider._get_sync_clients(self.player_id):
+                tg.create_task(client.stop())
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
         async with TaskManager(self.mass) as tg:
-            for slimplayer in self.provider._get_sync_clients(self.player_id):
-                tg.create_task(slimplayer.play())
+            for client in self.provider._get_sync_clients(self.player_id):
+                tg.create_task(client.play())
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
         async with TaskManager(self.mass) as tg:
-            for slimplayer in self.provider._get_sync_clients(self.player_id):
-                tg.create_task(slimplayer.pause())
+            for client in self.provider._get_sync_clients(self.player_id):
+                tg.create_task(client.pause())
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
@@ -157,7 +225,7 @@ class SqueezelitePlayer(Player):
         if not self.group_members:
             # Simple, single-player playback
             await self._handle_play_url(
-                self.slimplayer,
+                self.client,
                 url=media.uri,
                 media=media,
                 send_flush=True,
@@ -185,7 +253,7 @@ class SqueezelitePlayer(Player):
         # Handle enqueue for single player or sync group
         if not self.group_members:
             await self._handle_play_url(
-                self.slimplayer,
+                self.client,
                 url=media.uri,
                 media=media,
                 send_flush=False,
@@ -217,17 +285,23 @@ class SqueezelitePlayer(Player):
         """Poll player for state updates."""
         # Squeezelite players are event-driven, no polling needed
 
+    def set_config(self, config: PlayerConfig) -> None:
+        """Set/update the player config."""
+        super().set_config(config)
+        self.mass.create_task(self._set_preset_items())
+        self.mass.create_task(self._set_display())
+
     async def _handle_play_url(
         self,
-        slimplayer: SlimClient,
+        client: SlimClient,
         url: str,
         media: PlayerMedia,
         send_flush: bool = True,
         auto_play: bool = True,
     ) -> None:
-        """Handle playing a URL on a slimplayer."""
+        """Handle playing a URL on a client."""
         if send_flush:
-            await slimplayer.flush()
+            await client.flush()
 
         # Send play command with metadata
         metadata = {
@@ -241,7 +315,14 @@ class SqueezelitePlayer(Player):
             "queue_item_id": media.queue_item_id,
         }
 
-        await slimplayer.play_url(url, metadata=metadata, auto_play=auto_play)
+        await client.play_url(url, metadata=metadata, auto_play=auto_play)
+
+    def _get_sync_clients(self) -> Iterator[SlimClient]:
+        """Get all sync clients for a player."""
+        yield self.client
+        for member_id in self.group_members:
+            yield self.provider.slimproto.get_player(member_id)
+
 
     async def _handle_multi_client_stream(
         self, media: PlayerMedia, master_audio_format: AudioFormat

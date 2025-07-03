@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
 from dataclasses import dataclass
 
 from aioslimproto.client import SlimClient
@@ -16,6 +15,7 @@ from music_assistant.constants import CONF_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
+from .constants import CONF_CLI_JSON_PORT, CONF_CLI_TELNET_PORT
 from .multi_client_stream import MultiClientStream
 from .player import SqueezelitePlayer
 
@@ -51,28 +51,55 @@ class SqueezelitePlayerProvider(PlayerProvider):
             logging.getLogger("aioslimproto").setLevel(logging.DEBUG)
         else:
             logging.getLogger("aioslimproto").setLevel(self.logger.level + 10)
-
         # setup slimproto server
-        port = self.config.get_value(CONF_PORT)
-        if await is_port_in_use(port):
-            msg = f"Port {port} is not available"
+        control_port = self.config.get_value(CONF_PORT)
+        if await is_port_in_use(control_port):
+            msg = f"Port {control_port} is not available"
             raise SetupFailedError(msg)
-
+        telnet_port = self.config.get_value(CONF_CLI_TELNET_PORT)
+        if telnet_port is not None and await is_port_in_use(telnet_port):
+            msg = f"Telnet port {telnet_port} is not available"
+            raise SetupFailedError(msg)
+        json_port = self.config.get_value(CONF_CLI_JSON_PORT)
+        if json_port is not None and await is_port_in_use(json_port):
+            msg = f"JSON port {json_port} is not available"
+            raise SetupFailedError(msg)
+        # silence aioslimproto logger a bit
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("aioslimproto").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("aioslimproto").setLevel(self.logger.level + 10)
         self.slimproto = SlimServer(
-            port=port,
-            name=f"Music Assistant ({self.mass.webserver.ip})",
-            player_join_callback=self._player_join,
-            player_leave_callback=self._player_leave,
-            player_event_callback=self._player_update,
+            cli_port=telnet_port or None,
+            cli_port_json=json_port or None,
+            ip_address=self.mass.streams.publish_ip,
+            name="Music Assistant",
+            control_port=control_port,
         )
-
+        # start slimproto socket server
         await self.slimproto.start()
-        self.logger.info("Slimproto server started on port %s", port)
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        self.slimproto.subscribe(self._client_callback)
+        self.mass.streams.register_dynamic_route(
+            "/slimproto/multi", self._serve_multi_client_stream
+        )
+        # it seems that WiiM devices do not use the json rpc port that is broadcasted
+        # in the discovery info but instead they just assume that the jsonrpc endpoint
+        # lives on the same server as stream URL. So we need to provide a jsonrpc.js
+        # endpoint that just redirects to the jsonrpc handler within the slimproto package.
+        self.mass.streams.register_dynamic_route(
+            "/jsonrpc.js", self.slimproto.cli._handle_jsonrpc_client
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         if self.slimproto:
             await self.slimproto.stop()
+        self.mass.streams.unregister_dynamic_route("/slimproto/multi")
+        self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
 
     async def _player_join(self, slimplayer: SlimClient) -> None:
         """Handle player joining the slimproto server."""
@@ -102,13 +129,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
         """Handle player update from slimproto server."""
         if player := self._players.get(player_id):
             await player.handle_slim_event(event)
-
-    def _get_sync_clients(self, player_id: str) -> Iterator[SlimClient]:
-        """Get all sync clients for a player."""
-        player = self.mass.players.get(player_id)
-        yield self.slimproto.get_player(player_id)
-        for member_id in player.group_members:
-            yield self.slimproto.get_player(member_id)
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""

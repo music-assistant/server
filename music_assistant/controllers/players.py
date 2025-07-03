@@ -1146,7 +1146,7 @@ class PlayerController(CoreController):
 
         # ensure we fetch and set the latest/full config for the player
         player_config = await self.mass.config.get_player_config(player_id)
-        player.config = player_config
+        player.set_config(player_config)
         # always call update to fix special attributes like display name, group volume etc.
         player.update_state()
 
@@ -1528,7 +1528,7 @@ class PlayerController(CoreController):
         # ensure player state gets updated with any updated config
         if not (player := self.get(config.player_id)):
             return  # guard against player not being registered (yet)
-        player.config = config
+        player.set_config(config)
         player.update_state()
         assert player.active_source is not None  # for type checking
         resume_queue: PlayerQueue | None = self.mass.player_queues.get(player.active_source)
