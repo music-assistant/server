@@ -724,7 +724,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         # create special performant random query
         if order_by and order_by.startswith("random"):
-            sub_query_parts = []
+            sub_query_parts = query_parts
             # If favorite or search filter is active, add it to the subquery so we limit the number
             # of results to the correct amount
             if search:
@@ -734,11 +734,29 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 sub_query_parts.append(f"{self.db_table}.favorite = :favorite")
                 query_params["favorite"] = favorite
                 already_filtered_favorite = True
-            sub_query = f"SELECT item_id FROM {self.db_table}"
+            if provider:
+                sub_query_parts.append(
+                    f"JOIN provider_mappings ON provider_mappings.item_id "
+                    f"= {self.db_table}.item_id "
+                    f"AND provider_mappings.media_type = '{self.media_type.value}' "
+                    f"AND (provider_mappings.provider_instance = '{provider}' "
+                    f"OR provider_mappings.provider_domain = '{provider}')"
+                )
+                provider = None
+            sub_query = f"SELECT {self.db_table}.item_id FROM {self.db_table}"
+            if join_parts:
+                sub_query += f" {' '.join(join_parts)}"
+                join_parts = []  # are now part of the subquery
             if sub_query_parts:
+                # prevent duplicate where statement
+                sub_query_parts = [
+                    x[5:] if x.lower().startswith("where ") else x for x in sub_query_parts
+                ]
                 sub_query += " WHERE " + " AND ".join(sub_query_parts)
             sub_query += f" ORDER BY RANDOM() LIMIT {limit}"
-            query_parts.append(f"{self.db_table}.item_id in ({sub_query})")
+            # reset main query parts and replace with just the subquery
+            query_parts = [f"{self.db_table}.item_id in ({sub_query})"]
+
         # handle search
         if search and not already_filtered_search:
             query_parts.append(f"{self.db_table}.search_name LIKE :search")
