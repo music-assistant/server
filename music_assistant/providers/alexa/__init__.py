@@ -410,7 +410,13 @@ class AlexaProvider(PlayerProvider):
             try:
                 async with session.post(
                     f"{self.config.get_value(CONF_API_URL)}/ma/push-url",
-                    json={"streamUrl": media.uri},
+                    json={
+                        "streamUrl": media.uri,
+                        "title": media.title,
+                        "artist": media.artist,
+                        "album": media.album,
+                        "imageUrl": media.image_url,
+                    },
                     timeout=aiohttp.ClientTimeout(total=10),
                     auth=auth,
                 ) as resp:
