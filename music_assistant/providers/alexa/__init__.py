@@ -14,6 +14,7 @@ from alexapy import AlexaAPI, AlexaLogin, AlexaProxy
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    MediaType,
     PlayerFeature,
     PlayerState,
     PlayerType,
@@ -304,6 +305,7 @@ class AlexaProvider(PlayerProvider):
                         PlayerFeature.PAUSE,
                         PlayerFeature.VOLUME_MUTE,
                     },
+                    needs_poll=True,
                 )
                 await self.mass.players.register_or_update(player)
                 # Initialize AlexaDevice and store in self.devices
@@ -427,11 +429,50 @@ class AlexaProvider(PlayerProvider):
         if state:
             device_media = state.get("infoText")
             if device_media:
-                media.title = device_media.get("title")
-                media.artist = device_media.get("subText1")
                 player.current_media = media
-            player.elapsed_time = 0
+            if state.get("progress"):
+                player.elapsed_time = state.get("progress").get("mediaProgress")
             player.elapsed_time_last_updated = time.time()
-            if state.get("playbackState") == "PLAYING":
+            if state.get("state") == "PLAYING":
                 player.state = PlayerState.PLAYING
         self.mass.players.update(player_id)
+
+    async def poll_player(self, player_id: str) -> None:
+        """Poll player for state updates."""
+        if not (player := self.mass.players.get(player_id)):
+            return
+
+        if player_id == "PLACEHOLDER":
+            device_object = self.devices[player_id]
+            api = AlexaAPI(device_object, self.login)
+            state = await api.get_state()
+            if not (state := state.get("playerInfo", None)):
+                return
+
+            if state.get("state") == "PLAYING":
+                player.state = PlayerState.PLAYING
+            elif state.get("state") == "PAUSED":
+                player.state = PlayerState.PAUSED
+
+            if device_media := state.get("infoText"):
+                title = device_media.get("title")
+                artist = device_media.get("subText1")
+                album = device_media.get("subText2")
+                image_url = state.get("mainArt").get("url")
+                duration = state.get("progress").get("mediaLength")
+                player.set_current_media(
+                    uri="test.com",
+                    media_type=MediaType.TRACK,
+                    title=title,
+                    artist=artist,
+                    album=album,
+                    image_url=image_url,
+                    duration=duration,
+                )
+                player.elapsed_time = state.get("progress").get("mediaProgress")
+                player.elapsed_time_last_updated = time.time()
+            if state.get("volume"):
+                player.volume_level = state.get("volume").get("volume")
+
+            player.poll_interval = 30  # Set the poll interval to 30 seconds
+            self.mass.players.update(player_id)
