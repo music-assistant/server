@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterator
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 from aioslimproto.client import PlayerState as SlimPlayerState
 from aioslimproto.client import SlimClient
-from aioslimproto.models import EventType as SlimEventType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, PlayerConfig
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.media_items import AudioFormat
@@ -32,6 +32,8 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
+    from aioslimproto.models import EventType as SlimEventType
+
     from .provider import SqueezelitePlayerProvider
 
 
@@ -106,15 +108,13 @@ class SqueezelitePlayer(Player):
         )
         self._attr_can_group_with = {provider.instance_id}
 
-
-
     async def setup(self) -> None:
         """Set up the player."""
         await self.mass.players.register_or_update(self)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = await super().get_config_entries())
+        base_entries = await super().get_config_entries()
         max_sample_rate = int(self.client.max_sample_rate)
         # create preset entries (for players that support it)
         preset_entries = ()
@@ -322,7 +322,6 @@ class SqueezelitePlayer(Player):
         yield self.client
         for member_id in self.group_members:
             yield self.provider.slimproto.get_player(member_id)
-
 
     async def _handle_multi_client_stream(
         self, media: PlayerMedia, master_audio_format: AudioFormat

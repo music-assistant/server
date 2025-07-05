@@ -11,12 +11,11 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     MediaType,
-    PlaybackState,
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.media_items import AudioFormat
+from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_ENTRY_DEPRECATED_EQ_BASS,
@@ -41,7 +40,6 @@ from .const import (
     FALLBACK_VOLUME,
 )
 from .helpers import (
-    convert_airplay_volume,
     get_model_info,
     get_primary_ip_address,
     is_broken_raop_model,
@@ -49,10 +47,6 @@ from .helpers import (
 from .raop import RaopStreamSession
 
 if TYPE_CHECKING:
-    from typing import cast
-
-    from zeroconf.asyncio import AsyncServiceInfo
-
     from music_assistant.providers.player_group import PlayerGroupProvider
 
     from .provider import AirPlayProvider
@@ -74,7 +68,7 @@ class AirPlayPlayer(Player):
     """AirPlay Player implementation."""
 
     def __init__(
-        self, 
+        self,
         provider: AirPlayProvider,
         player_id: str,
         discovery_info: AsyncServiceInfo,
@@ -90,7 +84,7 @@ class AirPlayPlayer(Player):
         self.raop_stream: RaopStream | None = None
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
-        
+
         # Set player attributes
         self._attr_type = PlayerType.PLAYER
         self._attr_name = display_name
@@ -167,9 +161,13 @@ class AirPlayPlayer(Player):
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
                 label="Ignore volume reports sent by the device itself",
-                description="The AirPlay protocol allows devices to report their own volume level. \n"
-                "For some devices this is not reliable and can cause unexpected volume changes. \n"
-                "Enable this option to ignore these reports.",
+                description=(
+                    "The AirPlay protocol allows devices to report their own volume "
+                    "level. \n"
+                    "For some devices this is not reliable and can cause unexpected "
+                    "volume changes. \n"
+                    "Enable this option to ignore these reports."
+                ),
                 category="airplay",
             ),
         ]
@@ -198,7 +196,7 @@ class AirPlayPlayer(Player):
             self.logger.debug("Player is synced, using STOP instead of PAUSE")
             await self.stop()
             return
-        
+
         async with self._lock:
             if not self.raop_stream or not self.raop_stream.running:
                 return
@@ -209,7 +207,7 @@ class AirPlayPlayer(Player):
         if self.synced_to:
             # this should not happen, but guard anyways
             raise RuntimeError("Player is synced")
-        
+
         # set the active source for the player to the media queue
         # this accounts for syncgroups and linked players (e.g. sonos)
         self._attr_active_source = media.queue_id
@@ -239,7 +237,7 @@ class AirPlayPlayer(Player):
         elif media.queue_id and media.queue_id.startswith("ugp_"):
             # special case: UGP stream
             from typing import cast
-            from music_assistant.providers.player_group import PlayerGroupProvider
+
             ugp_provider = cast("PlayerGroupProvider", self.mass.get_provider("player_group"))
             ugp_stream = ugp_provider.ugp_streams[media.queue_id]
             input_format = ugp_stream.base_pcm_format
@@ -278,7 +276,9 @@ class AirPlayPlayer(Player):
 
         # setup RaopStreamSession for player (and its sync childs if any)
         sync_clients = self.provider._get_sync_clients(self.player_id)
-        raop_stream_session = RaopStreamSession(self.provider, sync_clients, input_format, audio_source)
+        raop_stream_session = RaopStreamSession(
+            self.provider, sync_clients, input_format, audio_source
+        )
         await raop_stream_session.start()
 
     async def volume_set(self, volume_level: int) -> None:
@@ -299,7 +299,6 @@ class AirPlayPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         # This would be implemented similar to cmd_group/cmd_ungroup logic
         # For now, airplay grouping is handled at the provider level
-        pass
 
     def update_volume_from_device(self, volume: int) -> None:
         """Update volume from device feedback."""
@@ -307,15 +306,12 @@ class AirPlayPlayer(Player):
             self.mass.config.get_raw_player_config_value(self.player_id, CONF_IGNORE_VOLUME, False)
             or self.device_info.manufacturer.lower() == "apple"
         )
-        
+
         if ignore_volume_report:
             return
-            
+
         cur_volume = self.volume_level or 0
-        if (
-            abs(cur_volume - volume) > 3
-            or (time.time() - self.last_command_sent) > 3
-        ):
+        if abs(cur_volume - volume) > 3 or (time.time() - self.last_command_sent) > 3:
             self.mass.create_task(self.volume_set(volume))
         else:
             self._attr_volume_level = volume
@@ -377,8 +373,8 @@ class AirPlayPlayer(Player):
             manufacturer=manufacturer,
             model=model,
         )
-        
+
         # Set initial volume
         player._attr_volume_level = volume
-        
+
         return player

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
+import aiofiles
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -16,7 +18,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
-from snapcast.control.client import Snapclient
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE_ENFORCED,
@@ -29,6 +30,7 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from . import SnapCastStreamType
 
 if TYPE_CHECKING:
+    from snapcast.control.client import Snapclient
     from snapcast.control.group import Snapgroup
 
     from .provider import SnapcastPlayerProvider
@@ -56,7 +58,7 @@ class SnapcastPlayer(Player):
         self.client = client
         self.group = group
         self._current_stream_task: asyncio.Task | None = None
-        
+
         # Set player attributes
         self._attr_type = PlayerType.PLAYER
         self._attr_name = client.name or f"Snapcast {client.identifier}"
@@ -102,12 +104,10 @@ class SnapcastPlayer(Player):
         # Stop any current streaming task
         if self._current_stream_task and not self._current_stream_task.done():
             self._current_stream_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._current_stream_task
-            except asyncio.CancelledError:
-                pass
             self._current_stream_task = None
-        
+
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_current_media = None
         self.update_state()
@@ -152,7 +152,7 @@ class SnapcastPlayer(Player):
         """Handle PLAY MEDIA on the player."""
         # Stop any current stream
         await self.stop()
-        
+
         # Determine which stream to use
         if media.media_type == MediaType.ANNOUNCEMENT:
             stream_type = SnapCastStreamType.ANNOUNCEMENT
@@ -160,7 +160,7 @@ class SnapcastPlayer(Player):
         else:
             stream_type = SnapCastStreamType.MUSIC
             target_stream = await self.provider.get_music_stream()
-        
+
         if not target_stream:
             raise PlayerCommandFailed(f"No {stream_type} stream available")
 
@@ -176,10 +176,8 @@ class SnapcastPlayer(Player):
             raise PlayerCommandFailed(f"No pipe available for {stream_type} stream")
 
         # Start streaming to the pipe
-        self._current_stream_task = asyncio.create_task(
-            self._stream_to_pipe(media, pipe_path)
-        )
-        
+        self._current_stream_task = asyncio.create_task(self._stream_to_pipe(media, pipe_path))
+
         # Update player state
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
@@ -201,7 +199,9 @@ class SnapcastPlayer(Player):
                 # Regular queue stream
                 queue = self.mass.player_queues.get(media.queue_id)
                 assert queue
-                start_queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+                start_queue_item = self.mass.player_queues.get_item(
+                    media.queue_id, media.queue_item_id
+                )
                 assert start_queue_item
                 audio_source = self.mass.streams.get_queue_flow_stream(
                     queue=queue,
@@ -217,11 +217,11 @@ class SnapcastPlayer(Player):
                 )
 
             # Stream to pipe
-            with open(pipe_path, 'wb') as pipe:
+            async with aiofiles.open(pipe_path, "wb") as pipe:
                 async for chunk in audio_source:
-                    pipe.write(chunk)
-                    pipe.flush()
-                    
+                    await pipe.write(chunk)
+                    await pipe.flush()
+
                     # Check if we should stop
                     if self._current_stream_task and self._current_stream_task.cancelled():
                         break
@@ -262,7 +262,7 @@ class SnapcastPlayer(Player):
                                     break
                             if target_client:
                                 break
-                        
+
                         if target_client:
                             # Create or find a single-client group for this client
                             await target_client.set_group(client_id)
@@ -281,7 +281,7 @@ class SnapcastPlayer(Player):
                                     break
                             if target_client:
                                 break
-                        
+
                         if target_client:
                             await target_client.set_group(self.group.identifier)
 
@@ -296,13 +296,13 @@ class SnapcastPlayer(Player):
             if self.client.volume:
                 self._attr_volume_level = self.client.volume.percent
                 self._attr_volume_muted = self.client.volume.muted
-            
+
             # Update playback state based on stream activity and our streaming task
             if self._current_stream_task and not self._current_stream_task.done():
                 self._attr_playback_state = PlaybackState.PLAYING
             elif self.group.stream:
                 # Check if there's activity on the stream
-                if hasattr(self.group.stream, 'status'):
+                if hasattr(self.group.stream, "status"):
                     if self.group.stream.status == "playing":
                         self._attr_playback_state = PlaybackState.PLAYING
                     elif self.group.stream.status == "idle":
@@ -314,9 +314,9 @@ class SnapcastPlayer(Player):
                     self._attr_playback_state = PlaybackState.IDLE
             else:
                 self._attr_playback_state = PlaybackState.IDLE
-                
+
             self.update_state()
-            
+
         except Exception as err:
             self.logger.debug("Error polling snapcast client: %s", err)
 
@@ -324,21 +324,21 @@ class SnapcastPlayer(Player):
         """Update player from snapcast client data."""
         self.client = client
         self.group = group
-        
+
         # Update attributes
         self._attr_name = client.name or f"Snapcast {client.identifier}"
         self._attr_available = client.connected
-        
+
         if client.volume:
             self._attr_volume_level = client.volume.percent
             self._attr_volume_muted = client.volume.muted
-        
+
         # Update device info if IP changed
         if client.host and client.host.host != self.device_info.ip_address:
             self._attr_device_info = DeviceInfo(
                 model="Snapcast Client",
-                manufacturer="Snapcast", 
+                manufacturer="Snapcast",
                 ip_address=client.host.host,
             )
-            
+
         self.update_state()

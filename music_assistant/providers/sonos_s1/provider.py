@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -66,10 +67,8 @@ class SonosPlayerProvider(PlayerProvider):
         for sonos_player in self.sonosplayers.values():
             if hasattr(sonos_player, "subscriptions"):
                 for subscription in sonos_player.subscriptions:
-                    try:
+                    with suppress(Exception):
                         subscription.unsubscribe()
-                    except Exception:
-                        pass
 
     async def discover_players(self) -> None:
         """Discover Sonos players on the network."""

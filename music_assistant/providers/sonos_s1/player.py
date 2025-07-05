@@ -14,7 +14,6 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
@@ -39,6 +38,7 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from .helpers import soco_error
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from soco.events_base import Event as SonosEvent
     from soco.events_base import SubscriptionBase
 

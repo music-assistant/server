@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
-import time
 from random import randrange
-from typing import cast
 
 from music_assistant_models.enums import (
     PlaybackState,
@@ -17,6 +15,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import get_ip_pton, lock, select_free_port
+from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
 from .const import CONF_IGNORE_VOLUME
@@ -26,7 +25,6 @@ from .helpers import (
     get_primary_ip_address,
 )
 from .player import AirPlayPlayer
-
 
 # TODO: AirPlay provider
 # - Implement authentication for Apple TV
@@ -251,7 +249,7 @@ class AirPlayProvider(PlayerProvider):
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
-        if player := self._players.get(player_id):
+        if self._players.get(player_id):
             # Airplay players don't need regular polling as they send DACP events
             pass
 

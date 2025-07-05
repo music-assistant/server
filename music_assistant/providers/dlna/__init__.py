@@ -9,12 +9,10 @@ All rights/credits reserved.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 import functools
 import logging
 import time
 from contextlib import suppress
-from dataclasses import dataclass, field
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
@@ -24,7 +22,7 @@ from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerUnavailableError
 
 from music_assistant.constants import (
@@ -48,7 +46,7 @@ if TYPE_CHECKING:
 
     from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
     from async_upnp_client.utils import CaseInsensitiveDict
-    from music_assistant_models.config_entries import PlayerConfig, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant

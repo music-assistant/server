@@ -12,7 +12,7 @@ from contextlib import suppress
 from random import randint
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, PlayerState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL

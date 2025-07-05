@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from aioslimproto.client import SlimClient
-from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.server import SlimServer
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import SetupFailedError
@@ -18,6 +17,10 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import CONF_CLI_JSON_PORT, CONF_CLI_TELNET_PORT
 from .multi_client_stream import MultiClientStream
 from .player import SqueezelitePlayer
+
+if TYPE_CHECKING:
+    from aioslimproto.client import SlimClient
+    from aioslimproto.models import EventType as SlimEventType
 
 
 @dataclass
@@ -120,7 +123,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         """Handle player leaving the slimproto server."""
         self.logger.debug("Player %s left the server", player_id)
 
-        if player := self._players.pop(player_id, None):
+        if self._players.pop(player_id, None):
             if mass_player := self.mass.players.get(player_id):
                 mass_player.available = False
                 self.mass.players.update(player_id)

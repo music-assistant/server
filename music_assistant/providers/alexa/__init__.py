@@ -16,8 +16,6 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     PlaybackState,
     PlayerFeature,
-    PlayerState,
-    PlayerType,
     ProviderFeature,
 )
 from music_assistant_models.errors import LoginFailed

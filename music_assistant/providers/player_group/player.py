@@ -53,6 +53,8 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from .ugp_stream import UGPStream
 
 if TYPE_CHECKING:
+    from music_assistant.models.player_provider import PlayerProvider
+
     from .provider import PlayerGroupProvider
 
 
@@ -259,7 +261,7 @@ class GroupPlayer(Player):
         # syncgroup: forward command to sync leader
         if self.player_id.startswith(SYNCGROUP_PREFIX):
             if sync_leader := self._get_sync_leader():
-                if player_provider := self.mass.get_provider(sync_leader.provider):
+                if self.mass.get_provider(sync_leader.provider):
                     await sync_leader.stop()
             return
         # ugp: forward command to all members

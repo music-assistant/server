@@ -7,11 +7,11 @@ import logging
 import os
 import subprocess
 import tempfile
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
-from snapcast.control.client import Snapclient
 from snapcast.control.server import Snapserver
 
 from music_assistant.helpers.process import check_output
@@ -27,6 +27,7 @@ from . import (
 from .player import SnapcastPlayer
 
 if TYPE_CHECKING:
+    from snapcast.control.client import Snapclient
     from snapcast.control.group import Snapgroup
     from snapcast.control.stream import Snapstream
 
@@ -54,14 +55,12 @@ class SnapcastPlayerProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._use_external_server = self.config.get_value(CONF_USE_EXTERNAL_SERVER)
-        
+
         if self._use_external_server:
             self._server_host = self.config.get_value(CONF_SERVER_HOST)
             self._control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
             self.logger.info(
-                "Using external snapcast server at %s:%s", 
-                self._server_host, 
-                self._control_port
+                "Using external snapcast server at %s:%s", self._server_host, self._control_port
             )
         else:
             # Start built-in snapserver
@@ -74,10 +73,8 @@ class SnapcastPlayerProvider(PlayerProvider):
         """Handle unload/close of the provider."""
         # Clean up players
         for player in self._players.values():
-            try:
+            with suppress(Exception):
                 await player.stop()
-            except Exception:
-                pass
 
         # Disconnect from snapserver
         if self.snapcast:
@@ -103,7 +100,7 @@ class SnapcastPlayerProvider(PlayerProvider):
             try:
                 for pipe_path in self._stream_pipes.values():
                     if os.path.exists(pipe_path):
-                        os.unlink(pipe_path)
+                        Path(pipe_path).unlink(missing_ok=True)
                 # Note: temp_dir will be cleaned up automatically if using tempfile
             except Exception as err:
                 self.logger.debug("Error cleaning up pipes: %s", err)
@@ -122,51 +119,52 @@ class SnapcastPlayerProvider(PlayerProvider):
                 if len(version_parts) >= 2:
                     major, minor = int(version_parts[0]), int(version_parts[1])
                     if major == 0 and (minor < 27 or minor == 30):
-                        raise RuntimeError(f"Unsupported snapserver version: {output.decode().strip()}")
+                        raise RuntimeError(
+                            f"Unsupported snapserver version: {output.decode().strip()}"
+                        )
             except (ValueError, IndexError):
                 self.logger.warning("Could not parse snapserver version: %s", output.decode())
 
             # Create temporary directory for pipes
             self._temp_dir = Path(tempfile.mkdtemp(prefix="snapcast_"))
-            
+
             # Create named pipes for streams
             music_pipe = self._temp_dir / "music"
             announcement_pipe = self._temp_dir / "announcement"
-            
+
             os.mkfifo(str(music_pipe))
             os.mkfifo(str(announcement_pipe))
-            
+
             self._stream_pipes[SnapCastStreamType.MUSIC] = str(music_pipe)
             self._stream_pipes[SnapCastStreamType.ANNOUNCEMENT] = str(announcement_pipe)
 
             # Create snapserver config
             config_content = self._create_snapserver_config()
-            config_file = tempfile.NamedTemporaryFile(mode='w', suffix='.conf', delete=False)
-            config_file.write(config_content)
-            config_file.close()
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".conf", delete=False) as config_file:
+                config_file.write(config_content)
+                config_file_name = config_file.name
 
             # Start snapserver process
             cmd = [
                 "snapserver",
-                "--config", config_file.name,
-                "--logging.level", "debug" if self.logger.isEnabledFor(logging.DEBUG) else "info"
+                "--config",
+                config_file_name,
+                "--logging.level",
+                "debug" if self.logger.isEnabledFor(logging.DEBUG) else "info",
             ]
-            
+
             self.logger.info("Starting snapserver: %s", " ".join(cmd))
-            self._snapserver_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
+            self._snapserver_process = await asyncio.create_subprocess_exec(
+                *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
             )
-            
+
             # Wait for server to start
             await asyncio.sleep(3)
-            
+
             if self._snapserver_process.poll() is not None:
                 stdout, stderr = self._snapserver_process.communicate()
                 raise RuntimeError(f"Snapserver failed to start: {stderr}")
-                
+
             self.logger.info("Snapserver started successfully")
 
         except Exception as err:
@@ -176,11 +174,11 @@ class SnapcastPlayerProvider(PlayerProvider):
     def _create_snapserver_config(self) -> str:
         """Create snapserver configuration."""
         buffer_ms = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
-        
+
         music_pipe = self._stream_pipes[SnapCastStreamType.MUSIC]
         announcement_pipe = self._stream_pipes[SnapCastStreamType.ANNOUNCEMENT]
-        
-        config = f"""
+
+        return f"""
 [server]
 datadir = {self._temp_dir}
 buffer = {buffer_ms}
@@ -200,47 +198,48 @@ stream = pipe://{announcement_pipe}?name=announcement&mode=read&idle_threshold=1
 [logging]
 filter.snapserver = *:info
 """
-        return config
 
     async def _connect_to_snapserver(self) -> None:
         """Connect to the snapserver."""
         max_retries = 10
         retry_delay = 1
-        
+
         for attempt in range(max_retries):
             try:
                 self.snapcast = Snapserver(
                     loop=asyncio.get_event_loop(),
                     host=self._server_host,
                     port=self._control_port,
-                    reconnect=True
+                    reconnect=True,
                 )
-                
+
                 # Set up event handlers
                 self.snapcast.set_on_connect_callback(self._on_snapserver_connect)
                 self.snapcast.set_on_disconnect_callback(self._on_snapserver_disconnect)
                 self.snapcast.set_on_update_callback(self._on_snapserver_update)
-                
+
                 # Start connection
                 await self.snapcast.start()
-                
+
                 self.logger.info(
-                    "Connected to snapserver at %s:%s", 
-                    self._server_host, 
-                    self._control_port
+                    "Connected to snapserver at %s:%s", self._server_host, self._control_port
                 )
                 return
 
             except Exception as err:
                 if attempt < max_retries - 1:
                     self.logger.debug(
-                        "Failed to connect to snapserver (attempt %d/%d): %s", 
-                        attempt + 1, max_retries, err
+                        "Failed to connect to snapserver (attempt %d/%d): %s",
+                        attempt + 1,
+                        max_retries,
+                        err,
                     )
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2  # exponential backoff
                 else:
-                    self.logger.error("Failed to connect to snapserver after %d attempts: %s", max_retries, err)
+                    self.logger.error(
+                        "Failed to connect to snapserver after %d attempts: %s", max_retries, err
+                    )
                     raise
 
     def _on_snapserver_connect(self, server: Snapserver) -> None:
@@ -268,7 +267,7 @@ filter.snapserver = *:info
 
         try:
             current_clients = set()
-            
+
             # Process all groups and clients
             for group in self.snapcast.groups:
                 for client in group.clients:
@@ -295,7 +294,7 @@ filter.snapserver = *:info
     async def _setup_client_player(self, client: Snapclient, group: Snapgroup) -> None:
         """Set up a player for a snapcast client."""
         player_id = f"snapcast_{client.identifier}"
-        
+
         if player_id not in self._players:
             # Create new player
             player = SnapcastPlayer(
@@ -305,7 +304,7 @@ filter.snapserver = *:info
             )
             self._players[player_id] = player
             await self.mass.players.register_or_update(player)
-            
+
             self.logger.info("Registered snapcast client: %s (%s)", client.name, client.host.host)
         else:
             # Update existing player
@@ -338,7 +337,7 @@ filter.snapserver = *:info
         """Get the group containing a specific client."""
         if not self.snapcast:
             return None
-            
+
         for group in self.snapcast.groups:
             for client in group.clients:
                 if client.identifier == client_id:
