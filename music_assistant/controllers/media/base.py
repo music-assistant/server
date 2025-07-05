@@ -781,6 +781,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # within itself
         query_parts.clear()
         query_parts.append(f"{self.db_table}.item_id in ({sub_query})")
+        join_parts.clear()
 
     def _apply_filters(
         self,
