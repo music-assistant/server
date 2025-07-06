@@ -248,7 +248,6 @@ class SnapCastProvider(PlayerProvider):
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
-        self.logger.error("FOOOO")
         for snap_client in self._snapserver.clients:
             if not snap_client.identifier:
                 self.logger.warning(

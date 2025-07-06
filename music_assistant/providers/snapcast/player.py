@@ -61,27 +61,21 @@ class SnapCastPlayer(Player):
 
     def setup(self) -> None:
         """Set up player."""
-
-        async def _setup() -> None:
-            self._attr_name = self.snap_client.friendly_name
-            self._attr_available = self.snap_client.connected
-            self._attr_device_info = DeviceInfo(
-                model=self.snap_client._client.get("host").get("os"),
-                ip_address=self.snap_client._client.get("host").get("ip"),
-                manufacturer=self.snap_client._client.get("host").get("arch"),
-            )
-            self._attr_supported_features = {
-                PlayerFeature.SET_MEMBERS,
-                PlayerFeature.VOLUME_SET,
-                PlayerFeature.VOLUME_MUTE,
-                PlayerFeature.PLAY_ANNOUNCEMENT,
-            }
-            self._attr_synced_to = self._synced_to()
-            self._attr_can_group_with = {self.provider.instance_id}
-
-            self.update_state()
-
-        self.mass.loop.create_task(_setup())
+        self._attr_name = self.snap_client.friendly_name
+        self._attr_available = self.snap_client.connected
+        self._attr_device_info = DeviceInfo(
+            model=self.snap_client._client.get("host").get("os"),
+            ip_address=self.snap_client._client.get("host").get("ip"),
+            manufacturer=self.snap_client._client.get("host").get("arch"),
+        )
+        self._attr_supported_features = {
+            PlayerFeature.SET_MEMBERS,
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+            PlayerFeature.PLAY_ANNOUNCEMENT,
+        }
+        self._attr_synced_to = self._synced_to()
+        self._attr_can_group_with = {self.provider.instance_id}
 
     async def play(self) -> None:
         """Play."""
@@ -359,8 +353,11 @@ class SnapCastPlayer(Player):
             CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
         ]
 
-    def _handle_player_update(self) -> None:
-        """Process Snapcast update to Player controller."""
+    def _handle_player_update(self, snap_client: Snapclient) -> None:
+        """Process Snapcast update to Player controller.
+
+        This is a callback function
+        """
         self._attr_name = self.snap_client.friendly_name
         self._attr_volume_level = self.snap_client.volume
         self._attr_volume_muted = self.snap_client.muted
