@@ -14,6 +14,7 @@ but it can also be something else, hence the loose coupling.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import random
 import time
 from types import NoneType
@@ -1816,7 +1817,8 @@ class PlayerQueuesController(CoreController):
             output_formats=output_formats,
         )
         changed_keys = get_changed_keys(prev_state, new_state)
-        changed_keys.pop("next_item", None)
+        with suppress(KeyError):
+            changed_keys.remove("next_item_id")
         # return early if nothing changed
         if len(changed_keys) == 0:
             return
