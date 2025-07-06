@@ -119,18 +119,11 @@ class SnapCastPlayer(Player):
         self.update_state()
 
     async def group_with(self, target_player_id: str) -> None:
-        """Group with."""
-        mass_target_player = self.mass.players.get(target_player_id)
-        assert mass_target_player is not None  # for type checking
-        assert isinstance(mass_target_player, SnapCastPlayer)
-        group = mass_target_player._get_snapgroup()
-        assert group is not None  # for type checking
-        if self.snap_client_id not in group.clients:
-            await group.add_client(self.snap_client_id)
-            self._attr_synced_to = target_player_id
-            mass_target_player._attr_group_members.append(self.player_id)
-            self.update_state()
-            mass_target_player.update_state()
+        """Group with.
+
+        we use set_members
+        """
+        return
 
     async def set_members(
         self,
@@ -141,7 +134,20 @@ class SnapCastPlayer(Player):
 
         we use group with in snapcast.
         """
-        return
+        if player_ids_to_add is None:
+            return
+        mass_target_player = self
+        group = mass_target_player._get_snapgroup()
+        assert group is not None  # for type checking
+        for player_id in player_ids_to_add:
+            if player_id not in group.clients:
+                child_player = self.mass.players.get(player_id)
+                await group.add_client(self.provider._get_snapclient_id(player_id))
+                mass_target_player._attr_group_members.append(player_id)
+                if child_player is not None:
+                    child_player._attr_synced_to = self.player_id
+                    child_player.update_state()
+        self.update_state()
 
     async def ungroup(self) -> None:
         """Ungroup."""
