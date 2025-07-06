@@ -99,6 +99,135 @@ class PlayerInstance:
     last_update: float
 
 
+class BuiltinPlayer(Player):
+    """Representation of a Builtin Player."""
+
+    def __init__(
+        self,
+        player_id: str,
+        provider: BuiltinPlayerProvider,
+        name: str,
+        features: tuple[PlayerFeature, ...],
+    ) -> None:
+        """Initialize the Builtin Player."""
+        super().__init__(provider, player_id)
+        self._attr_type = PlayerType.PLAYER
+        self._attr_name = name
+        self._attr_available = True
+        self._attr_power_control = PLAYER_CONTROL_NATIVE
+        self._attr_powered = False
+        self._attr_device_info = DeviceInfo()
+        self._attr_supported_features = set(features)
+        self._attr_needs_poll = True
+        self._attr_poll_interval = POLL_INTERVAL
+        self._attr_hidden_by_default = True
+        self._attr_expose_to_ha_by_default = False
+        self._attr_playback_state = PlaybackState.IDLE
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the player."""
+        base_entries = await super().get_config_entries()
+        return [
+            *base_entries,
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
+            # Hide power/volume/mute control options since they are guaranteed to work
+            ConfigEntry(
+                key=CONF_POWER_CONTROL,
+                type=ConfigEntryType.STRING,
+                label=CONF_POWER_CONTROL,
+                default_value=PLAYER_CONTROL_NATIVE,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_VOLUME_CONTROL,
+                type=ConfigEntryType.STRING,
+                label=CONF_VOLUME_CONTROL,
+                default_value=PLAYER_CONTROL_NATIVE,
+                hidden=True,
+            ),
+            ConfigEntry(
+                key=CONF_MUTE_CONTROL,
+                type=ConfigEntryType.STRING,
+                label=CONF_MUTE_CONTROL,
+                default_value=PLAYER_CONTROL_NATIVE,
+                hidden=True,
+            ),
+            CONF_ENTRY_HTTP_PROFILE_HIDDEN,
+            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
+            create_sample_rates_config_entry([48000]),
+        ]
+
+    async def stop(self) -> None:
+        """Send STOP command to player."""
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            self.player_id,
+            BuiltinPlayerEvent(type=BuiltinPlayerEventType.STOP),
+        )
+
+    async def play(self) -> None:
+        """Send PLAY command to player."""
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            self.player_id,
+            BuiltinPlayerEvent(type=BuiltinPlayerEventType.PLAY),
+        )
+
+    async def pause(self) -> None:
+        """Send PAUSE command to player."""
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            self.player_id,
+            BuiltinPlayerEvent(type=BuiltinPlayerEventType.PAUSE),
+        )
+
+    async def volume_set(self, volume_level: int) -> None:
+        """Send VOLUME_SET command to player."""
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            self.player_id,
+            BuiltinPlayerEvent(type=BuiltinPlayerEventType.SET_VOLUME, volume=volume_level),
+        )
+
+    async def volume_mute(self, muted: bool) -> None:
+        """Send VOLUME MUTE command to player."""
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            self.player_id,
+            BuiltinPlayerEvent(
+                type=BuiltinPlayerEventType.MUTE if muted else BuiltinPlayerEventType.UNMUTE
+            ),
+        )
+
+    async def play_media(self, media: PlayerMedia) -> None:
+        """Handle PLAY MEDIA on player."""
+        url = f"builtin_player/flow/{self.player_id}.mp3"
+        self._attr_current_media = media
+
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            self.player_id,
+            BuiltinPlayerEvent(type=BuiltinPlayerEventType.PLAY_MEDIA, media_url=url),
+        )
+
+    async def power_on(self) -> None:
+        """Send POWER ON command to player."""
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            self.player_id,
+            BuiltinPlayerEvent(type=BuiltinPlayerEventType.POWER_ON),
+        )
+
+    async def power_off(self) -> None:
+        """Send POWER OFF command to player."""
+        self.mass.signal_event(
+            EventType.BUILTIN_PLAYER,
+            self.player_id,
+            BuiltinPlayerEvent(type=BuiltinPlayerEventType.POWER_OFF),
+        )
+        self._attr_powered = False
+
+
 class BuiltinPlayerProvider(PlayerProvider):
     """Builtin Player Provider for playing to the Music Assistant Web Interface."""
 
@@ -133,115 +262,6 @@ class BuiltinPlayerProvider(PlayerProvider):
         for instance in self.instances.values():
             for unregister_cb in instance.unregister_cbs:
                 unregister_cb()
-
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        return (
-            *await super().get_player_config_entries(player_id),
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            # Hide power/volume/mute control options since they are guaranteed to work
-            ConfigEntry(
-                key=CONF_POWER_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_POWER_CONTROL,
-                default_value=PLAYER_CONTROL_NATIVE,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_VOLUME_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_VOLUME_CONTROL,
-                default_value=PLAYER_CONTROL_NATIVE,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_MUTE_CONTROL,
-                type=ConfigEntryType.STRING,
-                label=CONF_MUTE_CONTROL,
-                default_value=PLAYER_CONTROL_NATIVE,
-                hidden=True,
-            ),
-            # These options don't do anything here
-            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-            CONF_ENTRY_HTTP_PROFILE_HIDDEN,
-            create_sample_rates_config_entry(max_sample_rate=48000, max_bit_depth=16),
-        )
-
-    async def cmd_stop(self, player_id: str) -> None:
-        """Send STOP command to given player."""
-        self.mass.signal_event(
-            EventType.BUILTIN_PLAYER,
-            player_id,
-            BuiltinPlayerEvent(type=BuiltinPlayerEventType.STOP),
-        )
-
-    async def cmd_play(self, player_id: str) -> None:
-        """Send PLAY command to given player."""
-        self.mass.signal_event(
-            EventType.BUILTIN_PLAYER,
-            player_id,
-            BuiltinPlayerEvent(type=BuiltinPlayerEventType.PLAY),
-        )
-
-    async def cmd_pause(self, player_id: str) -> None:
-        """Send PAUSE command to given player."""
-        self.mass.signal_event(
-            EventType.BUILTIN_PLAYER,
-            player_id,
-            BuiltinPlayerEvent(type=BuiltinPlayerEventType.PAUSE),
-        )
-
-    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        self.mass.signal_event(
-            EventType.BUILTIN_PLAYER,
-            player_id,
-            BuiltinPlayerEvent(type=BuiltinPlayerEventType.SET_VOLUME, volume=volume_level),
-        )
-
-    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
-        """Send VOLUME MUTE command to given player."""
-        self.mass.signal_event(
-            EventType.BUILTIN_PLAYER,
-            player_id,
-            BuiltinPlayerEvent(
-                type=BuiltinPlayerEventType.MUTE if muted else BuiltinPlayerEventType.UNMUTE
-            ),
-        )
-
-    async def play_media(
-        self,
-        player_id: str,
-        media: PlayerMedia,
-    ) -> None:
-        """Handle PLAY MEDIA on given player."""
-        url = f"builtin_player/flow/{player_id}.mp3"
-        player = cast("Player", self.mass.players.get(player_id, raise_unavailable=True))
-        player.current_media = media
-
-        self.mass.signal_event(
-            EventType.BUILTIN_PLAYER,
-            player_id,
-            BuiltinPlayerEvent(type=BuiltinPlayerEventType.PLAY_MEDIA, media_url=url),
-        )
-
-    async def cmd_power(self, player_id: str, powered: bool) -> None:
-        """Send POWER command to given player.
-
-        - player_id: player_id of the player to handle the command.
-        - powered: bool if player should be powered on or off.
-        """
-        self.mass.signal_event(
-            EventType.BUILTIN_PLAYER,
-            player_id,
-            BuiltinPlayerEvent(
-                type=BuiltinPlayerEventType.POWER_ON
-                if powered
-                else BuiltinPlayerEventType.POWER_OFF
-            ),
-        )
-        if (not powered) and (player := self.mass.players.get(player_id)):
-            player.powered = False
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
@@ -306,27 +326,17 @@ class BuiltinPlayerProvider(PlayerProvider):
         player = self.mass.players.get(player_id)
 
         if player is None:
-            player = Player(
+            player = BuiltinPlayer(
                 player_id=player_id,
-                provider=self.instance_id,
-                type=PlayerType.PLAYER,
+                provider=self,
                 name=player_name,
-                available=True,
-                power_control=PLAYER_CONTROL_NATIVE,
-                powered=False,
-                device_info=DeviceInfo(),
-                supported_features=player_features,
-                needs_poll=True,
-                poll_interval=POLL_INTERVAL,
-                hidden_by_default=True,
-                expose_to_ha_by_default=False,
-                state=PlaybackState.IDLE,
+                features=tuple(player_features),
             )
         else:
-            player.state = PlaybackState.IDLE
-            player.name = player_name
-            player.available = True
-            player.powered = False
+            player._attr_playback_state = PlaybackState.IDLE
+            player._attr_name = player_name
+            player._attr_available = True
+            player._attr_powered = False
 
         await self.mass.players.register_or_update(player)
         return player
@@ -339,10 +349,10 @@ class BuiltinPlayerProvider(PlayerProvider):
         for cb in instance.unregister_cbs:
             cb()
         if player := self.mass.players.get(player_id):
-            player.available = False
-            player.state = PlaybackState.IDLE
-            player.powered = False
-            self.mass.players.update(player.player_id)
+            player._attr_available = False
+            player._attr_playback_state = PlaybackState.IDLE
+            player._attr_powered = False
+            player.update_state()
 
     async def update_player_state(self, player_id: str, state: BuiltinPlayerState) -> bool:
         """Update current state of a player.
@@ -366,24 +376,24 @@ class BuiltinPlayerProvider(PlayerProvider):
             # Skip, it.
             return True
 
-        player.elapsed_time_last_updated = time()
-        player.elapsed_time = float(state.position)
-        player.volume_muted = state.muted
-        player.volume_level = state.volume
+        player._attr_elapsed_time_last_updated = time()
+        player._attr_elapsed_time = float(state.position)
+        player._attr_volume_muted = state.muted
+        player._attr_volume_level = state.volume
         if not state.powered:
-            player.powered = False
-            player.state = PlaybackState.IDLE
+            player._attr_powered = False
+            player._attr_playback_state = PlaybackState.IDLE
         elif state.playing:
-            player.powered = True
-            player.state = PlaybackState.PLAYING
+            player._attr_powered = True
+            player._attr_playback_state = PlaybackState.PLAYING
         elif state.paused:
-            player.powered = True
-            player.state = PlaybackState.PAUSED
+            player._attr_powered = True
+            player._attr_playback_state = PlaybackState.PAUSED
         else:
-            player.powered = True
-            player.state = PlaybackState.IDLE
+            player._attr_powered = True
+            player._attr_playback_state = PlaybackState.IDLE
 
-        self.mass.players.update(player_id)
+        player.update_state()
         return True
 
     async def _serve_audio_stream(self, request: web.Request) -> web.StreamResponse:
