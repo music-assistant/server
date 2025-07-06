@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -10,6 +9,12 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.helpers.process import check_output
+from music_assistant.providers.snapcast.constants import (
+    CONF_SERVER_BUFFER_SIZE,
+    CONF_SERVER_CONTROL_PORT,
+    CONF_SERVER_HOST,
+    CONF_USE_EXTERNAL_SERVER,
+)
 
 from .provider import SnapcastPlayerProvider
 
@@ -19,25 +24,6 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-
-# Configuration constants
-CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
-CONF_SERVER_CHUNK_MS = "snapcast_server_built_in_chunk_ms"
-CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"
-CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_built_in_codec"
-CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
-CONF_STREAM_IDLE_THRESHOLD = "snapcast_stream_idle_threshold"
-CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
-CONF_SERVER_HOST = "snapcast_server_host"
-CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
-
-
-class SnapCastStreamType(StrEnum):
-    """Enum for Snapcast Stream Type."""
-
-    MUSIC = "MUSIC"
-    ANNOUNCEMENT = "ANNOUNCEMENT"
 
 
 async def setup(

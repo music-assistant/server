@@ -27,7 +27,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
-from . import SnapCastStreamType
+from .constants import SnapCastStreamType
 
 if TYPE_CHECKING:
     from snapcast.control.client import Snapclient

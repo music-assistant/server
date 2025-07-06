@@ -17,7 +17,7 @@ from snapcast.control.server import Snapserver
 from music_assistant.helpers.process import check_output
 from music_assistant.models.player_provider import PlayerProvider
 
-from . import (
+from .constants import (
     CONF_SERVER_BUFFER_SIZE,
     CONF_SERVER_CONTROL_PORT,
     CONF_SERVER_HOST,
