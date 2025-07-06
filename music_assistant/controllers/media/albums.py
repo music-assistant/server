@@ -171,7 +171,7 @@ class AlbumsController(MediaControllerBase[Album]):
             # Calculate how many more items we need to reach the original limit
             remaining_limit = limit - len(result)
 
-            for _album in await self._get_library_items_by_query(
+            for album in await self._get_library_items_by_query(
                 favorite=favorite,
                 search=None,
                 limit=remaining_limit,
@@ -182,8 +182,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 extra_join_parts=extra_join_parts,
             ):
                 # prevent duplicates (when artist is also in the title)
-                if _album.uri not in existing_uris:
-                    result.append(_album)
+                if album.uri not in existing_uris:
+                    result.append(album)
                     # Stop if we've reached the original limit
                     if len(result) >= limit:
                         break
