@@ -405,6 +405,7 @@ class SnapCastPlayer(Player):
         # The control script is used only for music streams in the builtin server
         # (queue_id is None only for announcement streams).
         if self.provider._use_builtin_server and queue_id:
+            # FIXME: Do we need the extra args?
             extra_args = (
                 f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
                 f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
@@ -412,6 +413,7 @@ class SnapCastPlayer(Player):
                 f"--streamserver-ip={self.mass.streams.publish_ip}%20"
                 f"--streamserver-port={self.mass.streams.publish_port}"
             )
+            extra_args = ""
         else:
             extra_args = ""
 
