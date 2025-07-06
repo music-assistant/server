@@ -167,10 +167,14 @@ class AlbumsController(MediaControllerBase[Album]):
             )
             extra_query_params["search_artist"] = f"%{search}%"
             existing_uris = {item.uri for item in result}
+
+            # Calculate how many more items we need to reach the original limit
+            remaining_limit = limit - len(result)
+
             for _album in await self._get_library_items_by_query(
                 favorite=favorite,
                 search=None,
-                limit=limit,
+                limit=remaining_limit,
                 order_by=order_by,
                 provider=provider,
                 extra_query_parts=extra_query_parts,
@@ -180,6 +184,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 # prevent duplicates (when artist is also in the title)
                 if _album.uri not in existing_uris:
                     result.append(_album)
+                    # Stop if we've reached the original limit
+                    if len(result) >= limit:
+                        break
         return result
 
     async def library_count(
