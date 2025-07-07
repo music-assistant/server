@@ -34,16 +34,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_BIND_INTERFACE,
-            type=ConfigEntryType.STRING,
-            default_value=cast("str", mass.streams.publish_ip),
-            label="Bind interface",
-            description="Interface to bind to for AirPlay streaming.",
-            category="advanced",
-        ),
-    )
+    return ()
 
 
 async def setup(

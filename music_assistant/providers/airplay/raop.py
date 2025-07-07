@@ -24,7 +24,6 @@ from music_assistant.helpers.util import TaskManager, close_async_generator
 from .const import (
     AIRPLAY_PCM_FORMAT,
     CONF_ALAC_ENCODE,
-    CONF_BIND_INTERFACE,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_READ_AHEAD_BUFFER,
@@ -223,12 +222,7 @@ class RaopStream:
         mass_player = self.mass.players.get(player_id)
         if not mass_player:
             return
-        bind_ip = str(
-            await self.mass.config.get_provider_config_value(
-                self.prov.instance_id, CONF_BIND_INTERFACE
-            )
-        )
-        extra_args += ["-if", bind_ip]
+        extra_args += ["-if", self.mass.streams.bind_ip]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ENCRYPTION, False):
             extra_args += ["-encrypt"]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):

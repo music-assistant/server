@@ -10,7 +10,7 @@ from zeroconf import ServiceStateChange
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 
-from . import CONF_NUMBER_OF_PLAYERS
+from .constants import CONF_NUMBER_OF_PLAYERS
 from .player import DemoPlayer
 
 if TYPE_CHECKING:

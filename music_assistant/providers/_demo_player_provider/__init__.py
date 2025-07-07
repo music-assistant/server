@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
+from .constants import CONF_NUMBER_OF_PLAYERS
 from .provider import DemoPlayerprovider
 
 if TYPE_CHECKING:
@@ -45,8 +46,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-CONF_NUMBER_OF_PLAYERS = "number_of_players"
 
 
 async def setup(
