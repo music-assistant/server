@@ -98,7 +98,6 @@ Template providers are available in `_template_*_provider` directories.
 ### Branch Structure
 - **`dev`** - Primary development branch, all PRs target this branch
 - **`stable`** - Stable release branch for production releases
-- **`main`** - Not used (legacy)
 
 ### Release Process
 - **Beta releases**: Released from `dev` branch on-demand when new features are stable
