@@ -426,7 +426,7 @@ class DLNAPlayer(Player):
         await self.device.async_set_volume_level(volume_level / 100)
 
     @catch_request_errors
-    async def cmd_volume_mute(self, muted: bool) -> None:
+    async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_mute_volume(muted)
