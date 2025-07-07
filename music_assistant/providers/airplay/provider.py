@@ -6,10 +6,7 @@ import asyncio
 import socket
 from random import randrange
 
-from music_assistant_models.enums import (
-    PlaybackState,
-    ProviderFeature,
-)
+from music_assistant_models.enums import PlaybackState, ProviderFeature
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
@@ -18,12 +15,8 @@ from music_assistant.helpers.util import get_ip_pton, lock, select_free_port
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
-from .const import CONF_IGNORE_VOLUME
-from .helpers import (
-    convert_airplay_volume,
-    get_cliraop_binary,
-    get_primary_ip_address,
-)
+from .constants import CONF_IGNORE_VOLUME
+from .helpers import convert_airplay_volume, get_cliraop_binary, get_primary_ip_address
 from .player import AirPlayPlayer
 
 # TODO: AirPlay provider

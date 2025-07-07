@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from zeroconf import IPVersion
 
 from music_assistant.helpers.process import check_output
-from music_assistant.providers.airplay.const import BROKEN_RAOP_MODELS
+from music_assistant.providers.airplay.constants import BROKEN_RAOP_MODELS
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo

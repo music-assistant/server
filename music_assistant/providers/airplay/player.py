@@ -29,21 +29,18 @@ from music_assistant.constants import (
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
-from .const import (
+from .constants import (
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_PCM_FORMAT,
     CACHE_KEY_PREV_VOLUME,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
+    CONF_IGNORE_VOLUME,
     CONF_PASSWORD,
     CONF_READ_AHEAD_BUFFER,
     FALLBACK_VOLUME,
 )
-from .helpers import (
-    get_model_info,
-    get_primary_ip_address,
-    is_broken_raop_model,
-)
+from .helpers import get_model_info, get_primary_ip_address, is_broken_raop_model
 from .raop import RaopStreamSession
 
 if TYPE_CHECKING:
@@ -52,7 +49,6 @@ if TYPE_CHECKING:
     from .provider import AirPlayProvider
     from .raop import RaopStream
 
-CONF_IGNORE_VOLUME = "ignore_volume"
 
 BROKEN_RAOP_WARN = ConfigEntry(
     key="broken_raop",

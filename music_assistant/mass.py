@@ -576,8 +576,7 @@ class MusicAssistant:
             if is_player_provider(provider):
                 # mark all players of this provider as unavailable
                 for player in provider.players:
-                    player.available = False
-                    self.players.trigger_player_update(player.player_id)
+                    self.players.unregister(player.player_id, permanent=is_removed)
             try:
                 await provider.unload(is_removed)
             except Exception as err:

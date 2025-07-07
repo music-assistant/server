@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.mass import MusicAssistant
 
-from .const import CONF_BIND_INTERFACE
 from .provider import AirPlayProvider
 
 if TYPE_CHECKING:

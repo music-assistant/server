@@ -21,7 +21,7 @@ from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import TaskManager, close_async_generator
 
-from .const import (
+from .constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,

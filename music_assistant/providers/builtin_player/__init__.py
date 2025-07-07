@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from time import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import shortuuid
 from aiohttp import web
@@ -227,6 +227,22 @@ class BuiltinPlayer(Player):
         )
         self._attr_powered = False
 
+    async def poll(self) -> None:
+        """
+        Poll player for state updates.
+
+        This is called by the Player Manager;
+        if the 'needs_poll' property is True.
+        """
+        last_updated = time() - self.last_update
+        if last_updated > DURATION_UNTIL_TIMEOUT:
+            self.mass.signal_event(
+                EventType.BUILTIN_PLAYER,
+                player_id,
+                BuiltinPlayerEvent(type=BuiltinPlayerEventType.TIMEOUT),
+            )
+            raise PlayerUnavailableError("Connection to player timed out")
+
 
 class BuiltinPlayerProvider(PlayerProvider):
     """Builtin Player Provider for playing to the Music Assistant Web Interface."""
@@ -262,22 +278,6 @@ class BuiltinPlayerProvider(PlayerProvider):
         for instance in self.instances.values():
             for unregister_cb in instance.unregister_cbs:
                 unregister_cb()
-
-    async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates.
-
-        This is called by the Player Manager;
-        if 'needs_poll' is set to True in the player object.
-        """
-        if instance := self.instances.get(player_id, None):
-            last_updated = time() - instance.last_update
-            if last_updated > DURATION_UNTIL_TIMEOUT:
-                self.mass.signal_event(
-                    EventType.BUILTIN_PLAYER,
-                    player_id,
-                    BuiltinPlayerEvent(type=BuiltinPlayerEventType.TIMEOUT),
-                )
-                raise PlayerUnavailableError("Connection to player timed out")
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player."""
