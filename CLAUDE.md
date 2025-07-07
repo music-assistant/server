@@ -16,12 +16,9 @@ Music Assistant is a Python-based music library manager that connects to streami
 - `pytest` - Run all tests
 - `pytest tests/specific_test.py` - Run a specific test file
 - `pytest --cov music_assistant` - Run tests with coverage (configured in pyproject.toml)
-- `ruff check` - Lint code
-- `ruff format` - Format code
-- `mypy` - Type checking
-- `codespell` - Spell check
-- `isort` - Sort imports
 - `pre-commit run --all-files` - Run all pre-commit hooks
+
+Always run `pre-commit run --all-files` after a code change to ensure the new code adheres to the project standards.
 
 ### Running the Server
 - Use F5 in VS Code to start Music Assistant locally (debug mode)
