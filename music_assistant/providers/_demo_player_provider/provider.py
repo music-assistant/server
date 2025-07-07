@@ -8,7 +8,6 @@ from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
-from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
 from . import CONF_NUMBER_OF_PLAYERS
@@ -114,7 +113,7 @@ class DemoPlayerprovider(PlayerProvider):
         # can completely remove it from your provider implementation.
 
         if not info:
-            return
+            return  # guard
 
         # NOTE: If you do not use mdns for discovery of players on the network,
         # you must implement your own discovery mechanism and logic to add new players
@@ -124,17 +123,13 @@ class DemoPlayerprovider(PlayerProvider):
         name = name.split("@", 1)[1] if "@" in name else name
         player_id = info.decoded_properties["uuid"]  # this is just an example!
 
-        if not player_id:
-            return
-
         # handle removed player
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
             if mass_player := self.mass.players.get(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
-                mass_player.available = False
-                self.mass.players.update(player_id)
+                self.mass.players.unregister(player_id)
             return
         # handle update for existing device
         # (state change is either updated or added)
@@ -150,51 +145,17 @@ class DemoPlayerprovider(PlayerProvider):
                 self.logger.debug(
                     "Address updated to %s for player %s", cur_address, mass_player.display_name
                 )
-                mass_player.device_info = DeviceInfo(
-                    model=mass_player.device_info.model,
-                    manufacturer=mass_player.device_info.manufacturer,
-                    ip_address=str(cur_address),
-                )
-            if not mass_player.available:
-                # if the player was marked offline and you now receive an mdns update
-                # it means the player is back online and we should try to connect to it
-                self.logger.debug("Player back online: %s", mass_player.display_name)
-                # you can try to connect to the player here if needed
-                mass_player.available = True
             # inform the player manager of any changes to the player object
             # note that you would normally call this from some other callback from
             # the player's native api/library which informs you of changes in the player state.
             # as a last resort you can also choose to let the player manager
             # poll the player for state changes
-            self.mass.players.update(player_id)
+            mass_player.update_state()
             return
         # handle new player
         self.logger.debug("Discovered device %s on %s", name, cur_address)
         # your own connection logic will probably be implemented here where
         # you connect to the player etc. using your device/provider specific library.
-
-        # Instantiate the MA Player object and register it with the player manager
-        # NOTE: In the new pattern, we create DemoPlayer instances, not generic Player instances
-        demo_player = DemoPlayer(
-            provider=self,
-            player_id=player_id,
-        )
-        demo_player._attr_name = name
-        demo_player._attr_available = True
-        demo_player._attr_powered = False
-        demo_player._attr_device_info = DeviceInfo(
-            model="Model XYX",
-            manufacturer="Super Brand",
-            ip_address=cur_address,
-        )
-        # register the player with the player manager
-        await self.mass.players.register(demo_player)
-
-        # once the player is registered, you can either instruct the player manager to
-        # poll the player for state changes or you can implement your own logic to
-        # listen for state changes from the player and update the player object accordingly.
-        # in any case, you need to call the update method on the player manager:
-        self.mass.players.update(player_id)
 
     async def discover_players(self) -> None:
         """Discover players for this provider."""
