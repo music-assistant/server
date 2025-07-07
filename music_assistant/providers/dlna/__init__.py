@@ -245,8 +245,11 @@ class DLNAPlayer(Player):
             # fetch track details on state or url change
             self.force_poll = True
 
-        with suppress(KeyError):
+        try:
+            self.update_state()
+        except (KeyError, TypeError):
             # at start the update might come faster than the config is initialized
+            await asyncio.sleep(2)
             self.update_state()
 
     def _set_player_features(self) -> None:
