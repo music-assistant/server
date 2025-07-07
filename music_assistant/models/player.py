@@ -522,37 +522,6 @@ class Player(ABC):
             "set_members needs to be implemented when PlayerFeature.SET_MEMBERS is set"
         )
 
-    async def group_with(self, target_player_id: str) -> None:
-        """
-        Handle GROUP_WITH command on the player.
-
-        Group this player to the given syncleader/target.
-        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
-
-        :param target_player: player_id of the target player / sync leader.
-        """
-        # default implementation will simply call set_members
-        # to add the target player to the group.
-        target_player = self.mass.players.get(target_player_id, raise_unavailable=True)
-        assert target_player  # for type checking
-        await target_player.set_members(player_ids_to_add=[self.player_id])
-
-    async def ungroup(self) -> None:
-        """
-        Handle UNGROUP command on the player.
-
-        Remove the player from any (sync)groups it currently is grouped to.
-        If this player is the sync leader (or group player),
-        all child's will be ungrouped and the group dissolved.
-
-        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
-        """
-        # default implementation will simply call set_members
-        if self.synced_to:
-            await self.set_members(player_ids_to_remove=[self.player_id])
-        else:
-            await self.set_members(player_ids_to_remove=self.group_members)
-
     async def poll(self) -> None:
         """
         Poll player for state updates.
@@ -609,6 +578,41 @@ class Player(ABC):
                     self.player_id,
                     err,
                 )
+
+    async def group_with(self, target_player_id: str) -> None:
+        """
+        Handle GROUP_WITH command on the player.
+
+        Group this player to the given syncleader/target.
+        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
+
+        :param target_player: player_id of the target player / sync leader.
+        """
+        # convenience helper method
+        # no need to implement unless your player/provider has an optimized way to execute this
+        # default implementation will simply call set_members
+        # to add the target player to the group.
+        target_player = self.mass.players.get(target_player_id, raise_unavailable=True)
+        assert target_player  # for type checking
+        await target_player.set_members(player_ids_to_add=[self.player_id])
+
+    async def ungroup(self) -> None:
+        """
+        Handle UNGROUP command on the player.
+
+        Remove the player from any (sync)groups it currently is grouped to.
+        If this player is the sync leader (or group player),
+        all child's will be ungrouped and the group dissolved.
+
+        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
+        """
+        # convenience helper method
+        # no need to implement unless your player/provider has an optimized way to execute this
+        # default implementation will simply call set_members
+        if self.synced_to:
+            await self.set_members(player_ids_to_remove=[self.player_id])
+        else:
+            await self.set_members(player_ids_to_remove=self.group_members)
 
     # DO NOT OVERWRITE BELOW !
     # These properties and methods are either managed by core logic or they
