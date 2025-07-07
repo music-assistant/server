@@ -565,6 +565,15 @@ class PlayerController(CoreController):
             raise UnsupportedFeaturedException(
                 f"Player {player.display_name} does not support volume control"
             )
+
+        if player.mute_control != PLAYER_CONTROL_NONE and player.volume_muted:
+            # if player is muted, we unmute it first
+            self.logger.debug(
+                "Unmuting player %s before setting volume",
+                player.display_name,
+            )
+            await self.cmd_volume_mute(player_id, False)
+
         if player.volume_control == PLAYER_CONTROL_NATIVE:
             # player supports volume command natively: forward to player
             async with self._player_throttlers[player_id]:
@@ -709,7 +718,7 @@ class PlayerController(CoreController):
             # player supports mute command natively: forward to player
             async with self._player_throttlers[player_id]:
                 await player.volume_mute(muted)
-        elif player.power_control == PLAYER_CONTROL_FAKE:
+        elif player.mute_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake mute control - so we use volume instead
             self.logger.debug(
                 "Using volume for muting for player %s",

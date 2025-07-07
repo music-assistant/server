@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from random import randrange
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState, ProviderFeature
 from zeroconf import ServiceStateChange
@@ -12,11 +13,15 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import get_ip_pton, lock, select_free_port
-from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_IGNORE_VOLUME
-from .helpers import convert_airplay_volume, get_cliraop_binary, get_primary_ip_address
+from .constants import CACHE_KEY_PREV_VOLUME, CONF_IGNORE_VOLUME, FALLBACK_VOLUME
+from .helpers import (
+    convert_airplay_volume,
+    get_cliraop_binary,
+    get_model_info,
+    get_primary_ip_address_from_zeroconf,
+)
 from .player import AirPlayPlayer
 
 # TODO: AirPlay provider
@@ -32,7 +37,6 @@ class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
     cliraop_bin: str | None
-    _players: dict[str, AirPlayPlayer]
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
 
@@ -43,8 +47,9 @@ class AirPlayProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._players = {}
+        # we locate the cliraop binary here, so we can fail early if it is not available
         self.cliraop_bin: str | None = await get_cliraop_binary()
+        # register DACP zeroconf service
         dacp_port = await select_free_port(39831, 49831)
         self.dacp_id = dacp_id = f"{randrange(2**64):X}"
         self.logger.debug("Starting DACP ActiveRemote %s on port %s", dacp_id, dacp_port)
@@ -73,7 +78,6 @@ class AirPlayProvider(PlayerProvider):
     ) -> None:
         """Handle MDNS service state callback."""
         if not info:
-            # When info are not provided for the service
             if state_change == ServiceStateChange.Removed and "@" in name:
                 # Service name is enough to mark the player as unavailable on 'Removed' notification
                 raw_id, display_name = name.split(".")[0].split("@", 1)
@@ -90,43 +94,23 @@ class AirPlayProvider(PlayerProvider):
         player_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
-            if airplay_player := self._players.get(player_id):
-                if not airplay_player.available:
-                    return
+            if player := self.mass.players.get(player_id):
                 # the player has become unavailable
-                self.logger.debug("Player offline: %s", display_name)
-                airplay_player._attr_available = False
-                airplay_player.update_state()
+                self.logger.debug("Player offline: %s", player.display_name)
+                self.mass.players.unregister(player_id)
             return
         # handle update for existing device
         assert info is not None  # type guard
-        if airplay_player := self._players.get(player_id):
-            cur_address = get_primary_ip_address(info)
-            if cur_address and cur_address != airplay_player.address:
-                airplay_player.logger.debug(
-                    "Address updated from %s to %s", airplay_player.address, cur_address
-                )
-                airplay_player.address = cur_address
-                airplay_player._attr_device_info = DeviceInfo(
-                    model=airplay_player.device_info.model,
-                    manufacturer=airplay_player.device_info.manufacturer,
-                    ip_address=str(cur_address),
-                )
-            if not airplay_player.available:
-                self.logger.debug("Player back online: %s", display_name)
-                airplay_player._attr_available = True
-            # always update the latest discovery info
-            airplay_player.discovery_info = info
-            airplay_player.update_state()
+        player: AirPlayPlayer | None
+        if player := self.mass.players.get(player_id):
+            # update the latest discovery info for existing player
+            player.set_discovery_info(info, display_name)
             return
         # handle new player
         await self._setup_player(player_id, display_name, info)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        # power off all players (will disconnect and close cliraop)
-        for player in self._players.values():
-            await player.stop()
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
@@ -213,38 +197,60 @@ class AirPlayProvider(PlayerProvider):
         self.mass.players.update(mass_player.player_id, skip_forward=True)
         self.mass.players.update(group_leader.player_id, skip_forward=True)
 
-    def _get_sync_clients(self, player_id: str) -> list[AirPlayPlayer]:
-        """Get all sync clients for a player."""
-        mass_player = self.mass.players.get(player_id, True)
-        assert mass_player
-        sync_clients: list[AirPlayPlayer] = []
-        # we need to return the player itself too
-        group_child_ids = {player_id}
-        group_child_ids.update(mass_player.group_childs)
-        for child_id in group_child_ids:
-            if client := self._players.get(child_id):
-                sync_clients.append(client)
-        return sync_clients
-
     async def _setup_player(
-        self, player_id: str, display_name: str, info: AsyncServiceInfo
+        self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        # Create player using the new pattern
-        airplay_player = await AirPlayPlayer.create_from_discovery(
-            self, player_id, display_name, info
+        # prefer airplay mdns info as it has more details
+        # fallback to raop info if airplay info is not available
+        airplay_info = AsyncServiceInfo(
+            "_airplay._tcp.local.", discovery_info.name.split("@")[-1].replace("_raop", "_airplay")
         )
-        if airplay_player is None:
+        if await airplay_info.async_request(self.mass.aiozc.zeroconf, 3000):
+            manufacturer, model = get_model_info(airplay_info)
+        else:
+            manufacturer, model = get_model_info(discovery_info)
+
+        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
+            self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
             return
 
-        self._players[player_id] = airplay_player
-        await self.mass.players.register_or_update(airplay_player)
+        if "apple tv" in model.lower():
+            # For now, we ignore the Apple TV until we implement the authentication.
+            # maybe we can simply use pyatv only for this part?
+            # the cliraop application has already been prepared to accept the secret.
+            self.logger.info(
+                "Ignoring %s in discovery because it is not yet supported.", display_name
+            )
+            return
 
-    async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates."""
-        if self._players.get(player_id):
-            # Airplay players don't need regular polling as they send DACP events
-            pass
+        address = get_primary_ip_address_from_zeroconf(discovery_info)
+        if not address:
+            return  # should not happen, but guard just in case
+
+        # if we reach this point, all preflights are ok and we can create the player
+        self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
+
+        # append airplay to the default display name for generic (non-apple) devices
+        # this makes it easier for users to distinguish between airplay and non-airplay devices
+        if manufacturer.lower() != "apple" and "airplay" not in display_name.lower():
+            display_name += " (AirPlay)"
+
+        # Get volume from cache
+        if not (volume := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_VOLUME)):
+            volume = FALLBACK_VOLUME
+
+        player = AirPlayPlayer(
+            provider=self,
+            player_id=player_id,
+            discovery_info=discovery_info,
+            address=address,
+            display_name=display_name,
+            manufacturer=manufacturer,
+            model=model,
+            initial_volume=volume,
+        )
+        await self.mass.players.register(player)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -277,10 +283,11 @@ class AirPlayProvider(PlayerProvider):
                 headers[x.strip()] = y.strip()
             active_remote = headers.get("Active-Remote")
             _, path, _ = headers_split[0].split(" ")
+            # lookup airplay player by active remote id
             airplay_player = next(
                 (
                     x
-                    for x in self._players.values()
+                    for x in self.players
                     if x.raop_stream and x.raop_stream.active_remote_id == active_remote
                 ),
                 None,
@@ -372,3 +379,10 @@ class AirPlayProvider(PlayerProvider):
             await writer.drain()
         finally:
             writer.close()
+
+    @property
+    def players(self) -> list[AirPlayPlayer]:
+        """Return all players belonging to this provider."""
+        if TYPE_CHECKING:
+            return cast("list[AirPlayPlayer]", super().players)
+        return super().players

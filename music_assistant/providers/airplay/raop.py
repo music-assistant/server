@@ -110,7 +110,18 @@ class RaopStreamSession:
         """Add a sync client to the session."""
         # TODO: Add the ability to add a new client to an existing session
         # e.g. by counting the number of frames sent etc.
-        raise NotImplementedError("Adding clients to a session is not yet supported")
+
+        # playback needs to be restarted to form a new multi client stream session
+        await self.mass.player_queues.stop(active_queue.queue_id)
+        # this could potentially be called by multiple players at the exact same time
+        # so we debounce the resync a bit here with a timer
+        self.mass.call_later(
+            0.5,
+            self.mass.player_queues.resume,
+            active_queue.queue_id,
+            fade_in=False,
+            task_id=f"resume_{active_queue.queue_id}",
+        )
 
     async def replace_stream(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Replace the audio source of the stream."""

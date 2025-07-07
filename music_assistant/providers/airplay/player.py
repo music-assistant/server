@@ -40,7 +40,7 @@ from .constants import (
     CONF_READ_AHEAD_BUFFER,
     FALLBACK_VOLUME,
 )
-from .helpers import get_model_info, get_primary_ip_address, is_broken_raop_model
+from .helpers import get_primary_ip_address_from_zeroconf, is_broken_raop_model
 from .raop import RaopStreamSession
 
 if TYPE_CHECKING:
@@ -72,6 +72,7 @@ class AirPlayPlayer(Player):
         display_name: str,
         manufacturer: str,
         model: str,
+        initial_volume: int = FALLBACK_VOLUME,
     ) -> None:
         """Initialize AirPlayPlayer."""
         super().__init__(provider, player_id)
@@ -81,7 +82,7 @@ class AirPlayPlayer(Player):
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
 
-        # Set player attributes
+        # Set (static) player attributes
         self._attr_type = PlayerType.PLAYER
         self._attr_name = display_name
         self._attr_available = True
@@ -96,6 +97,7 @@ class AirPlayPlayer(Player):
             PlayerFeature.MULTI_DEVICE_DSP,
             PlayerFeature.VOLUME_SET,
         }
+        self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_raop_model(manufacturer, model)
 
@@ -271,7 +273,7 @@ class AirPlayPlayer(Player):
                 return
 
         # setup RaopStreamSession for player (and its sync childs if any)
-        sync_clients = self.provider._get_sync_clients(self.player_id)
+        sync_clients = self._get_sync_clients()
         raop_stream_session = RaopStreamSession(
             self.provider, sync_clients, input_format, audio_source
         )
@@ -282,7 +284,6 @@ class AirPlayPlayer(Player):
         if self.raop_stream and self.raop_stream.running:
             await self.raop_stream.send_cli_command(f"VOLUME={volume_level}\n")
         self._attr_volume_level = volume_level
-        self._attr_volume_muted = volume_level == 0
         self.update_state()
         # store last state in cache
         await self.mass.cache.set(self.player_id, volume_level, base_key=CACHE_KEY_PREV_VOLUME)
@@ -293,8 +294,59 @@ class AirPlayPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        # This would be implemented similar to cmd_group/cmd_ungroup logic
-        # For now, airplay grouping is handled at the provider level
+        if self.synced_to:
+            # this should not happen, but guard anyways
+            raise RuntimeError("Player is synced, cannot set members")
+        if not player_ids_to_add and not player_ids_to_remove:
+            # nothing to do
+            return
+
+        if self.player_id in player_ids_to_remove:
+            # dissolve the entire sync group
+            if self.raop_stream and self.raop_stream.running:
+                # stop the stream session if it is running
+                await self.raop_stream.session.stop()
+            self._attr_group_members = []
+            self.update_state()
+            return
+
+        raop_session = self.raop_stream.session if self.raop_stream else None
+        # handle removals first
+        if player_ids_to_remove:
+            for child_player in self._get_sync_clients():
+                if child_player.player_id in player_ids_to_remove:
+                    if raop_session:
+                        await raop_session.remove_client(child_player)
+                    self._attr_group_members.remove(child_player.player_id)
+
+        # handle additions
+        for player_id in player_ids_to_add or []:
+            if player_id == self.player_id or player_id in self.group_members:
+                # nothing to do: player is already part of the group
+                continue
+            child_player: AirPlayPlayer | None = self.mass.players.get(player_id)
+            if not child_player:
+                # should not happen, but guard against it
+                continue
+            if child_player.synced_to and child_player.synced_to != self.player_id:
+                raise RuntimeError("Player is already synced to another player")
+
+            # ensure the child does not have an existing stream session active
+            if child_player := self.mass.players.get(player_id):
+                if (
+                    child_player.raop_stream
+                    and child_player.raop_stream.running
+                    and child_player.raop_stream.session != raop_session
+                ):
+                    await child_player.raop_stream.session.remove_client(child_player)
+
+            # add new child to the existing raop session (if any)
+            self._attr_group_members.append(player_id)
+            if raop_session:
+                await raop_session.add_client(child_player)
+
+        # always update the state after modifying group members
+        self.update_state()
 
     def update_volume_from_device(self, volume: int) -> None:
         """Update volume from device feedback."""
@@ -313,64 +365,35 @@ class AirPlayPlayer(Player):
             self._attr_volume_level = volume
             self.update_state()
 
-    @classmethod
-    async def create_from_discovery(
-        cls,
-        provider: AirPlayProvider,
-        player_id: str,
-        display_name: str,
-        info: AsyncServiceInfo,
-    ) -> AirPlayPlayer | None:
-        """Create AirPlayPlayer from discovery info."""
-        address = get_primary_ip_address(info)
-        if address is None:
-            return None
+    def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
+        """Set/update the discovery info for the player."""
+        self._attr_name = display_name
+        self.discovery_info = discovery_info
+        cur_address = self.address
+        new_address = get_primary_ip_address_from_zeroconf(discovery_info)
+        assert new_address  # should always be set, but guard against None
+        if cur_address != new_address:
+            self.logger.debug("Address updated from %s to %s", cur_address, new_address)
+            self.address = cur_address
+            self._attr_device_info.ip_address = new_address
+        self.update_state()
 
-        provider.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
+    def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        super().on_unload()
+        if self.raop_stream:
+            # stop the stream session if it is running
+            if self.raop_stream.running:
+                self.mass.create_task(self.raop_stream.session.stop())
+            self.raop_stream = None
 
-        # prefer airplay mdns info as it has more details
-        # fallback to raop info if airplay info is not available
-        airplay_info = AsyncServiceInfo(
-            "_airplay._tcp.local.", info.name.split("@")[-1].replace("_raop", "_airplay")
-        )
-        if await airplay_info.async_request(provider.mass.aiozc.zeroconf, 3000):
-            manufacturer, model = get_model_info(airplay_info)
-        else:
-            manufacturer, model = get_model_info(info)
-
-        if not provider.mass.config.get_raw_player_config_value(player_id, "enabled", True):
-            provider.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
-            return None
-
-        if "apple tv" in model.lower():
-            # For now, we ignore the Apple TV until we implement the authentication.
-            # maybe we can simply use pyatv only for this part?
-            # the cliraop application has already been prepared to accept the secret.
-            provider.logger.info(
-                "Ignoring %s in discovery because it is not yet supported.", display_name
-            )
-            return None
-
-        # append airplay to the default display name for generic (non-apple) devices
-        # this makes it easier for users to distinguish between airplay and non-airplay devices
-        if manufacturer.lower() != "apple" and "airplay" not in display_name.lower():
-            display_name += " (AirPlay)"
-
-        # Get volume from cache
-        if not (volume := await provider.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_VOLUME)):
-            volume = FALLBACK_VOLUME
-
-        player = cls(
-            provider=provider,
-            player_id=player_id,
-            discovery_info=info,
-            address=address,
-            display_name=display_name,
-            manufacturer=manufacturer,
-            model=model,
-        )
-
-        # Set initial volume
-        player._attr_volume_level = volume
-
-        return player
+    def _get_sync_clients(self) -> list[AirPlayPlayer]:
+        """Get all sync clients for a player."""
+        sync_clients: list[AirPlayPlayer] = []
+        # we need to return the player itself too
+        group_child_ids = {self.player_id}
+        group_child_ids.update(self.group_members)
+        for child_id in group_child_ids:
+            if client := self.mass.players.get(child_id):
+                sync_clients.append(client)
+        return sync_clients
