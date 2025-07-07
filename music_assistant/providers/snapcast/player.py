@@ -118,13 +118,6 @@ class SnapCastPlayer(Player):
         self._attr_volume_muted = muted
         self.update_state()
 
-    async def group_with(self, target_player_id: str) -> None:
-        """Group with.
-
-        we use set_members
-        """
-        return
-
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
