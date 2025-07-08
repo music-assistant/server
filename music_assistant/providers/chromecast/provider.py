@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
     from pychromecast.models import CastInfo
 
-    from music_assistant import MusicAssistant
+    from music_assistant.mass import MusicAssistant
 
 
 class ChromecastProvider(PlayerProvider):
@@ -82,7 +82,7 @@ class ChromecastProvider(PlayerProvider):
 
     ### Discovery callbacks
 
-    def _on_chromecast_discovered(self, uuid, _) -> None:
+    def _on_chromecast_discovered(self, uuid: str, _: object) -> None:
         """
         Handle Chromecast discovered callback.
 
@@ -140,7 +140,7 @@ class ChromecastProvider(PlayerProvider):
                 self.mass.players.register_or_update(castplayer), loop=self.mass.loop
             )
 
-    def _on_chromecast_removed(self, uuid, service, cast_info) -> None:
+    def _on_chromecast_removed(self, uuid: str, service: object, cast_info: object) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""
         player_id = str(service[1])
         friendly_name = service[3]

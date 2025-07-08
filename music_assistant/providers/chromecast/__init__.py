@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
-    from music_assistant import MusicAssistant
+    from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
 
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 _patched_process_media_status_org = MediaController._process_media_status
 
 
-def _patched_process_media_status(self, data) -> None:
+def _patched_process_media_status(self: MediaController, data: dict) -> None:
     """Process STATUS message(s) of the media controller."""
     _patched_process_media_status_org(self, data)
     for status_msg in data.get("status", []):
@@ -31,6 +31,7 @@ def _patched_process_media_status(self, data) -> None:
             self.status.items = items
 
 
+# Apply the monkey patch
 MediaController._process_media_status = _patched_process_media_status
 
 

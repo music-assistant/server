@@ -151,19 +151,19 @@ class CastStatusListener:
         """Handle updated CastStatus."""
         if not self._valid:
             return
-        self.castplayer.on_new_cast_status(self.castplayer, status)
+        self.castplayer.on_new_cast_status(status)
 
     def new_media_status(self, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
         if not self._valid:
             return
-        self.castplayer.on_new_media_status(self.castplayer, status)
+        self.castplayer.on_new_media_status(status)
 
     def new_connection_status(self, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
         if not self._valid:
             return
-        self.castplayer.on_new_connection_status(self.castplayer, status)
+        self.castplayer.on_new_connection_status(status)
 
     def added_to_multizone(self, group_uuid) -> None:
         """Handle the cast added to a group."""
@@ -213,7 +213,7 @@ class CastStatusListener:
             self.castplayer.display_name,
             group_uuid,
         )
-        self.castplayer.on_new_media_status(self.castplayer, media_status)
+        self.castplayer.on_new_media_status(media_status)
 
     def load_media_failed(self, queue_item_id, error_code) -> None:
         """Call when media failed to load."""
