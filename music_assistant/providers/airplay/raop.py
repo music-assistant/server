@@ -443,7 +443,7 @@ class RaopStream:
                 player.set_state_from_raop(state=PlaybackState.PLAYING)
             if "restarting w/o pause" in line:
                 # streaming has started
-                player.set_state_from_raop(state=PlaybackState.PAUSED, elapsed_time=0)
+                player.set_state_from_raop(state=PlaybackState.PLAYING, elapsed_time=0)
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 100:
