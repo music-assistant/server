@@ -14,9 +14,9 @@ but it can also be something else, hence the loose coupling.
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
 import random
 import time
+from contextlib import suppress
 from types import NoneType
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
@@ -618,7 +618,7 @@ class PlayerQueuesController(CoreController):
         if (
             (queue := self._queues.get(queue_id))
             and queue.active
-            and queue_player.state == PlaybackState.PAUSED
+            and queue.state == PlaybackState.PAUSED
         ):
             # forward the actual play/unpause command to the player
             await queue_player.play()
@@ -654,7 +654,7 @@ class PlayerQueuesController(CoreController):
                 count += 1
                 await asyncio.sleep(1)
             # wait for unpause
-            if queue_player.state != PlaybackState.PAUSED:
+            if queue_player.playback_state != PlaybackState.PAUSED:
                 return
             count = 0
             while count < 30 and queue_player.playback_state == PlaybackState.PAUSED:
@@ -1928,7 +1928,7 @@ class PlayerQueuesController(CoreController):
                     track_sec_skipped = 0
                 track_time = elapsed_time_queue_total + track_sec_skipped - played_time
                 break
-        if player.state.playback_state != PlaybackState.PLAYING:
+        if player.playback_state != PlaybackState.PLAYING:
             # if the player is not playing, we can't be sure that the elapsed time is correct
             # so we just return the queue index and the elapsed time
             return queue.current_index, queue.elapsed_time
