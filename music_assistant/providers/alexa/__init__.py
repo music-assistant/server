@@ -36,10 +36,7 @@ from music_assistant.models.player_provider import PlayerProvider
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import (
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -262,7 +259,6 @@ class AlexaPlayer(Player):
         self._attr_supported_features = {
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
-            PlayerFeature.VOLUME_MUTE,
         }
         self._attr_name = player_id
         self._attr_device_info = DeviceInfo()
@@ -296,14 +292,6 @@ class AlexaPlayer(Player):
         """Handle VOLUME_SET command on the player."""
         await self.api.set_volume(volume_level / 100)
         self._attr_volume_level = volume_level
-        self.update_state()
-
-    async def volume_mute(self, muted: bool) -> None:
-        """Handle VOLUME MUTE command on the player."""
-        await self.api.set_volume(0 if muted else self._attr_volume_level or 50)
-        self._attr_volume_muted = muted
-        if muted:
-            self._attr_volume_level = 0
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:

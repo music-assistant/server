@@ -57,8 +57,6 @@ class BuiltinPlayerProvider(PlayerProvider):
         """
         for unload_cb in self._unregister_cbs:
             unload_cb()
-        for player in self.players:
-            self.mass.players.unregister(player.player_id)
 
     @override
     async def remove_player(self, player_id: str) -> None:

@@ -556,7 +556,7 @@ class Player(ABC):
             ),
         ]
 
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         for callback in self._on_unload_callbacks:
             try:

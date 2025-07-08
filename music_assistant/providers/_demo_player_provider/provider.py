@@ -129,7 +129,7 @@ class DemoPlayerprovider(PlayerProvider):
             if mass_player := self.mass.players.get(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
-                self.mass.players.unregister(player_id)
+                await self.mass.players.unregister(player_id)
             return
         # handle update for existing device
         # (state change is either updated or added)

@@ -147,9 +147,7 @@ class ChromecastPlayer(Player):
         self.status_listener: CastStatusListener | None
         self.cast_info = cast_info
         self.mz_controller: MultizoneController | None = None
-
         self.last_poll = 0.0
-
         self.flow_meta_checksum: str | None = None
 
     def setup(
@@ -158,7 +156,6 @@ class ChromecastPlayer(Player):
         """Set features."""
         self._attr_supported_features = {
             PlayerFeature.POWER,
-            PlayerFeature.VOLUME_MUTE,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
             PlayerFeature.NEXT_PREVIOUS,
@@ -216,20 +213,12 @@ class ChromecastPlayer(Player):
         """Send POWER command to given player."""
         if powered:
             await self._launch_app()
+            self._attr_active_source = self.player_id
         else:
-            # old provider active group
-            # self.active_group = None
             self._attr_active_source = None
             await asyncio.to_thread(self.cc.quit_app)
-            self.mass.loop.call_soon_threadsafe(self.update_state)
-        # optimistically update the group childs
-        if self.type == PlayerType.GROUP:
-            active_group = self.active_group or self.player_id
-            for child_id in self.group_members:
-                if child := self.mass.players.get(child_id):
-                    child._attr_powered = powered
-                    child.active_group = active_group if powered else None
-                    self.mass.loop.call_soon_threadsafe(child.update_state)
+        # optimistically update the state
+        self.mass.loop.call_soon_threadsafe(self.update_state)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -303,6 +292,16 @@ class ChromecastPlayer(Player):
             await self.update_flow_metadata()
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        self.logger.debug("Disconnecting from chromecast socket %s", self.display_name)
+        await self.mass.loop.run_in_executor(None, self.cc.disconnect, 10)
+        self.mz_controller = None
+        if self.status_listener is not None:
+            self.status_listener.invalidate()
+        self.status_listener = None
 
     async def update_flow_metadata(self) -> None:
         """Update the metadata of a cast player running the flow stream."""
@@ -406,7 +405,7 @@ class ChromecastPlayer(Player):
         """Launch the default Media Receiver App on a Chromecast."""
         event = asyncio.Event()
 
-        if self.mass.config.get_raw_player_config_value(self.player_id, CONF_USE_MASS_APP, True):
+        if self.config.get_value(CONF_USE_MASS_APP, True):
             app_id = MASS_APP_ID
         else:
             app_id = APP_MEDIA_RECEIVER
@@ -513,9 +512,9 @@ class ChromecastProvider(PlayerProvider):
 
         await self.mass.loop.run_in_executor(None, stop_discovery)
         # stop all chromecasts
-        for castplayer in self.mass.players.all(provider_filter=self.lookup_key):
-            assert isinstance(castplayer, ChromecastPlayer)  # for type checking
-            await self._disconnect_chromecast(castplayer)
+        for player in self.players:
+            assert isinstance(player, ChromecastPlayer)  # for type checking
+            await self._disconnect_chromecast(player)
 
     ### Discovery callbacks
 
@@ -788,15 +787,3 @@ class ChromecastProvider(PlayerProvider):
                     )
                     if not group_media_controller:
                         continue
-
-    ### Helpers / utils
-
-    async def _disconnect_chromecast(self, castplayer: ChromecastPlayer) -> None:
-        """Disconnect Chromecast object if it is set."""
-        self.logger.debug("Disconnecting from chromecast socket %s", castplayer.display_name)
-        await self.mass.loop.run_in_executor(None, castplayer.cc.disconnect, 10)
-        castplayer.mz_controller = None
-        if castplayer.status_listener is not None:
-            castplayer.status_listener.invalidate()
-        castplayer.status_listener = None
-        await self.mass.players.remove(castplayer.player_id)

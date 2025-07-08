@@ -1187,7 +1187,7 @@ class PlayerController(CoreController):
         assert player is not None  # for type checker
         self.mass.loop.call_soon(player.update_state, force_update)
 
-    def unregister(self, player_id: str, permanent: bool = False) -> None:
+    async def unregister(self, player_id: str, permanent: bool = False) -> None:
         """
         Unregister a player from the player controller.
 
@@ -1209,7 +1209,7 @@ class PlayerController(CoreController):
             return
         self.logger.info("Player removed: %s", player.name)
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
-        player.on_unload()
+        await player.on_unload()
         if permanent:
             self.mass.config.remove(f"players/{player_id}")
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
