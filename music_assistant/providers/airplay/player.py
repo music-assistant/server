@@ -303,18 +303,18 @@ class AirPlayPlayer(Player):
             # nothing to do
             return
 
-        if self.player_id in player_ids_to_remove:
-            # dissolve the entire sync group
-            if self.raop_stream and self.raop_stream.running:
-                # stop the stream session if it is running
-                await self.raop_stream.session.stop()
-            self._attr_group_members = []
-            self.update_state()
-            return
-
         raop_session = self.raop_stream.session if self.raop_stream else None
         # handle removals first
         if player_ids_to_remove:
+            if self.player_id in player_ids_to_remove:
+                # dissolve the entire sync group
+                if self.raop_stream and self.raop_stream.running:
+                    # stop the stream session if it is running
+                    await self.raop_stream.session.stop()
+                self._attr_group_members = []
+                self.update_state()
+                return
+
             for child_player in self._get_sync_clients():
                 if child_player.player_id in player_ids_to_remove:
                     if raop_session:

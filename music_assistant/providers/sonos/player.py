@@ -105,6 +105,20 @@ class SonosPlayer(Player):
             and airplay_player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         )
 
+    @property
+    def synced_to(self) -> str | None:
+        """
+        Return the id of the player this player is synced to (sync leader).
+
+        If this player is not synced to another player (or is the sync leader itself),
+        this should return None.
+        """
+        if self.client.player.is_coordinator:
+            return None
+        if self.client.player.group:
+            return self.client.player.group.coordinator_id
+        return None
+
     async def setup(self) -> None:
         """Handle setup of the player."""
         # connect the player first so we can fail early
@@ -568,7 +582,6 @@ class SonosPlayer(Player):
                 )
             else:
                 self._attr_can_group_with = {self._provider.instance_id}
-            self._attr_synced_to = None
         else:
             # player is group child (synced to another player)
             group_parent: SonosPlayer = self.mass.players.get(
@@ -579,8 +592,6 @@ class SonosPlayer(Player):
                 return
             active_group = group_parent.client.player.group
             self._attr_group_members.clear()
-            self._attr_synced_to = active_group.coordinator_id
-            self._attr_active_source = active_group.coordinator_id
 
         # map playback state
         self._playback_state = PLAYBACK_STATE_MAP[active_group.playback_state]

@@ -251,7 +251,6 @@ class BluesoundPlayer(Player):
                     self._attr_group_members = self.sync_status.followers
                 else:
                     self._attr_group_members.clear()
-                self._attr_synced_to = None
 
             if self.status.state == "stream":
                 self._attr_current_media = PlayerMedia(
@@ -266,8 +265,19 @@ class BluesoundPlayer(Player):
 
         else:
             self._attr_group_members.clear()
-            self._attr_synced_to = self.sync_status.leader
             self._attr_active_source = self.sync_status.leader
 
         self._attr_playback_state = PLAYBACK_STATE_MAP[self.status.state]
         self.update_state()
+
+    @property
+    def synced_to(self) -> str | None:
+        """
+        Return the id of the player this player is synced to (sync leader).
+
+        If this player is not synced to another player (or is the sync leader itself),
+        this should return None.
+        """
+        if self.sync_status.leader:
+            return self.sync_status.leader
+        return None

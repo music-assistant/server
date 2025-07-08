@@ -56,8 +56,22 @@ class SnapCastPlayer(Player):
         self.snap_client = snap_client
         self.snap_client_id = snap_client_id
         super().__init__(provider, player_id)
-
         self._stream_task: asyncio.Task | None = None
+
+    @property
+    def synced_to(self) -> str | None:
+        """
+        Return the id of the player this player is synced to (sync leader).
+
+        If this player is not synced to another player (or is the sync leader itself),
+        this should return None.
+        """
+        snap_group = self._get_snapgroup()
+        assert snap_group is not None  # for type checking
+        master_id: str = self.provider._get_ma_id(snap_group.clients[0])
+        if len(snap_group.clients) < 2 or self.player_id == master_id:
+            return None
+        return master_id
 
     def setup(self) -> None:
         """Set up player."""
@@ -74,12 +88,7 @@ class SnapCastPlayer(Player):
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PLAY_ANNOUNCEMENT,
         }
-        self._attr_synced_to = self._synced_to()
         self._attr_can_group_with = {self.provider.instance_id}
-
-    async def play(self) -> None:
-        """Play."""
-        return
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -123,24 +132,24 @@ class SnapCastPlayer(Player):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Set members.
-
-        we use group with in snapcast.
-        """
-        if player_ids_to_add is None:
-            return
-        mass_target_player = self
-        group = mass_target_player._get_snapgroup()
+        """Handle SET_MEMBERS command on the player."""
+        group = self._get_snapgroup()
         assert group is not None  # for type checking
-        for player_id in player_ids_to_add:
+
+        # handle client additions
+        for player_id in player_ids_to_add or []:
             if player_id not in group.clients:
-                child_player = self.mass.players.get(player_id)
-                await group.add_client(self.provider._get_snapclient_id(player_id))
-                mass_target_player._attr_group_members.append(player_id)
-                if child_player is not None:
-                    child_player._attr_synced_to = self.player_id
-                    child_player.update_state()
+                snapcast_id = self.provider._get_snapclient_id(player_id)
+                await group.add_client(snapcast_id)
+                self._attr_group_members.append(player_id)
         self.update_state()
+
+        # handle client removals
+        for player_id in player_ids_to_remove or []:
+            if player_id in group.clients:
+                snapcast_id = self.provider._get_snapclient_id(player_id)
+                await group.remove_client(snapcast_id)
+                self._attr_group_members.remove(player_id)
 
     async def ungroup(self) -> None:
         """Ungroup."""
@@ -153,7 +162,6 @@ class SnapCastPlayer(Player):
         mass_sync_master_player = self.mass.players.get(self.synced_to)
         assert mass_sync_master_player is not None  # for type checking
         mass_sync_master_player._attr_group_members.remove(self.player_id)
-        self._attr_synced_to = None
         group = self._get_snapgroup()
         assert group is not None  # for type checking
         await group.remove_client(self.snap_client_id)
@@ -361,7 +369,6 @@ class SnapCastPlayer(Player):
         self._attr_volume_level = self.snap_client.volume
         self._attr_volume_muted = self.snap_client.muted
         self._attr_available = self.snap_client.connected
-        self._attr_synced_to = self._synced_to()
 
         # Note: when the active stream is a MASS stream the active_source is __not__ updated at all.
         # So it doesn't matter whether a MASS stream is for music or announcements.
@@ -404,7 +411,6 @@ class SnapCastPlayer(Player):
         # The control script is used only for music streams in the builtin server
         # (queue_id is None only for announcement streams).
         if self.provider._use_builtin_server and queue_id:
-            # FIXME: Do we need the extra args?
             extra_args = (
                 f"&controlscript={urllib.parse.quote_plus(str(CONTROL_SCRIPT))}"
                 f"&controlscriptparams=--queueid={urllib.parse.quote_plus(queue_id)}%20"
@@ -469,16 +475,6 @@ class SnapCastPlayer(Player):
         if group := self._get_snapgroup():
             return self._get_snapstream(group.stream)
         return None
-
-    def _synced_to(self) -> str | None:
-        """Return player_id of the player this player is synced to."""
-        snap_group = self._get_snapgroup()
-        assert snap_group is not None  # for type checking
-        master_id: str = self.provider._get_ma_id(snap_group.clients[0])
-
-        if len(snap_group.clients) < 2 or self.player_id == master_id:
-            return None
-        return master_id
 
     def _group_childs(self) -> None:
         """Return player_ids of the players synced to this player."""

@@ -114,7 +114,6 @@ class Player(ABC):
     _attr_volume_muted: bool | None = None
     _attr_elapsed_time: float | None = None
     _attr_elapsed_time_last_updated: float | None = None
-    _attr_synced_to: str | None = None
     _attr_active_source: str | None = None
     _attr_current_media: PlayerMedia | None = None
     _attr_needs_poll: bool = False
@@ -291,16 +290,6 @@ class Player(ABC):
         or just the provider's instance_id if all players can group with each other.
         """
         return self._attr_can_group_with
-
-    @property
-    def synced_to(self) -> str | None:
-        """
-        Return the id of the player this player is synced to (sync leader).
-
-        If this player is not synced to another player (or is the sync leader itself),
-        this should return None.
-        """
-        return self._attr_synced_to
 
     @property
     def active_source(self) -> str | None:
@@ -610,9 +599,29 @@ class Player(ABC):
         # no need to implement unless your player/provider has an optimized way to execute this
         # default implementation will simply call set_members
         if self.synced_to:
-            await self.set_members(player_ids_to_remove=[self.player_id])
-        else:
+            if parent_player := self.mass.players.get(self.synced_to):
+                # if this player is synced to another player, remove self from that group
+                await parent_player.set_members(player_ids_to_remove=[self.player_id])
+        elif self.group_members:
             await self.set_members(player_ids_to_remove=self.group_members)
+
+    @cached_property
+    def synced_to(self) -> str | None:
+        """
+        Return the id of the player this player is synced to (sync leader).
+
+        If this player is not synced to another player (or is the sync leader itself),
+        this should return None.
+        """
+        # default implementation: feel free to override
+        for player in self.mass.players.all():
+            if player.player_id == self.player_id:
+                # skip self
+                continue
+            if self.player_id in player.group_members:
+                # this player is a member of the group of the other player
+                return player.player_id
+        return None
 
     # DO NOT OVERWRITE BELOW !
     # These properties and methods are either managed by core logic or they

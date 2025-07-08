@@ -361,14 +361,11 @@ class HomeAssistantPlayer(Player):
                 if group_members and group_members[0] == self.player_id:
                     # first in the list is the group leader
                     self._attr_group_members.set(group_members)
-                    self._attr_synced_to = None
                 elif group_members and group_members[0] != self.player_id:
                     # this player is not the group leader
                     self._attr_group_members.clear()
-                    self._attr_synced_to = group_members[0]
                 else:
                     self._attr_group_members.clear()
-                    self._attr_synced_to = None
 
         # Update media info if available
         if attributes.get("media_content_id"):

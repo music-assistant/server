@@ -116,6 +116,7 @@ class RaopStreamSession:
         if not sync_leader.raop_stream or not sync_leader.raop_stream.running:
             return
 
+        await self.stop()  # we need to stop the current session to add a new client
         # this could potentially be called by multiple players at the exact same time
         # so we debounce the resync a bit here with a timer
         self.mass.call_later(
