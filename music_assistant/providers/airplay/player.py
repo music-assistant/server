@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     MediaType,
+    PlaybackState,
     PlayerFeature,
     PlayerType,
 )
 from music_assistant_models.media_items import AudioFormat
-from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_ENTRY_DEPRECATED_EQ_BASS,
@@ -44,6 +44,8 @@ from .helpers import get_primary_ip_address_from_zeroconf, is_broken_raop_model
 from .raop import RaopStreamSession
 
 if TYPE_CHECKING:
+    from zeroconf.asyncio import AsyncServiceInfo
+
     from music_assistant.providers.player_group import PlayerGroupProvider
 
     from .provider import AirPlayProvider
@@ -378,6 +380,17 @@ class AirPlayPlayer(Player):
             self._attr_device_info.ip_address = new_address
         self.update_state()
 
+    def set_state_from_raop(
+        self, state: PlaybackState | None = None, elapsed_time: float | None = None
+    ) -> None:
+        """Set the playback state from RAOP."""
+        if state is not None:
+            self._attr_playback_state = state
+        if elapsed_time is not None:
+            self._attr_elapsed_time = elapsed_time
+            self._attr_elapsed_time_last_updated = time.time()
+        self.update_state()
+
     def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         super().on_unload()
@@ -396,4 +409,6 @@ class AirPlayPlayer(Player):
         for child_id in group_child_ids:
             if client := self.mass.players.get(child_id):
                 sync_clients.append(client)
+        if TYPE_CHECKING:
+            sync_clients = cast("list[AirPlayPlayer]", sync_clients)
         return sync_clients

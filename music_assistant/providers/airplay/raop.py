@@ -12,7 +12,7 @@ from contextlib import suppress
 from random import randint
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlaybackState, PlayerState
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
@@ -111,16 +111,17 @@ class RaopStreamSession:
         # TODO: Add the ability to add a new client to an existing session
         # e.g. by counting the number of frames sent etc.
 
-        # playback needs to be restarted to form a new multi client stream session
-        await self.mass.player_queues.stop(active_queue.queue_id)
+        # temp solution: just restart the whole playback session when new client(s) join
+        sync_leader = self.sync_clients[0]
+        if not sync_leader.raop_stream or not sync_leader.raop_stream.running:
+            return
+
         # this could potentially be called by multiple players at the exact same time
         # so we debounce the resync a bit here with a timer
         self.mass.call_later(
             0.5,
-            self.mass.player_queues.resume,
-            active_queue.queue_id,
-            fade_in=False,
-            task_id=f"resume_{active_queue.queue_id}",
+            sync_leader.play_media(sync_leader.current_media),
+            task_id=f"resync_session_{sync_leader.player_id}",
         )
 
     async def replace_stream(self, audio_source: AsyncGenerator[bytes, None]) -> None:
@@ -194,13 +195,13 @@ class RaopStream:
     def __init__(
         self,
         session: RaopStreamSession,
-        airplay_player: AirPlayPlayer,
+        player: AirPlayPlayer,
     ) -> None:
         """Initialize RaopStream."""
         self.session = session
         self.prov = session.prov
         self.mass = session.prov.mass
-        self.airplay_player = airplay_player
+        self.player = player
 
         # always generate a new active remote id to prevent race conditions
         # with the named pipe used to send audio
@@ -229,17 +230,14 @@ class RaopStream:
         """Initialize CLIRaop process for a player."""
         assert self.prov.cliraop_bin
         extra_args: list[str] = []
-        player_id = self.airplay_player.player_id
-        mass_player = self.mass.players.get(player_id)
-        if not mass_player:
-            return
+        player_id = self.player.player_id
         extra_args += ["-if", self.mass.streams.bind_ip]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ENCRYPTION, False):
             extra_args += ["-encrypt"]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):
             extra_args += ["-alac"]
         for prop in ("et", "md", "am", "pk", "pw"):
-            if prop_value := self.airplay_player.discovery_info.decoded_properties.get(prop):
+            if prop_value := self.player.discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
         sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
@@ -269,21 +267,21 @@ class RaopStream:
             "-ntpstart",
             str(start_ntp),
             "-port",
-            str(self.airplay_player.discovery_info.port),
+            str(self.player.discovery_info.port),
             "-wait",
             str(wait_start - sync_adjust),
             "-latency",
             str(read_ahead),
             "-volume",
-            str(mass_player.volume_level),
+            str(self.player.volume_level),
             *extra_args,
             "-dacp",
             self.prov.dacp_id,
             "-activeremote",
             self.active_remote_id,
             "-udn",
-            self.airplay_player.discovery_info.name,
-            self.airplay_player.address,
+            self.player.discovery_info.name,
+            self.player.address,
             "-",
         ]
         self._cliraop_proc = AsyncProcess(cliraop_args, stdin=True, stderr=True, name="cliraop")
@@ -293,7 +291,7 @@ class RaopStream:
         # read first 20 lines of stderr to get the initial status
         for _ in range(20):
             line = (await self._cliraop_proc.read_stderr()).decode("utf-8", errors="ignore")
-            self.airplay_player.logger.debug(line)
+            self.player.logger.debug(line)
             if "connected to " in line:
                 self._started.set()
                 break
@@ -304,7 +302,7 @@ class RaopStream:
         # repeat sending the volume level to the player because some players seem
         # to ignore it the first time
         # https://github.com/music-assistant/support/issues/3330
-        await self.send_cli_command(f"VOLUME={mass_player.volume_level}\n")
+        await self.send_cli_command(f"VOLUME={self.player.volume_level}\n")
         # start reading the stderr of the cliraop process from another task
         self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
 
@@ -320,9 +318,7 @@ class RaopStream:
             await self._cliraop_proc.close(True)
         if self._ffmpeg_proc and not self._ffmpeg_proc.closed:
             await self._ffmpeg_proc.close(True)
-        if mass_player := self.mass.players.get(self.airplay_player.player_id):
-            mass_player.state = PlayerState.IDLE
-            self.mass.players.update(mass_player.player_id)
+        self.player.set_state_from_raop(state=PlaybackState.IDLE, elapsed_time=0)
 
     async def write_chunk(self, chunk: bytes) -> None:
         """Write a (pcm) audio chunk."""
@@ -354,8 +350,8 @@ class RaopStream:
                 f.write(command)
 
         named_pipe = f"/tmp/raop-{self.active_remote_id}"  # noqa: S108
-        self.airplay_player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
-        self.airplay_player.last_command_sent = time.time()
+        self.player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
+        self.player.last_command_sent = time.time()
         await asyncio.to_thread(send_data)
 
     def start_ffmpeg_stream(self) -> None:
@@ -376,14 +372,12 @@ class RaopStream:
             output_format=AIRPLAY_PCM_FORMAT,
             filter_params=get_player_filter_params(
                 self.mass,
-                self.airplay_player.player_id,
+                self.player.player_id,
                 self.session.input_format,
                 AIRPLAY_PCM_FORMAT,
             ),
         )
         self._stream_bytes_sent = 0
-        mass_player = self.mass.players.get(self.airplay_player.player_id)
-        assert mass_player  # for type checker
         await self._ffmpeg_proc.start()
         chunksize = get_chunksize(AIRPLAY_PCM_FORMAT)
         # wait for cliraop to be ready
@@ -399,20 +393,18 @@ class RaopStream:
             del chunk
             # we base elapsed time on the amount of bytes sent
             # so we can account for reusing the same session for multiple streams
-            mass_player.elapsed_time = self._stream_bytes_sent / chunksize
-            mass_player.elapsed_time_last_updated = time.time()
+            self.player.set_state_from_raop(
+                elapsed_time=self._stream_bytes_sent / chunksize,
+            )
         # if we reach this point, the process exited, most likely because the stream ended
         if self._cliraop_proc and not self._cliraop_proc.closed:
             await self._cliraop_proc.write_eof()
 
     async def _stderr_reader(self) -> None:
         """Monitor stderr for the running CLIRaop process."""
-        airplay_player = self.airplay_player
-        mass_player = self.mass.players.get(airplay_player.player_id)
-        if not mass_player or not mass_player.active_source:
-            return
-        queue = self.mass.player_queues.get_active_queue(mass_player.active_source)
-        logger = airplay_player.logger
+        player = self.player
+        queue = self.mass.players.get_active_queue(player)
+        logger = player.logger
         lost_packets = 0
         prev_metadata_checksum: str = ""
         prev_progress_report: float = 0
@@ -422,13 +414,13 @@ class RaopStream:
             if "elapsed milliseconds:" in line:
                 # this is received more or less every second while playing
                 # millis = int(line.split("elapsed milliseconds: ")[1])
-                # mass_player.elapsed_time = (millis / 1000) - self.elapsed_time_correction
-                # mass_player.elapsed_time_last_updated = time.time()
+                # self.player.elapsed_time = (millis / 1000) - self.elapsed_time_correction
+                # self.player.elapsed_time_last_updated = time.time()
                 # send metadata to player(s) if needed
                 # NOTE: this must all be done in separate tasks to not disturb audio
                 now = time.time()
                 if (
-                    (mass_player.elapsed_time or 0) > 2
+                    (player.elapsed_time or 0) > 2
                     and queue
                     and queue.current_item
                     and queue.current_item.streamdetails
@@ -446,17 +438,12 @@ class RaopStream:
                         prev_progress_report = now
                         self.mass.create_task(self._send_progress(queue))
             if "set pause" in line or "Pause at" in line:
-                mass_player.state = PlaybackState.PAUSED
-                self.mass.players.update(airplay_player.player_id)
+                player.set_state_from_raop(state=PlaybackState.PAUSED)
             if "Restarted at" in line or "restarting w/ pause" in line:
-                mass_player.state = PlaybackState.PLAYING
-                self.mass.players.update(airplay_player.player_id)
+                player.set_state_from_raop(state=PlaybackState.PLAYING)
             if "restarting w/o pause" in line:
                 # streaming has started
-                mass_player.state = PlaybackState.PLAYING
-                mass_player.elapsed_time = 0
-                mass_player.elapsed_time_last_updated = time.time()
-                self.mass.players.update(airplay_player.player_id)
+                player.set_state_from_raop(state=PlaybackState.PAUSED, elapsed_time=0)
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 100:

@@ -12,7 +12,7 @@ from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.util import get_ip_pton, lock, select_free_port
+from music_assistant.helpers.util import get_ip_pton, select_free_port
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import CACHE_KEY_PREV_VOLUME, CONF_IGNORE_VOLUME, FALLBACK_VOLUME
@@ -118,85 +118,6 @@ class AirPlayProvider(PlayerProvider):
         if self._dacp_info:
             await self.mass.aiozc.async_unregister_service(self._dacp_info)
 
-    @lock
-    async def cmd_group(self, player_id: str, target_player: str) -> None:
-        """Handle GROUP command for given player.
-
-        Join/add the given player(id) to the given (master) player/sync group.
-
-            - player_id: player_id of the player to handle the command.
-            - target_player: player_id of the syncgroup master or group player.
-        """
-        if player_id == target_player:
-            return
-        child_player = self.mass.players.get(player_id)
-        assert child_player  # guard
-        parent_player = self.mass.players.get(target_player)
-        assert parent_player  # guard
-        if parent_player.synced_to:
-            raise RuntimeError("Player is already synced")
-        if child_player.synced_to and child_player.synced_to != target_player:
-            raise RuntimeError("Player is already synced to another player")
-        if player_id in parent_player.group_childs:
-            # nothing to do: player is already part of the group
-            return
-        # ensure the child does not have an existing stream session active
-        if airplay_player := self._players.get(player_id):
-            if airplay_player.raop_stream and airplay_player.raop_stream.running:
-                await airplay_player.raop_stream.session.remove_client(airplay_player)
-        # always make sure that the parent player is part of the sync group
-        parent_player.group_childs.append(parent_player.player_id)
-        parent_player.group_childs.append(child_player.player_id)
-        child_player.synced_to = parent_player.player_id
-
-        # check if we should (re)start or join a stream session
-        active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
-        if active_queue.state == PlaybackState.PLAYING:
-            # playback needs to be restarted to form a new multi client stream session
-            # TODO: allow late joining to existing stream
-            await self.mass.player_queues.stop(active_queue.queue_id)
-            # this could potentially be called by multiple players at the exact same time
-            # so we debounce the resync a bit here with a timer
-            self.mass.call_later(
-                0.5,
-                self.mass.player_queues.resume,
-                active_queue.queue_id,
-                fade_in=False,
-                task_id=f"resume_{active_queue.queue_id}",
-            )
-        else:
-            # make sure that the player manager gets an update
-            self.mass.players.update(child_player.player_id, skip_forward=True)
-            self.mass.players.update(parent_player.player_id, skip_forward=True)
-
-    @lock
-    async def cmd_ungroup(self, player_id: str) -> None:
-        """Handle UNGROUP command for given player.
-
-        Remove the given player from any (sync)groups it currently is grouped to.
-
-            - player_id: player_id of the player to handle the command.
-        """
-        mass_player = self.mass.players.get(player_id, raise_unavailable=True)
-        if not mass_player or not mass_player.synced_to:
-            return
-        ap_player = self._players[player_id]
-        if ap_player.raop_stream and ap_player.raop_stream.running:
-            await ap_player.raop_stream.session.remove_client(ap_player)
-        group_leader = self.mass.players.get(mass_player.synced_to, raise_unavailable=True)
-        assert group_leader
-        if player_id in group_leader.group_childs:
-            group_leader.group_childs.remove(player_id)
-        mass_player.synced_to = None
-        mass_player.active_source = None
-        mass_player.state = PlaybackState.IDLE
-        airplay_player = self._players.get(player_id)
-        if airplay_player:
-            await airplay_player.stop()
-        # make sure that the player manager gets an update
-        self.mass.players.update(mass_player.player_id, skip_forward=True)
-        self.mass.players.update(group_leader.player_id, skip_forward=True)
-
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
     ) -> None:
@@ -284,7 +205,7 @@ class AirPlayProvider(PlayerProvider):
             active_remote = headers.get("Active-Remote")
             _, path, _ = headers_split[0].split(" ")
             # lookup airplay player by active remote id
-            airplay_player = next(
+            player = next(
                 (
                     x
                     for x in self.players
@@ -294,21 +215,18 @@ class AirPlayProvider(PlayerProvider):
             )
             self.logger.debug(
                 "DACP request for %s (%s): %s -- %s",
-                airplay_player.discovery_info.name if airplay_player else "UNKNOWN PLAYER",
+                player.discovery_info.name if player else "UNKNOWN PLAYER",
                 active_remote,
                 path,
                 body,
             )
-            if not airplay_player:
+            if not player:
                 return
 
-            player_id = airplay_player.player_id
-            mass_player = self.mass.players.get(player_id)
-            if not mass_player:
-                return
+            player_id = player.player_id
             ignore_volume_report = (
                 self.mass.config.get_raw_player_config_value(player_id, CONF_IGNORE_VOLUME, False)
-                or mass_player.device_info.manufacturer.lower() == "apple"
+                or player.device_info.manufacturer.lower() == "apple"
             )
             active_queue = self.mass.player_queues.get_active_queue(player_id)
             if path == "/ctrl-int/1/nextitem":
@@ -318,7 +236,7 @@ class AirPlayProvider(PlayerProvider):
             elif path == "/ctrl-int/1/play":
                 # sometimes this request is sent by a device as confirmation of a play command
                 # we ignore this if the player is already playing
-                if mass_player.state != PlaybackState.PLAYING:
+                if player.state != PlaybackState.PLAYING:
                     self.mass.create_task(self.mass.player_queues.play(active_queue.queue_id))
             elif path == "/ctrl-int/1/playpause":
                 self.mass.create_task(self.mass.player_queues.play_pause(active_queue.queue_id))
@@ -338,7 +256,7 @@ class AirPlayProvider(PlayerProvider):
             elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
                 # sometimes this request is sent by a device as confirmation of a play command
                 # we ignore this if the player is already playing
-                if mass_player.state == PlaybackState.PLAYING:
+                if player.state == PlaybackState.PLAYING:
                     self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
             elif "dmcp.device-volume=" in path and not ignore_volume_report:
                 # This is a bit annoying as this can be either the device confirming a new volume
@@ -347,24 +265,19 @@ class AirPlayProvider(PlayerProvider):
                 # to prevent an endless pingpong of volume changes
                 raop_volume = float(path.split("dmcp.device-volume=", 1)[-1])
                 volume = convert_airplay_volume(raop_volume)
-                airplay_player.update_volume_from_device(volume)
+                player.update_volume_from_device(volume)
             elif "dmcp.volume=" in path:
                 # volume change request from device (e.g. volume buttons)
                 volume = int(path.split("dmcp.volume=", 1)[-1])
-                airplay_player.update_volume_from_device(volume)
+                player.update_volume_from_device(volume)
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
-                if raop_stream := airplay_player.raop_stream:
+                if raop_stream := player.raop_stream:
                     raop_stream.prevent_playback = True
-                    if mass_player.synced_to:
-                        self.mass.create_task(self.cmd_ungroup(airplay_player.player_id))
-                    else:
-                        self.mass.create_task(
-                            airplay_player.raop_stream.session.remove_client(airplay_player)
-                        )
+                    self.mass.create_task(player.raop_stream.session.remove_client(player))
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
-                if raop_stream := airplay_player.raop_stream:
+                if raop_stream := player.raop_stream:
                     raop_stream.prevent_playback = False
 
             # send response
