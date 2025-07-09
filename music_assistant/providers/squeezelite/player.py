@@ -269,21 +269,59 @@ class SqueezelitePlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        if player_ids_to_add:
-            for player_id in player_ids_to_add:
-                if slave_player := self.mass.players.get(player_id):
-                    slave_player._attr_synced_to = self.player_id
-                    slave_player.update_state()
+        if self.synced_to:
+            # this should not happen, but guard anyways
+            raise RuntimeError("Player is synced, cannot set members")
+        if not player_ids_to_add and not player_ids_to_remove:
+            # nothing to do
+            return
 
+        raop_session = self.raop_stream.session if self.raop_stream else None
+        # handle removals first
         if player_ids_to_remove:
-            for player_id in player_ids_to_remove:
-                if slave_player := self.mass.players.get(player_id):
-                    slave_player._attr_synced_to = None
-                    slave_player.update_state()
+            if self.player_id in player_ids_to_remove:
+                # dissolve the entire sync group
+                if self.raop_stream and self.raop_stream.running:
+                    # stop the stream session if it is running
+                    await self.raop_stream.session.stop()
+                self._attr_group_members = []
+                self.update_state()
+                return
 
-    async def poll(self) -> None:
-        """Poll player for state updates."""
-        # Squeezelite players are event-driven, no polling needed
+            for child_player in self._get_sync_clients():
+                if child_player.player_id in player_ids_to_remove:
+                    if raop_session:
+                        await raop_session.remove_client(child_player)
+                    self._attr_group_members.remove(child_player.player_id)
+
+        # handle additions
+        for player_id in player_ids_to_add or []:
+            if player_id == self.player_id or player_id in self.group_members:
+                # nothing to do: player is already part of the group
+                continue
+            child_player: SqueezelitePlayer | None = self.mass.players.get(player_id)
+            if not child_player:
+                # should not happen, but guard against it
+                continue
+            if child_player.synced_to and child_player.synced_to != self.player_id:
+                raise RuntimeError("Player is already synced to another player")
+
+            # ensure the child does not have an existing stream session active
+            if child_player := self.mass.players.get(player_id):
+                if (
+                    child_player.raop_stream
+                    and child_player.raop_stream.running
+                    and child_player.raop_stream.session != raop_session
+                ):
+                    await child_player.raop_stream.session.remove_client(child_player)
+
+            # add new child to the existing raop session (if any)
+            self._attr_group_members.append(player_id)
+            if raop_session:
+                await raop_session.add_client(child_player)
+
+        # always update the state after modifying group members
+        self.update_state()
 
     def set_config(self, config: PlayerConfig) -> None:
         """Set/update the player config."""

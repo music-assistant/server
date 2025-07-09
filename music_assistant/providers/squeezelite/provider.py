@@ -132,8 +132,3 @@ class SqueezelitePlayerProvider(PlayerProvider):
         """Handle player update from slimproto server."""
         if player := self._players.get(player_id):
             await player.handle_slim_event(event)
-
-    async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates."""
-        if player := self._players.get(player_id):
-            await player.poll()

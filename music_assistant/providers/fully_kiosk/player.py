@@ -72,10 +72,6 @@ class FullyKioskPlayer(Player):
         self._attr_volume_level = volume_level
         self.update_state()
 
-    async def play(self) -> None:
-        """Send PLAY command to given player."""
-        # FullyKiosk doesn't have a separate play command
-
     async def stop(self) -> None:
         """Send STOP command to given player."""
         await self.fully.stopSound()
