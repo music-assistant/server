@@ -65,6 +65,7 @@ class BluesoundPlayer(Player):
         provider: BluesoundPlayerProvider,
         player_id: str,
         discovery_info: BluesoundDiscoveryInfo,
+        name: str,
         ip_address: str,
         port: int,
     ) -> None:
@@ -83,7 +84,7 @@ class BluesoundPlayer(Player):
         # Set base player attributes
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = PLAYER_FEATURES_BASE.copy()
-        self._attr_name = discovery_info.get("model", player_id)
+        self._attr_name = name
         self._attr_device_info = DeviceInfo(
             model=discovery_info.get("model", "BluOS Device"),
             manufacturer="BluOS",

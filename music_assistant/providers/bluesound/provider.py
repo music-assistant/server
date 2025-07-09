@@ -85,7 +85,7 @@ class BluesoundPlayerProvider(PlayerProvider):
         port = get_port_from_zeroconf(info)
 
         # Create BluOS player
-        bluos_player = BluesoundPlayer(self, player_id, discovery_info, ip_address, port)
+        bluos_player = BluesoundPlayer(self, player_id, discovery_info, name, ip_address, port)
         self.bluos_players[player_id] = bluos_player
 
         # Register with Music Assistant
