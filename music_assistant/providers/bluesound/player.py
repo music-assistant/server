@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
@@ -93,6 +93,7 @@ class BluesoundPlayer(Player):
         self._attr_available = True
         self._attr_needs_poll = True
         self._attr_poll_interval = 30
+        self._attr_can_group_with = {provider.instance_id}
 
     async def setup(self) -> None:
         """Set up the player."""
@@ -246,10 +247,24 @@ class BluesoundPlayer(Player):
         elif self.status.state == "stream" and (mass_active not in self.status.stream_url):
             self._attr_active_source = SOURCE_UNKNOWN
 
+        # TODO check pair status
+
+        # TODO fix pairing
+
+        # Create a lookup map of (ip, port) -> player_id for all known players.
+        player_map = {
+            (player.ip_address, player.port): player.player_id
+            for player in cast("list[BluesoundPlayer]", self.provider.players)
+        }
+
         if self.sync_status.leader is None:
             if self.sync_status.followers:
                 if len(self.sync_status.followers) > 1:
-                    self._attr_group_members = self.sync_status.followers
+                    self._attr_group_members = [
+                        player_map[f.ip, f.port]
+                        for f in self.sync_status.followers
+                        if (f.ip, f.port) in player_map
+                    ]
                 else:
                     self._attr_group_members.clear()
 
@@ -266,7 +281,8 @@ class BluesoundPlayer(Player):
 
         else:
             self._attr_group_members.clear()
-            self._attr_active_source = self.sync_status.leader
+            leader = self.sync_status.leader
+            self._attr_active_source = player_map[leader.ip, leader.port]
 
         self._attr_playback_state = PLAYBACK_STATE_MAP[self.status.state]
         self.update_state()
