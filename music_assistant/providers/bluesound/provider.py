@@ -70,11 +70,20 @@ class BluesoundPlayerProvider(PlayerProvider):
 
         # Handle update of existing player
         if bluos_player := self.bluos_players.get(player_id):
-            bluos_player.connected = True
-            if mass_player := self.mass.players.get(player_id):
-                mass_player.available = True
-                self.mass.players.update(player_id)
-            return
+            ip_changed = False
+            # Check if the IP address has changed
+            if ip_address and ip_address != bluos_player.ip_address:
+                self.logger.debug(
+                    "IP address for player %s updated to %s", bluos_player.name, ip_address
+                )
+                ip_changed = True  # Always recreate the player on ip changes
+
+            # Mark player as available if it was previously unavailable
+            if not bluos_player.available and not ip_changed:
+                self.logger.debug("Player back online: %s", bluos_player.name)
+                bluos_player._attr_available = True
+                bluos_player.update_state()
+                return
 
         # New player discovered
         self.logger.debug("Discovered player: %s", name)
