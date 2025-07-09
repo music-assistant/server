@@ -58,8 +58,8 @@ class BluesoundPlayerProvider(PlayerProvider):
             if mass_player := self.mass.players.get(player_id):
                 # The player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
-                mass_player.available = False
-                self.mass.players.update(player_id)
+                mass_player._attr_available = False
+                mass_player.update_state()
             return
 
         ip_address = get_primary_ip_address_from_zeroconf(info)
