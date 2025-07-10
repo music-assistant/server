@@ -936,6 +936,15 @@ class PlexProvider(MusicProvider):
         media_part: PlexMediaPart = media.parts[0]
         audio_stream: PlexAudioStream = media_part.audioStreams()[0]
 
+        plex_data = {
+            "rating_key": plex_track.ratingKey,
+            "key": media_part.key,
+            "duration": plex_track.duration,
+            "server_url": self._baseurl,
+            "token": self.config.get_value(CONF_AUTH_TOKEN),
+            "machine_identifier": self._plex_server.machineIdentifier,
+        }
+
         stream_details = StreamDetails(
             item_id=plex_track.key,
             provider=self.lookup_key,
@@ -945,7 +954,7 @@ class PlexProvider(MusicProvider):
             ),
             stream_type=StreamType.HTTP,
             duration=plex_track.duration,
-            data=plex_track,
+            data=plex_data,
             can_seek=True,
             allow_seek=True,
         )
@@ -977,7 +986,7 @@ class PlexProvider(MusicProvider):
         def mark_played() -> None:
             item = streamdetails.data
             params = {
-                "key": str(item.ratingKey),
+                "key": str(item["rating_key"]),
                 "identifier": "com.plexapp.plugins.library",
             }
             self._plex_server.query("/:/scrobble", params=params)
