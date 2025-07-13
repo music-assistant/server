@@ -30,8 +30,20 @@ class HomeAssistantPlayerProvider(PlayerProvider):
     hass_prov: HomeAssistantProvider
     on_unload_callbacks: list[callable] | None = None
 
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        hass_prov: HomeAssistantProvider,
+    ) -> None:
+        """Initialize MusicProvider."""
+        super().__init__(mass, manifest, config)
+        self.hass_prov = hass_prov
+
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
         player_ids: list[str] = self.config.get_value(CONF_PLAYERS)
         # prefetch the device- and entity registry
         device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}
@@ -86,7 +98,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
                 # The new media player component publishes its supported sample rates but that info
                 # is not exposed directly by HA, so we fetch it from the diagnostics.
                 esphome_supported_audio_formats = await get_esphome_supported_audio_formats(
-                    entity_registry_entry["config_entry_id"]
+                    self.hass_prov, entity_registry_entry["config_entry_id"]
                 )
                 extra_player_data["esphome_supported_audio_formats"] = (
                     esphome_supported_audio_formats

@@ -37,6 +37,7 @@ from .helpers import ESPHomeSupportedAudioFormat
 if TYPE_CHECKING:
     from hass_client.models import CompressedState
     from hass_client.models import Entity as HassEntity
+    from hass_client.models import State as HassState
     from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import HomeAssistantPlayerProvider
@@ -59,7 +60,7 @@ class HomeAssistantPlayer(Player):
         self,
         provider: HomeAssistantPlayerProvider,
         player_id: str,
-        hass_state: CompressedState,
+        hass_state: HassState,
         dev_info: dict[str, Any],
         extra_player_data: dict[str, Any],
         entity_registry: dict[str, HassEntity],
@@ -69,7 +70,7 @@ class HomeAssistantPlayer(Player):
         self.provider: HomeAssistantPlayerProvider = provider
         self.hass = self.provider.hass_prov.hass
         self.hass_state = hass_state
-        self.extra_data = extra_player_data
+        self._extra_data = extra_player_data
         # Set base attributes from Home Assistant state
         self._attr_available = hass_state["state"] not in UNAVAILABLE_STATES
         self._attr_device_info = DeviceInfo.from_dict(dev_info)
@@ -107,8 +108,8 @@ class HomeAssistantPlayer(Player):
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        entries = await super().get_config_entries()
-        entries = (*entries, *DEFAULT_PLAYER_CONFIG_ENTRIES)
+        base_entries = await super().get_config_entries()
+        base_entries = (*base_entries, *DEFAULT_PLAYER_CONFIG_ENTRIES)
         if self.extra_data.get("esphome_supported_audio_formats"):
             # optimized config for new ESPHome mediaplayer
             supported_sample_rates: list[int] = []
@@ -132,8 +133,8 @@ class HomeAssistantPlayer(Player):
                 # simply use the default config of the media pipeline
                 supported_sample_rates = [48000]
                 supported_bit_depths = [16]
-            return (
-                *entries,
+            return [
+                *base_entries,
                 # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
                 CONF_ENTRY_FLOW_MODE_ENFORCED,
                 CONF_ENTRY_HTTP_PROFILE_FORCED_2,
@@ -147,17 +148,17 @@ class HomeAssistantPlayer(Player):
                 # although the Voice PE supports announcements,
                 # it does not support volume for announcements
                 *HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
-            )
+            ]
 
         # add alert if player is a known player type that has a native provider in MA
         if self.extra_data.get("hass_domain") in WARN_HASS_INTEGRATIONS:
-            base_entries = (CONF_ENTRY_WARN_HASS_INTEGRATION, *entries)
+            base_entries = (CONF_ENTRY_WARN_HASS_INTEGRATION, *base_entries)
 
         # enable flow mode by default if player does not report enqueue support
         if MediaPlayerEntityFeature.MEDIA_ENQUEUE not in self.extra_data["hass_supported_features"]:
             base_entries = (*base_entries, CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED)
 
-        return base_entries
+        return list(base_entries)
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
@@ -360,7 +361,7 @@ class HomeAssistantPlayer(Player):
                 )
                 if group_members and group_members[0] == self.player_id:
                     # first in the list is the group leader
-                    self._attr_group_members.set(group_members)
+                    self._attr_group_members = group_members
                 elif group_members and group_members[0] != self.player_id:
                     # this player is not the group leader
                     self._attr_group_members.clear()
