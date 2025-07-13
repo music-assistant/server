@@ -127,6 +127,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         # create the player
         player = HomeAssistantPlayer(
             provider=self,
+            hass=self.hass_prov.hass,
             player_id=state["entity_id"],
             hass_state=state,
             dev_info=dev_info,

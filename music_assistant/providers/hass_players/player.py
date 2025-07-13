@@ -24,6 +24,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.hass.constants import (
     OFF_STATES,
     UNAVAILABLE_STATES,
@@ -35,12 +36,11 @@ from .constants import CONF_ENTRY_WARN_HASS_INTEGRATION, WARN_HASS_INTEGRATIONS
 from .helpers import ESPHomeSupportedAudioFormat
 
 if TYPE_CHECKING:
+    from hass_client import HomeAssistantClient
     from hass_client.models import CompressedState
     from hass_client.models import Entity as HassEntity
     from hass_client.models import State as HassState
     from music_assistant_models.config_entries import ConfigEntry
-
-    from .provider import HomeAssistantPlayerProvider
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
@@ -58,7 +58,8 @@ class HomeAssistantPlayer(Player):
 
     def __init__(
         self,
-        provider: HomeAssistantPlayerProvider,
+        provider: PlayerProvider,
+        hass: HomeAssistantClient,
         player_id: str,
         hass_state: HassState,
         dev_info: dict[str, Any],
@@ -67,8 +68,7 @@ class HomeAssistantPlayer(Player):
     ) -> None:
         """Initialize the Home Assistant Player."""
         super().__init__(provider, player_id)
-        self.provider: HomeAssistantPlayerProvider = provider
-        self.hass = self.provider.hass_prov.hass
+        self.hass = hass
         self.hass_state = hass_state
         self._extra_data = extra_player_data
         # Set base attributes from Home Assistant state
