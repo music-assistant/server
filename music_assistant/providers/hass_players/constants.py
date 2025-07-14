@@ -8,8 +8,6 @@ from music_assistant_models.enums import ConfigEntryType
 CONF_PLAYERS = "players"
 
 BLOCKLISTED_HASS_INTEGRATIONS = ("alexa_media", "apple_tv")
-
-BLOCKLISTED_HASS_INTEGRATIONS = ("alexa_media", "apple_tv")
 WARN_HASS_INTEGRATIONS = ("cast", "dlna_dmr", "fully_kiosk", "sonos", "snapcast")
 
 

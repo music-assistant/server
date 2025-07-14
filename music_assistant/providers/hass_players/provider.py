@@ -7,8 +7,12 @@ Requires the Home Assistant Plugin.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.config_entries import ProviderConfig
+from music_assistant_models.provider import ProviderManifest
+
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import CONF_PLAYERS
@@ -30,9 +34,21 @@ class HomeAssistantPlayerProvider(PlayerProvider):
     hass_prov: HomeAssistantProvider
     on_unload_callbacks: list[callable] | None = None
 
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        hass_prov: HomeAssistantProvider,
+    ) -> None:
+        """Initialize MusicProvider."""
+        super().__init__(mass, manifest, config)
+        self.hass_prov = hass_prov
+
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        player_ids: list[str] = self.config.get_value(CONF_PLAYERS)
+        await super().loaded_in_mass()
+        player_ids = cast("list[str]", self.config.get_value(CONF_PLAYERS))
         # prefetch the device- and entity registry
         device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}
         entity_registry = {
@@ -86,7 +102,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
                 # The new media player component publishes its supported sample rates but that info
                 # is not exposed directly by HA, so we fetch it from the diagnostics.
                 esphome_supported_audio_formats = await get_esphome_supported_audio_formats(
-                    entity_registry_entry["config_entry_id"]
+                    self.hass_prov, entity_registry_entry["config_entry_id"]
                 )
                 extra_player_data["esphome_supported_audio_formats"] = (
                     esphome_supported_audio_formats
@@ -111,6 +127,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         # create the player
         player = HomeAssistantPlayer(
             provider=self,
+            hass=self.hass_prov.hass,
             player_id=state["entity_id"],
             hass_state=state,
             dev_info=dev_info,
@@ -124,11 +141,11 @@ class HomeAssistantPlayerProvider(PlayerProvider):
 
         def update_player_from_state_msg(entity_id: str, state: CompressedState) -> None:
             """Handle updating MA player with updated info in a HA CompressedState."""
-            player: HomeAssistantPlayer | None = self.mass.players.get(entity_id)
+            player = cast("HomeAssistantPlayer | None", self.mass.players.get(entity_id))
             if player is None:
                 # edge case - one of our subscribed entities was not available at startup
                 # and now came available - we should still set it up
-                player_ids: list[str] = self.config.get_value(CONF_PLAYERS)
+                player_ids = cast("list[str]", self.config.get_value(CONF_PLAYERS))
                 if entity_id not in player_ids:
                     return  # should not happen, but guard just in case
                 self.mass.create_task(self._late_add_player(entity_id))

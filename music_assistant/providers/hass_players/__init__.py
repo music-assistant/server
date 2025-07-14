@@ -7,7 +7,7 @@ Requires the Home Assistant Plugin.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
@@ -32,12 +32,12 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    hass_prov: HomeAssistantProvider = mass.get_provider(HASS_DOMAIN)
+    hass_prov = mass.get_provider(HASS_DOMAIN)
     if not hass_prov:
         msg = "The Home Assistant Plugin needs to be set-up first"
         raise SetupFailedError(msg)
-    prov = HomeAssistantPlayerProvider(mass, manifest, config)
-    prov.hass_prov = hass_prov
+    hass_prov = cast("HomeAssistantProvider", hass_prov)
+    prov = HomeAssistantPlayerProvider(mass, manifest, config, hass_prov)
     return prov
 
 
@@ -54,7 +54,7 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    hass_prov: HomeAssistantProvider = mass.get_provider(HASS_DOMAIN)
+    hass_prov = cast("HomeAssistantProvider|None", mass.get_provider(HASS_DOMAIN))
     player_entities: list[ConfigValueOption] = []
     if hass_prov and hass_prov.hass.connected:
         async for state in get_hass_media_players(hass_prov):
