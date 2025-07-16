@@ -9,6 +9,7 @@ which is a dataclass in the models package containing the player state.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -29,6 +30,7 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
 )
+from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.player import (
     EXTRA_ATTRIBUTES_TYPES,
     DeviceInfo,
@@ -43,6 +45,10 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
+    CONF_CROSSFADE,
+    CONF_CROSSFADE_DURATION,
+    CONF_DYNAMIC_GROUP_MEMBERS,
+    CONF_ENABLE_ICY_METADATA,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
@@ -68,9 +74,13 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
+    CONF_GROUP_MEMBERS,
     CONF_HIDE_PLAYER_IN_UI,
+    CONF_HTTP_PROFILE,
     CONF_MUTE_CONTROL,
+    CONF_OUTPUT_CODEC,
     CONF_POWER_CONTROL,
+    CONF_SAMPLE_RATES,
     CONF_VOLUME_CONTROL,
 )
 from music_assistant.helpers.util import get_changed_dataclass_values
@@ -820,7 +830,7 @@ class Player(ABC):
             return self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
         return self.elapsed_time
 
-    @cached_property
+    @property
     @final
     def active_group(self) -> str | None:
         """
@@ -834,7 +844,7 @@ class Player(ABC):
                 continue
             if not (player.powered or player.playback_state == PlaybackState.PLAYING):
                 continue
-            if player.player_id in self.group_members:
+            if self.player_id in player.group_members:
                 return player.player_id
         return None
 
@@ -1208,7 +1218,7 @@ class Player(ABC):
 
 
 class GroupPlayer(Player):
-    """Helper class for (sync) group player."""
+    """Helper class for a (generic) group player."""
 
     _attr_type: PlayerType = PlayerType.GROUP
 
@@ -1271,6 +1281,276 @@ class GroupPlayer(Player):
         await self.mass.players.set_group_volume(self, volume_level)
 
 
+class SyncGroupPlayer(GroupPlayer):
+    """Helper class for a (provider specific) SyncGroup player."""
+
+    _attr_type: PlayerType = PlayerType.GROUP
+
+    @cached_property
+    def is_dynamic(self) -> bool:
+        """Return if the player is a dynamic group player."""
+        return self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, default_value=False)
+
+    def __init__(
+        self,
+        provider: PlayerProvider,
+        player_id: str,
+    ) -> None:
+        """Initialize GroupPlayer instance."""
+        super().__init__(provider, player_id)
+        self._attr_name = self.config.name or f"SyncGroup {player_id}"
+        self._attr_available = True
+        self._attr_powered = False  # group players are always powered off by default
+        self._attr_active_source = player_id
+        self._attr_group_members = self.config.get_value(CONF_GROUP_MEMBERS, default_value=[])
+        self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
+        self._set_attributes()
+
+    def _set_attributes(self) -> None:
+        """Set player attributes."""
+        player_features = {
+            PlayerFeature.POWER,
+            PlayerFeature.VOLUME_SET,
+        }
+        if self.is_dynamic:
+            player_features.add(PlayerFeature.SET_MEMBERS)
+
+        self._attr_supported_features = player_features
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        entries: list[ConfigEntry] = [
+            # default entries for player groups
+            *await super().get_config_entries(),
+            # add syncgroup specific entries
+            ConfigEntry(
+                key=CONF_GROUP_MEMBERS,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                label="Group members",
+                default_value=[],
+                description="Select all players you want to be part of this group",
+                required=False,  # needed for dynamic members (which allows empty members list)
+                options=tuple(
+                    ConfigValueOption(x.display_name, x.player_id) for x in self.provider.players
+                ),
+            ),
+            ConfigEntry(
+                key="dynamic_members",
+                type=ConfigEntryType.BOOLEAN,
+                label="Enable dynamic members",
+                description="Allow (un)joining members dynamically, "
+                "so the group more or less behaves the same like manually syncing players together, "
+                "with the main difference being that the groupplayer will hold the queue.",
+                default_value=False,
+                required=False,
+            ),
+        ]
+        # combine base group entries with (base) player entries for this player type
+        child_player = next((x for x in self.provider.players if x.type != PlayerType.GROUP), None)
+        if child_player:
+            allowed_conf_entries = (
+                CONF_HTTP_PROFILE,
+                CONF_ENABLE_ICY_METADATA,
+                CONF_CROSSFADE,
+                CONF_CROSSFADE_DURATION,
+                CONF_OUTPUT_CODEC,
+                CONF_FLOW_MODE,
+                CONF_SAMPLE_RATES,
+            )
+            child_config_entries = await child_player.get_config_entries()
+            entries.extend(
+                *(entry for entry in child_config_entries if entry.key in allowed_conf_entries)
+            )
+        return entries
+
+    async def stop(self) -> None:
+        """Send STOP command to given player."""
+        if sync_leader := self._get_sync_leader():
+            await sync_leader.stop()
+
+    async def play(self) -> None:
+        """Send PLAY command to given player."""
+        if sync_leader := self._get_sync_leader():
+            await sync_leader.play()
+
+    async def pause(self) -> None:
+        """Send PAUSE command to given player."""
+        if sync_leader := self._get_sync_leader():
+            await sync_leader.pause()
+
+    async def power(self, powered: bool) -> None:
+        """Handle POWER command to group player."""
+        # always stop at power off
+        if not powered and self.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            await self.stop()
+
+        if powered:
+            await self._form_syncgroup()
+
+        # optimistically set the group state
+        self._attr_powered = powered
+        self.update_state()
+
+        if powered:
+            # handle TURN_ON of the group player by turning on all members
+            for member in self.mass.players.iter_group_members(
+                self, only_powered=False, active_only=False
+            ):
+                if (
+                    member.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+                    and member.active_source != self.active_source
+                ):
+                    # stop playing existing content on member if we start the group player
+                    await member.stop()
+                if member.active_group not in (
+                    None,
+                    self.player_id,
+                ):
+                    # collision: child player is part of multiple groups
+                    # and another group already active !
+                    # solve this by powering off the other group
+                    await self.mass.players.cmd_power(member.active_group, False)
+                    await asyncio.sleep(1)
+                if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
+                    await self.mass.players.cmd_power(member.player_id, True)
+        else:
+            # handle TURN_OFF of the group player by ungrouping and turning off all members
+            if (sync_leader := self._get_sync_leader()) and sync_leader.group_members:
+                # dissolve the temporary syncgroup from the sync leader
+                sync_childs = [x for x in sync_leader.group_members if x != sync_leader.player_id]
+                if sync_childs:
+                    await sync_leader.set_members(player_ids_to_remove=sync_childs)
+            # turn off all group members
+            for member in self.mass.players.iter_group_members(
+                self, only_powered=True, active_only=True
+            ):
+                if member.powered and member.power_control != PLAYER_CONTROL_NONE:
+                    await self.mass.players.cmd_power(member.player_id, False)
+
+        if not powered:
+            # reset the original group members when powered off
+            self._attr_group_members.set(self.config.get_value(CONF_GROUP_MEMBERS, []))
+
+    async def volume_set(self, volume_level: int) -> None:
+        """Send VOLUME_SET command to given player."""
+        # group volume is already handled in the player manager
+
+    async def play_media(self, media: PlayerMedia) -> None:
+        """Handle PLAY MEDIA on given player."""
+        # power on (which will also resync if needed)
+        await self.power(True)
+        # simply forward the command to the sync leader
+        if sync_leader := self._get_sync_leader():
+            await sync_leader.play_media(media)
+
+    async def enqueue_next_media(self, media: PlayerMedia) -> None:
+        """Handle enqueuing of a next media item on the player."""
+        if sync_leader := self._get_sync_leader():
+            await sync_leader.enqueue_next_media(media)
+
+    async def set_members(
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """Handle SET_MEMBERS command on the player."""
+        if not self.is_dynamic:
+            raise UnsupportedFeaturedException(
+                f"Group {self.display_name} does not allow dynamically adding/removing members!"
+            )
+        # handle additions
+        final_players_to_add: list[str] = []
+        for player_id in player_ids_to_add or []:
+            if player_id in self._attr_group_members:
+                continue
+            if player_id == self.player_id:
+                raise UnsupportedFeaturedException(
+                    f"Cannot add {self.display_name} to itself as a member!"
+                )
+            self._attr_group_members.append(player_id)
+            final_players_to_add.append(player_id)
+        # handle removals
+        final_players_to_remove: list[str] = []
+        static_members = self.config.get_value(CONF_GROUP_MEMBERS, default_value=[])
+        for player_id in player_ids_to_remove or []:
+            if player_id not in self._attr_group_members:
+                continue
+            if player_id in static_members:
+                raise UnsupportedFeaturedException(
+                    f"Cannot remove {player_id} from {self.display_name} "
+                    "as it is a static member of this group"
+                )
+            if player_id == self.player_id:
+                raise UnsupportedFeaturedException(
+                    f"Cannot remove {self.display_name} from itself as a member!"
+                )
+            self._attr_group_members.remove(player_id)
+            final_players_to_remove.append(player_id)
+        self.update_state()
+        if self.powered and (player_ids_to_add or player_ids_to_remove):
+            # if the group is powered on, we need to (re)sync the members
+            sync_leader = await self._select_sync_leader()
+            await sync_leader.set_members(
+                player_ids_to_add=final_players_to_add,
+                player_ids_to_remove=final_players_to_remove,
+            )
+
+    def _get_sync_leader(self) -> Player | None:
+        """Get the active sync leader player for the syncgroup."""
+        for child_player in self.mass.players.iter_group_members(
+            self, only_powered=False, only_playing=False, active_only=False
+        ):
+            # the syncleader is just the first player in the group
+            return child_player
+        return None
+
+    async def _form_syncgroup(self) -> None:
+        """Form syncgroup by sync all (possible) members."""
+        sync_leader = await self._select_sync_leader()
+        # ensure the sync leader is first in the list
+        self._attr_group_members = [
+            sync_leader.player_id,
+            *[x for x in self._attr_group_members if x != sync_leader.player_id],
+        ]
+        self.update_state()
+        members_to_sync: list[str] = []
+        for member in self.mass.players.iter_group_members(self, active_only=False):
+            if member.synced_to and member.synced_to != sync_leader.player_id:
+                # ungroup first
+                await self.mass.players.cmd_ungroup(member.player_id)
+            if member.player_id == sync_leader.player_id:
+                # skip sync leader
+                continue
+            if (
+                member.synced_to == sync_leader.player_id
+                and member.player_id in sync_leader.group_members
+            ):
+                # already synced
+                continue
+            members_to_sync.append(member.player_id)
+        if members_to_sync:
+            await sync_leader.set_members(members_to_sync)
+
+    async def _select_sync_leader(self) -> Player:
+        """Select the active sync leader player for a syncgroup."""
+        for prefer_sync_leader in (True, False):
+            for child_player in self.mass.players.iter_group_members(self):
+                if prefer_sync_leader and child_player.synced_to:
+                    # prefer the first player that already has sync childs
+                    continue
+                if child_player.active_group not in (
+                    None,
+                    self.player_id,
+                    child_player.player_id,
+                ):
+                    # this should not happen (because its already handled in the power on logic),
+                    # but guard it just in case bad things happen
+                    continue
+                return child_player
+        raise RuntimeError("No players available to form syncgroup")
+
+
 __all__ = [
     # explicitly re-export the models we imported from the models package,
     # for convenience reasons
@@ -1281,4 +1561,5 @@ __all__ = [
     "PlayerMedia",
     "PlayerSource",
     "PlayerState",
+    "SyncGroupPlayer",
 ]

@@ -145,7 +145,7 @@ class MusicAssistant:
         self.http_session = ClientSession(
             loop=self.loop,
             connector=TCPConnector(
-                ssl=False,
+                ssl=True,
                 limit=4096,
                 limit_per_host=100,
             ),
@@ -574,9 +574,9 @@ class MusicAssistant:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
             if is_player_provider(provider):
-                # mark all players of this provider as unavailable
+                # unregister all players of this provider
                 for player in provider.players:
-                    self.players.unregister(player.player_id, permanent=is_removed)
+                    await self.players.unregister(player.player_id, permanent=is_removed)
             try:
                 await provider.unload(is_removed)
             except Exception as err:

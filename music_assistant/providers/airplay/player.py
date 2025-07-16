@@ -46,7 +46,7 @@ from .raop import RaopStreamSession
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
-    from music_assistant.providers.player_group import PlayerGroupProvider
+    from music_assistant.providers.universal_group import PlayerGroupProvider
 
     from .provider import AirPlayProvider
     from .raop import RaopStream
