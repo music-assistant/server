@@ -841,7 +841,7 @@ class ConfigController:
             changed = True
 
         # migrate sample_rates config entry
-        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if not (values := player_config.get("values")):
                 continue
             if not (sample_rates := values.get("sample_rates")):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .player import UniversalGroupPlayer
 from .provider import UniversalGroupProvider
 
 if TYPE_CHECKING:
@@ -41,3 +42,11 @@ async def get_config_entries(
     """
     # nothing to configure (for now)
     return ()
+
+
+__all__ = (
+    "UniversalGroupPlayer",
+    "UniversalGroupProvider",
+    "get_config_entries",
+    "setup",
+)

@@ -133,6 +133,7 @@ class UniversalGroupPlayer(GroupPlayer):
             await self.stop()
 
         # optimistically set the group state
+        prev_power = self._attr_powered
         self._attr_powered = powered
         self.update_state()
 
@@ -153,15 +154,23 @@ class UniversalGroupPlayer(GroupPlayer):
                 ):
                     # collision: child player is part of multiple groups
                     # and another group already active !
-                    # solve this by powering off the other group
-                    await self.mass.players.cmd_power(member.active_group, False)
+                    # solve this by trying to leave the group first
+                    if (
+                        other_group := self.mass.players.get(member.active_group)
+                    ) and PlayerFeature.SET_MEMBERS in other_group.supported_features:
+                        await other_group.set_members(player_ids_to_remove=[member.player_id])
+                    else:
+                        # if the other group does not support SET_MEMBERS,
+                        # we need to power it off to leave the group
+                        await self.mass.players.cmd_power(member.active_group, False)
+                        await asyncio.sleep(1)
                     await asyncio.sleep(1)
                 if member.synced_to:
                     # edge case: the member is part of a syncgroup - ungroup it first
                     await member.ungroup()
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await self.mass.players.cmd_power(member.player_id, True)
-        else:
+        elif prev_power:
             # handle TURN_OFF of the group player by turning off all members
             for member in self.mass.players.iter_group_members(
                 self, only_powered=True, active_only=True
@@ -258,7 +267,6 @@ class UniversalGroupPlayer(GroupPlayer):
             raise UnsupportedFeaturedException(
                 f"Group {self.display_name} does not allow dynamically adding/removing members!"
             )
-
         # handle additions
         for player_id in player_ids_to_add or []:
             if player_id in self._attr_group_members:
@@ -267,7 +275,23 @@ class UniversalGroupPlayer(GroupPlayer):
                 raise UnsupportedFeaturedException(
                     f"Cannot add {self.display_name} to itself as a member!"
                 )
+            child_player = self.mass.players.get(player_id, True)
+            assert child_player  # for type checking
+            if child_player.synced_to:
+                # This is player is part of a syncgroup - ungroup it first
+                await child_player.ungroup()
             self._attr_group_members.append(player_id)
+            # let the newly add member join the stream if we're playing
+            if self.stream and not self.stream.done and self.powered:
+                base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.flac"
+                await child_player.play_media(
+                    media=PlayerMedia(
+                        uri=f"{base_url}?player_id={player_id}",
+                        media_type=MediaType.FLOW_STREAM,
+                        title=self.display_name,
+                        queue_id=child_player.player_id,
+                    ),
+                )
         # handle removals
         static_members = self.config.get_value(CONF_GROUP_MEMBERS, default_value=[])
         for player_id in player_ids_to_remove or []:
@@ -283,6 +307,14 @@ class UniversalGroupPlayer(GroupPlayer):
                     f"Cannot remove {self.display_name} from itself as a member!"
                 )
             self._attr_group_members.remove(player_id)
+            child_player = self.mass.players.get(player_id, True)
+            assert child_player  # for type checking
+            if child_player.state in (
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
+            ):
+                # if the child player is playing the group stream, stop it
+                await child_player.stop()
         self.update_state()
 
     async def poll(self) -> None:
@@ -318,7 +350,6 @@ class UniversalGroupPlayer(GroupPlayer):
         else:
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_available = False
-
         self.update_state()
 
     async def _serve_ugp_stream(self, request: web.Request) -> web.Response:

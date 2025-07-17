@@ -28,6 +28,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 from .constants import (
     AIRPLAY_FLOW_PCM_FORMAT,
@@ -46,7 +47,7 @@ from .raop import RaopStreamSession
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
-    from music_assistant.providers.universal_group import PlayerGroupProvider
+    from music_assistant.providers.universal_group import UniversalGroupPlayer
 
     from .provider import AirPlayProvider
     from .raop import RaopStream
@@ -234,12 +235,11 @@ class AirPlayPlayer(Player):
                 # because this could have been a group
                 player_id=media.custom_data["player_id"],
             )
-        elif media.queue_id and media.queue_id.startswith("ugp_"):
+        elif media.queue_id and media.queue_id.startswith(UGP_PREFIX):
             # special case: UGP stream
-            from typing import cast
-
-            ugp_provider = cast("PlayerGroupProvider", self.mass.get_provider("player_group"))
-            ugp_stream = ugp_provider.ugp_streams[media.queue_id]
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.queue_id))
+            ugp_stream = ugp_player.stream
+            assert ugp_stream is not None  # for type checker
             input_format = ugp_stream.base_pcm_format
             audio_source = ugp_stream.subscribe_raw()
         elif media.queue_id and media.queue_item_id:

@@ -24,7 +24,6 @@ from music_assistant.constants import (
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_stream
-from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
     CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
@@ -35,7 +34,8 @@ from music_assistant.providers.snapcast.constants import (
     MASS_STREAM_PREFIX,
     SnapCastStreamType,
 )
-from music_assistant.providers.universal_group.provider import PlayerGroupProvider
+from music_assistant.providers.universal_group.constants import UGP_PREFIX
+from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 if TYPE_CHECKING:
     from music_assistant.providers.snapcast.provider import SnapCastProvider
@@ -210,14 +210,11 @@ class SnapCastPlayer(Player):
                 output_format=DEFAULT_SNAPCAST_FORMAT,
                 player_id=self.player_id,
             )
-        elif media.queue_id is not None and media.queue_id.startswith("ugp_"):
+        elif media.queue_id and media.queue_id.startswith(UGP_PREFIX):
             # special case: UGP stream
-            ugp_provider: ProviderInstanceType | PlayerGroupProvider | None = (
-                self.mass.get_provider("player_group")
-            )
-            assert ugp_provider is not None  # for type checking
-            assert isinstance(ugp_provider, PlayerGroupProvider)  # for type checking
-            ugp_stream = ugp_provider.ugp_streams[media.queue_id]
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.queue_id))
+            ugp_stream = ugp_player.stream
+            assert ugp_stream is not None  # for type checker
             input_format = ugp_stream.base_pcm_format
             audio_source = ugp_stream.subscribe_raw()
         elif media.queue_id and media.queue_item_id:

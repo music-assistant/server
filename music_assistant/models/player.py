@@ -1389,6 +1389,7 @@ class SyncGroupPlayer(GroupPlayer):
             await self._form_syncgroup()
 
         # optimistically set the group state
+        prev_power = self._attr_powered
         self._attr_powered = powered
         self.update_state()
 
@@ -1397,24 +1398,26 @@ class SyncGroupPlayer(GroupPlayer):
             for member in self.mass.players.iter_group_members(
                 self, only_powered=False, active_only=False
             ):
-                if (
-                    member.state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
-                    and member.active_source != self.active_source
-                ):
-                    # stop playing existing content on member if we start the group player
-                    await member.stop()
                 if member.active_group not in (
                     None,
                     self.player_id,
                 ):
                     # collision: child player is part of multiple groups
                     # and another group already active !
-                    # solve this by powering off the other group
-                    await self.mass.players.cmd_power(member.active_group, False)
+                    # solve this by trying to leave the group first
+                    if (
+                        other_group := self.mass.players.get(member.active_group)
+                    ) and PlayerFeature.SET_MEMBERS in other_group.supported_features:
+                        await other_group.set_members(player_ids_to_remove=[member.player_id])
+                    else:
+                        # if the other group does not support SET_MEMBERS,
+                        # we need to power it off to leave the group
+                        await self.mass.players.cmd_power(member.active_group, False)
+                        await asyncio.sleep(1)
                     await asyncio.sleep(1)
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await self.mass.players.cmd_power(member.player_id, True)
-        else:
+        elif not prev_power:
             # handle TURN_OFF of the group player by ungrouping and turning off all members
             if (sync_leader := self._get_sync_leader()) and sync_leader.group_members:
                 # dissolve the temporary syncgroup from the sync leader

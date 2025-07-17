@@ -50,6 +50,7 @@ from music_assistant.providers.sonos.const import (
     SOURCE_SPOTIFY,
     SOURCE_TV,
 )
+from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
@@ -403,7 +404,7 @@ class SonosPlayer(Player):
         if media.media_type in (
             MediaType.PLUGIN_SOURCE,
             MediaType.FLOW_STREAM,
-        ) or media.queue_id.startswith("ugp_"):
+        ) or media.queue_id.startswith(UGP_PREFIX):
             # flow stream or plugin source playback
             # always use the legacy (UPNP) playback method for this
             await self._play_media_legacy(media)
