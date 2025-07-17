@@ -965,6 +965,7 @@ class Player(ABC):
         """Return the current PlayerState of the player."""
         return self._state
 
+    @final
     def update_state(self, force_update: bool = False) -> None:
         """
         Update the PlayerState with the current state of the player.
@@ -990,6 +991,7 @@ class Player(ABC):
         # signal the state update to the PlayerController
         self.mass.players.signal_player_state_update(self, changed_values)
 
+    @final
     def set_current_media(  # noqa: PLR0913
         self,
         uri: str,
@@ -1034,6 +1036,7 @@ class Player(ABC):
         if custom_data:
             self.current_media.custom_data = custom_data
 
+    @final
     def set_config(self, config: PlayerConfig) -> None:
         """
         Set/update the player config.
@@ -1043,9 +1046,23 @@ class Player(ABC):
         # TODO: validate that caller is the PlayerController ?
         self._config = config
 
+    @final
     def to_dict(self) -> dict[str, Any]:
         """Return the (serializable) dict representation of the Player."""
         return self.state.to_dict()
+
+    @final
+    def supports_feature(self, feature: PlayerFeature) -> bool:
+        """Return True if this player supports the given feature."""
+        return feature in self.supported_features
+
+    @final
+    def check_feature(self, feature: PlayerFeature) -> None:
+        """Check if this player supports the given feature."""
+        if not self.supports_feature(feature):
+            raise UnsupportedFeaturedException(
+                f"Player {self.display_name} does not support feature {feature.name}"
+            )
 
     def _create_player_control_config_entries(
         self,

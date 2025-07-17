@@ -20,7 +20,7 @@ import asyncio
 import functools
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
@@ -41,6 +41,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     PlayerCommandFailed,
     PlayerUnavailableError,
+    ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import UniqueList
@@ -1052,6 +1053,43 @@ class PlayerController(CoreController):
         """Handle UNGROUP command for all the given players."""
         for player_id in list(player_ids):
             await self.cmd_ungroup(player_id)
+
+    @api_command("players/create_group_player")
+    async def create_group_player(
+        self, provider: str, name: str, members: list[str], dynamic: bool = True
+    ):
+        """
+        Create a new (permanent) Group Player.
+
+        :param provider: The provider to create the group player for
+        :param name: Name of the new group player
+        :param members: List of player ids to add to the group
+        :param dynamic: Whether the group is dynamic (members can change)
+        """
+        if not (provider_instance := self.mass.get_provider(provider)):
+            raise ProviderUnavailableError(f"Provider {provider} not found")
+        provider_instance.check_feature(ProviderFeature.CREATE_GROUP_PLAYER)
+        provider_instance = cast("PlayerProvider", provider_instance)
+        # create the group player
+        return await provider_instance.create_group_player(name, members, dynamic)
+
+    @api_command("players/remove_group_player")
+    async def remove_group_player(self, player_id: str) -> None:
+        """
+        Remove a group player.
+
+        :param player_id: ID of the group player to remove.
+        """
+        if not (player := self.get(player_id)):
+            raise PlayerUnavailableError(f"Player {player_id} not found")
+        if player.type != PlayerType.GROUP:
+            raise UnsupportedFeaturedException(
+                f"Player {player.display_name} is not a group player"
+            )
+        provider = self.mass.get_provider(player.provider.instance_id)
+        provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
+        provider = cast("PlayerProvider", provider)
+        await provider.remove_group_player(player_id)
 
     @api_command("players/add_currently_playing_to_favorites")
     async def add_currently_playing_to_favorites(self, player_id: str) -> None:

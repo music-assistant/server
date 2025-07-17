@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import shortuuid
 from music_assistant_models.enums import ProviderFeature
 
@@ -10,6 +12,9 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import UGP_PREFIX
 from .player import UniversalGroupPlayer
+
+if TYPE_CHECKING:
+    from music_assistant.models.player import Player
 
 
 class UniversalGroupProvider(PlayerProvider):
@@ -20,7 +25,9 @@ class UniversalGroupProvider(PlayerProvider):
         """Return the features supported by this Provider."""
         return {ProviderFeature.CREATE_GROUP_PLAYER, ProviderFeature.REMOVE_GROUP_PLAYER}
 
-    async def create_group_player(self, name: str, members: list[str], dynamic: bool = True):
+    async def create_group_player(
+        self, name: str, members: list[str], dynamic: bool = True
+    ) -> Player:
         """Create new Universal Group Player."""
         # filter out members that are not registered players
         # TODO: do we want to filter out groups here to prevent nested groups?
@@ -37,7 +44,7 @@ class UniversalGroupProvider(PlayerProvider):
                 CONF_DYNAMIC_GROUP_MEMBERS: dynamic,
             },
         )
-        await self._register_player(player_id)
+        return await self._register_player(player_id)
 
     async def remove_group_player(self, player_id: str) -> None:
         """
@@ -56,7 +63,8 @@ class UniversalGroupProvider(PlayerProvider):
             if player_conf.player_id.startswith(UGP_PREFIX):
                 await self._register_player(player_conf.player_id)
 
-    async def _register_player(self, player_id: str) -> None:
+    async def _register_player(self, player_id: str) -> Player:
         """Register a universal group player."""
-        syncgroup = UniversalGroupPlayer(self, player_id)
-        await self.mass.players.register_or_update(syncgroup)
+        group = UniversalGroupPlayer(self, player_id)
+        await self.mass.players.register_or_update(group)
+        return group

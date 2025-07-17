@@ -49,7 +49,9 @@ class PlayerProvider(Provider):
         # will only be called for providers with REMOVE_PLAYER feature set.
         raise NotImplementedError
 
-    async def create_group_player(self, name: str, members: list[str], dynamic: bool = True):
+    async def create_group_player(
+        self, name: str, members: list[str], dynamic: bool = True
+    ) -> Player:
         """
         Create new Group Player.
 
@@ -75,8 +77,7 @@ class PlayerProvider(Provider):
                     CONF_DYNAMIC_GROUP_MEMBERS: dynamic,
                 },
             )
-            await self._register_syncgroup_player(player_id)
-            return
+            return await self._register_syncgroup_player(player_id)
         # all other providers should implement this method
         raise NotImplementedError
 
@@ -124,10 +125,11 @@ class PlayerProvider(Provider):
                 if player_conf.player_id.startswith(SYNCGROUP_PREFIX):
                     await self._register_syncgroup_player(player_conf.player_id)
 
-    async def _register_syncgroup_player(self, player_id: str) -> None:
+    async def _register_syncgroup_player(self, player_id: str) -> Player:
         """Register a syncgroup player."""
         syncgroup = SyncGroupPlayer(self, player_id)
         await self.mass.players.register_or_update(syncgroup)
+        return syncgroup
 
     @property
     def players(self) -> list[Player]:
