@@ -64,6 +64,7 @@ CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_CROSSFADE: Final[str] = "crossfade"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
+CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
 CONF_HIDE_PLAYER_IN_UI: Final[str] = "hide_player_in_ui"
 CONF_EXPOSE_PLAYER_TO_HA: Final[str] = "expose_player_to_ha"
 CONF_SYNC_ADJUST: Final[str] = "sync_adjust"
@@ -129,7 +130,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")
-
+SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
 
 ####### REUSABLE CONFIG ENTRIES #######
 

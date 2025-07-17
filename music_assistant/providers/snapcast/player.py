@@ -26,7 +26,6 @@ from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_stream
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.player import Player
-from music_assistant.providers.player_group.provider import PlayerGroupProvider
 from music_assistant.providers.snapcast.constants import (
     CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
     CONTROL_SCRIPT,
@@ -36,6 +35,7 @@ from music_assistant.providers.snapcast.constants import (
     MASS_STREAM_PREFIX,
     SnapCastStreamType,
 )
+from music_assistant.providers.universal_group.provider import PlayerGroupProvider
 
 if TYPE_CHECKING:
     from music_assistant.providers.snapcast.provider import SnapCastProvider

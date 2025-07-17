@@ -1,15 +1,15 @@
 """
-Sync Group Player provider.
+Universal Group Player provider.
 
-This is more like a "virtual" player provider,
-allowing the user to create 'presets' of players to sync together (of the same type).
+Create universal groups to group speakers of different
+protocols/ecosystems to play the same audio (but not in sync).
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .provider import PlayerGroupProvider
+from .provider import UniversalGroupProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -23,7 +23,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return PlayerGroupProvider(mass, manifest, config)
+    return UniversalGroupProvider(mass, manifest, config)
 
 
 async def get_config_entries(

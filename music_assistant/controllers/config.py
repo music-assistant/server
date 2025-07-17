@@ -38,7 +38,6 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
     CONF_ONBOARD_DONE,
-    CONF_OUTPUT_LIMITER,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PROVIDERS,
@@ -813,18 +812,26 @@ class ConfigController:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _migrate(self) -> None:  # noqa: PLR0915
+    async def _migrate(self) -> None:
         changed = False
+
+        # some type hints to help with the code below
+        instance_id: str
+        player_id: str
+        provider_config: dict[str, Any]
+        player_config: dict[str, Any]
+        values: dict[str, ConfigValueType]
 
         # Older versions of MA can create corrupt entries with no domain if retrying
         # logic runs after a provider has been removed. Remove those corrupt entries.
-        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+        for instance_id, provider_config in {**self._data.get(CONF_PROVIDERS, {})}.items():
             if "domain" not in provider_config:
                 self._data[CONF_PROVIDERS].pop(instance_id, None)
                 LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
                 changed = True
+
         # migrate manual_ips to new format
-        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+        for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
             if not (values := provider_config.get("values")):
                 continue
             if not (ips := values.get("ips")):
@@ -832,8 +839,9 @@ class ConfigController:
             values["manual_discovery_ip_addresses"] = ips.split(",")
             del values["ips"]
             changed = True
+
         # migrate sample_rates config entry
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
             if not (values := player_config.get("values")):
                 continue
             if not (sample_rates := values.get("sample_rates")):
@@ -847,24 +855,6 @@ class ConfigController:
                 for x in sample_rates
             ]
             changed = True
-        # migrate DSPConfig.output_limiter
-        for player_id, dsp_config in list(self._data.get(CONF_PLAYER_DSP, {}).items()):
-            output_limiter = dsp_config.get("output_limiter")
-            enabled = dsp_config.get("enabled")
-            if output_limiter is None or enabled is None or output_limiter:
-                continue
-
-            if enabled:
-                # The DSP is enabled, and the user disabled the output limiter in a prior version
-                # Migrate the output limiter option to the player config
-                if (players := self._data.get(f"{CONF_PLAYERS}")) and (
-                    player := players.get(player_id)
-                ):
-                    player["values"][CONF_OUTPUT_LIMITER] = False
-            # Delete the old option, so this migration logic will never be called
-            # anymore for this player.
-            del dsp_config["output_limiter"]
-            changed = True
 
         # set 'onboard_done' flag if we have any (non default) provider configs
         if self._data.get(CONF_ONBOARD_DONE) is None:
@@ -874,23 +864,21 @@ class ConfigController:
                     self._data[CONF_ONBOARD_DONE] = True
                     changed = True
                     break
-        # migrate slimproto --> squeezelite
-        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
-            if provider_config.get("domain") == "slimproto":
-                del self._data[CONF_PROVIDERS][instance_id]
-                new_instance_id = instance_id.replace("slimproto", "squeezelite")
-                provider_config["instance_id"] = new_instance_id
-                provider_config["domain"] = "squeezelite"
-                self._data[CONF_PROVIDERS][new_instance_id] = provider_config
-                changed = True
 
-        # migrate "hide_player" -->  "hide_player_in_ui"
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+        # migrate player_group entries
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            if not player_config.get("provider").startswith("player_group"):
+                continue
             if not (values := player_config.get("values")):
                 continue
-            if values.pop("hide_player", None):
-                player_config["values"]["hide_player_in_ui"] = ["always"]
+            if (group_type := values.pop("group_type", None)) is None:
+                continue
+            # this is a legacy player group, migrate the values
             changed = True
+            if group_type == "universal":
+                player_config["provider"] = "universal_group"
+            else:
+                player_config["provider"] = group_type
 
         if changed:
             await self._async_save()
