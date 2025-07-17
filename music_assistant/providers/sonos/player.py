@@ -489,7 +489,7 @@ class SonosPlayer(Player):
         if airplay_player := self.get_linked_airplay_player(False):
             # if airplay mode is enabled, we could possibly receive child player id's that are
             # not Sonos players, but AirPlay players. We redirect those.
-            airplay_child_ids = [x for x in player_ids_to_add if x.startswith("ap")]
+            airplay_child_ids = [x for x in player_ids_to_add or [] if x.startswith("ap")]
             player_ids_to_add = [x for x in player_ids_to_add if x not in airplay_child_ids]
             if airplay_child_ids:
                 if (
@@ -825,8 +825,6 @@ class SonosPlayer(Player):
     ) -> None:
         """Handle PLAY MEDIA using the legacy upnp api."""
         player_id = self.player_id
-        mass_player = self.mass.players.get(player_id)
-        mass_player.active_source = airplay_player.active_source
         if (
             airplay_player.playback_state == PlaybackState.PLAYING
             and airplay_player.active_source == media.queue_id
