@@ -424,6 +424,9 @@ class SoundcloudMusicProvider(MusicProvider):
     async def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         """Parse a Soundcloud Playlist response to a Playlist object."""
         playlist_id = str(playlist_obj["id"])
+        # Remove the "Related tracks" prefix from the playlist name
+        playlist_obj["title"] = playlist_obj["title"].removeprefix("Related tracks: ")
+
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.domain,
