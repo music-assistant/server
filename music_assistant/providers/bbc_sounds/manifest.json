@@ -1,0 +1,13 @@
+{
+  "type": "music",
+  "domain": "bbc_sounds",
+  "name": "BBC Sounds",
+  "description": "Listen to your favourite BBC radio stations in Music Assistant",
+  "codeowners": [
+    "@kieranhogg"
+  ],
+  "requirements": [
+    "auntie-sounds==1.0.0b4"
+  ],
+  "multi_instance": false
+}
