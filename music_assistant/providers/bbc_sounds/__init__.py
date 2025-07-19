@@ -151,7 +151,9 @@ class BBCSoundsProvider(MusicProvider):
 
         # If we have an account, authenticate. Testing shows all features work without auth
         # but BBC will be disabling BBC Sounds from outside the UK at some point
-        if self.config.get_value(CONF_USERNAME) and self.config.get_value(CONF_PASSWORD):
+        if self.config.get_value(CONF_USERNAME) and self.config.get_value(
+            CONF_PASSWORD
+        ):
             try:
                 await self.client.auth.authenticate(
                     username=str(self.config.get_value(CONF_USERNAME)),
@@ -174,7 +176,9 @@ class BBCSoundsProvider(MusicProvider):
         station = await self.client.stations.get_station(station_id=station_id)
         if not station:
             return
-        now_playing = await self.client.schedules.currently_playing_song(station, image_size=1280)
+        now_playing = await self.client.schedules.currently_playing_song(
+            station, image_size=1280
+        )
 
         # TODO: check if there is a neater way to do this
         if (
@@ -243,7 +247,9 @@ class BBCSoundsProvider(MusicProvider):
                 except exceptions.SoundsException as e:
                     self.logger.error(f"BBC Sounds API error during player update: {e}")
                 except Exception as e:
-                    self.logger.error(f"Unexpected error during now playing update: {e}")
+                    self.logger.error(
+                        f"Unexpected error during now playing update: {e}"
+                    )
             await asyncio.sleep(cast("int", self.config.get_value("update_interval")))
 
     async def _update_our_queues(self) -> None:
@@ -263,12 +269,19 @@ class BBCSoundsProvider(MusicProvider):
             if queue.current_item.streamdetails.provider == self.domain:
                 station_id = queue.current_item.streamdetails.item_id
                 self.logger.debug("Found a bbc_sounds queue")
-                if queue.state == PlayerState.PLAYING and queue.current_item is not None:
-                    self.logger.debug("Queue is playing, updating its now playing metadata")
+                if (
+                    queue.state == PlayerState.PLAYING
+                    and queue.current_item is not None
+                ):
+                    self.logger.debug(
+                        "Queue is playing, updating its now playing metadata"
+                    )
                     await self._update_player_now_playing(queue.queue_id, station_id)
 
                 elif queue.state in [PlayerState.PAUSED, PlayerState.IDLE]:
-                    self.logger.debug("Queue is paused, reverting to station information")
+                    self.logger.debug(
+                        "Queue is paused, reverting to station information"
+                    )
                     await self._display_station(queue.queue_id, station_id)
 
     @property
@@ -293,7 +306,9 @@ class BBCSoundsProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
-        station = await self.client.stations.get_station(prov_radio_id, include_stream=True)
+        station = await self.client.stations.get_station(
+            prov_radio_id, include_stream=True
+        )
         if not station or not station.stream:
             raise MusicAssistantError("No valid radio stream found")
         return Radio(
@@ -324,7 +339,9 @@ class BBCSoundsProvider(MusicProvider):
             },
         )
 
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+    async def get_stream_details(
+        self, item_id: str, media_type: MediaType
+    ) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         station = await self.client.stations.get_station(item_id, include_stream=True)
         if not station or not station.stream:
@@ -337,7 +354,9 @@ class BBCSoundsProvider(MusicProvider):
             path=station.stream.uri,
             item_id=item_id,
             provider=self.domain,
-            audio_format=AudioFormat(content_type=ContentType.try_parse(station.stream.uri)),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(station.stream.uri)
+            ),
             can_seek=station.stream.can_seek,
             data={"provider": self.domain, "station": station.id},
         )
@@ -369,10 +388,14 @@ class BBCSoundsProvider(MusicProvider):
                     )
                 },
             )
-            for station in await self.client.stations.get_stations(include_local=include_local)
+            for station in await self.client.stations.get_stations(
+                include_local=include_local
+            )
         ]
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+    async def browse(
+        self, path: str
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -382,7 +405,9 @@ class BBCSoundsProvider(MusicProvider):
             item_path = ""
 
         if item_path == "":
-            return [BrowseFolder(item_id="live", provider=self.domain, name="Listen Live")]
+            return [
+                BrowseFolder(item_id="live", provider=self.domain, name="Listen Live")
+            ]
         elif item_path == "live":
             show_local = cast("bool", self.config.get_value("show_local"))
             return await self._station_list(include_local=show_local)
@@ -399,7 +424,7 @@ class BBCSoundsProvider(MusicProvider):
             stations = await self._station_list(include_local=show_local)
 
             # TODO: better way of ordering
-            results.radio = [station for station in stations if search_query in station.name][
-                :limit
-            ]
+            results.radio = [
+                station for station in stations if search_query in station.name
+            ][:limit]
         return results
