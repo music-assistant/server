@@ -56,8 +56,6 @@ from sounds.client import SoundsClient
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_RADIOS,
-    ProviderFeature.TRACK_METADATA,
-    ProviderFeature.AUDIO_SOURCE,
 }
 
 
