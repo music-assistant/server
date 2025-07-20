@@ -331,13 +331,11 @@ class BBCSoundsProvider(MusicProvider):
         return StreamDetails(
             stream_title=station.description,
             media_type=MediaType.RADIO,
-            stream_type=StreamType.HTTP,
+            stream_type=StreamType.HLS,
             path=station.stream.uri,
             item_id=item_id,
-            provider=self.lookup_key,
-            # enable_cache=False,
+            provider=self.domain,
             audio_format=AudioFormat(content_type=ContentType.try_parse(station.stream.uri)),
-            # cache=False,
             can_seek=station.stream.can_seek,
             data={"provider": self.domain, "station": station.id},
         )
