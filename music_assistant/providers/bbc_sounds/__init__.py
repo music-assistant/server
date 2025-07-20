@@ -35,6 +35,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
+    SearchResults,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
@@ -56,6 +57,7 @@ from sounds.client import SoundsClient
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.SEARCH,
 }
 
 
@@ -386,3 +388,18 @@ class BBCSoundsProvider(MusicProvider):
             return await self._station_list(include_local=show_local)
         else:
             return []
+
+    async def search(
+        self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
+    ) -> SearchResults:
+        """Perform search for BBC Sounds stations."""
+        results = SearchResults()
+        if media_types is None or MediaType.RADIO in media_types:
+            show_local = cast("bool", self.config.get_value("show_local"))
+            stations = await self._station_list(include_local=show_local)
+
+            # TODO: better way of ordering
+            results.radio = [station for station in stations if search_query in station.name][
+                :limit
+            ]
+        return results
