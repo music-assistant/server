@@ -393,8 +393,8 @@ class AudioTags:
 
         if tag := self.tags.get("replaygaintrackgain"):
             try:
-                value = float(tag.split(" ")[0])
-                return -18 - value
+                gain_adjustment = float(tag.split(" ")[0])
+                return -18 - gain_adjustment
             except (ValueError, IndexError) as e:
                 LOGGER.warning(f"Invalid replaygaintrackgain tag value: {tag!r} — {e}")
 
