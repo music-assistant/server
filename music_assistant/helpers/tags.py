@@ -386,8 +386,8 @@ class AudioTags:
         """Try to read/calculate the integrated loudness from the tags (track level)."""
         if tag := self.tags.get("r128trackgain"):
             try:
-                value = int(tag.split(" ")[0]) / 256
-                return -23 - float(value)
+                gain_adjustment = int(tag.split(" ")[0]) / 256
+                return -23 - gain_adjustment
             except (ValueError, IndexError) as e:
                 LOGGER.warning(f"Invalid r128trackgain tag value: {tag!r} — {e}")
 
