@@ -45,7 +45,7 @@ version = "0.0.0"
 test = [
   "codespell==2.4.1",
   "isort==6.0.1",
-  "mypy==1.15.0",
+  "mypy==1.17.0",
   "pre-commit==4.2.0",
   "pre-commit-hooks==5.0.0",
   "pytest==8.4.1",
