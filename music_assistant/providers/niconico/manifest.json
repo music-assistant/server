@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "niconico",
+  "name": "niconico",
+  "description": "Support for the niconico in Music Assistant",
+  "codeowners": ["@Shi-553"],
+  "requirements": [
+    "yt-dlp==2025.6.30",
+    "git+https://github.com/Shi-553/niconico.py@main"
+  ],
+  "multi_instance": true
+}

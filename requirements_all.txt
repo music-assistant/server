@@ -24,6 +24,7 @@ cryptography==45.0.4
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 duration-parser==1.0.1
+git+https://github.com/Shi-553/niconico.py@main
 hass-client==1.2.0
 ibroadcastaio==0.4.0
 ifaddr==0.2.0
