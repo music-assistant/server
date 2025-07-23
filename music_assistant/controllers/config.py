@@ -540,8 +540,8 @@ class ConfigController:
         self,
         player_id: str,
         provider: str,
-        name: str,
-        enabled: bool,
+        name: str | None = None,
+        enabled: bool = True,
         values: dict[str, ConfigValueType] | None = None,
     ) -> None:
         """
@@ -817,7 +817,6 @@ class ConfigController:
 
         # some type hints to help with the code below
         instance_id: str
-        player_id: str
         provider_config: dict[str, Any]
         player_config: dict[str, Any]
         values: dict[str, ConfigValueType]

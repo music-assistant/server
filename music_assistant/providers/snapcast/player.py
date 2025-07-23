@@ -135,21 +135,19 @@ class SnapCastPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         group = self._get_snapgroup()
         assert group is not None  # for type checking
-
         # handle client additions
         for player_id in player_ids_to_add or []:
             if player_id not in group.clients:
                 snapcast_id = self.provider._get_snapclient_id(player_id)
                 await group.add_client(snapcast_id)
                 self._attr_group_members.append(player_id)
-        self.update_state()
-
         # handle client removals
         for player_id in player_ids_to_remove or []:
             if player_id in group.clients:
                 snapcast_id = self.provider._get_snapclient_id(player_id)
                 await group.remove_client(snapcast_id)
                 self._attr_group_members.remove(player_id)
+        self.update_state()
 
     async def ungroup(self) -> None:
         """Ungroup."""

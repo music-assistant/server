@@ -570,7 +570,7 @@ class Player(ABC):
         """Handle logic when the player is unloaded from the Player controller."""
         for callback in self._on_unload_callbacks:
             try:
-                callback(self)
+                callback()
             except Exception as err:
                 self.logger.error(
                     "Error calling on_unload callback for player %s: %s",
@@ -706,7 +706,7 @@ class Player(ABC):
         """
         power_control = self.power_control
         if power_control == PLAYER_CONTROL_FAKE:
-            return self.extra_data.get(ATTR_FAKE_POWER, False)
+            return bool(self.extra_data.get(ATTR_FAKE_POWER, False))
         if power_control == PLAYER_CONTROL_NATIVE:
             return self.powered
         if power_control == PLAYER_CONTROL_NONE:
@@ -726,7 +726,7 @@ class Player(ABC):
         """
         volume_control = self.volume_control
         if volume_control == PLAYER_CONTROL_FAKE:
-            return self.extra_data.get(ATTR_FAKE_VOLUME, 0)
+            return int(self.extra_data.get(ATTR_FAKE_VOLUME, 0))
         if volume_control == PLAYER_CONTROL_NATIVE:
             return self.volume_level
         if volume_control == PLAYER_CONTROL_NONE:
@@ -746,7 +746,7 @@ class Player(ABC):
         """
         mute_control = self.mute_control
         if mute_control == PLAYER_CONTROL_FAKE:
-            return self.extra_data.get(ATTR_FAKE_MUTE, False)
+            return bool(self.extra_data.get(ATTR_FAKE_MUTE, False))
         if mute_control == PLAYER_CONTROL_NATIVE:
             return self.volume_muted
         if mute_control == PLAYER_CONTROL_NONE:
@@ -798,7 +798,6 @@ class Player(ABC):
         # if the player is grouped/synced, add the active source list of the group/parent player
         if parent_player_id := (self.synced_to or self.active_group):
             if parent_player := self.mass.players.get(parent_player_id):
-                source = parent_player.active_source_state
                 for source in parent_player.source_list_state:
                     if source.id == parent_player.active_source_state:
                         sources.append(
@@ -924,8 +923,8 @@ class Player(ABC):
             group_volume += child_volume
             active_players += 1
         if active_players:
-            group_volume = group_volume / active_players
-        return int(group_volume)
+            group_volume = int(group_volume / active_players)
+        return group_volume
 
     @cached_property
     @final
@@ -935,7 +934,10 @@ class Player(ABC):
 
         This is a convenience property based on the config entry.
         """
-        return {HidePlayerOption(x) for x in self._config.get_value(CONF_HIDE_PLAYER_IN_UI)}
+        return {
+            HidePlayerOption(x)
+            for x in cast("list[str]", self._config.get_value(CONF_HIDE_PLAYER_IN_UI, []))
+        }
 
     @cached_property
     @final
@@ -1016,25 +1018,25 @@ class Player(ABC):
                 uri=uri,
                 media_type=media_type,
             )
-        self.current_media.uri = uri
+        self._attr_current_media.uri = uri
         if media_type != MediaType.UNKNOWN:
-            self.current_media.media_type = media_type
+            self._attr_current_media.media_type = media_type
         if title:
-            self.current_media.title = title
+            self._attr_current_media.title = title
         if artist:
-            self.current_media.artist = artist
+            self._attr_current_media.artist = artist
         if album:
-            self.current_media.album = album
+            self._attr_current_media.album = album
         if image_url:
-            self.current_media.image_url = image_url
+            self._attr_current_media.image_url = image_url
         if duration:
-            self.current_media.duration = duration
+            self._attr_current_media.duration = duration
         if queue_id:
-            self.current_media.queue_id = queue_id
+            self._attr_current_media.queue_id = queue_id
         if queue_item_id:
-            self.current_media.queue_item_id = queue_item_id
+            self._attr_current_media.queue_item_id = queue_item_id
         if custom_data:
-            self.current_media.custom_data = custom_data
+            self._attr_current_media.custom_data = custom_data
 
     @final
     def set_config(self, config: PlayerConfig) -> None:
@@ -1245,7 +1247,7 @@ class GroupPlayer(Player):
         # Feel free to override but ensure to include the base entries by calling super() first.
         # To override the default config entries, simply define an entry with the same key
         # and it will be used instead of the default one.
-        return (
+        return [
             *BASE_CONFIG_ENTRIES,
             CONF_ENTRY_PLAYER_ICON_GROUP,
             # add player control entries as hidden entries
@@ -1284,7 +1286,7 @@ class GroupPlayer(Player):
                 if self.expose_to_ha_by_default
                 else CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED
             ),
-        )
+        ]
 
     async def volume_set(self, volume_level: int) -> None:
         """
@@ -1306,7 +1308,7 @@ class SyncGroupPlayer(GroupPlayer):
     @cached_property
     def is_dynamic(self) -> bool:
         """Return if the player is a dynamic group player."""
-        return self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, default_value=False)
+        return bool(self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, False))
 
     def __init__(
         self,
@@ -1319,7 +1321,7 @@ class SyncGroupPlayer(GroupPlayer):
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
         self._attr_active_source = player_id
-        self._attr_group_members = self.config.get_value(CONF_GROUP_MEMBERS, default_value=[])
+        self._attr_group_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
         self._set_attributes()
 
@@ -1348,16 +1350,16 @@ class SyncGroupPlayer(GroupPlayer):
                 default_value=[],
                 description="Select all players you want to be part of this group",
                 required=False,  # needed for dynamic members (which allows empty members list)
-                options=tuple(
+                options=[
                     ConfigValueOption(x.display_name, x.player_id) for x in self.provider.players
-                ),
+                ],
             ),
             ConfigEntry(
                 key="dynamic_members",
                 type=ConfigEntryType.BOOLEAN,
                 label="Enable dynamic members",
-                description="Allow (un)joining members dynamically, "
-                "so the group more or less behaves the same like manually syncing players together, "
+                description="Allow (un)joining members dynamically, so the group more or less"
+                "behaves the same like manually syncing players together, "
                 "with the main difference being that the groupplayer will hold the queue.",
                 default_value=False,
                 required=False,
@@ -1377,7 +1379,7 @@ class SyncGroupPlayer(GroupPlayer):
             )
             child_config_entries = await child_player.get_config_entries()
             entries.extend(
-                *(entry for entry in child_config_entries if entry.key in allowed_conf_entries)
+                [entry for entry in child_config_entries if entry.key in allowed_conf_entries]
             )
         return entries
 
@@ -1399,7 +1401,7 @@ class SyncGroupPlayer(GroupPlayer):
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
         # always stop at power off
-        if not powered and self.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        if not powered and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             await self.stop()
 
         if powered:
@@ -1415,10 +1417,7 @@ class SyncGroupPlayer(GroupPlayer):
             for member in self.mass.players.iter_group_members(
                 self, only_powered=False, active_only=False
             ):
-                if member.active_group not in (
-                    None,
-                    self.player_id,
-                ):
+                if member.active_group is not None and member.active_group != self.player_id:
                     # collision: child player is part of multiple groups
                     # and another group already active !
                     # solve this by trying to leave the group first
@@ -1450,7 +1449,9 @@ class SyncGroupPlayer(GroupPlayer):
 
         if not powered:
             # reset the original group members when powered off
-            self._attr_group_members.set(self.config.get_value(CONF_GROUP_MEMBERS, []))
+            self._attr_group_members = cast(
+                "list[str]", self.config.get_value(CONF_GROUP_MEMBERS, [])
+            )
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -1492,7 +1493,7 @@ class SyncGroupPlayer(GroupPlayer):
             final_players_to_add.append(player_id)
         # handle removals
         final_players_to_remove: list[str] = []
-        static_members = self.config.get_value(CONF_GROUP_MEMBERS, default_value=[])
+        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         for player_id in player_ids_to_remove or []:
             if player_id not in self._attr_group_members:
                 continue

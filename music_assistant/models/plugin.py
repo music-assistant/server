@@ -73,7 +73,7 @@ class PluginProvider(Provider):
     Plugin Provider implementations should inherit from this base model.
     """
 
-    def get_source(self) -> PluginSource:  # type: ignore[return]
+    def get_source(self) -> PluginSource:
         """
         Get (audio)source details for this plugin.
 
