@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from zeroconf import IPVersion
 
 from music_assistant.helpers.process import check_output
-from music_assistant.providers.airplay.const import BROKEN_RAOP_MODELS
+from music_assistant.providers.airplay.const import AIRPLAY2_MODELS, BROKEN_RAOP_MODELS
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -57,6 +57,8 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:
         return ("Apple", "Apple TV 4K Gen2")
     if model == "AppleTV14,1":
         return ("Apple", "Apple TV 4K Gen3")
+    if model == "UPL-AMP":
+        return ("Ubiquiti Inc.", "UPL-AMP")
     if "AirPort" in model:
         return ("Apple", "AirPort Express")
     if "AudioAccessory" in model:
@@ -89,6 +91,16 @@ def is_broken_raop_model(manufacturer: str, model: str) -> bool:
     return False
 
 
+def is_airplay2_model(manufacturer: str, model: str) -> bool:
+    """Check if a model should default to AirPlay 2 support."""
+    # Find a more generic method for determining AirPlay 2 support. Perhaps from
+    # _airplay._tcp srcvers property or _raop._tcp vs property.
+    for airplay2_manufacturer, airplay2_model in AIRPLAY2_MODELS:
+        if airplay2_manufacturer in (manufacturer, "*") and airplay2_model in (model, "*"):
+            return True
+    return False
+
+
 async def get_cliraop_binary() -> str:
     """Find the correct raop/airplay binary belonging to the platform."""
 
@@ -114,4 +126,32 @@ async def get_cliraop_binary() -> str:
         return bridge_binary
 
     msg = f"Unable to locate RAOP Play binary for {system}/{architecture}"
+    raise RuntimeError(msg)
+
+
+async def get_cliairplay2_binary() -> str:
+    """Find the correct AirPlay2 binary belonging to the platform."""
+
+    async def check_binary(cliairplay2_path: str) -> str | None:
+        try:
+            returncode, output = await check_output(
+                cliairplay2_path,
+                "-check",
+            )
+            if returncode == 0 and output.strip().decode() == "cliairplay2 check":
+                return cliairplay2_path
+        except OSError:
+            pass
+        return None
+
+    base_path = os.path.join(os.path.dirname(__file__), "bin")
+    system = platform.system().lower().replace("darwin", "macos")
+    architecture = platform.machine().lower()
+
+    if bridge_binary := await check_binary(
+        os.path.join(base_path, f"cliairplay2-{system}-{architecture}")
+    ):
+        return bridge_binary
+
+    msg = f"Unable to locate AirPlay2 Play binary for {system}/{architecture}"
     raise RuntimeError(msg)

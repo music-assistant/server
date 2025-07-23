@@ -37,6 +37,7 @@ from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import get_ip_pton, lock, select_free_port
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.airplay.airplay2 import AirPlay2StreamSession
 from music_assistant.providers.airplay.raop import RaopStreamSession
 from music_assistant.providers.player_group import PlayerGroupProvider
 
@@ -52,9 +53,11 @@ from .const import (
 )
 from .helpers import (
     convert_airplay_volume,
+    get_cliairplay2_binary,
     get_cliraop_binary,
     get_model_info,
     get_primary_ip_address,
+    is_airplay2_model,
     is_broken_raop_model,
 )
 from .player import AirPlayPlayer
@@ -138,14 +141,16 @@ BROKEN_RAOP_WARN = ConfigEntry(
 # - Implement volume control for Apple devices using pyatv
 # - Implement metadata for Apple Apple devices using pyatv
 # - Use pyatv for communicating with original Apple devices (and use cliraop for actual streaming)
-# - Implement AirPlay 2 support
+# - Implement AirPlay 2 support - being worked on now
 # - Implement late joining to existing stream (instead of restarting it)
 
 
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
-    cliraop_bin: str | None
+    cliraop_bin: str | None = None
+    cliairplay2_bin: str | None = None
+    airplay_version: int | None = None
     _players: dict[str, AirPlayPlayer]
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
@@ -159,6 +164,8 @@ class AirPlayProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self._players = {}
         self.cliraop_bin: str | None = await get_cliraop_binary()
+        self.cliairplay2_bin: str | None = await get_cliairplay2_binary()
+        self.logger.debug(f"handle_async_init for {self}")
         dacp_port = await select_free_port(39831, 49831)
         self.dacp_id = dacp_id = f"{randrange(2**64):X}"
         self.logger.debug("Starting DACP ActiveRemote %s on port %s", dacp_id, dacp_port)
@@ -186,6 +193,7 @@ class AirPlayProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+        self.logger.debug(f"on_mdns_service_state_change for name {name} with info {info}")
         if not info:
             # When info are not provided for the service
             if state_change == ServiceStateChange.Removed and "@" in name:
@@ -239,7 +247,7 @@ class AirPlayProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        # power off all players (will disconnect and close cliraop)
+        # power off all players (will disconnect and close cliraop/cliairplay2)
         for player in self._players.values():
             await player.cmd_stop()
         # shutdown DACP server
@@ -290,6 +298,7 @@ class AirPlayProvider(PlayerProvider):
         airplay_player = self._players[player_id]
         await airplay_player.cmd_pause()
 
+    # ruff: noqa: PLR0915
     @lock
     async def play_media(
         self,
@@ -360,20 +369,39 @@ class AirPlayProvider(PlayerProvider):
                 output_format=AIRPLAY_PCM_FORMAT,
             )
 
-        # if an existing stream session is running, we could replace it with the new stream
-        if airplay_player.raop_stream and airplay_player.raop_stream.running:
-            # check if we need to replace the stream
-            if airplay_player.raop_stream.prevent_playback:
-                # player is in prevent playback mode, we need to stop the stream
-                await airplay_player.cmd_stop()
-            else:
-                await airplay_player.raop_stream.session.replace_stream(audio_source)
-                return
+        assert self.airplay_version is not None
+        if self.airplay_version == 1:
+            # if an existing stream session is running, we could replace it with the new stream
+            if airplay_player.raop_stream and airplay_player.raop_stream.running:
+                # check if we need to replace the stream
+                if airplay_player.raop_stream.prevent_playback:
+                    # player is in prevent playback mode, we need to stop the stream
+                    await airplay_player.cmd_stop()
+                else:
+                    await airplay_player.raop_stream.session.replace_stream(audio_source)
+                    return
 
-        # setup RaopStreamSession for player (and its sync childs if any)
-        sync_clients = self._get_sync_clients(player_id)
-        raop_stream_session = RaopStreamSession(self, sync_clients, input_format, audio_source)
-        await raop_stream_session.start()
+            # setup RaopStreamSession for player (and its sync childs if any)
+            sync_clients = self._get_sync_clients(player_id)
+            raop_stream_session = RaopStreamSession(self, sync_clients, input_format, audio_source)
+            await raop_stream_session.start()
+        elif self.airplay_version == 2:
+            # if an existing stream session is running, we could replace it with the new stream
+            if airplay_player.airplay2_stream and airplay_player.airplay2_stream.running:
+                # check if we need to replace the stream
+                if airplay_player.airplay2_stream.prevent_playback:
+                    # player is in prevent playback mode, we need to stop the stream
+                    await airplay_player.cmd_stop()
+                else:
+                    await airplay_player.airplay2_stream.session.replace_stream(audio_source)
+                    return
+
+            # setup AirPlay2StreamSession for player (and its sync childs if any)
+            sync_clients = self._get_sync_clients(player_id)
+            airplay2_stream_session = AirPlay2StreamSession(
+                self, sync_clients, input_format, audio_source
+            )
+            await airplay2_stream_session.start()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
@@ -382,8 +410,15 @@ class AirPlayProvider(PlayerProvider):
         - volume_level: volume level (0..100) to set on the player.
         """
         airplay_player = self._players[player_id]
-        if airplay_player.raop_stream and airplay_player.raop_stream.running:
-            await airplay_player.raop_stream.send_cli_command(f"VOLUME={volume_level}\n")
+
+        assert self.airplay_version is not None
+        if self.airplay_version == 1:
+            if airplay_player.raop_stream and airplay_player.raop_stream.running:
+                await airplay_player.raop_stream.send_cli_command(f"VOLUME={volume_level}\n")
+        elif self.airplay_version == 2:
+            if airplay_player.airplay2_stream and airplay_player.airplay2_stream.running:
+                await airplay_player.airplay2_stream.send_cli_command(f"VOLUME={volume_level}\n")
+
         mass_player = self.mass.players.get(player_id)
         if not mass_player:
             return
@@ -415,10 +450,16 @@ class AirPlayProvider(PlayerProvider):
         if player_id in parent_player.group_childs:
             # nothing to do: player is already part of the group
             return
-        # ensure the child does not have an existing steam session active
-        if airplay_player := self._players.get(player_id):
-            if airplay_player.raop_stream and airplay_player.raop_stream.running:
-                await airplay_player.raop_stream.session.remove_client(airplay_player)
+        # ensure the child does not have an existing stream session active
+        assert self.airplay_version is not None
+        if self.airplay_version == 1:
+            if airplay_player := self._players.get(player_id):
+                if airplay_player.raop_stream and airplay_player.raop_stream.running:
+                    await airplay_player.raop_stream.session.remove_client(airplay_player)
+        elif self.airplay_version == 2:
+            if airplay_player := self._players.get(player_id):
+                if airplay_player.airplay2_stream and airplay_player.airplay2_stream.running:
+                    await airplay_player.airplay2_stream.session.remove_client(airplay_player)
         # always make sure that the parent player is part of the sync group
         parent_player.group_childs.append(parent_player.player_id)
         parent_player.group_childs.append(child_player.player_id)
@@ -456,8 +497,15 @@ class AirPlayProvider(PlayerProvider):
         if not mass_player or not mass_player.synced_to:
             return
         ap_player = self._players[player_id]
-        if ap_player.raop_stream and ap_player.raop_stream.running:
-            await ap_player.raop_stream.session.remove_client(ap_player)
+
+        assert self.airplay_version is not None
+        if self.airplay_version == 1:
+            if ap_player.raop_stream and ap_player.raop_stream.running:
+                await ap_player.raop_stream.session.remove_client(ap_player)
+        elif self.airplay_version == 2:
+            if ap_player.airplay2_stream and ap_player.airplay2_stream.running:
+                await ap_player.airplay2_stream.session.remove_client(ap_player)
+
         group_leader = self.mass.players.get(mass_player.synced_to, raise_unavailable=True)
         assert group_leader
         if player_id in group_leader.group_childs:
@@ -504,6 +552,15 @@ class AirPlayProvider(PlayerProvider):
         else:
             manufacturer, model = get_model_info(info)
 
+        if is_airplay2_model(manufacturer, model):
+            self.airplay_version = 2
+        else:
+            self.airplay_version = 1
+        self.logger.debug(
+            f"{display_name} has manufacturer {manufacturer}, model {model}"
+            f" and will use AirPlay version {self.airplay_version}"
+        )
+
         if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
             return
@@ -520,7 +577,7 @@ class AirPlayProvider(PlayerProvider):
         # append airplay to the default display name for generic (non-apple) devices
         # this makes it easier for users to distinguish between airplay and non-airplay devices
         if manufacturer.lower() != "apple" and "airplay" not in display_name.lower():
-            display_name += " (AirPlay)"
+            display_name += f" (AirPlay {self.airplay_version})"
 
         self._players[player_id] = AirPlayPlayer(self, player_id, info, address)
         if not (volume := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_VOLUME)):
@@ -548,7 +605,7 @@ class AirPlayProvider(PlayerProvider):
         )
         await self.mass.players.register_or_update(mass_player)
 
-    async def _handle_dacp_request(  # noqa: PLR0915
+    async def _handle_dacp_request(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         """Handle new connection on the socket."""
@@ -583,7 +640,8 @@ class AirPlayProvider(PlayerProvider):
                 (
                     x
                     for x in self._players.values()
-                    if x.raop_stream and x.raop_stream.active_remote_id == active_remote
+                    if (x.raop_stream and x.raop_stream.active_remote_id == active_remote)
+                    or (x.airplay2_stream and x.airplay2_stream.active_remote_id == active_remote)
                 ),
                 None,
             )
@@ -662,18 +720,35 @@ class AirPlayProvider(PlayerProvider):
                     self.mass.create_task(self.cmd_volume_set(player_id, volume))
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
-                if raop_stream := airplay_player.raop_stream:
-                    raop_stream.prevent_playback = True
-                    if mass_player.synced_to:
-                        self.mass.create_task(self.cmd_ungroup(airplay_player.player_id))
-                    else:
-                        self.mass.create_task(
-                            airplay_player.raop_stream.session.remove_client(airplay_player)
-                        )
+                assert self.airplay_version is not None
+                if self.airplay_version == 1:
+                    if raop_stream := airplay_player.raop_stream:
+                        raop_stream.prevent_playback = True
+                        if mass_player.synced_to:
+                            self.mass.create_task(self.cmd_ungroup(airplay_player.player_id))
+                        else:
+                            self.mass.create_task(
+                                airplay_player.raop_stream.session.remove_client(airplay_player)
+                            )
+                elif self.airplay_version == 2:
+                    if airplay2_stream := airplay_player.airplay2_stream:
+                        airplay2_stream.prevent_playback = True
+                        if mass_player.synced_to:
+                            self.mass.create_task(self.cmd_ungroup(airplay_player.player_id))
+                        else:
+                            self.mass.create_task(
+                                airplay_player.airplay2_stream.session.remove_client(airplay_player)
+                            )
+
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
-                if raop_stream := airplay_player.raop_stream:
-                    raop_stream.prevent_playback = False
+                assert self.airplay_version is not None
+                if self.airplay_version == 1:
+                    if raop_stream := airplay_player.raop_stream:
+                        raop_stream.prevent_playback = False
+                elif self.airplay_version == 2:
+                    if airplay2_stream := airplay_player.airplay2_stream:
+                        airplay2_stream.prevent_playback = False
 
             # send response
             date_str = utc().strftime("%a, %-d %b %Y %H:%M:%S")

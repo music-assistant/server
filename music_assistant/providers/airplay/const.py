@@ -45,3 +45,5 @@ BROKEN_RAOP_MODELS = (
     # Samsung has been repeatedly being reported as having issues with AirPlay 1/raop
     ("Samsung", "*"),
 )
+
+AIRPLAY2_MODELS = (("Ubiquiti Inc.", "UPL-AMP"),)
