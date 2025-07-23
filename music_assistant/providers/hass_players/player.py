@@ -256,6 +256,7 @@ class HomeAssistantPlayer(Player):
 
         # Optimistically update state
         self._attr_current_media = media
+        self._attr_active_source = media.queue_id
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
@@ -336,18 +337,19 @@ class HomeAssistantPlayer(Player):
 
     def _update_attributes(self, attributes: dict[str, Any]) -> None:
         """Update Player attributes from HA state attributes."""
-        self._attr_name = attributes["friendly_name"]
         # process optional attributes - these may not be present in all states
         for key, value in attributes.items():
-            if key == "media_position":
+            if key == "friendly_name":
+                self._attr_name = value
+            elif key == "media_position":
                 self._attr_elapsed_time = value
-            if key == "media_position_updated_at":
+            elif key == "media_position_updated_at":
                 self._attr_elapsed_time_last_updated = from_iso_string(value).timestamp()
-            if key == "volume_level":
+            elif key == "volume_level":
                 self._attr_volume_level = int(value * 100)
-            if key == "is_volume_muted":
+            elif key == "is_volume_muted":
                 self._attr_volume_muted = value
-            if key == "group_members":
+            elif key == "group_members":
                 group_members: list[str] = (
                     [
                         # ignore integrations that incorrectly set the group members attribute
@@ -367,14 +369,3 @@ class HomeAssistantPlayer(Player):
                     self._attr_group_members.clear()
                 else:
                     self._attr_group_members.clear()
-
-        # Update media info if available
-        if attributes.get("media_content_id"):
-            self._attr_current_media = PlayerMedia(
-                uri=attributes.get("media_content_id", ""),
-                title=attributes.get("media_title"),
-                artist=attributes.get("media_artist"),
-                album=attributes.get("media_album_name"),
-                image_url=attributes.get("entity_picture_local"),
-                duration=attributes.get("media_duration"),
-            )
