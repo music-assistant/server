@@ -140,7 +140,6 @@ class NiconicoMusicprovider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        await self.try_logout()
         self.niconico_py_client = NicoNico()
         await self.try_login()
         # Schedule periodic re-login to refresh the session
