@@ -1385,17 +1385,17 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
-        if sync_leader := self._get_sync_leader():
+        if sync_leader := self.sync_leader:
             await sync_leader.stop()
 
     async def play(self) -> None:
         """Send PLAY command to given player."""
-        if sync_leader := self._get_sync_leader():
+        if sync_leader := self.sync_leader:
             await sync_leader.play()
 
     async def pause(self) -> None:
         """Send PAUSE command to given player."""
-        if sync_leader := self._get_sync_leader():
+        if sync_leader := self.sync_leader:
             await sync_leader.pause()
 
     async def power(self, powered: bool) -> None:
@@ -1435,7 +1435,7 @@ class SyncGroupPlayer(GroupPlayer):
                     await self.mass.players.cmd_power(member.player_id, True)
         elif not prev_power:
             # handle TURN_OFF of the group player by ungrouping and turning off all members
-            if (sync_leader := self._get_sync_leader()) and sync_leader.group_members:
+            if (sync_leader := self.sync_leader) and sync_leader.group_members:
                 # dissolve the temporary syncgroup from the sync leader
                 sync_childs = [x for x in sync_leader.group_members if x != sync_leader.player_id]
                 if sync_childs:
@@ -1462,12 +1462,12 @@ class SyncGroupPlayer(GroupPlayer):
         # power on (which will also resync if needed)
         await self.power(True)
         # simply forward the command to the sync leader
-        if sync_leader := self._get_sync_leader():
+        if sync_leader := self.sync_leader:
             await sync_leader.play_media(media)
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
-        if sync_leader := self._get_sync_leader():
+        if sync_leader := self.sync_leader:
             await sync_leader.enqueue_next_media(media)
 
     async def set_members(
@@ -1517,7 +1517,8 @@ class SyncGroupPlayer(GroupPlayer):
                 player_ids_to_remove=final_players_to_remove,
             )
 
-    def _get_sync_leader(self) -> Player | None:
+    @property
+    def sync_leader(self) -> Player | None:
         """Get the active sync leader player for the syncgroup."""
         for child_player in self.mass.players.iter_group_members(
             self, only_powered=False, only_playing=False, active_only=False

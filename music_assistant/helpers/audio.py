@@ -47,6 +47,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
+from music_assistant.models.player import SyncGroupPlayer
 
 from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
@@ -63,7 +64,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.player import Player
-    from music_assistant.providers.universal_group import PlayerGroupProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
 
@@ -498,19 +498,10 @@ def get_stream_dsp_details(
     output_format = None
     is_external_group = False
 
-    if player.type == PlayerType.GROUP and player.provider.domain == "player_group":
+    if player.type == PlayerType.GROUP and isinstance(player, SyncGroupPlayer):
         if group_preventing_dsp:
-            try:
-                # We need a bit of a hack here since only the leader knows the correct output format
-                group_player_provider = player.provider
-                if TYPE_CHECKING:  # avoid circular import
-                    assert isinstance(group_player_provider, PlayerGroupProvider)
-                if sync_leader := group_player_provider._get_sync_leader(player):
-                    output_format = sync_leader.extra_data.get("output_format", None)
-            except RuntimeError:
-                # _get_sync_leader will raise a RuntimeError if this group has no players
-                # just ignore this and continue without output_format
-                LOGGER.warning("Unable to get the sync group leader for %s", queue_id)
+            if sync_leader := player.sync_leader:
+                output_format = sync_leader.extra_data.get("output_format", None)
     else:
         # We only add real players (so skip the PlayerGroups as they only sync containing players)
         details = get_player_dsp_details(mass, player)
