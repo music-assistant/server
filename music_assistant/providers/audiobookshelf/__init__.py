@@ -150,8 +150,8 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="Token _instead_ of user/ password.",
             required=False,
-            description="Instead of using a username and password,"
-            " you may provide the user's token."
+            description="Instead of using a username and password, "
+            "you may provide the user's token."
             "\nThe token can be seen in Audiobookshelf as an admin user in Settings -> Users.",
         ),
         ConfigEntry(
