@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.providers.niconico.helpers import get_library_items
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
@@ -20,12 +22,41 @@ if TYPE_CHECKING:
 class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
     """Track-related methods for NiconicoMusicProvider."""
 
+    _supported_features = {
+        ProviderFeature.LIBRARY_TRACKS,
+    }
+
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         track = await self.niconico_adapter.video.get_video(prov_track_id)
         if not track:
             raise MediaNotFoundError(f"Track with id {prov_track_id} not found on Niconico.")
         return track
+
+    async def get_library_tracks(
+        self,
+    ) -> AsyncGenerator[Track, None]:
+        """Retrieve library tracks from the provider."""
+        if not self.niconico_adapter.auth.is_logged_in():
+            return
+        playlists = await get_library_items(
+            self.provider,
+            cache_key="playlist",
+            query_table="playlists",
+            query_method=self.provider.mass.music.playlists.library_items,
+        )
+        for playlist in playlists:
+            page = 0
+            prov_map = next(iter(playlist.provider_mappings), None)
+            if not prov_map:
+                continue
+            while True:
+                playlist_tracks = await self.provider.get_playlist_tracks(prov_map.item_id, page)
+                if not playlist_tracks:
+                    break
+                for track in playlist_tracks:
+                    yield track
+                page += 1
 
     async def get_stream_details_for_mixin(
         self, item_id: str, media_type: MediaType

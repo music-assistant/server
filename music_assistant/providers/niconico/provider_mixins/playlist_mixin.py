@@ -1,4 +1,10 @@
-"""Niconico playlist mixin for Music Assistant."""
+"""
+Niconico playlist mixin for Music Assistant.
+
+In this section, "Mylist" on NicoNico is treated as a playlist.
+"""
+
+from collections.abc import AsyncGenerator
 
 from music_assistant_models.enums import (
     ProviderFeature,
@@ -6,6 +12,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Playlist, Track
 
+from music_assistant.providers.niconico.helpers import get_library_items
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
@@ -46,6 +53,19 @@ class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
             )
 
         return playlist_with_tracks.tracks if playlist_with_tracks else []
+
+    async def get_library_playlists(
+        self,
+    ) -> AsyncGenerator[Playlist, None]:
+        """Retrieve library playlists from the provider."""
+        playlists = await get_library_items(
+            self.provider,
+            cache_key="playlist",
+            query_table="playlists",
+            query_method=self.provider.mass.music.playlists.library_items,
+        )
+        for playlist in playlists:
+            yield playlist
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""

@@ -9,7 +9,7 @@ from music_assistant.constants import CACHE_CATEGORY_LIBRARY_ITEMS
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Playlist, Track
+    from music_assistant_models.media_items import Album, Playlist, Track
     from requests.cookies import RequestsCookieJar
 
 T = TypeVar("T")
@@ -21,6 +21,15 @@ class PlaylistWithTracks:
     def __init__(self, playlist: Playlist, tracks: list[Track]) -> None:
         """Initialize with playlist and its tracks."""
         self.playlist = playlist
+        self.tracks = tracks
+
+
+class AlbumWithTracks:
+    """Helper class to hold album and its tracks."""
+
+    def __init__(self, album: Album, tracks: list[Track]) -> None:
+        """Initialize with album and its tracks."""
+        self.album = album
         self.tracks = tracks
 
 

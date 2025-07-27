@@ -6,8 +6,9 @@ from io import StringIO
 from typing import Any, TypeVar
 
 import yt_dlp
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import UnplayableMediaError
-from music_assistant_models.media_items import Artist, Playlist, SearchResults, Track
+from music_assistant_models.media_items import Album, Artist, Playlist, SearchResults, Track
 from niconico import NicoNico
 from niconico.exceptions import LoginFailureError
 from niconico.objects.video import EssentialVideo
@@ -22,11 +23,17 @@ from music_assistant.providers.niconico.constants import (
     CONF_USER_SESSION,
     NICONICO_COOKIE_DOMAIN,
 )
-from music_assistant.providers.niconico.helpers import PlaylistWithTracks, convert_to_netscape
+from music_assistant.providers.niconico.helpers import (
+    AlbumWithTracks,
+    PlaylistWithTracks,
+    convert_to_netscape,
+)
 from music_assistant.providers.niconico.parsers import (
+    parse_album_by_series,
     parse_artist,
     parse_playlist_by_mylist,
     parse_playlist_with_tracks_by_mylist,
+    parse_series_to_album_with_tracks,
     parse_track_by_essential_video,
 )
 
@@ -210,6 +217,83 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
         return await self.adapter.call_with_throttler(_extract)
 
 
+class NiconicoSeriesAdapter(NiconicoBaseAdapter):
+    """Handles series related operations for NicoNico."""
+
+    def __init__(self, adapter: "NicoNicoMusicAssistantAdapter") -> None:
+        """Initialize NiconicoSeriesAdapter with reference to parent adapter."""
+        super().__init__(adapter)
+
+    async def get_series(
+        self, series_id: str, page: int = 1, page_size: int = 100
+    ) -> AlbumWithTracks | None:
+        """Get series details and parse as AlbumWithTracks."""
+        series_data = await self.adapter.call_with_throttler(
+            self.adapter.niconico_py_client.video.get_series,
+            series_id,
+            page=page,
+            page_size=page_size,
+        )
+        if not series_data:
+            return None
+
+        return parse_series_to_album_with_tracks(self.adapter.provider, series_data)
+
+    async def get_user_series(
+        self, user_id: str, page: int = 1, page_size: int = 100
+    ) -> list[Album]:
+        """Get user series and parse as Album list."""
+        user_series_items = await self.adapter.call_with_throttler(
+            self.adapter.niconico_py_client.user.get_user_series,
+            user_id,
+            page=page,
+            page_size=page_size,
+        )
+        if not user_series_items:
+            return []
+
+        return [
+            parse_album_by_series(self.adapter.provider, series_item)
+            for series_item in user_series_items
+        ]
+
+    async def get_own_series_list(self, page: int = 1, page_size: int = 100) -> list[Album]:
+        """Get own series list and parse as Album list."""
+        if not self.adapter.auth.is_logged_in():
+            return []
+
+        user_series_items = await self.adapter.call_with_throttler(
+            self.adapter.niconico_py_client.user.get_own_series_list,
+            page=page,
+            page_size=page_size,
+        )
+        if not user_series_items:
+            return []
+
+        return [
+            parse_album_by_series(self.adapter.provider, series_item)
+            for series_item in user_series_items
+        ]
+
+    async def get_own_series(
+        self, series_id: str, page: int = 1, page_size: int = 100
+    ) -> AlbumWithTracks | None:
+        """Get own series details and parse as AlbumWithTracks."""
+        if not self.adapter.auth.is_logged_in():
+            return None
+
+        series_data = await self.adapter.call_with_throttler(
+            self.adapter.niconico_py_client.user.get_own_series,
+            series_id,
+            page=page,
+            page_size=page_size,
+        )
+        if not series_data:
+            return None
+
+        return parse_series_to_album_with_tracks(self.adapter.provider, series_data)
+
+
 class NiconicoMylistAdapter(NiconicoBaseAdapter):
     """Handles mylist related operations for NicoNico."""
 
@@ -260,24 +344,57 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
         """Initialize NiconicoSearchAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
-    async def search_playlists_by_keyword(
-        self, search_query: str, limit: int, search_result: SearchResults
+    async def search_playlists_and_albums_by_keyword(
+        self,
+        search_query: str,
+        limit: int,
+        search_result: SearchResults,
+        media_types: list[MediaType],
     ) -> None:
-        """Search for playlists by keyword."""
-        mylist_search_data = await self.adapter.call_with_throttler(
+        """Search for playlists (mylists) and albums (series) by keyword."""
+        if not media_types:
+            return
+
+        # Determine which types to search for
+        types = []
+        search_playlists = MediaType.PLAYLIST in media_types
+        search_albums = MediaType.ALBUM in media_types
+
+        if search_playlists:
+            types.append("mylist")
+        if search_albums:
+            types.append("series")
+
+        if not types:
+            return
+
+        list_search_data = await self.adapter.call_with_throttler(
             self.adapter.niconico_py_client.video.search.search_lists,
             search_query,
             page_size=limit,
-            types=["mylist"],
+            types=types,
         )
-        if mylist_search_data:
-            search_result.playlists = []
+
+        if list_search_data:
+            playlists_to_add = []
+            albums_to_add = []
+
             item: EssentialMylist | EssentialSeries
-            for item in mylist_search_data.items:
-                if isinstance(item, EssentialMylist):
-                    search_result.playlists.append(
-                        parse_playlist_by_mylist(self.adapter.provider, item)
-                    )
+            for item in list_search_data.items:
+                if isinstance(item, EssentialMylist) and search_playlists:
+                    playlists_to_add.append(parse_playlist_by_mylist(self.adapter.provider, item))
+                elif isinstance(item, EssentialSeries) and search_albums:
+                    albums_to_add.append(parse_album_by_series(self.adapter.provider, item))
+
+            # Add items to search result like search_videos_by_keyword does
+            if playlists_to_add:
+                current_playlists = list(search_result.playlists)
+                current_playlists.extend(playlists_to_add)
+                search_result.playlists = current_playlists
+            if albums_to_add:
+                current_albums = list(search_result.albums)
+                current_albums.extend(albums_to_add)
+                search_result.albums = current_albums
 
     async def search_videos_by_keyword(
         self, search_query: str, limit: int, search_result: SearchResults
@@ -291,7 +408,7 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
             sensitive_content=sensitive_content,
         )
         if video_search_data:
-            search_result.tracks = []
+            search_result.tracks = list(search_result.tracks)
             for item in video_search_data.items:
                 if isinstance(item, EssentialVideo):
                     track = parse_track_by_essential_video(self.adapter.provider, item)
@@ -367,6 +484,7 @@ class NicoNicoMusicAssistantAdapter:
         self.logger = provider.logger.getChild("NicoNicoMusicAssistantAdapter")
         self.auth = NiconicoAuthAdapter(self)
         self.video = NiconicoVideoAdapter(self)
+        self.series = NiconicoSeriesAdapter(self)
         self.mylist = NiconicoMylistAdapter(self)
         self.search = NiconicoSearchAdapter(self)
         self.user = NicoNicoUserAdapter(self)

@@ -39,9 +39,12 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
                 search_query, limit, search_result
             )
 
-        if MediaType.PLAYLIST in media_types:
-            await self.niconico_adapter.search.search_playlists_by_keyword(
-                search_query, limit, search_result
+        # Search for both playlists and albums in a single API call for efficiency
+        list_media_types = [mt for mt in media_types if mt in (MediaType.PLAYLIST, MediaType.ALBUM)]
+
+        if list_media_types:
+            await self.niconico_adapter.search.search_playlists_and_albums_by_keyword(
+                search_query, limit, search_result, list_media_types
             )
 
         return search_result
