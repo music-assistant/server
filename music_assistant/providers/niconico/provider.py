@@ -15,6 +15,7 @@ from music_assistant.providers.niconico.provider_mixins import (
     NiconicoMusicProviderAlbumMixin,
     NiconicoMusicProviderArtistMixin,
     NiconicoMusicProviderCoreMixin,
+    NiconicoMusicProviderExplorerMixin,
     NiconicoMusicProviderLibraryMixin,
     NiconicoMusicProviderPlaylistMixin,
     NiconicoMusicProviderTrackMixin,
@@ -27,6 +28,7 @@ NICONICO_MIXINS = (
     NiconicoMusicProviderPlaylistMixin,
     NiconicoMusicProviderArtistMixin,
     NiconicoMusicProviderAlbumMixin,
+    NiconicoMusicProviderExplorerMixin,
 )
 
 
