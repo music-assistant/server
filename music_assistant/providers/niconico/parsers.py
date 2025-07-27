@@ -33,7 +33,6 @@ from music_assistant.providers.niconico.helpers import PlaylistWithTracks
 
 if TYPE_CHECKING:
     from niconico.objects.user import (
-        NicoUser,
         UserMylistItem,
     )
     from niconico.objects.video import Mylist
@@ -98,6 +97,7 @@ def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVide
         name=video.title,
         duration=video.duration,
         artists=UniqueList([parse_artist(provider, video.owner)]),
+        is_playable=video.duration > 0,
         metadata=MediaItemMetadata(
             description=video.short_description,
             explicit=video.require_sensitive_masking,
@@ -141,6 +141,9 @@ def parse_artist(provider: MusicProvider, owner_or_user: Owner | NicoUser) -> Ar
         item_id=item_id,
         provider=provider.lookup_key,
         name=name,
+        metadata=MediaItemMetadata(
+            description=owner_or_user.description if isinstance(owner_or_user, NicoUser) else None,
+        ),
         provider_mappings={
             ProviderMapping(
                 item_id=item_id,
@@ -166,4 +169,13 @@ def parse_artist(provider: MusicProvider, owner_or_user: Owner | NicoUser) -> Ar
             url=f"https://www.nicovideo.jp/user/{item_id}",
         )
     }
+    if isinstance(owner_or_user, NicoUser):
+        # Add SNS links if available
+        for sns in owner_or_user.sns:
+            artist.metadata.links.add(
+                MediaItemLink(
+                    type=LinkType(sns.type_),
+                    url=sns.url,
+                )
+            )
     return artist
