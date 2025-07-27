@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
+    ConfigValueOption,
     ConfigValueType,
     ProviderConfig,
 )
@@ -19,7 +20,11 @@ from music_assistant.constants import (
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
-from music_assistant.providers.niconico.constants import CONF_MFA, CONF_USER_SESSION
+from music_assistant.providers.niconico.constants import (
+    CONF_MFA,
+    CONF_SENSITIVE_CONTENTS,
+    CONF_USER_SESSION,
+)
 from music_assistant.providers.niconico.provider import NiconicoMusicProvider
 
 if TYPE_CHECKING:
@@ -74,5 +79,23 @@ async def get_config_entries(
                 "Enter the user_session obtained from the cookie."
                 "If invalid, it will be set automatically from your email and password."
             ),
+        ),
+        ConfigEntry(
+            key=CONF_SENSITIVE_CONTENTS,
+            type=ConfigEntryType.STRING,
+            label="Sensitive Content Handling",
+            required=False,
+            default_value=None,
+            options=[
+                ConfigValueOption(title="Default (No filtering)", value=None),
+                ConfigValueOption(title="Mask sensitive content", value="mask"),
+                ConfigValueOption(title="Filter out sensitive content", value="filter"),
+            ],
+            description=(
+                "Choose how to handle sensitive content in searches and recommendations. "
+                "'Mask' will show sensitive content with warnings, "
+                "'Filter' will hide it completely."
+            ),
+            category="content",
         ),
     )

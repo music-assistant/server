@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.media_items import SearchResults, Track
+from music_assistant_models.media_items import RecommendationFolder, SearchResults, Track
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
-
-if TYPE_CHECKING:
-    from music_assistant_models.media_items import RecommendationFolder
 
 
 class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
@@ -20,6 +16,8 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
 
     _supported_features = {
         ProviderFeature.SEARCH,
+        ProviderFeature.RECOMMENDATIONS,
+        ProviderFeature.SIMILAR_TRACKS,
     }
 
     async def search(
@@ -55,13 +53,26 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
         Returns an actual (and often personalised) list of recommendations
         from this provider for the user/account.
         """
-        # Get this provider's recommendations.
-        # This is only called if you reported the RECOMMENDATIONS feature in the supported_features.
-        return []
+        try:
+            tracks = await self.niconico_adapter.user.get_recommendations(limit=25)
+            return [
+                RecommendationFolder(
+                    item_id="niconico_recommendations",
+                    name="NicoNico Recommendations",
+                    provider=self.provider.lookup_key,
+                    items=UniqueList(tracks),
+                )
+            ]
+        except Exception as err:
+            self.provider.logger.warning("Error fetching NicoNico recommendations: %s", err)
+            return []
 
-    async def get_similar_tracks(  # type: ignore[empty-body]
-        self, prov_track_id: str, limit: int = 25
-    ) -> list[Track]:
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
-        # Get a list of similar tracks based on the provided track.
-        # This is only called if the provider supports the SIMILAR_TRACKS feature.
+        try:
+            return await self.niconico_adapter.user.get_similar_tracks(prov_track_id, limit=limit)
+        except Exception as err:
+            self.provider.logger.warning(
+                "Error fetching similar tracks for %s: %s", prov_track_id, err
+            )
+            return []
