@@ -64,6 +64,7 @@ def parse_playlist_by_mylist(
                 item_id=str(mylist.id_),
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
+                url=f"https://www.nicovideo.jp/mylist/{mylist.id_}",
                 available=True,
             )
         },
@@ -219,6 +220,7 @@ def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVide
                 item_id=video.id_,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
+                url=f"https://www.nicovideo.jp/watch/{video.id_}",
                 available=True,
             )
         },
@@ -244,6 +246,7 @@ def parse_artist(provider: MusicProvider, owner_or_user: Owner | NicoUser) -> Ar
                 item_id=item_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
+                url=f"https://www.nicovideo.jp/user/{item_id}",
                 available=True,
             )
         },

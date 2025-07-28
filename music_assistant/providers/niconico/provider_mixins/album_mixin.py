@@ -14,6 +14,7 @@ from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.constants import CACHE_CATEGORY_MUSIC_PROVIDER_ITEM
+from music_assistant.helpers.util import TaskManager
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
@@ -87,8 +88,6 @@ class NiconicoMusicProviderAlbumMixin(NiconicoMusicProviderMixinBase):
             return
 
         # Update album information in cached tracks
-        from music_assistant.helpers.util import TaskManager
-
         async def cache_track(track: Track) -> None:
             """Cache single track with album information."""
             track.album = album
