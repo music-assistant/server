@@ -137,7 +137,7 @@ class LrclibProvider(MetadataProvider):
             "duration": duration,
         }
 
-        self.logger.debug("Searching lyrics (synchronized preferred) with params: %s", search_params)
+        self.logger.debug("Searching lyrics (sync-ed preferred) with params: %s", search_params)
 
         if data := await self._get_data(**search_params):
             synced_lyrics = data.get("syncedLyrics")
