@@ -558,7 +558,7 @@ class MetaDataController(CoreController):
         album.metadata.last_refresh = int(time())
         await self.mass.music.albums.update_item_in_library(album.item_id, album)
 
-async def _update_track_metadata(self, track: Track, force_refresh: bool = False) -> None:
+    async def _update_track_metadata(self, track: Track, force_refresh: bool = False) -> None:
         """Get/update rich metadata for a track."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
