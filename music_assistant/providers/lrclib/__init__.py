@@ -115,7 +115,7 @@ class LrclibProvider(MetadataProvider):
             return None
 
         artist_name = track.artists[0].name
-        album_name = track.album.name if track.album else "Unknown Album"
+        album_name = track.album.name if track.album else ""
 
         duration = track.duration or 0
 
@@ -137,7 +137,7 @@ class LrclibProvider(MetadataProvider):
             "duration": duration,
         }
 
-        self.logger.debug("Searching synchronized lyrics with params: %s", search_params)
+        self.logger.debug("Searching lyrics (synchronized preferred) with params: %s", search_params)
 
         if data := await self._get_data(**search_params):
             synced_lyrics = data.get("syncedLyrics")
@@ -148,6 +148,26 @@ class LrclibProvider(MetadataProvider):
 
                 self.logger.debug("Found synchronized lyrics for %s by %s", track.name, artist_name)
                 return metadata
+            else:
+                self.logger.debug(
+                    "No synchronized lyrics found for %s by %s with album name %s and with a "
+                    "duration within 2 secs of %s",
+                    track.name, artist_name, album_name, duration
+                )
 
-        self.logger.debug("No synchronized lyrics found for %s by %s", track.name, artist_name)
+            plain_lyrics = data.get("plainLyrics")
+
+            if plain_lyrics:
+                metadata = MediaItemMetadata()
+                metadata.lrc_lyrics = plain_lyrics
+
+                self.logger.debug("Found plain lyrics for %s by %s", track.name, artist_name)
+                return metadata
+            else:
+                self.logger.debug(
+                    "No plain lyrics found for %s by %s with album name %s and with a "
+                    "duration within 2 secs of %s",
+                    track.name, artist_name, album_name, duration
+                )
+
         return None
