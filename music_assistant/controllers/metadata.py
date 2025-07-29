@@ -558,7 +558,7 @@ class MetaDataController(CoreController):
         album.metadata.last_refresh = int(time())
         await self.mass.music.albums.update_item_in_library(album.item_id, album)
 
-    async def _update_track_metadata(self, track: Track, force_refresh: bool = False) -> None:
+async def _update_track_metadata(self, track: Track, force_refresh: bool = False) -> None:
         """Get/update rich metadata for a track."""
         # collect metadata from all (online) music + metadata providers
         # NOTE: we only do/allow this every REFRESH_INTERVAL
@@ -591,12 +591,23 @@ class MetaDataController(CoreController):
                 track.metadata.update(prov_item.metadata)
 
         # collect metadata from all [metadata] providers
-        # there is only little metadata available for tracks so we only fetch metadata
-        # from other sources if the force flag is set
-        if force_refresh and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
+        # Only fetch metadata from these sources if force_refresh is set OR
+        # if the track needs a refresh (based on REFRESH_INTERVAL_TRACKS) AND
+        # online metadata is enabled.
+        if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
+                    
+                # Stop unncessary calls to lrclib
+                if provider.lookup_key == "lrclib":
+                    if track.metadata and (track.metadata.lyrics or track.metadata.lrc_lyrics):
+                        self.logger.debug(
+                            "Lyrics already exist for %s, skipping LRCLIB lookup for this track.",
+                            track.name
+                        )
+                        continue
+
                 if metadata := await provider.get_track_metadata(track):
                     track.metadata.update(metadata)
                     self.logger.debug(
