@@ -599,7 +599,7 @@ class MetaDataController(CoreController):
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
                     
-                # Stop unncessary calls to lrclib
+                # Stop unnecessary calls to lrclib
                 if provider.lookup_key == "lrclib":
                     if track.metadata and (track.metadata.lyrics or track.metadata.lrc_lyrics):
                         self.logger.debug(
