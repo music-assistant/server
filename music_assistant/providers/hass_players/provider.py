@@ -9,9 +9,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.config_entries import ProviderConfig
-from music_assistant_models.provider import ProviderManifest
-
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -24,6 +21,8 @@ if TYPE_CHECKING:
     from hass_client.models import Device as HassDevice
     from hass_client.models import Entity as HassEntity
     from hass_client.models import State as HassState
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.providers.hass import HomeAssistantProvider
 

@@ -12,7 +12,7 @@ from pathlib import Path
 PACKAGE_REGEX = re.compile(r"^(?:--.+\s)?([-_\.\w\d]+).*==.+$")
 GIT_REPO_REGEX = re.compile(r"^(git\+https:\/\/[-_\.\w\d\/]+[@-_\.\w\d\/]*)$")
 
-# ruff: noqa: PTH112,PTH113,PTH118,PTH123,T201
+# ruff: noqa: T201
 
 
 def gather_core_requirements() -> list[str]:

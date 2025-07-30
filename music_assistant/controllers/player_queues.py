@@ -376,7 +376,7 @@ class PlayerQueuesController(CoreController):
         - radio_mode: Enable radio mode for the given item(s).
         - start_item: Optional item to start the playlist or album from.
         """
-        # ruff: noqa: PLR0915,PLR0912
+        # ruff: noqa: PLR0915
         # we use a contextvar to bypass the throttler for this asyncio task/context
         # this makes sure that playback has priority over other requests that may be
         # happening in the background

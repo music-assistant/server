@@ -21,8 +21,6 @@ from .provider import Provider
 if TYPE_CHECKING:
     from music_assistant.models.player import Player
 
-# ruff: noqa: ARG001, ARG002
-
 
 class PlayerProvider(Provider):
     """

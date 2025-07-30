@@ -66,7 +66,7 @@ def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[s
             params_str = ",".join(f":{x}" for x in subparams)
             result_query = result_query.replace(f" :{key}", f" ({params_str})")
         else:
-            result_params[key] = params[key]
+            result_params[key] = value
     return (result_query, result_params)
 
 

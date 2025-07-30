@@ -37,8 +37,7 @@ async def setup(
         msg = "The Home Assistant Plugin needs to be set-up first"
         raise SetupFailedError(msg)
     hass_prov = cast("HomeAssistantProvider", hass_prov)
-    prov = HomeAssistantPlayerProvider(mass, manifest, config, hass_prov)
-    return prov
+    return HomeAssistantPlayerProvider(mass, manifest, config, hass_prov)
 
 
 async def get_config_entries(

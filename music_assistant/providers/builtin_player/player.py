@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from time import time
-from typing import override
 
 from aiohttp import web
 from music_assistant_models.builtin_player import BuiltinPlayerEvent, BuiltinPlayerState
@@ -72,7 +71,6 @@ class BuiltinPlayer(Player):
         for cb in self.unregister_cbs:
             cb()
         self.unregister_cbs.clear()
-
         self._attr_available = False
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_powered = False
@@ -97,7 +95,6 @@ class BuiltinPlayer(Player):
         if update_state:
             self.update_state()
 
-    @override
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = await super().get_config_entries()
@@ -131,7 +128,6 @@ class BuiltinPlayer(Player):
             create_sample_rates_config_entry([48000]),
         ]
 
-    @override
     async def stop(self) -> None:
         """Send STOP command to player."""
         self.mass.signal_event(
@@ -140,7 +136,6 @@ class BuiltinPlayer(Player):
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.STOP),
         )
 
-    @override
     async def play(self) -> None:
         """Send PLAY command to player."""
         self.mass.signal_event(
@@ -149,7 +144,6 @@ class BuiltinPlayer(Player):
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.PLAY),
         )
 
-    @override
     async def pause(self) -> None:
         """Send PAUSE command to player."""
         self.mass.signal_event(
@@ -158,7 +152,6 @@ class BuiltinPlayer(Player):
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.PAUSE),
         )
 
-    @override
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to player."""
         self.mass.signal_event(
@@ -167,7 +160,6 @@ class BuiltinPlayer(Player):
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.SET_VOLUME, volume=volume_level),
         )
 
-    @override
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to player."""
         self.mass.signal_event(
@@ -178,7 +170,6 @@ class BuiltinPlayer(Player):
             ),
         )
 
-    @override
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on player."""
         url = f"builtin_player/flow/{self.player_id}.mp3"
@@ -186,14 +177,12 @@ class BuiltinPlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_active_source = media.queue_id
         self.update_state()
-
         self.mass.signal_event(
             EventType.BUILTIN_PLAYER,
             self.player_id,
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.PLAY_MEDIA, media_url=url),
         )
 
-    @override
     async def power(self, powered: bool) -> None:
         """Send POWER ON command to player."""
         self.mass.signal_event(
@@ -207,8 +196,8 @@ class BuiltinPlayer(Player):
         )
         if not powered:
             self._attr_powered = False
+            self.update_state()
 
-    @override
     async def poll(self) -> None:
         """
         Poll player for state updates.
@@ -225,8 +214,7 @@ class BuiltinPlayer(Player):
             )
             self.unregister_routes()
 
-    @override
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         self.unregister_routes()
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
@@ -122,6 +122,8 @@ class DemoPlayerprovider(PlayerProvider):
         # player providers for more inspiration.
         name = name.split("@", 1)[1] if "@" in name else name
         player_id = info.decoded_properties["uuid"]  # this is just an example!
+        if not player_id:
+            return  # guard, we need a player_id to work with
 
         # handle removed player
         if state_change == ServiceStateChange.Removed:
@@ -162,7 +164,7 @@ class DemoPlayerprovider(PlayerProvider):
         # This is an optional method that you can implement if
         # you want to (manually) discover players on the
         # network and you do not use mdns discovery.
-        number_of_players = int(self.config.get_value(CONF_NUMBER_OF_PLAYERS))
+        number_of_players = cast("int", self.config.get_value(CONF_NUMBER_OF_PLAYERS, 0))
         self.logger.info(
             "Discovering %s demo players",
             number_of_players,

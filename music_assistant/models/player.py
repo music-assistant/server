@@ -31,13 +31,9 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
-from music_assistant_models.player import (
-    EXTRA_ATTRIBUTES_TYPES,
-    DeviceInfo,
-    PlayerMedia,
-    PlayerSource,
-)
+from music_assistant_models.player import EXTRA_ATTRIBUTES_TYPES, DeviceInfo
 from music_assistant_models.player import Player as PlayerState
+from music_assistant_models.player import PlayerMedia, PlayerSource
 from music_assistant_models.unique_list import UniqueList
 from propcache import under_cached_property as cached_property
 
@@ -385,14 +381,18 @@ class Player(ABC):
             "volume_mute needs to be implemented when PlayerFeature.VOLUME_MUTE is set"
         )
 
-    @abstractmethod
     async def play(self) -> None:
         """Handle PLAY command on the player."""
         raise NotImplementedError("play needs to be implemented")
 
     @abstractmethod
     async def stop(self) -> None:
-        """Handle STOP command on the player."""
+        """
+        Handle STOP command on the player.
+
+        Will only be called if the player reports PlayerFeature.PAUSE is supported or
+        player supports resuming of stopped playback.
+        """
         raise NotImplementedError("stop needs to be implemented")
 
     async def pause(self) -> None:

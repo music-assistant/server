@@ -19,8 +19,6 @@ if TYPE_CHECKING:
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
 
-# ruff: noqa: ARG002
-
 
 class UGPStream:
     """

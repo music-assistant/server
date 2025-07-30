@@ -45,7 +45,7 @@ class DemoPlayer(Player):
         # OPTIONAL
         # used in conjunction with the needs_poll property.
         # this should return the interval in seconds to poll the player for state updates.
-        return 5 if self.state == PlaybackState.PLAYING else 30
+        return 5 if self.playback_state == PlaybackState.PLAYING else 30
 
     @property
     def source_list(self) -> list[PlayerSource]:
@@ -102,20 +102,20 @@ class DemoPlayer(Player):
         """Handle POWER command on the player."""
         # OPTIONAL - required only if you specified PlayerFeature.POWER
         # this method should send a power on/off command to the given player.
-        logger = self.provider.logger.getChild(self.name)
+        logger = self.provider.logger.getChild(self.player_id)
         if powered:
             # In this demo implementation we just set the power state to ON
             # and optimistically update the state.
             # In a real implementation you would read the actual value from the player
             # either from a callback or by polling the player.
-            logger.info("Received POWER ON command on player %s", self.name)
+            logger.info("Received POWER ON command on player %s", self.display_name)
             self._attr_powered = True
         else:
             # In this demo implementation we just set the power state to OFF
             # and optimistically update the state.
             # In a real implementation you would read the actual value from the player
             # either from a callback or by polling the player.
-            logger.info("Received POWER OFF command on player %s", self.name)
+            logger.info("Received POWER OFF command on player %s", self.display_name)
             self._attr_powered = False
         # update the player state in the player manager
         self.update_state()
@@ -129,9 +129,11 @@ class DemoPlayer(Player):
         # and optimistically update the state.
         # In a real implementation you would send a command to the actual player and
         # get the actual value from the player either from a callback or by polling the player.
-        logger = self.provider.logger.getChild(self.name)
+        logger = self.provider.logger.getChild(self.player_id)
         logger.info(
-            "Received VOLUME_SET command on player %s with level %s", self.name, volume_level
+            "Received VOLUME_SET command on player %s with level %s",
+            self.display_name,
+            volume_level,
         )
         self._attr_volume_level = volume_level  # volume level is between 0 and 100
         # update the player state in the player manager
@@ -141,8 +143,10 @@ class DemoPlayer(Player):
         """Handle VOLUME MUTE command on the player."""
         # OPTIONAL - required only if you specified PlayerFeature.VOLUME_MUTE
         # this method should send a volume mute command to the given player.
-        logger = self.provider.logger.getChild(self.name)
-        logger.info("Received VOLUME_MUTE command on player %s with muted %s", self.name, muted)
+        logger = self.provider.logger.getChild(self.player_id)
+        logger.info(
+            "Received VOLUME_MUTE command on player %s with muted %s", self.display_name, muted
+        )
         self._attr_volume_muted = muted
         self.update_state()
 
@@ -158,8 +162,8 @@ class DemoPlayer(Player):
         # and optimistically set the playback state to PLAYING.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
-        logger = self.provider.logger.getChild(self.name)
-        logger.info("Received PLAY command on player %s", self.name)
+        logger = self.provider.logger.getChild(self.player_id)
+        logger.info("Received PLAY command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
@@ -175,8 +179,8 @@ class DemoPlayer(Player):
         # and optimistically set the playback state to IDLE.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
-        logger = self.provider.logger.getChild(self.name)
-        logger.info("Received STOP command on player %s", self.name)
+        logger = self.provider.logger.getChild(self.player_id)
+        logger.info("Received STOP command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
@@ -189,8 +193,8 @@ class DemoPlayer(Player):
         # and optimistically set the playback state to PAUSED.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
-        logger = self.provider.logger.getChild(self.name)
-        logger.info("Received PAUSE command on player %s", self.name)
+        logger = self.provider.logger.getChild(self.player_id)
+        logger.info("Received PAUSE command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.PAUSED
         self.update_state()
 
@@ -249,8 +253,10 @@ class DemoPlayer(Player):
         # In this demo implementation we just optimistically set the state.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
-        logger = self.provider.logger.getChild(self.name)
-        logger.info("Received PLAY_MEDIA command on player %s with uri %s", self.name, media.uri)
+        logger = self.provider.logger.getChild(self.player_id)
+        logger.info(
+            "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
+        )
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -302,7 +308,7 @@ class DemoPlayer(Player):
         self._set_attributes()
         self.update_state()
 
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         # OPTIONAL
         # this method is optional and should be implemented if you need to handle

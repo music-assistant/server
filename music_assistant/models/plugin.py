@@ -13,8 +13,6 @@ from music_assistant.models.player import PlayerMedia, PlayerSource
 
 from .provider import Provider
 
-# ruff: noqa: ARG001, ARG002
-
 
 @dataclass
 class PluginSource(PlayerSource):
