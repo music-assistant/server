@@ -125,7 +125,7 @@ class SonosPlayer(Player):
 
         # Grouping
         self.sync_coordinator: SonosPlayer | None = None
-        self.group_members: list[SonosPlayer] = [self]
+        # self.group_members: list[SonosPlayer] = [self]
 
     async def setup(self) -> None:
         """Set up the player."""
@@ -316,12 +316,12 @@ class SonosPlayer(Player):
         """Schedule a poll update."""
         self.mass.call_later(interval, self.poll_speaker)
 
-    @soco_error
+    @soco_error()
     def join(self, target_player: SonosPlayer) -> None:
         """Join this player to another player's group."""
         self.soco.join(target_player.soco)
 
-    @soco_error
+    @soco_error()
     def unjoin(self) -> None:
         """Remove this player from its group."""
         self.soco.unjoin()

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ProviderFeature
 from soco import SoCo
@@ -18,9 +18,6 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .player import SonosPlayer
 
-if TYPE_CHECKING:
-    from soco.data_structures import ZoneGroupState
-
 
 @dataclass
 class DiscoveredPlayer:
@@ -28,15 +25,12 @@ class DiscoveredPlayer:
 
     soco: SoCo
     sonos_player: SonosPlayer | None = None
-    zone_group_state: ZoneGroupState | None = None
-    subscription_address: str | None = None
-    sources: list = field(default_factory=list)
 
 
 class SonosPlayerProvider(PlayerProvider):
     """Sonos S1 Player Provider for legacy Sonos speakers."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
         super().__init__(*args, **kwargs)
         self.sonosplayers: dict[str, SonosPlayer] = {}
