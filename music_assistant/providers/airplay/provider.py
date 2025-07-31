@@ -94,15 +94,15 @@ class AirPlayProvider(PlayerProvider):
         player_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
-            if player := self.mass.players.get(player_id):
+            if _player := self.mass.players.get(player_id):
                 # the player has become unavailable
-                self.logger.debug("Player offline: %s", player.display_name)
+                self.logger.debug("Player offline: %s", _player.display_name)
                 await self.mass.players.unregister(player_id)
             return
         # handle update for existing device
         assert info is not None  # type guard
         player: AirPlayPlayer | None
-        if player := self.mass.players.get(player_id):
+        if player := cast(AirPlayPlayer | None, self.mass.players.get(player_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
             return
@@ -229,6 +229,13 @@ class AirPlayProvider(PlayerProvider):
                 or player.device_info.manufacturer.lower() == "apple"
             )
             active_queue = self.mass.player_queues.get_active_queue(player_id)
+            if not active_queue:
+                self.logger.warning(
+                    "DACP request for %s (%s) but no active queue found, ignoring request",
+                    player.display_name,
+                    player_id,
+                )
+                return
             if path == "/ctrl-int/1/nextitem":
                 self.mass.create_task(self.mass.player_queues.next(active_queue.queue_id))
             elif path == "/ctrl-int/1/previtem":
@@ -236,7 +243,7 @@ class AirPlayProvider(PlayerProvider):
             elif path == "/ctrl-int/1/play":
                 # sometimes this request is sent by a device as confirmation of a play command
                 # we ignore this if the player is already playing
-                if player.state != PlaybackState.PLAYING:
+                if player.playback_state != PlaybackState.PLAYING:
                     self.mass.create_task(self.mass.player_queues.play(active_queue.queue_id))
             elif path == "/ctrl-int/1/playpause":
                 self.mass.create_task(self.mass.player_queues.play_pause(active_queue.queue_id))
@@ -256,7 +263,7 @@ class AirPlayProvider(PlayerProvider):
             elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
                 # sometimes this request is sent by a device as confirmation of a play command
                 # we ignore this if the player is already playing
-                if player.state == PlaybackState.PLAYING:
+                if player.playback_state == PlaybackState.PLAYING:
                     self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
             elif "dmcp.device-volume=" in path and not ignore_volume_report:
                 # This is a bit annoying as this can be either the device confirming a new volume

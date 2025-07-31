@@ -119,11 +119,12 @@ class RaopStreamSession:
         await self.stop()  # we need to stop the current session to add a new client
         # this could potentially be called by multiple players at the exact same time
         # so we debounce the resync a bit here with a timer
-        self.mass.call_later(
-            0.5,
-            sync_leader.play_media(sync_leader.current_media),
-            task_id=f"resync_session_{sync_leader.player_id}",
-        )
+        if sync_leader.current_media:
+            self.mass.call_later(
+                0.5,
+                sync_leader.play_media(sync_leader.current_media),
+                task_id=f"resync_session_{sync_leader.player_id}",
+            )
 
     async def replace_stream(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Replace the audio source of the stream."""
@@ -447,7 +448,7 @@ class RaopStream:
                 player.set_state_from_raop(state=PlaybackState.PLAYING, elapsed_time=0)
             if "lost packet out of backlog" in line:
                 lost_packets += 1
-                if lost_packets == 100:
+                if lost_packets == 100 and queue:
                     logger.error("High packet loss detected, restarting playback...")
                     self.mass.create_task(self.mass.player_queues.resume(queue.queue_id, False))
                 else:

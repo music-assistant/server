@@ -276,6 +276,8 @@ class AirPlayPlayer(Player):
 
         # setup RaopStreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
+        assert isinstance(
+            self.provider, AirPlayProvider)
         raop_stream_session = RaopStreamSession(
             self.provider, sync_clients, input_format, audio_source
         )
@@ -326,26 +328,26 @@ class AirPlayPlayer(Player):
             if player_id == self.player_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
-            child_player: AirPlayPlayer | None = self.mass.players.get(player_id)
-            if not child_player:
+            child_player_to_add: AirPlayPlayer | None = cast(AirPlayPlayer | None, self.mass.players.get(player_id))
+            if not child_player_to_add:
                 # should not happen, but guard against it
                 continue
-            if child_player.synced_to and child_player.synced_to != self.player_id:
+            if child_player_to_add.synced_to and child_player_to_add.synced_to != self.player_id:
                 raise RuntimeError("Player is already synced to another player")
 
             # ensure the child does not have an existing stream session active
-            if child_player := self.mass.players.get(player_id):
+            if child_player_to_add := cast(AirPlayPlayer | None, self.mass.players.get(player_id)):
                 if (
-                    child_player.raop_stream
-                    and child_player.raop_stream.running
-                    and child_player.raop_stream.session != raop_session
+                    child_player_to_add.raop_stream
+                    and child_player_to_add.raop_stream.running
+                    and child_player_to_add.raop_stream.session != raop_session
                 ):
-                    await child_player.raop_stream.session.remove_client(child_player)
+                    await child_player_to_add.raop_stream.session.remove_client(child_player_to_add)
 
             # add new child to the existing raop session (if any)
             self._attr_group_members.append(player_id)
             if raop_session:
-                await raop_session.add_client(child_player)
+                await raop_session.add_client(child_player_to_add)
 
         # always update the state after modifying group members
         self.update_state()
@@ -391,9 +393,9 @@ class AirPlayPlayer(Player):
             self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
 
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
-        super().on_unload()
+        await super().on_unload()
         if self.raop_stream:
             # stop the stream session if it is running
             if self.raop_stream.running:
@@ -407,8 +409,6 @@ class AirPlayPlayer(Player):
         group_child_ids = {self.player_id}
         group_child_ids.update(self.group_members)
         for child_id in group_child_ids:
-            if client := self.mass.players.get(child_id):
+            if client := cast(AirPlayPlayer | None, self.mass.players.get(child_id)):
                 sync_clients.append(client)
-        if TYPE_CHECKING:
-            sync_clients = cast("list[AirPlayPlayer]", sync_clients)
         return sync_clients

@@ -368,7 +368,7 @@ class MusicCastPlayer(Player):
         _net_sources.add(MC_SOURCE_MAIN_SYNC)  # main zone sync
         return _input_sources.difference(_net_sources)
 
-    async def _set_player_unavailable(self):
+    async def _set_player_unavailable(self) -> None:
         """Set this player and associated zone players unavailable.
 
         Only called from a main zone player.
@@ -376,7 +376,6 @@ class MusicCastPlayer(Player):
         assert self.zone_device.zone_name == "main", "Call only from main player!"
         self.logger.debug("Player %s became unavailable.", self.display_name)
 
-        device_id, _ = self.player_id.split(PLAYER_ZONE_SPLITTER)
         if TYPE_CHECKING:
             assert isinstance(self.provider, MusicCastProvider)
 
@@ -554,7 +553,7 @@ class MusicCastPlayer(Player):
         for child_id in children_zones:
             child_player = self.mass.players.get(child_id)
             assert child_player is not None
-            if child_player.state == MusicCastPlayerState.OFF:
+            if child_player.playback_state == MusicCastPlayerState.OFF:
                 await child_player.power(powered=True)
             await child_player.select_source(MC_SOURCE_MAIN_SYNC)
         if not children:

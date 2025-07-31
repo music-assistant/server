@@ -94,7 +94,7 @@ class SonosPlayer(Player):
         self._attr_supported_features = set(PLAYER_FEATURES)
         self._attr_name = soco.player_name
         self._attr_device_info = DeviceInfo(
-            model=soco.model_name,
+            model=soco.speaker_info["model_name"],
             manufacturer="Sonos",
             ip_address=soco.ip_address,
         )
