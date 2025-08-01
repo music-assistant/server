@@ -1,8 +1,8 @@
 """Mylist adapter for NicoNico."""
 
-from typing import TYPE_CHECKING
+from __future__ import annotations
 
-from music_assistant_models.media_items import Playlist
+from typing import TYPE_CHECKING
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
 from music_assistant.providers.niconico.helpers import PlaylistWithTracks
@@ -12,13 +12,15 @@ from music_assistant.providers.niconico.parsers import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import Playlist
+
     from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
 
 
 class NiconicoMylistAdapter(NiconicoBaseAdapter):
     """Handles mylist related operations for NicoNico."""
 
-    def __init__(self, adapter: "NicoNicoMusicAssistantAdapter") -> None:
+    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
         """Initialize NiconicoMylistAdapter with reference to parent adapter."""
         super().__init__(adapter)
 

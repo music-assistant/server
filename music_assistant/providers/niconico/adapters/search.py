@@ -1,14 +1,14 @@
 """Search adapter for NicoNico."""
 
-from typing import TYPE_CHECKING
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Literal, cast
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import SearchResults
 from niconico.objects.video import EssentialVideo
 from niconico.objects.video.search import EssentialMylist, EssentialSeries
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.constants import CONF_SENSITIVE_CONTENTS
 from music_assistant.providers.niconico.parsers import (
     parse_album_by_series,
     parse_playlist_by_mylist,
@@ -16,13 +16,15 @@ from music_assistant.providers.niconico.parsers import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import SearchResults
+
     from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
 
 
 class NiconicoSearchAdapter(NiconicoBaseAdapter):
     """Handles search related operations for NicoNico."""
 
-    def __init__(self, adapter: "NicoNicoMusicAssistantAdapter") -> None:
+    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
         """Initialize NiconicoSearchAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
@@ -38,7 +40,7 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
             return
 
         # Determine which types to search for
-        types = []
+        types: list[str] = []
         search_playlists = MediaType.PLAYLIST in media_types
         search_albums = MediaType.ALBUM in media_types
 
@@ -50,11 +52,15 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
         if not types:
             return
 
+        # Type cast for API call
+        valid_types: list[Literal["mylist", "series"]] | None = [
+            cast("Literal['mylist', 'series']", t) for t in types if t in ("mylist", "series")
+        ] or None
         list_search_data = await self.adapter.call_with_throttler(
             self.adapter.niconico_py_client.video.search.search_lists,
             search_query,
             page_size=limit,
-            types=types,
+            types=valid_types,
         )
 
         if list_search_data:
@@ -82,7 +88,10 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
         self, search_query: str, limit: int, search_result: SearchResults
     ) -> None:
         """Search for videos by keyword."""
-        sensitive_content = self.adapter.provider.config.get_value(CONF_SENSITIVE_CONTENTS) or None
+        from music_assistant.providers.niconico.config import NiconicoConfig
+
+        config = NiconicoConfig(self.adapter.provider)
+        sensitive_content = config.get_sensitive_contents_config()
         video_search_data = await self.adapter.call_with_throttler(
             self.adapter.niconico_py_client.video.search.search_videos_by_keyword,
             search_query,

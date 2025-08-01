@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 
-from music_assistant.constants import CACHE_CATEGORY_MUSIC_PROVIDER_ITEM
 from music_assistant.helpers.util import TaskManager
+from music_assistant.providers.niconico.helpers import cache_track
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
@@ -58,7 +58,7 @@ class NiconicoMusicProviderAlbumMixin(NiconicoMusicProviderMixinBase):
 
             for album in albums:
                 # Update album information for existing tracks in library
-                await self._update_tracks_album_info(album)
+                await self._update_tracks_album_info(album, None)
                 yield album
 
             # If we got fewer albums than page_size, we've reached the end
@@ -88,18 +88,12 @@ class NiconicoMusicProviderAlbumMixin(NiconicoMusicProviderMixinBase):
             return
 
         # Update album information in cached tracks
-        async def cache_track(track: Track) -> None:
-            """Cache single track with album information."""
+        async def update_track_with_album(track: Track) -> None:
+            """Update single track with album information and cache it."""
             track.album = album
-            cache_key = f"track.{track.item_id}"
-            await self.provider.mass.cache.set(
-                cache_key,
-                track.to_dict(),
-                category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
-                base_key=self.provider.lookup_key,
-            )
+            await cache_track(self.provider, track)
 
-        # Process tracks in parallel for better performance
-        async with TaskManager(self.provider.mass, limit=10) as task_manager:
+        # Process tracks in parallel for better performance with limited concurrency
+        async with TaskManager(self.provider.mass, limit=5) as task_manager:
             for track in tracks:
-                task_manager.create_task(cache_track(track))
+                task_manager.create_task(update_track_with_album(track))

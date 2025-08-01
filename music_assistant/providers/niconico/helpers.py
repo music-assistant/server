@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import logging
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, TypeVar, cast
 
-from music_assistant.constants import CACHE_CATEGORY_LIBRARY_ITEMS
+from music_assistant_models.errors import ProviderUnavailableError
+from niconico.exceptions import LoginFailureError
+
+from music_assistant.constants import (
+    CACHE_CATEGORY_LIBRARY_ITEMS,
+    CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -13,6 +21,28 @@ if TYPE_CHECKING:
     from requests.cookies import RequestsCookieJar
 
 T = TypeVar("T")
+
+
+class ErrorState:
+    """Error state wrapper that can be used as a boolean."""
+
+    exception: Exception | None = None
+
+    def __init__(self) -> None:
+        """Initialize error state as False."""
+        self.exception = None
+
+    def set_error(self, exception: Exception) -> None:
+        """Mark that an error occurred."""
+        self.exception = exception
+
+    def __bool__(self) -> bool:
+        """Return True if an error occurred."""
+        return self.exception is not None
+
+    def raise_error(self) -> None:
+        """Raise the stored exception if one exists, otherwise raise a default error."""
+        raise self.exception or ProviderUnavailableError("No error set")
 
 
 class PlaylistWithTracks:
@@ -46,6 +76,55 @@ def convert_to_netscape(cookie: RequestsCookieJar, domain: str) -> str:
     return netscape_cookie
 
 
+@asynccontextmanager
+async def handle_niconico_errors(
+    logger: logging.Logger,
+    operation: str,
+    context: str = "",
+) -> AsyncGenerator[ErrorState, None]:
+    """
+    Context manager for handling Niconico errors with consistent logging.
+
+    Args:
+        logger: Logger instance
+        operation: Description of the operation
+        context: Additional context (e.g., item name)
+
+    Yields:
+        ErrorState: Object that evaluates to True if an error occurred
+
+    Usage:
+        async with handle_niconico_errors(
+            self.provider.logger, "fetching playlist", playlist.name
+        ) as error_state:
+            # This may raise LoginFailureError, ConnectionError, etc.
+            data = await self.niconico_adapter.get_playlist_data(playlist_id)
+            return self._parse_playlist(data)
+
+        # If an exception occurred, error_state will be True
+        if error_state:
+            return None
+    """
+    error_state = ErrorState()
+
+    try:
+        yield error_state
+    except Exception as err:
+        error_state.set_error(err)
+        # Import here to avoid circular imports
+        try:
+            if isinstance(err, LoginFailureError):
+                logger.debug("Authentication required for %s %s: %s", operation, context, err)
+            elif isinstance(err, (ConnectionError, TimeoutError)):
+                logger.warning("Network error %s %s: %s", operation, context, err)
+            else:
+                logger.debug("Error %s %s: %s", operation, context, err)
+        except ImportError:
+            # Fallback if niconico module is not available
+            logger.debug("Error %s %s: %s", operation, context, err)
+        # Don't re-raise - let caller check error state
+
+
 async def get_library_items(
     provider: MusicProvider,
     cache_key: str,
@@ -64,3 +143,31 @@ async def get_library_items(
     query = f"{query_table}.item_id in :ids"
     query_params = {"ids": library_item_ids}
     return await query_method(extra_query=query, extra_query_params=query_params)
+
+
+async def cache_track(provider: MusicProvider, track: Track) -> None:
+    """Cache single track with provider item cache."""
+    cache_key = f"track.{track.item_id}"
+    await provider.mass.cache.set(
+        cache_key,
+        track.to_dict(),
+        category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
+        base_key=provider.lookup_key,
+    )
+
+
+async def get_cached_track(provider: MusicProvider, track_id: str) -> Track | None:
+    """Get track from cache or return None if not found."""
+    cache_key = f"track.{track_id}"
+    cached_track_data = await provider.mass.cache.get(
+        cache_key,
+        category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
+        base_key=provider.lookup_key,
+    )
+
+    if cached_track_data:
+        from music_assistant_models.media_items import Track as TrackModel
+
+        return TrackModel.from_dict(cached_track_data)
+
+    return None

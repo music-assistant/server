@@ -39,17 +39,32 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
         """Retrieve library tracks from the provider."""
         if not self.niconico_adapter.auth.is_logged_in():
             return
+
+        # Check config settings for including tracks
+        include_following_tracks = self.niconico_config.get_include_following_mylists_tracks()
+        include_own_tracks = self.niconico_config.get_include_own_mylists_tracks()
+
+        # Get all library playlists
         playlists = await get_library_items(
             self.provider,
             cache_key="playlist",
             query_table="playlists",
             query_method=self.provider.mass.music.playlists.library_items,
         )
+
         for playlist in playlists:
-            page = 0
+            # Filter based on playlist type and config settingげ
+            # Own mylists are editable (is_editable=True)
+            # Following mylists are not editable (is_editable=False)
+            if playlist.is_editable and not include_own_tracks:
+                continue
+            if not playlist.is_editable and not include_following_tracks:
+                continue
+
             prov_map = next(iter(playlist.provider_mappings), None)
             if not prov_map:
                 continue
+            page = 0
             while True:
                 playlist_tracks = await self.provider.get_playlist_tracks(prov_map.item_id, page)
                 if not playlist_tracks:
@@ -81,6 +96,7 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
 
         stream_details = StreamDetails(
             provider=self.provider.instance_id,
+            duration=stream_format.get("duration"),
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(str(stream_format["audio_ext"])),

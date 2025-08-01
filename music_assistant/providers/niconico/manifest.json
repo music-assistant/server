@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "niconico",
+  "stage": "experimental",
   "name": "niconico",
   "description": "Support for the niconico in Music Assistant",
   "codeowners": ["@Shi-553"],

@@ -8,6 +8,7 @@ from music_assistant_models.errors import MediaNotFoundError
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import MediaType, ProviderFeature
+    from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.models.music_provider import MusicProvider
@@ -56,6 +57,24 @@ class NiconicoMusicProvider(
             if details:
                 return details
         raise MediaNotFoundError("Stream unknown")
+
+    async def library_add(self, item: MediaItemType) -> bool:
+        """Add item to provider's library. Return true on success."""
+        for mixin_class in NICONICO_MIXINS:
+            result = await mixin_class.library_add_for_mixin(self, item)
+            if result is not None:
+                return result
+        # If no mixin handled it, return False (not supported)
+        return False
+
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Remove item from provider's library. Return true on success."""
+        for mixin_class in NICONICO_MIXINS:
+            result = await mixin_class.library_remove_for_mixin(self, prov_item_id, media_type)
+            if result is not None:
+                return result
+        # If no mixin handled it, return False (not supported)
+        return False
 
     @property
     def provider(self) -> MusicProvider:

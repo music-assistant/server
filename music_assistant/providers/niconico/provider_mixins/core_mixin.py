@@ -1,5 +1,7 @@
 """Core mixin for Niconico music provider."""
 
+from __future__ import annotations
+
 from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
@@ -28,3 +30,8 @@ class NiconicoMusicProviderCoreMixin(NiconicoMusicProviderMixinBase):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        if hasattr(self, "_niconico_adapter") and self._niconico_adapter:
+            # Stop the periodic relogin task
+            self.niconico_adapter.auth.stop_periodic_relogin_task()
+            # Logout from Niconico
+            await self.niconico_adapter.auth.try_logout()

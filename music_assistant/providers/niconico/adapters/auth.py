@@ -1,17 +1,14 @@
 """Authentication adapter for NicoNico."""
 
+from __future__ import annotations
+
 import asyncio
 from typing import TYPE_CHECKING
 
 from niconico import NicoNico
 from niconico.exceptions import LoginFailureError
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.constants import (
-    CONF_MFA,
-    CONF_USER_SESSION,
-)
 
 if TYPE_CHECKING:
     from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
@@ -20,9 +17,10 @@ if TYPE_CHECKING:
 class NiconicoAuthAdapter(NiconicoBaseAdapter):
     """Handles authentication and session management for NicoNico."""
 
-    def __init__(self, adapter: "NicoNicoMusicAssistantAdapter") -> None:
+    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
         """Initialize the NiconicoAuthAdapter with a reference to the parent adapter."""
         super().__init__(adapter)
+        self._periodic_relogin_task: asyncio.Task[None] | None = None
 
     def is_logged_in(self) -> bool:
         """Check if the user is logged in to NicoNico."""
@@ -33,10 +31,14 @@ class NiconicoAuthAdapter(NiconicoBaseAdapter):
         if self.is_logged_in():
             return True
         provider = self.adapter.provider
-        username = provider.config.get_value(CONF_USERNAME)
-        password = provider.config.get_value(CONF_PASSWORD)
-        mfa = provider.config.get_value(CONF_MFA)
-        user_session = provider.config.get_value(CONF_USER_SESSION)
+        from music_assistant.providers.niconico.config import NiconicoConfig
+
+        config = NiconicoConfig(provider)
+        credentials = config.get_auth_credentials()
+        username = credentials.username
+        password = credentials.password
+        mfa = credentials.mfa
+        user_session = credentials.user_session
         max_retries = 3
         retry_delay_seconds = 1
         async with self.adapter.niconico_api_throttler.bypass():
@@ -47,10 +49,8 @@ class NiconicoAuthAdapter(NiconicoBaseAdapter):
                     )
                     if user_session:
                         self.adapter.logger.info("Using user_session for login.")
-                        copied_user_session = str(user_session)
-                        user_session = None
                         await asyncio.to_thread(
-                            self.adapter.niconico_py_client.login_with_session, copied_user_session
+                            self.adapter.niconico_py_client.login_with_session, str(user_session)
                         )
                     else:
                         self.adapter.logger.info("Using mail and password for login.")
@@ -66,16 +66,20 @@ class NiconicoAuthAdapter(NiconicoBaseAdapter):
                             str(mfa) if mfa else None,
                         )
                     self.adapter.logger.info("Successful login!")
-                    self.adapter.mass.config.set_raw_provider_config_value(
-                        provider.instance_id,
-                        CONF_USER_SESSION,
-                        self.adapter.niconico_py_client.get_user_session(),
-                        True,
-                    )
+                    # Clear MFA code after successful use (one-time password should not be reused)
+                    if mfa:
+                        config.clear_mfa_code()
+                    session = self.adapter.niconico_py_client.get_user_session()
+                    if session:
+                        config.save_user_session(session)
                     return True
                 except LoginFailureError as err:
-                    self.adapter.logger.error("Login Failure: %s", err)
-                    return False
+                    if user_session:
+                        user_session = None  # Clear session on failure
+                        self.adapter.logger.warning("Login with user_session failed: %s", err)
+                    else:
+                        self.adapter.logger.error("Login with mail and password failed: %s", err)
+                        return False
                 except Exception as e:
                     if (
                         "Name or service not known" in str(e)
@@ -105,12 +109,27 @@ class NiconicoAuthAdapter(NiconicoBaseAdapter):
 
     def start_periodic_relogin_task(self) -> None:
         """Start the periodic re-login task."""
-        self.adapter.mass.create_task(self._schedule_periodic_relogin())
+        # Cancel existing task if any
+        self.stop_periodic_relogin_task()
+
+        self._periodic_relogin_task = self.adapter.mass.create_task(
+            self._schedule_periodic_relogin()
+        )
+
+    def stop_periodic_relogin_task(self) -> None:
+        """Stop the periodic re-login task."""
+        if self._periodic_relogin_task and not self._periodic_relogin_task.done():
+            self._periodic_relogin_task.cancel()
+        self._periodic_relogin_task = None
 
     async def _schedule_periodic_relogin(self) -> None:
         """Periodic re-login every 30 days."""
-        while True:
-            await asyncio.sleep(30 * 24 * 60 * 60)
-            self.adapter.logger.info("Performing periodic re-login to refresh the session.")
-            await self.try_logout()
-            await self.try_login()
+        try:
+            while True:
+                await asyncio.sleep(30 * 24 * 60 * 60)
+                self.adapter.logger.info("Performing periodic re-login to refresh the session.")
+                await self.try_logout()
+                await self.try_login()
+        except asyncio.CancelledError:
+            self.adapter.logger.debug("Periodic relogin task was cancelled.")
+            raise

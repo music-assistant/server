@@ -1,8 +1,8 @@
 """Series adapter for NicoNico."""
 
-from typing import TYPE_CHECKING
+from __future__ import annotations
 
-from music_assistant_models.media_items import Album
+from typing import TYPE_CHECKING
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
 from music_assistant.providers.niconico.helpers import AlbumWithTracks
@@ -12,13 +12,15 @@ from music_assistant.providers.niconico.parsers import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import Album
+
     from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
 
 
 class NiconicoSeriesAdapter(NiconicoBaseAdapter):
     """Handles series related operations for NicoNico."""
 
-    def __init__(self, adapter: "NicoNicoMusicAssistantAdapter") -> None:
+    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
         """Initialize NiconicoSeriesAdapter with reference to parent adapter."""
         super().__init__(adapter)
 

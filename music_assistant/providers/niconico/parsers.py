@@ -27,7 +27,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 from niconico.objects.nvapi import SeriesData
 from niconico.objects.user import NicoUser, UserMylistItem, UserSeriesItem
-from niconico.objects.video import EssentialVideo, Mylist, Owner
+from niconico.objects.video import EssentialVideo, Mylist, Owner, VideoThumbnail
 from niconico.objects.video.search import EssentialMylist, EssentialSeries
 
 from music_assistant.models.music_provider import MusicProvider
@@ -50,6 +50,7 @@ def parse_playlist_by_mylist(
         provider=provider.lookup_key,
         name=(mylist.title if isinstance(mylist, EssentialMylist) else mylist.name),
         owner=mylist.owner.id_ or "",
+        is_editable=True,  # Own mylists are editable by default
         metadata=MediaItemMetadata(
             description=getattr(mylist, "description", ""),
             links={
@@ -81,6 +82,16 @@ def parse_playlist_by_mylist(
                 remotely_accessible=True,
             )
         )
+    return playlist
+
+
+def parse_following_playlist_by_mylist(
+    provider: MusicProvider, mylist: UserMylistItem | Mylist | EssentialMylist
+) -> Playlist:
+    """Parse a NicoNico UserMylistItem from following users into a read-only Playlist."""
+    playlist = parse_playlist_by_mylist(provider, mylist)
+    # Mark following mylists as non-editable
+    playlist.is_editable = False
     return playlist
 
 
@@ -187,27 +198,23 @@ def parse_playlist_with_tracks_by_mylist(
 
 def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVideo) -> Track:
     """Parse an EssentialVideo object into a Track."""
-    return Track(
+    # Create base track with enhanced metadata
+    track = Track(
         item_id=video.id_,
         provider=provider.lookup_key,
         name=video.title,
         duration=video.duration,
         artists=UniqueList([parse_artist(provider, video.owner)]),
-        is_playable=video.duration > 0,
+        is_playable=video.duration > 0 and not video.is_payment_required,
         metadata=MediaItemMetadata(
             description=video.short_description,
             explicit=video.require_sensitive_masking,
             release_date=datetime.fromisoformat(video.registered_at),
-            images=UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=video.thumbnail.nhd_url,
-                        provider=provider.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
-            ),
+            # Calculate popularity using mylist*3 + like*1 (normalized to 0-100 scale)
+            # 200 likes + 50 mylists = ~50%, 1000 likes + 300 mylists = ~100%
+            popularity=min(100, max(0, int((video.count.mylist * 3 + video.count.like) / 10))),
+            # Enhanced image support with multiple sizes
+            images=_parse_video_thumbnails(provider, video.thumbnail),
             links={
                 MediaItemLink(
                     type=LinkType.WEBSITE,
@@ -221,10 +228,59 @@ def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVide
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=f"https://www.nicovideo.jp/watch/{video.id_}",
-                available=True,
+                available=not video.is_payment_required and not video.is_muted,
             )
         },
     )
+
+    # Trigger async tag caching for this video (fire-and-forget)
+    if hasattr(provider, "tag_manager"):
+        provider.tag_manager.trigger_update(video.id_)
+
+    return track
+
+
+def _parse_video_thumbnails(
+    provider: MusicProvider, thumbnail: VideoThumbnail
+) -> UniqueList[MediaItemImage]:
+    """Parse video thumbnails into multiple image sizes."""
+    images: UniqueList[MediaItemImage] = UniqueList()
+
+    # nhd_url is the largest size, use it as primary
+    if thumbnail.nhd_url:
+        images.append(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=thumbnail.nhd_url,
+                provider=provider.lookup_key,
+                remotely_accessible=True,
+            )
+        )
+
+    # large_url as secondary (if different from nhd_url)
+    if thumbnail.large_url and thumbnail.large_url != thumbnail.nhd_url:
+        images.append(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=thumbnail.large_url,
+                provider=provider.lookup_key,
+                remotely_accessible=True,
+            )
+        )
+
+    # middle_url and listing_url are same size, skip them if nhd_url exists
+    # Only add if nhd_url is not available
+    if not thumbnail.nhd_url and thumbnail.middle_url:
+        images.append(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=thumbnail.middle_url,
+                provider=provider.lookup_key,
+                remotely_accessible=True,
+            )
+        )
+
+    return images
 
 
 def parse_artist(provider: MusicProvider, owner_or_user: Owner | NicoUser) -> Artist:

@@ -1,5 +1,7 @@
 """NicoNico adapters package."""
 
+from __future__ import annotations
+
 from music_assistant.providers.niconico.adapters.auth import NiconicoAuthAdapter
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
 from music_assistant.providers.niconico.adapters.mylist import NiconicoMylistAdapter

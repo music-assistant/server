@@ -1,5 +1,7 @@
 """Niconico provider mixins package."""
 
+from __future__ import annotations
+
 from .album_mixin import NiconicoMusicProviderAlbumMixin
 from .artist_mixin import NiconicoMusicProviderArtistMixin
 from .core_mixin import NiconicoMusicProviderCoreMixin
