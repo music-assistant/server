@@ -414,7 +414,7 @@ def get_changed_dataclass_values(
     return changed_values
 
 
-def empty_queue(q: asyncio.Queue[T]) -> None:
+def empty_queue[T](q: asyncio.Queue[T]) -> None:
     """Empty an asyncio Queue."""
     for _ in range(q.qsize()):
         try:
@@ -703,7 +703,7 @@ _R = TypeVar("_R")
 _P = ParamSpec("_P")
 
 
-def lock(
+def lock[**P, R](  # type: ignore[valid-type]
     func: Callable[_P, Awaitable[_R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
     """Call async function using a Lock."""

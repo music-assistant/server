@@ -5,7 +5,7 @@ import functools
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate
 
 from async_upnp_client.client import UpnpService, UpnpStateVariable
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
@@ -24,18 +24,14 @@ from .constants import PLAYER_CONFIG_ENTRIES
 if TYPE_CHECKING:
     from .provider import DLNAPlayerProvider
 
-_DLNAPlayerT = TypeVar("_DLNAPlayerT", bound="DLNAPlayer")
-_R = TypeVar("_R")
-_P = ParamSpec("_P")
 
-
-def catch_request_errors(
-    func: Callable[Concatenate[_DLNAPlayerT, _P], Awaitable[_R]],
-) -> Callable[Concatenate[_DLNAPlayerT, _P], Coroutine[Any, Any, _R | None]]:
+def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
+    func: Callable[Concatenate[DLNAPlayerT, P], Awaitable[R]],
+) -> Callable[Concatenate[DLNAPlayerT, P], Coroutine[Any, Any, R | None]]:
     """Catch UpnpError errors."""
 
     @functools.wraps(func)
-    async def wrapper(self: _DLNAPlayerT, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
+    async def wrapper(self: DLNAPlayerT, *args: P.args, **kwargs: P.kwargs) -> R | None:
         """Catch UpnpError errors and check availability before and after request."""
         self.last_command = time.time()
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):

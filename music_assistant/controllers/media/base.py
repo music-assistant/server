@@ -7,7 +7,7 @@ import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
@@ -78,7 +78,7 @@ SORT_KEYS = {
 }
 
 
-class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
+class MediaControllerBase[ItemCls](metaclass=ABCMeta):
     """Base model for controller managing a MediaType."""
 
     media_type: MediaType
@@ -682,6 +682,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> None:
         """Update existing library record in the database."""
 
+    @abstractmethod
     async def match_providers(self, db_item: ItemCls) -> None:
         """
         Try to find match on all (streaming) providers for the provided (database) item.

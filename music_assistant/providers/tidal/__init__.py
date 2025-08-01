@@ -345,10 +345,8 @@ class TidalProvider(MusicProvider):
         # Handle conversion from ISO format to timestamp if needed
         if isinstance(expires_at, str) and "T" in expires_at:
             # This looks like an ISO format date
-            import datetime
-
             try:
-                dt = datetime.datetime.fromisoformat(expires_at)
+                dt = datetime.fromisoformat(expires_at)
                 # Convert to timestamp
                 expires_at = dt.timestamp()
                 # Update the config with the numeric value

@@ -85,7 +85,7 @@ _R = TypeVar("_R")
 _P = ParamSpec("_P")
 
 
-def handle_player_command(
+def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     func: Callable[Concatenate[_PlayerControllerT, _P], Awaitable[_R]],
 ) -> Callable[Concatenate[_PlayerControllerT, _P], Coroutine[Any, Any, _R | None]]:
     """Check and log commands to players."""
