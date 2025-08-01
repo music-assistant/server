@@ -552,8 +552,9 @@ class MusicCastPlayer(Player):
 
         for child_id in children_zones:
             child_player = self.mass.players.get(child_id)
-            assert child_player is not None
-            if child_player.playback_state == MusicCastPlayerState.OFF:
+            if TYPE_CHECKING:
+                child_player = cast("MusicCastPlayer", child_player)
+            if child_player.zone_device.state == MusicCastPlayerState.OFF:
                 await child_player.power(powered=True)
             await child_player.select_source(MC_SOURCE_MAIN_SYNC)
         if not children:
@@ -562,8 +563,8 @@ class MusicCastPlayer(Player):
         child_player_zone_devices: list[MusicCastZoneDevice] = []
         for child_id in children:
             child_player = self.mass.players.get(child_id)
-            assert child_player is not None
-            assert isinstance(child_player, MusicCastPlayer)
+            if TYPE_CHECKING:
+                child_player = cast("MusicCastPlayer", child_player)
             child_player_zone_devices.append(child_player.zone_device)
 
         await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)

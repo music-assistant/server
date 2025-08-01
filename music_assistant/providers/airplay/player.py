@@ -276,11 +276,8 @@ class AirPlayPlayer(Player):
 
         # setup RaopStreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
-        assert isinstance(
-            self.provider, AirPlayProvider)
-        raop_stream_session = RaopStreamSession(
-            self.provider, sync_clients, input_format, audio_source
-        )
+        provider = cast("AirPlayProvider", self.provider)
+        raop_stream_session = RaopStreamSession(provider, sync_clients, input_format, audio_source)
         await raop_stream_session.start()
 
     async def volume_set(self, volume_level: int) -> None:
@@ -328,7 +325,9 @@ class AirPlayPlayer(Player):
             if player_id == self.player_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
-            child_player_to_add: AirPlayPlayer | None = cast(AirPlayPlayer | None, self.mass.players.get(player_id))
+            child_player_to_add: AirPlayPlayer | None = cast(
+                "AirPlayPlayer | None", self.mass.players.get(player_id)
+            )
             if not child_player_to_add:
                 # should not happen, but guard against it
                 continue
@@ -336,7 +335,9 @@ class AirPlayPlayer(Player):
                 raise RuntimeError("Player is already synced to another player")
 
             # ensure the child does not have an existing stream session active
-            if child_player_to_add := cast(AirPlayPlayer | None, self.mass.players.get(player_id)):
+            if child_player_to_add := cast(
+                "AirPlayPlayer | None", self.mass.players.get(player_id)
+            ):
                 if (
                     child_player_to_add.raop_stream
                     and child_player_to_add.raop_stream.running
@@ -409,6 +410,6 @@ class AirPlayPlayer(Player):
         group_child_ids = {self.player_id}
         group_child_ids.update(self.group_members)
         for child_id in group_child_ids:
-            if client := cast(AirPlayPlayer | None, self.mass.players.get(child_id)):
+            if client := cast("AirPlayPlayer | None", self.mass.players.get(child_id)):
                 sync_clients.append(client)
         return sync_clients

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
 from aiohttp import BasicAuth, web
@@ -268,7 +268,8 @@ class AlexaPlayer(Player):
     @property
     def api(self) -> AlexaAPI:
         """Get the AlexaAPI instance for this player."""
-        return AlexaAPI(self.device, self.provider.login)
+        provider = cast("AlexaProvider", self.provider)
+        return AlexaAPI(self.device, provider.login)
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
@@ -334,6 +335,17 @@ class AlexaPlayer(Player):
                 self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        base_entries = await super().get_config_entries()
+        return [
+            *base_entries,
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
+            CONF_ENTRY_CROSSFADE,
+            CONF_ENTRY_CROSSFADE_DURATION,
+            CONF_ENTRY_HTTP_PROFILE,
+        ]
+
 
 class AlexaProvider(PlayerProvider):
     """Implementation of an Alexa Device Provider."""
@@ -392,14 +404,3 @@ class AlexaProvider(PlayerProvider):
                 # Create AlexaPlayer instance
                 player = AlexaPlayer(self, player_id, device_object)
                 await self.mass.players.register_or_update(player)
-
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_player_config_entries(player_id)
-        return (
-            *base_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
-            CONF_ENTRY_HTTP_PROFILE,
-        )

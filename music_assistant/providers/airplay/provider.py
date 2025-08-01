@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from random import randrange
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from music_assistant_models.enums import PlaybackState, ProviderFeature
 from zeroconf import ServiceStateChange
@@ -102,7 +102,7 @@ class AirPlayProvider(PlayerProvider):
         # handle update for existing device
         assert info is not None  # type guard
         player: AirPlayPlayer | None
-        if player := cast(AirPlayPlayer | None, self.mass.players.get(player_id)):
+        if player := cast("AirPlayPlayer | None", self.mass.players.get(player_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
             return
@@ -208,7 +208,7 @@ class AirPlayProvider(PlayerProvider):
             player = next(
                 (
                     x
-                    for x in self.players
+                    for x in self.get_players()
                     if x.raop_stream and x.raop_stream.active_remote_id == active_remote
                 ),
                 None,
@@ -300,9 +300,10 @@ class AirPlayProvider(PlayerProvider):
         finally:
             writer.close()
 
-    @property
-    def players(self) -> list[AirPlayPlayer]:
-        """Return all players belonging to this provider."""
-        if TYPE_CHECKING:
-            return cast("list[AirPlayPlayer]", super().players)
-        return super().players
+    def get_players(self) -> list[AirPlayPlayer]:
+        """Return all airplay players belonging to this instance."""
+        return cast("list[AirPlayPlayer]", self.players)
+
+    def get_player(self, player_id: str) -> AirPlayPlayer | None:
+        """Return AirplayPlayer by id."""
+        return cast("AirPlayPlayer | None", self.mass.players.get(player_id))
