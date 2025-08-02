@@ -63,20 +63,12 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
         return await self.niconico_adapter.series.get_user_series(prov_artist_id)
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of most popular tracks for the given artist."""
-        tracks: list[Track] = []
-        page: int = 1
-        while True:
-            page_tracks = await self.niconico_adapter.video.get_user_videos(
-                prov_artist_id,
-                page=page,
-                page_size=50,
-            )
-            if not page_tracks:
-                break
-            tracks.extend(page_tracks)
-            page += 1
-        return tracks
+        """Get newest 50 tracks of an artist."""
+        return await self.niconico_adapter.video.get_user_videos(
+            prov_artist_id,
+            page=1,
+            page_size=50,
+        )
 
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
         """Add item to library."""
