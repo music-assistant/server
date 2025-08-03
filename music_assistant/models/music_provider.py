@@ -45,8 +45,6 @@ if TYPE_CHECKING:
     from music_assistant.controllers.media.radio import RadioController
     from music_assistant.controllers.media.tracks import TracksController
 
-# ruff: noqa: ARG001, ARG002
-
 
 class MusicProvider(Provider):
     """Base representation of a Music Provider (controller).

@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate
 
 from music_assistant_models.errors import ResourceTemporarilyUnavailable, RetriesExhausted
 
@@ -18,9 +18,6 @@ from music_assistant.constants import MASS_LOGGER_NAME
 if TYPE_CHECKING:
     from music_assistant.models.provider import Provider
 
-_ProviderT = TypeVar("_ProviderT", bound="Provider")
-_R = TypeVar("_R")
-_P = ParamSpec("_P")
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.throttle_retry")
 
 BYPASS_THROTTLER: ContextVar[bool] = ContextVar("BYPASS_THROTTLER", default=False)
@@ -108,13 +105,13 @@ class ThrottlerManager:
             ...
 
 
-def throttle_with_retries(
-    func: Callable[Concatenate[_ProviderT, _P], Awaitable[_R]],
-) -> Callable[Concatenate[_ProviderT, _P], Coroutine[Any, Any, _R]]:
+def throttle_with_retries[ProviderT: "Provider", **P, R](
+    func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
+) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
     """Call async function using the throttler with retries."""
 
     @functools.wraps(func)
-    async def wrapper(self: _ProviderT, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call async function using the throttler with retries."""
         # the trottler attribute must be present on the class
         throttler: ThrottlerManager = self.throttler  # type: ignore[attr-defined]

@@ -607,7 +607,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        # ruff: noqa: PLR0915, PLR0912
+        # ruff: noqa: PLR0915
         if not await self.exists(prov_track_id):
             msg = f"Track path does not exist: {prov_track_id}"
             raise MediaNotFoundError(msg)
@@ -650,7 +650,7 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
-        # ruff: noqa: PLR0915, PLR0912
+        # ruff: noqa: PLR0915
         if not await self.exists(prov_audiobook_id):
             msg = f"Audiobook path does not exist: {prov_audiobook_id}"
             raise MediaNotFoundError(msg)
@@ -861,7 +861,7 @@ class LocalFileSystemProvider(MusicProvider):
         self, file_item: FileSystemItem, tags: AudioTags, full_album_metadata: bool = False
     ) -> Track:
         """Parse full track details from file tags."""
-        # ruff: noqa: PLR0915, PLR0912
+        # ruff: noqa: PLR0915
         name, version = parse_title_and_version(tags.title, tags.version)
         track = Track(
             item_id=file_item.relative_path,
@@ -1191,7 +1191,7 @@ class LocalFileSystemProvider(MusicProvider):
         self, file_item: FileSystemItem, tags: AudioTags
     ) -> PodcastEpisode:
         """Parse full PodcastEpisode details from file tags."""
-        # ruff: noqa: PLR0915, PLR0912
+        # ruff: noqa: PLR0915
         podcast_name = tags.album or file_item.parent_name
         podcast_path = get_relative_path(self.base_path, file_item.parent_path)
         episode = PodcastEpisode(

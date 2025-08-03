@@ -30,13 +30,14 @@ ifaddr==0.2.0
 liblistenbrainz==0.5.6
 mashumaro==3.16
 music-assistant-frontend==2.15.2
-music-assistant-models==1.1.47
+music-assistant-models==1.1.52
 mutagen==1.47.0
 orjson==3.10.18
 pillow==11.3.0
 pkce==1.0.3
 plexapi==4.17.0
 podcastparser==0.6.10
+propcache>=0.2.1
 py-opensonic==7.0.2
 pyblu==2.0.1
 PyChromecast==14.0.7

@@ -2,27 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import time
 from typing import TYPE_CHECKING
 
-from fullykiosk import FullyKiosk
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlayerFeature, PlayerState, PlayerType
-from music_assistant_models.errors import PlayerUnavailableError, SetupFailedError
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE,
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
-    CONF_IP_ADDRESS,
-    CONF_PASSWORD,
-    CONF_PORT,
-    VERBOSE_LOG_LEVEL,
-)
-from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.constants import CONF_IP_ADDRESS, CONF_PASSWORD, CONF_PORT
+
+from .provider import FullyKioskProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -30,8 +17,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-AUDIOMANAGER_STREAM_MUSIC = 3
 
 
 async def setup(
@@ -77,128 +62,3 @@ async def get_config_entries(
             category="advanced",
         ),
     )
-
-
-class FullyKioskProvider(PlayerProvider):
-    """Player provider for FullyKiosk based players."""
-
-    _fully: FullyKiosk
-
-    async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
-        # set-up fullykiosk logging
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("fullykiosk").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("fullykiosk").setLevel(self.logger.level + 10)
-        self._fully = FullyKiosk(
-            self.mass.http_session,
-            self.config.get_value(CONF_IP_ADDRESS),
-            self.config.get_value(CONF_PORT),
-            self.config.get_value(CONF_PASSWORD),
-        )
-        try:
-            async with asyncio.timeout(15):
-                await self._fully.getDeviceInfo()
-        except Exception as err:
-            msg = f"Unable to start the FullyKiosk connection ({err!s}"
-            raise SetupFailedError(msg) from err
-
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        # Add FullyKiosk device to Player controller.
-        player_id = self._fully.deviceInfo["deviceID"]
-        player = self.mass.players.get(player_id, raise_unavailable=False)
-        address = (
-            f"http://{self.config.get_value(CONF_IP_ADDRESS)}:{self.config.get_value(CONF_PORT)}"
-        )
-        if not player:
-            player = Player(
-                player_id=player_id,
-                provider=self.instance_id,
-                type=PlayerType.PLAYER,
-                name=self._fully.deviceInfo["deviceName"],
-                available=True,
-                device_info=DeviceInfo(
-                    model=self._fully.deviceInfo["deviceModel"],
-                    manufacturer=self._fully.deviceInfo["deviceManufacturer"],
-                    ip_address=address,
-                ),
-                supported_features={PlayerFeature.VOLUME_SET},
-                needs_poll=True,
-                poll_interval=10,
-            )
-        await self.mass.players.register_or_update(player)
-        self._handle_player_update()
-
-    def _handle_player_update(self) -> None:
-        """Update FullyKiosk player attributes."""
-        player_id = self._fully.deviceInfo["deviceID"]
-        if not (player := self.mass.players.get(player_id)):
-            return
-        player.name = self._fully.deviceInfo["deviceName"]
-        for volume_dict in self._fully.deviceInfo.get("audioVolumes", []):
-            if str(AUDIOMANAGER_STREAM_MUSIC) in volume_dict:
-                volume = volume_dict[str(AUDIOMANAGER_STREAM_MUSIC)]
-                player.volume_level = volume
-                break
-        current_url = self._fully.deviceInfo.get("soundUrlPlaying")
-        player.current_item_id = current_url
-        if not current_url:
-            player.state = PlayerState.IDLE
-        player.available = True
-        self.mass.players.update(player_id)
-
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_player_config_entries(player_id)
-        return (
-            *base_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
-            CONF_ENTRY_HTTP_PROFILE,
-        )
-
-    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
-            return
-        await self._fully.setAudioVolume(volume_level, AUDIOMANAGER_STREAM_MUSIC)
-        player.volume_level = volume_level
-        self.mass.players.update(player_id)
-
-    async def cmd_play(self, player_id: str) -> None:
-        """Send PLAY command to given player."""
-
-    async def cmd_stop(self, player_id: str) -> None:
-        """Send STOP command to given player."""
-        if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
-            return
-        await self._fully.stopSound()
-        player.state = PlayerState.IDLE
-        self.mass.players.update(player_id)
-
-    async def play_media(
-        self,
-        player_id: str,
-        media: PlayerMedia,
-    ) -> None:
-        """Handle PLAY MEDIA on given player."""
-        if not (player := self.mass.players.get(player_id)):
-            return
-        await self._fully.playSound(media.uri, AUDIOMANAGER_STREAM_MUSIC)
-        player.current_media = media
-        player.elapsed_time = 0
-        player.elapsed_time_last_updated = time.time()
-        player.state = PlayerState.PLAYING
-        self.mass.players.update(player_id)
-
-    async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates."""
-        try:
-            async with asyncio.timeout(15):
-                await self._fully.getDeviceInfo()
-                self._handle_player_update()
-        except Exception as err:
-            msg = f"Unable to start the FullyKiosk connection ({err!s}"
-            raise PlayerUnavailableError(msg) from err

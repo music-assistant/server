@@ -138,7 +138,7 @@ async def get_config_entries(
             await asyncio.sleep(1)
 
     authenticated_nc = True
-    if values.get(CONF_TOKEN_NC, None) is None:
+    if values.get(CONF_TOKEN_NC) is None:
         authenticated_nc = False
 
     using_gpodder = bool(values.get(CONF_USING_GPODDER, False))
@@ -344,7 +344,6 @@ class GPodder(MusicProvider):
         return False
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
-        # ruff: noqa: PLR0915
         """Retrieve library/subscribed podcasts from the provider."""
         try:
             subscriptions = await self._client.get_subscriptions()

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, final
 
+from music_assistant_models.errors import UnsupportedFeaturedException
+
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
@@ -149,3 +151,14 @@ class Provider:
             "available": self.available,
             "is_streaming_provider": getattr(self, "is_streaming_provider", None),
         }
+
+    def supports_feature(self, feature: ProviderFeature) -> bool:
+        """Return True if this provider supports the given feature."""
+        return feature in self.supported_features
+
+    def check_feature(self, feature: ProviderFeature) -> None:
+        """Check if this provider supports the given feature."""
+        if not self.supports_feature(feature):
+            raise UnsupportedFeaturedException(
+                f"Provider {self.name} does not support feature {feature.name}"
+            )

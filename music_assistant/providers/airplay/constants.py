@@ -13,8 +13,8 @@ CONF_ENCRYPTION = "encryption"
 CONF_ALAC_ENCODE = "alac_encode"
 CONF_VOLUME_START = "volume_start"
 CONF_PASSWORD = "password"
-CONF_BIND_INTERFACE = "bind_interface"
 CONF_READ_AHEAD_BUFFER = "read_ahead_buffer"
+CONF_IGNORE_VOLUME = "ignore_volume"
 
 BACKOFF_TIME_LOWER_LIMIT = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT = 300  # Five minutes
