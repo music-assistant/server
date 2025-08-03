@@ -14,10 +14,12 @@ from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.config import ConfigController
 from music_assistant.providers.niconico.constants import (
     CONF_AUTO_LIKE_ON_LIBRARY_ADD,
+    CONF_AUTO_SYNC_ARTISTS_ON_LIBRARY_CHANGE,
     CONF_FOLLOWING_ACTIVITIES_COUNT,
     CONF_HISTORY_COUNT,
     CONF_INCLUDE_FOLLOWING_MYLISTS,
     CONF_INCLUDE_FOLLOWING_MYLISTS_TRACKS,
+    CONF_INCLUDE_LIBRARY_TRACK_ARTISTS,
     CONF_INCLUDE_OWN_MYLISTS_TRACKS,
     CONF_MFA,
     CONF_RECOMMENDATION_COUNT,
@@ -134,6 +136,10 @@ class NiconicoConfig:
         """Get auto-like on library add setting."""
         return self.get_bool(CONF_AUTO_LIKE_ON_LIBRARY_ADD)
 
+    def get_auto_sync_artists_on_library_change(self) -> bool:
+        """Get auto-sync artists on library change setting."""
+        return self.get_bool(CONF_AUTO_SYNC_ARTISTS_ON_LIBRARY_CHANGE)
+
     def get_include_following_mylists(self) -> bool:
         """Get include following mylists setting."""
         return self.get_bool(CONF_INCLUDE_FOLLOWING_MYLISTS)
@@ -145,6 +151,10 @@ class NiconicoConfig:
     def get_include_own_mylists_tracks(self) -> bool:
         """Get include own mylists tracks setting."""
         return self.get_bool(CONF_INCLUDE_OWN_MYLISTS_TRACKS)
+
+    def get_include_library_track_artists(self) -> bool:
+        """Get include library track artists setting."""
+        return self.get_bool(CONF_INCLUDE_LIBRARY_TRACK_ARTISTS, default=True)
 
     def get_auth_credentials(self) -> AuthCredentials:
         """Get authentication credentials."""
@@ -245,6 +255,20 @@ async def get_config_entries_impl(
             category="content",
         ),
         ConfigEntry(
+            key=CONF_AUTO_SYNC_ARTISTS_ON_LIBRARY_CHANGE,
+            type=ConfigEntryType.BOOLEAN,
+            label="Auto-sync when managing artists in library",
+            required=False,
+            default_value=False,
+            description=(
+                "Automatically follow/unfollow users on NicoNico when adding/removing artists "
+                "to/from your Music Assistant library.\n"
+                "Note: NicoNico has a limit of 800 users you can follow. "
+                "Enable this only if you understand this limitation."
+            ),
+            category="content",
+        ),
+        ConfigEntry(
             key=CONF_INCLUDE_OWN_MYLISTS_TRACKS,
             type=ConfigEntryType.BOOLEAN,
             label="Include own mylists tracks in library",
@@ -254,6 +278,19 @@ async def get_config_entries_impl(
                 "Include tracks from your own mylists in your library tracks.\n"
                 "This allows you to manage whether playlist tracks appear in your main "
                 "track library."
+            ),
+            category="content",
+        ),
+        ConfigEntry(
+            key=CONF_INCLUDE_LIBRARY_TRACK_ARTISTS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Include library track artists",
+            required=False,
+            default_value=True,
+            description=(
+                "Include artists from your library tracks in the artist library.\n"
+                "When enabled, all artists from tracks in your library will appear "
+                "in the artist section, even if you don't explicitly follow them on NicoNico."
             ),
             category="content",
         ),

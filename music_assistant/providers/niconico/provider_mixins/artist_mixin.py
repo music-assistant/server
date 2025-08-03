@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Artist, MediaItemType
 
 from music_assistant.providers.niconico.helpers import get_library_items, handle_niconico_errors
@@ -39,17 +39,18 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
-        # Get artists from library tracks
-        tracks = await get_library_items(
-            self.provider,
-            cache_key="track",
-            query_table="tracks",
-            query_method=self.provider.mass.music.tracks.library_items,
-        )
-        for track in tracks:
-            for artist in track.artists:
-                if isinstance(artist, Artist):
-                    yield artist
+        # Get artists from library tracks (if enabled in config)
+        if self.niconico_config.get_include_library_track_artists():
+            tracks = await get_library_items(
+                self.provider,
+                cache_key="track",
+                query_table="tracks",
+                query_method=self.provider.mass.music.tracks.library_items,
+            )
+            for track in tracks:
+                for artist in track.artists:
+                    if isinstance(artist, Artist):
+                        yield artist
 
         # Include followed artists if user is logged in
         if self.niconico_adapter.auth.is_logged_in():
@@ -73,6 +74,11 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
         """Add item to library."""
         if item.media_type == MediaType.ARTIST:
+            # Check if auto-sync artists is enabled
+            auto_sync_enabled = self.niconico_config.get_auto_sync_artists_on_library_change()
+            if not auto_sync_enabled:
+                return True  # Successfully "added" but no action needed
+
             async with handle_niconico_errors(self.provider.logger, "following artist", item.name):
                 success = await self.niconico_adapter.call_with_throttler(
                     self.niconico_adapter.niconico_py_client.user.follow_user,
@@ -83,15 +89,24 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
                     return True
                 else:
                     self.provider.logger.warning("Failed to follow artist %s", item.name)
+                    # Raise error with user-friendly message
+                    raise ProviderUnavailableError(
+                        f"Failed to follow artist '{item.name}' on NicoNico. "
+                        f"This might be due to API limits or network issues."
+                    )
 
-            return False  # API call failed
         return None  # Not handled by this mixin
 
     async def library_remove_for_mixin(
         self, prov_item_id: str, media_type: MediaType
     ) -> bool | None:
-        """Unfollow an artist."""
+        """Remove artist from library."""
         if media_type == MediaType.ARTIST:
+            # Check if auto-sync artists is enabled
+            auto_sync_enabled = self.niconico_config.get_auto_sync_artists_on_library_change()
+            if not auto_sync_enabled:
+                return True  # Successfully "removed" but no action needed
+
             async with handle_niconico_errors(
                 self.provider.logger, "unfollowing artist", prov_item_id
             ):
@@ -104,6 +119,10 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
                     return True
                 else:
                     self.provider.logger.warning("Failed to unfollow artist %s", prov_item_id)
+                    # Raise error with user-friendly message
+                    raise ProviderUnavailableError(
+                        f"Failed to unfollow artist (ID: {prov_item_id}) on NicoNico. "
+                        f"This might be due to API limits or network issues."
+                    )
 
-            return False  # API call failed
         return None  # Not handled by this mixin

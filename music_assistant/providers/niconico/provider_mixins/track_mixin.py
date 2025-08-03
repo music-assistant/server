@@ -10,13 +10,13 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.niconico.helpers import get_library_items
+from music_assistant.providers.niconico.helpers import get_library_items, handle_niconico_errors
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Track
+    from music_assistant_models.media_items import MediaItemType, Track
 
 
 class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
@@ -24,6 +24,7 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
 
     _supported_features = {
         ProviderFeature.LIBRARY_TRACKS,
+        ProviderFeature.LIBRARY_TRACKS_EDIT,
     }
 
     async def get_track(self, prov_track_id: str) -> Track:
@@ -120,3 +121,42 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
         if stream_format.get("asr"):
             stream_details.audio_format.sample_rate = int(str(stream_format.get("asr") or "0"))
         return stream_details
+
+    async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
+        """Add item to provider's library. Return true on success."""
+        if item.media_type == MediaType.TRACK:
+            # Check if auto-like is enabled
+            auto_like_enabled = self.niconico_config.get_auto_like_on_library_add()
+            if not auto_like_enabled:
+                return True  # Successfully "added" but no action needed
+
+            async with handle_niconico_errors(self.provider.logger, "liking video", item.item_id):
+                # Extract video ID from provider item ID
+                video_id = item.item_id
+
+                # Like the video using niconico.py
+                like_result = await self.niconico_adapter.call_with_throttler(
+                    self.niconico_adapter.niconico_py_client.video.like_video, video_id
+                )
+
+                if like_result:
+                    self.provider.logger.info("Successfully liked video %s", video_id)
+                else:
+                    self.provider.logger.warning("Failed to like video %s", video_id)
+
+            # Always return True for library add, regardless of like success/failure
+            return True
+
+        return None  # Not handled by this mixin
+
+    async def library_remove_for_mixin(
+        self, prov_item_id: str, media_type: MediaType
+    ) -> bool | None:
+        """Remove item from provider's library. Return true on success."""
+        if media_type == MediaType.TRACK:
+            # For now, we don't implement unlike functionality for tracks
+            # because Niconico's "like" feature is more of an optional engagement feature
+            # rather than a core library management feature.
+            return True
+
+        return None  # Not handled by this mixin

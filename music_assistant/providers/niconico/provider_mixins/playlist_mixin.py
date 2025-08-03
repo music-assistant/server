@@ -31,7 +31,6 @@ class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
 
     _supported_features = {
         ProviderFeature.LIBRARY_PLAYLISTS,
-        ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
         ProviderFeature.PLAYLIST_TRACKS_EDIT,
         ProviderFeature.PLAYLIST_CREATE,
     }
