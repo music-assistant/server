@@ -8,14 +8,13 @@ from music_assistant_models.enums import MediaType
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Playlist
-from niconico.objects.video import EssentialVideo
 from niconico.objects.video.search import EssentialMylist, EssentialSeries
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
 from music_assistant.providers.niconico.parsers import (
     parse_album_by_series,
     parse_playlist_by_mylist,
-    parse_track_by_essential_video,
+    parse_track_by_snapshot_item,
 )
 
 if TYPE_CHECKING:
@@ -110,20 +109,27 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
         self, search_query: str, limit: int, search_result: SearchResults
     ) -> None:
         """Search for videos by keyword."""
-        from music_assistant.providers.niconico.config import NiconicoConfig
-
-        config = NiconicoConfig(self.adapter.provider)
-        sensitive_content = config.get_sensitive_contents_config()
         video_search_data = await self.adapter.call_with_throttler(
-            self.adapter.niconico_py_client.video.search.search_videos_by_keyword,
+            self.adapter.niconico_py_client.video.search.search_videos_snapshot,
             search_query,
-            page_size=limit,
-            sensitive_content=sensitive_content,
+            ["title", "description", "tags"],
+            "startTime",
+            fields=[
+                "contentId",
+                "title",
+                "description",
+                "viewCounter",
+                "mylistCounter",
+                "likeCounter",
+                "startTime",
+                "thumbnailUrl",
+            ],
+            _limit=limit,
         )
         if video_search_data:
             search_result.tracks = list(search_result.tracks)
-            for item in video_search_data.items:
-                if isinstance(item, EssentialVideo):
-                    track = parse_track_by_essential_video(self.adapter.provider, item)
+            for item in video_search_data.data:
+                if item.content_id:
+                    track = parse_track_by_snapshot_item(self.adapter.provider, item)
                     if track:
                         search_result.tracks.append(track)

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
+from music_assistant.providers.niconico.config import NiconicoConfig
 from music_assistant.providers.niconico.parsers import (
     parse_artist,
     parse_track_by_essential_video,
@@ -18,6 +19,9 @@ if TYPE_CHECKING:
     from niconico.objects.nvapi import FollowingMylistsData
 
     from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
+
+# Import at runtime for isinstance checks
+from niconico.objects.video import EssentialVideo
 
 
 class NicoNicoUserAdapter(NiconicoBaseAdapter):
@@ -42,48 +46,68 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
         limit: int = 25,
     ) -> list[Track]:
         """Get recommendations from NicoNico."""
-        from music_assistant.providers.niconico.config import NiconicoConfig
+        try:
+            config = NiconicoConfig(self.adapter.provider)
+            sensitive_contents = config.get_sensitive_contents_config()
+            recommendations = await self.adapter.call_with_throttler(
+                self.adapter.niconico_py_client.user.get_recommendations,
+                recipe_id,
+                limit=limit,
+                sensitive_contents=sensitive_contents,
+            )
+            if not recommendations or not recommendations.items:
+                return []
 
-        config = NiconicoConfig(self.adapter.provider)
-        sensitive_contents = config.get_sensitive_contents_config()
-        recommendations = await self.adapter.call_with_throttler(
-            self.adapter.niconico_py_client.user.get_recommendations,
-            recipe_id,
-            limit=limit,
-            sensitive_contents=sensitive_contents,
-        )
-        if not recommendations or not recommendations.items:
+            tracks = []
+            for item in recommendations.items:
+                # Only process video content, skip user recommendations
+                if item.content_type != "video":
+                    continue
+
+                # Type check to ensure content is EssentialVideo
+                if isinstance(item.content, EssentialVideo):
+                    track = parse_track_by_essential_video(self.adapter.provider, item.content)
+                    if track:
+                        tracks.append(track)
+            return tracks
+        except Exception as err:
+            self.adapter.provider.logger.warning(
+                "Failed to fetch recommendations for recipe %s: %s", recipe_id, err
+            )
             return []
-
-        tracks = []
-        for item in recommendations.items:
-            track = parse_track_by_essential_video(self.adapter.provider, item.content)
-            if track:
-                tracks.append(track)
-        return tracks
 
     async def get_similar_tracks(self, video_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks based on a given video ID."""
-        from music_assistant.providers.niconico.config import NiconicoConfig
+        try:
+            config = NiconicoConfig(self.adapter.provider)
+            sensitive_contents = config.get_sensitive_contents_config()
+            recommendations = await self.adapter.call_with_throttler(
+                self.adapter.niconico_py_client.user.get_recommendations,
+                "video_watch_recommendation",
+                video_id=video_id,
+                limit=limit,
+                sensitive_contents=sensitive_contents,
+            )
+            if not recommendations or not recommendations.items:
+                return []
 
-        config = NiconicoConfig(self.adapter.provider)
-        sensitive_contents = config.get_sensitive_contents_config()
-        recommendations = await self.adapter.call_with_throttler(
-            self.adapter.niconico_py_client.user.get_recommendations,
-            "video_watch_recommendation",
-            video_id=video_id,
-            limit=limit,
-            sensitive_contents=sensitive_contents,
-        )
-        if not recommendations or not recommendations.items:
+            tracks = []
+            for item in recommendations.items:
+                # Only process video content, skip user recommendations
+                if item.content_type != "video":
+                    continue
+
+                # Type check to ensure content is EssentialVideo
+                if isinstance(item.content, EssentialVideo):
+                    track = parse_track_by_essential_video(self.adapter.provider, item.content)
+                    if track:
+                        tracks.append(track)
+            return tracks
+        except Exception as err:
+            self.adapter.provider.logger.warning(
+                "Failed to fetch similar tracks for %s: %s", video_id, err
+            )
             return []
-
-        tracks = []
-        for item in recommendations.items:
-            track = parse_track_by_essential_video(self.adapter.provider, item.content)
-            if track:
-                tracks.append(track)
-        return tracks
 
     async def get_like_history(self, limit: int = 25) -> list[Track]:
         """Get user's like history from NicoNico."""
