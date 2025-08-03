@@ -42,7 +42,7 @@ Always run `pre-commit run --all-files` after a code change to ensure the new co
    - `metadata.py` - Metadata handling
 
 3. **Models (`music_assistant/models/`)** - Base classes and interfaces:
-   - `core_controller.py` - Base for all controllers
+   - `core_controller.py` - Base class/model for all core controllers
    - `music_provider.py` - Base for music providers
    - `player_provider.py` - Base for player providers
    - `plugin.py` - Plugin system base
