@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This guidance is aimed at Claude Code but may as well be suitable for other AI tooling, such as Github CoPilot.
 
 ## Project Overview
 
