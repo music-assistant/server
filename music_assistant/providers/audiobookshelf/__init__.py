@@ -128,7 +128,8 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Server",
             required=True,
-            description="The url of the Audiobookshelf server to connect to.",
+            description="The URL of the Audiobookshelf server to connect to. For example "
+            "https://abs.domain.tld/ or http://192.168.1.4:13378/",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
@@ -149,7 +150,8 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="Token _instead_ of user/ password.",
             required=False,
-            description="Instead of using username and password, you may provide the user's token."
+            description="Instead of using a username and password, "
+            "you may provide the user's token."
             "\nThe token can be seen in Audiobookshelf as an admin user in Settings -> Users.",
         ),
         ConfigEntry(
