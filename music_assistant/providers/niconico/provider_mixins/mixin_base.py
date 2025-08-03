@@ -32,8 +32,6 @@ class NiconicoMusicProviderMixinBase(ABC):
     def niconico_config(self) -> NiconicoConfig:
         """Get the config helper instance."""
         if self._niconico_config is None:
-            from music_assistant.providers.niconico.config import NiconicoConfig
-
             self._niconico_config = NiconicoConfig(self.provider)
         return self._niconico_config
 

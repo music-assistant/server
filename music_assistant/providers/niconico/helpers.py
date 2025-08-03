@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from music_assistant_models.errors import ProviderUnavailableError
-from niconico.exceptions import LoginFailureError
+from music_assistant_models.media_items import Track as TrackModel
 
 from music_assistant.constants import (
     CACHE_CATEGORY_LIBRARY_ITEMS,
     CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    import logging
+
     from music_assistant_models.media_items import Album, Playlist, Track
     from requests.cookies import RequestsCookieJar
 
@@ -76,55 +77,6 @@ def convert_to_netscape(cookie: RequestsCookieJar, domain: str) -> str:
     return netscape_cookie
 
 
-@asynccontextmanager
-async def handle_niconico_errors(
-    logger: logging.Logger,
-    operation: str,
-    context: str = "",
-) -> AsyncGenerator[ErrorState, None]:
-    """
-    Context manager for handling Niconico errors with consistent logging.
-
-    Args:
-        logger: Logger instance
-        operation: Description of the operation
-        context: Additional context (e.g., item name)
-
-    Yields:
-        ErrorState: Object that evaluates to True if an error occurred
-
-    Usage:
-        async with handle_niconico_errors(
-            self.provider.logger, "fetching playlist", playlist.name
-        ) as error_state:
-            # This may raise LoginFailureError, ConnectionError, etc.
-            data = await self.niconico_adapter.get_playlist_data(playlist_id)
-            return self._parse_playlist(data)
-
-        # If an exception occurred, error_state will be True
-        if error_state:
-            return None
-    """
-    error_state = ErrorState()
-
-    try:
-        yield error_state
-    except Exception as err:
-        error_state.set_error(err)
-        # Import here to avoid circular imports
-        try:
-            if isinstance(err, LoginFailureError):
-                logger.debug("Authentication required for %s %s: %s", operation, context, err)
-            elif isinstance(err, (ConnectionError, TimeoutError)):
-                logger.warning("Network error %s %s: %s", operation, context, err)
-            else:
-                logger.debug("Error %s %s: %s", operation, context, err)
-        except ImportError:
-            # Fallback if niconico module is not available
-            logger.debug("Error %s %s: %s", operation, context, err)
-        # Don't re-raise - let caller check error state
-
-
 async def get_library_items(
     provider: MusicProvider,
     cache_key: str,
@@ -166,8 +118,35 @@ async def get_cached_track(provider: MusicProvider, track_id: str) -> Track | No
     )
 
     if cached_track_data:
-        from music_assistant_models.media_items import Track as TrackModel
-
         return TrackModel.from_dict(cached_track_data)
 
     return None
+
+
+def log_verbose(logger: logging.Logger, message: str, *args: object) -> None:
+    """Log a message at VERBOSE level with performance optimization.
+
+    Args:
+        logger: Logger instance
+        message: Log message format string
+        *args: Arguments for the message format string
+    """
+    if logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        logger.log(VERBOSE_LOG_LEVEL, message, *args)
+
+
+def log_verbose_operation(
+    logger: logging.Logger, operation: str, item_id: str, **details: object
+) -> None:
+    """Log verbose information about an operation with structured details.
+
+    Args:
+        logger: Logger instance
+        operation: Operation name (e.g., "cached_tags", "auth_attempt")
+        item_id: Item identifier
+        **details: Additional details to include in the log
+    """
+    if logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        detail_parts = [f"{k}={v}" for k, v in details.items()]
+        detail_str = f" ({', '.join(detail_parts)})" if detail_parts else ""
+        logger.log(VERBOSE_LOG_LEVEL, "%s for %s%s", operation, item_id, detail_str)

@@ -10,7 +10,11 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.niconico.helpers import get_library_items, handle_niconico_errors
+from music_assistant.providers.niconico.helpers import (
+    get_library_items,
+    log_verbose,
+    log_verbose_operation,
+)
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
@@ -82,8 +86,11 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
             return None
 
         stream_format = await self.niconico_adapter.video.get_stream_format(item_id=item_id)
-        self.provider.logger.debug(
-            "Found stream_format: %s for song %s", stream_format["audio_ext"], item_id
+        log_verbose_operation(
+            self.provider.logger,
+            "found_stream_format",
+            item_id,
+            audio_ext=stream_format["audio_ext"],
         )
 
         extra_args = [
@@ -130,19 +137,16 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
             if not auto_like_enabled:
                 return True  # Successfully "added" but no action needed
 
-            async with handle_niconico_errors(self.provider.logger, "liking video", item.item_id):
-                # Extract video ID from provider item ID
-                video_id = item.item_id
+            # Extract video ID from provider item ID
+            video_id = item.item_id
 
-                # Like the video using niconico.py
-                like_result = await self.niconico_adapter.call_with_throttler(
-                    self.niconico_adapter.niconico_py_client.video.like_video, video_id
-                )
+            # Like the video using niconico.py
+            like_result = await self.niconico_adapter.video.like_video(video_id)
 
-                if like_result:
-                    self.provider.logger.info("Successfully liked video %s", video_id)
-                else:
-                    self.provider.logger.warning("Failed to like video %s", video_id)
+            if like_result:
+                log_verbose(self.provider.logger, "Successfully liked video %s", video_id)
+            else:
+                self.provider.logger.warning("Failed to like video %s", video_id)
 
             # Always return True for library add, regardless of like success/failure
             return True

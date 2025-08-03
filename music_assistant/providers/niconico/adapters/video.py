@@ -35,11 +35,9 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
         self, user_id: str, page: int = 1, page_size: int = 50
     ) -> list[Track]:
         """Get user videos and parse as Track list."""
-        from music_assistant.providers.niconico.config import NiconicoConfig
-
-        config = NiconicoConfig(self.adapter.provider)
+        config = self.niconico_config
         sensitive_contents = config.get_sensitive_contents_config()
-        user_video_data = await self.adapter.call_with_throttler(
+        user_video_data = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_user_videos,
             user_id,
             page=page,
@@ -57,7 +55,7 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
 
     async def get_video(self, video_id: str) -> Track | None:
         """Get video details and parse as Track."""
-        video = await self.adapter.call_with_throttler(
+        video = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.video.get_video, video_id
         )
         return parse_track_by_essential_video(self.adapter.provider, video) if video else None
@@ -66,7 +64,7 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
         self, video_id: str, priority: ApiPriority = ApiPriority.HIGH
     ) -> list[str]:
         """Get video tags as list of strings with specified priority."""
-        tags = await self.adapter.call_with_throttler_with_priority(
+        tags = await self.adapter._call_with_throttler_with_priority(
             priority, self.adapter.niconico_py_client.video.get_video_tags, video_id
         )
         if not tags:
@@ -109,4 +107,14 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
                 except Exception as err:
                     raise UnplayableMediaError(f"Niconico extract error: {err}") from err
 
-        return await self.adapter.call_with_throttler(_extract)
+        result = await self.adapter._call_with_throttler(_extract)
+        if result is None:
+            raise UnplayableMediaError("Failed to extract stream format")
+        return result
+
+    async def like_video(self, video_id: str) -> bool:
+        """Like a video."""
+        result = await self.adapter._call_with_throttler(
+            self.adapter.niconico_py_client.video.like_video, video_id
+        )
+        return bool(result)

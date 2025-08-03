@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
 
@@ -74,11 +74,11 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
 
     async def _search_mylists_by_keyword(self, search_query: str, limit: int) -> list[Playlist]:
         """Search for mylists by keyword."""
-        list_search_data = await self.adapter.call_with_throttler(
+        list_search_data = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.video.search.search_lists,
             search_query,
             page_size=limit,
-            types=cast("list[Literal['mylist', 'series']]", ["mylist"]),
+            types=["mylist"],
         )
 
         if not list_search_data:
@@ -93,11 +93,11 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
 
     async def _search_series_by_keyword(self, search_query: str, limit: int) -> list[Album]:
         """Search for series by keyword."""
-        list_search_data = await self.adapter.call_with_throttler(
+        list_search_data = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.video.search.search_lists,
             search_query,
             page_size=limit,
-            types=cast("list[Literal['mylist', 'series']]", ["series"]),
+            types=["series"],
         )
 
         if not list_search_data:
@@ -112,7 +112,7 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
 
     async def search_videos_by_keyword(self, search_query: str, limit: int) -> list[Track]:
         """Search for videos by keyword."""
-        video_search_data = await self.adapter.call_with_throttler(
+        video_search_data = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.video.search.search_videos_by_keyword,
             search_query,
             page_size=limit,
@@ -143,7 +143,7 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
         tracks = []
         # Search for each tag separately since search_videos_by_tag only accepts one tag
         for tag in tags:
-            video_search_data = await self.adapter.call_with_throttler(
+            video_search_data = await self.adapter._call_with_throttler(
                 self.adapter.niconico_py_client.video.search.search_videos_by_tag,
                 tag,
                 page_size=limit,

@@ -12,15 +12,12 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import (
     ProviderFeature,
 )
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import MediaNotFoundError
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.providers.niconico.helpers import (
-    handle_niconico_errors,
-)
-from music_assistant.providers.niconico.parsers import parse_following_playlist_by_mylist
+from music_assistant.providers.niconico.helpers import log_verbose
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
@@ -77,128 +74,89 @@ class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
         if not self.niconico_adapter.auth.is_logged_in():
             return
         # Get user's own playlists (editable)
-        async with handle_niconico_errors(self.provider.logger, "fetching own mylists"):
-            own_playlists = await self.niconico_adapter.mylist.get_own_mylists()
-            for playlist in own_playlists:
-                yield playlist
+        own_playlists = await self.niconico_adapter.mylist.get_own_mylists()
+        for playlist in own_playlists:
+            yield playlist
 
         # Include following mylists if enabled in config
         include_following = self.niconico_config.get_include_followed_mylists()
         if include_following:
-            async with handle_niconico_errors(self.provider.logger, "fetching following mylists"):
-                following_mylists_data = await self.niconico_adapter.user.get_following_mylists()
-                # following_mylists_data is a FollowingMylistsData object
-                if following_mylists_data:
-                    for mylist in following_mylists_data.mylists:
-                        # Parse as read-only playlist
-                        playlist = parse_following_playlist_by_mylist(self.provider, mylist.detail)
-                        yield playlist
+            following_playlists = await self.niconico_adapter.user.get_following_playlists()
+            for playlist in following_playlists:
+                yield playlist
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
-        async with handle_niconico_errors(
-            self.provider.logger, "adding tracks to playlist", prov_playlist_id
-        ) as error_state:
-            for track_id in prov_track_ids:
-                success = await self.niconico_adapter.call_with_throttler(
-                    self.niconico_adapter.niconico_py_client.user.add_mylist_item,
-                    prov_playlist_id,
+        for track_id in prov_track_ids:
+            success = await self.niconico_adapter.mylist.add_mylist_item(prov_playlist_id, track_id)
+            if success:
+                log_verbose(
+                    self.provider.logger,
+                    "Successfully added track %s to playlist %s",
                     track_id,
+                    prov_playlist_id,
                 )
-                if success:
-                    self.provider.logger.info(
-                        "Successfully added track %s to playlist %s", track_id, prov_playlist_id
-                    )
-                else:
-                    self.provider.logger.warning(
-                        "Failed to add track %s to playlist %s", track_id, prov_playlist_id
-                    )
-
-        # Only raise an error if an exception occurred
-        if error_state:
-            raise error_state.exception or ProviderUnavailableError(
-                f"Failed to add tracks to playlist '{prov_playlist_id}'"
-            )
+            else:
+                self.provider.logger.warning(
+                    "Failed to add track %s to playlist %s", track_id, prov_playlist_id
+                )
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        async with handle_niconico_errors(
-            self.provider.logger, "removing tracks from playlist", prov_playlist_id
-        ) as error_state:
-            # Get current playlist tracks to find track IDs at the specified positions
-            playlist_tracks = await self.get_playlist_tracks(prov_playlist_id)
+        # Get current playlist tracks to find track IDs at the specified positions
+        playlist_tracks = await self.get_playlist_tracks(prov_playlist_id)
 
-            # Extract track IDs to remove based on positions
-            # Note: positions_to_remove uses 1-based indexing, so convert to 0-based
-            track_ids_to_remove = []
-            for position in positions_to_remove:
-                index = position - 1  # Convert from 1-based to 0-based indexing
-                if 0 <= index < len(playlist_tracks):
-                    track_ids_to_remove.append(playlist_tracks[index].item_id)
+        # Extract track IDs to remove based on positions
+        # Note: positions_to_remove uses 1-based indexing, so convert to 0-based
+        track_ids_to_remove = []
+        for position in positions_to_remove:
+            index = position - 1  # Convert from 1-based to 0-based indexing
+            if 0 <= index < len(playlist_tracks):
+                track_ids_to_remove.append(playlist_tracks[index].item_id)
 
-            if not track_ids_to_remove:
-                self.provider.logger.warning(
-                    "No valid tracks found to remove from playlist %s", prov_playlist_id
-                )
-                return
-
-            success = await self.niconico_adapter.call_with_throttler(
-                self.niconico_adapter.niconico_py_client.user.remove_mylist_items,
-                prov_playlist_id,
-                track_ids_to_remove,
+        if not track_ids_to_remove:
+            self.provider.logger.warning(
+                "No valid tracks found to remove from playlist %s", prov_playlist_id
             )
-            if success:
-                self.provider.logger.info(
-                    "Successfully removed %d tracks from playlist %s",
-                    len(track_ids_to_remove),
-                    prov_playlist_id,
-                )
-            else:
-                self.provider.logger.warning(
-                    "Failed to remove tracks from playlist %s", prov_playlist_id
-                )
+            return
 
-        # Only raise an error if an exception occurred
-        if error_state:
-            raise error_state.exception or ProviderUnavailableError(
-                f"Failed to remove tracks from playlist '{prov_playlist_id}'"
+        success = await self.niconico_adapter.mylist.remove_mylist_items(
+            prov_playlist_id, track_ids_to_remove
+        )
+        if success:
+            log_verbose(
+                self.provider.logger,
+                "Successfully removed %d tracks from playlist %s",
+                len(track_ids_to_remove),
+                prov_playlist_id,
+            )
+        else:
+            self.provider.logger.warning(
+                "Failed to remove tracks from playlist %s", prov_playlist_id
             )
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
-        async with handle_niconico_errors(
-            self.provider.logger, "creating playlist", name
-        ) as error_state:
-            # Create a new mylist using niconico.py
-            create_result = await self.niconico_adapter.call_with_throttler(
-                self.niconico_adapter.niconico_py_client.user.create_mylist,
-                name,
-                description="Created by Music Assistant",
-                is_public=False,  # Private by default for safety
-            )
-
-            if not create_result or not hasattr(create_result, "mylist"):
-                raise MediaNotFoundError(f"Failed to create playlist '{name}' on Niconico.")
-
-            # Get the created mylist details
-            mylist_id = str(create_result.mylist.id_)
-            playlist_with_tracks = await self.niconico_adapter.mylist.get_own_mylist(
-                mylist_id, page_size=1
-            )
-
-            if not playlist_with_tracks:
-                raise MediaNotFoundError(
-                    f"Failed to retrieve created playlist '{name}' from Niconico."
-                )
-
-            self.provider.logger.info(
-                "Successfully created playlist '%s' with ID %s", name, mylist_id
-            )
-            return playlist_with_tracks.playlist
-
-        # If we reach here, an exception occurred during playlist creation
-        raise error_state.exception or ProviderUnavailableError(
-            f"Failed to create playlist '{name}'"
+        # Create a new mylist using niconico.py
+        create_result = await self.niconico_adapter.mylist.create_mylist(
+            name, description="Created by Music Assistant", is_public=False
         )
+
+        if not create_result or not hasattr(create_result, "mylist"):
+            raise MediaNotFoundError(f"Failed to create playlist '{name}' on Niconico.")
+
+        # Get the created mylist details
+        mylist_id = str(create_result.mylist.id_)
+        playlist_with_tracks = await self.niconico_adapter.mylist.get_own_mylist(
+            mylist_id, page_size=1
+        )
+
+        if not playlist_with_tracks:
+            raise MediaNotFoundError(f"Failed to retrieve created playlist '{name}' from Niconico.")
+
+        log_verbose(
+            self.provider.logger, "Successfully created playlist '%s' with ID %s", name, mylist_id
+        )
+        return playlist_with_tracks.playlist

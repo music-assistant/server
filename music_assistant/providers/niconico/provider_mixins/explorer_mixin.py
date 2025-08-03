@@ -6,7 +6,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.media_items import RecommendationFolder, SearchResults, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.providers.niconico.helpers import handle_niconico_errors
+from music_assistant.providers.niconico.helpers import log_verbose
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
@@ -64,106 +64,96 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
         target_count = self.niconico_config.get_recommendation_count()
 
         # General recommendations
-        async with handle_niconico_errors(self.provider.logger, "fetching recommendations"):
-            # Start with the target count, but be prepared to fetch more if filtering reduces count
-            tracks = await self._fetch_recommendations_with_filtering(target_count)
-            if tracks:
-                recommendation_folders.append(
-                    RecommendationFolder(
-                        item_id="niconico_recommendations",
-                        name="niconico recommendations",
-                        provider=self.provider.lookup_key,
-                        items=UniqueList(tracks),
-                    )
+        # Start with the target count, but be prepared to fetch more if filtering reduces count
+        tracks = await self._fetch_recommendations_with_filtering(target_count)
+        if tracks:
+            recommendation_folders.append(
+                RecommendationFolder(
+                    item_id="niconico_recommendations",
+                    name="niconico recommendations",
+                    provider=self.provider.lookup_key,
+                    items=UniqueList(tracks),
                 )
+            )
 
         # History-based recommendations
-        async with handle_niconico_errors(self.provider.logger, "fetching history"):
-            history_count = self.niconico_config.get_history_count()
-            history_tracks = await self.niconico_adapter.user.get_user_history(limit=history_count)
-            if history_tracks:
-                recommendation_folders.append(
-                    RecommendationFolder(
-                        item_id="niconico_history",
-                        name="Recently watched  (niconico history)",
-                        provider=self.provider.lookup_key,
-                        items=UniqueList(history_tracks),
-                    )
+        history_count = self.niconico_config.get_history_count()
+        history_tracks = await self.niconico_adapter.user.get_user_history(limit=history_count)
+        if history_tracks:
+            recommendation_folders.append(
+                RecommendationFolder(
+                    item_id="niconico_history",
+                    name="Recently watched  (niconico history)",
+                    provider=self.provider.lookup_key,
+                    items=UniqueList(history_tracks),
                 )
+            )
 
         # Following activities recommendations
-        async with handle_niconico_errors(self.provider.logger, "fetching following activities"):
-            following_count = self.niconico_config.get_following_activities_count()
-            following_tracks = await self.niconico_adapter.user.get_following_activities(
-                limit=following_count
-            )
-            if following_tracks:
-                recommendation_folders.append(
-                    RecommendationFolder(
-                        item_id="niconico_following_activities",
-                        name="New Tracks from Followed Users",
-                        provider=self.provider.lookup_key,
-                        items=UniqueList(following_tracks),
-                    )
+        following_count = self.niconico_config.get_following_activities_count()
+        following_tracks = await self.niconico_adapter.user.get_following_activities(
+            limit=following_count
+        )
+        if following_tracks:
+            recommendation_folders.append(
+                RecommendationFolder(
+                    item_id="niconico_following_activities",
+                    name="New Tracks from Followed Users",
+                    provider=self.provider.lookup_key,
+                    items=UniqueList(following_tracks),
                 )
+            )
 
         # Like History recommendations
-        async with handle_niconico_errors(self.provider.logger, "fetching like history"):
-            like_history_count = self.niconico_config.get_history_count()  # Same as history
-            like_history_tracks = await self.niconico_adapter.user.get_like_history(
-                limit=like_history_count
-            )
-            if like_history_tracks:
-                recommendation_folders.append(
-                    RecommendationFolder(
-                        item_id="niconico_like_history",
-                        name="Recently liked (Like history)",
-                        provider=self.provider.lookup_key,
-                        items=UniqueList(like_history_tracks),
-                    )
+        like_history_count = self.niconico_config.get_history_count()  # Same as history
+        like_history_tracks = await self.niconico_adapter.user.get_like_history(
+            limit=like_history_count
+        )
+        if like_history_tracks:
+            recommendation_folders.append(
+                RecommendationFolder(
+                    item_id="niconico_like_history",
+                    name="Recently liked (Like history)",
+                    provider=self.provider.lookup_key,
+                    items=UniqueList(like_history_tracks),
                 )
+            )
 
         # Tag-based recommendations
         recommendation_tags = self.niconico_config.get_tag_recommendation_tags()
         if recommendation_tags:
             for tag in recommendation_tags:
-                async with handle_niconico_errors(
-                    self.provider.logger, f"fetching tag-based recommendations for {tag}"
-                ):
-                    tag_recommendation_tracks = (
-                        await self.niconico_adapter.search.search_videos_by_tags(
-                            [tag], target_count, "personalized", "none"
+                tag_recommendation_tracks = (
+                    await self.niconico_adapter.search.search_videos_by_tags(
+                        [tag], target_count, "personalized", "none"
+                    )
+                )
+                if tag_recommendation_tracks:
+                    recommendation_folders.append(
+                        RecommendationFolder(
+                            item_id=f"niconico_tag_recommendations_{tag}",
+                            name=f"Tag-based Recommendations: {tag}",
+                            provider=self.provider.lookup_key,
+                            items=UniqueList(tag_recommendation_tracks),
                         )
                     )
-                    if tag_recommendation_tracks:
-                        recommendation_folders.append(
-                            RecommendationFolder(
-                                item_id=f"niconico_tag_recommendations_{tag}",
-                                name=f"Tag-based Recommendations: {tag}",
-                                provider=self.provider.lookup_key,
-                                items=UniqueList(tag_recommendation_tracks),
-                            )
-                        )
 
         # New tracks by tags
         new_tracks_tags = self.niconico_config.get_tag_recommendation_new_tracks_tags()
         if new_tracks_tags:
             for tag in new_tracks_tags:
-                async with handle_niconico_errors(
-                    self.provider.logger, f"fetching new tracks by tag {tag}"
-                ):
-                    new_tracks_by_tags = await self.niconico_adapter.search.search_videos_by_tags(
-                        [tag], target_count, "registeredAt", "desc"
-                    )
-                    if new_tracks_by_tags:
-                        recommendation_folders.append(
-                            RecommendationFolder(
-                                item_id=f"niconico_new_tracks_by_tags_{tag}",
-                                name=f"New Tracks by Tags: {tag}",
-                                provider=self.provider.lookup_key,
-                                items=UniqueList(new_tracks_by_tags),
-                            )
+                new_tracks_by_tags = await self.niconico_adapter.search.search_videos_by_tags(
+                    [tag], target_count, "registeredAt", "desc"
+                )
+                if new_tracks_by_tags:
+                    recommendation_folders.append(
+                        RecommendationFolder(
+                            item_id=f"niconico_new_tracks_by_tags_{tag}",
+                            name=f"New Tracks by Tags: {tag}",
+                            provider=self.provider.lookup_key,
+                            items=UniqueList(new_tracks_by_tags),
                         )
+                    )
 
         return recommendation_folders
 
@@ -172,14 +162,7 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
         # Use config count if limit is default
         target_count = self.niconico_config.get_recommendation_count() if limit == 25 else limit
 
-        async with handle_niconico_errors(
-            self.provider.logger, "fetching similar tracks", prov_track_id
-        ) as error_state:
-            tracks = await self._fetch_similar_tracks_with_filtering(prov_track_id, target_count)
-            if not error_state:
-                return tracks
-
-        return []
+        return await self._fetch_similar_tracks_with_filtering(prov_track_id, target_count)
 
     def _track_has_required_tags(self, track_tags: list[str], required_tags: list[str]) -> bool:
         """Check if track has at least one of the required tags."""
@@ -258,7 +241,8 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
 
                 # Not enough tracks yet, prepare for next attempt
                 if attempt < max_attempts - 1:
-                    self.provider.logger.info(
+                    log_verbose(
+                        self.provider.logger,
                         "Got %d filtered tracks (target: %d), fetching more...",
                         len(filtered_tracks),
                         target_count,

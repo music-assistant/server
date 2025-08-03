@@ -28,7 +28,7 @@ class NiconicoSeriesAdapter(NiconicoBaseAdapter):
         self, series_id: str, page: int = 1, page_size: int = 100
     ) -> AlbumWithTracks | None:
         """Get series details and parse as AlbumWithTracks."""
-        series_data = await self.adapter.call_with_throttler(
+        series_data = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.video.get_series,
             series_id,
             page=page,
@@ -43,7 +43,7 @@ class NiconicoSeriesAdapter(NiconicoBaseAdapter):
         self, user_id: str, page: int = 1, page_size: int = 100
     ) -> list[Album]:
         """Get user series and parse as Album list."""
-        user_series_items = await self.adapter.call_with_throttler(
+        user_series_items = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_user_series,
             user_id,
             page=page,
@@ -62,7 +62,7 @@ class NiconicoSeriesAdapter(NiconicoBaseAdapter):
         if not self.adapter.auth.is_logged_in():
             return []
 
-        user_series_items = await self.adapter.call_with_throttler(
+        user_series_items = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_own_series_list,
             page=page,
             page_size=page_size,
@@ -82,7 +82,7 @@ class NiconicoSeriesAdapter(NiconicoBaseAdapter):
         if not self.adapter.auth.is_logged_in():
             return None
 
-        series_data = await self.adapter.call_with_throttler(
+        series_data = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_own_series,
             series_id,
             page=page,

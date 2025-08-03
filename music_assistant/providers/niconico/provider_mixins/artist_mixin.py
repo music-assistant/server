@@ -9,7 +9,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Artist, MediaItemType
 
-from music_assistant.providers.niconico.helpers import get_library_items, handle_niconico_errors
+from music_assistant.providers.niconico.helpers import get_library_items, log_verbose
 from music_assistant.providers.niconico.provider_mixins.mixin_base import (
     NiconicoMusicProviderMixinBase,
 )
@@ -54,10 +54,9 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
 
         # Include followed artists if user is logged in
         if self.niconico_adapter.auth.is_logged_in():
-            async with handle_niconico_errors(self.provider.logger, "fetching following artists"):
-                following_artists = await self.niconico_adapter.user.get_own_followings()
-                for artist in following_artists:
-                    yield artist
+            following_artists = await self.niconico_adapter.user.get_own_followings()
+            for artist in following_artists:
+                yield artist
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist (user's series)."""
@@ -79,21 +78,17 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
             if not auto_sync_enabled:
                 return True  # Successfully "added" but no action needed
 
-            async with handle_niconico_errors(self.provider.logger, "following artist", item.name):
-                success = await self.niconico_adapter.call_with_throttler(
-                    self.niconico_adapter.niconico_py_client.user.follow_user,
-                    item.item_id,
+            success = await self.niconico_adapter.user.follow_user(item.item_id)
+            if success:
+                log_verbose(self.provider.logger, "Successfully followed artist %s", item.name)
+                return True
+            else:
+                self.provider.logger.warning("Failed to follow artist %s", item.name)
+                # Raise error with user-friendly message
+                raise ProviderUnavailableError(
+                    f"Failed to follow artist '{item.name}' on NicoNico. "
+                    f"This might be due to API limits or network issues."
                 )
-                if success:
-                    self.provider.logger.info("Successfully followed artist %s", item.name)
-                    return True
-                else:
-                    self.provider.logger.warning("Failed to follow artist %s", item.name)
-                    # Raise error with user-friendly message
-                    raise ProviderUnavailableError(
-                        f"Failed to follow artist '{item.name}' on NicoNico. "
-                        f"This might be due to API limits or network issues."
-                    )
 
         return None  # Not handled by this mixin
 
@@ -107,22 +102,16 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
             if not auto_sync_enabled:
                 return True  # Successfully "removed" but no action needed
 
-            async with handle_niconico_errors(
-                self.provider.logger, "unfollowing artist", prov_item_id
-            ):
-                success = await self.niconico_adapter.call_with_throttler(
-                    self.niconico_adapter.niconico_py_client.user.unfollow_user,
-                    prov_item_id,
+            success = await self.niconico_adapter.user.unfollow_user(prov_item_id)
+            if success:
+                log_verbose(self.provider.logger, "Successfully unfollowed artist %s", prov_item_id)
+                return True
+            else:
+                self.provider.logger.warning("Failed to unfollow artist %s", prov_item_id)
+                # Raise error with user-friendly message
+                raise ProviderUnavailableError(
+                    f"Failed to unfollow artist (ID: {prov_item_id}) on NicoNico. "
+                    f"This might be due to API limits or network issues."
                 )
-                if success:
-                    self.provider.logger.info("Successfully unfollowed artist %s", prov_item_id)
-                    return True
-                else:
-                    self.provider.logger.warning("Failed to unfollow artist %s", prov_item_id)
-                    # Raise error with user-friendly message
-                    raise ProviderUnavailableError(
-                        f"Failed to unfollow artist (ID: {prov_item_id}) on NicoNico. "
-                        f"This might be due to API limits or network issues."
-                    )
 
         return None  # Not handled by this mixin

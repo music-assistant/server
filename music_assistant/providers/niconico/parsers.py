@@ -7,6 +7,7 @@ tracks, and artists into Music Assistant media items.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -28,10 +29,16 @@ from music_assistant_models.unique_list import UniqueList
 from niconico.objects.nvapi import SeriesData
 from niconico.objects.user import NicoUser, UserMylistItem, UserSeriesItem
 from niconico.objects.video import EssentialVideo, Mylist, Owner, VideoThumbnail
-from niconico.objects.video.search import EssentialMylist, EssentialSeries, SnapshotVideoItem
+from niconico.objects.video.search import EssentialMylist, EssentialSeries
 
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.niconico.helpers import AlbumWithTracks, PlaylistWithTracks
+from music_assistant.providers.niconico.helpers import (
+    AlbumWithTracks,
+    PlaylistWithTracks,
+    log_verbose,
+)
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from niconico.objects.user import (
@@ -210,15 +217,16 @@ def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVide
         name=video.title,
         duration=video.duration,
         artists=UniqueList([parse_artist(provider, video.owner)]),
+        # Videos that cannot be played will have a duration of 0.
         is_playable=video.duration > 0 and not video.is_payment_required,
         metadata=_create_track_metadata(
+            provider=provider,
+            video_id=video.id_,
             description=video.short_description,
             explicit=video.require_sensitive_masking,
             release_date_str=video.registered_at,
             popularity=popularity,
             thumbnail=video.thumbnail,
-            video_id=video.id_,
-            provider=provider,
         ),
         provider_mappings=_create_provider_mapping(
             item_id=video.id_,
@@ -361,6 +369,8 @@ def _calculate_popularity(
 
 
 def _create_track_metadata(
+    provider: MusicProvider,
+    video_id: str,
     *,
     description: str | None = None,
     explicit: bool | None = None,
@@ -368,24 +378,8 @@ def _create_track_metadata(
     popularity: int | None = None,
     thumbnail: VideoThumbnail | None = None,
     thumbnail_url: str | None = None,
-    video_id: str,
-    provider: MusicProvider,
 ) -> MediaItemMetadata:
-    """Create track metadata with common fields.
-
-    Args:
-        description: Video description.
-        explicit: Whether the content is explicit.
-        release_date_str: Release date as string (ISO 8601 format).
-        popularity: Popularity score.
-        thumbnail: VideoThumbnail object for enhanced image support.
-        thumbnail_url: Single thumbnail URL (fallback when VideoThumbnail not available).
-        video_id: Video ID for link generation.
-        provider: Music provider instance.
-
-    Returns:
-        MediaItemMetadata object with populated fields.
-    """
+    """Create track metadata with common fields."""
     metadata = MediaItemMetadata()
 
     if description:
@@ -402,8 +396,9 @@ def _create_track_metadata(
                 metadata.release_date = datetime.fromisoformat(clean_date_str)
             else:
                 metadata.release_date = datetime.fromisoformat(release_date_str)
-        except (ValueError, AttributeError):
-            pass
+        except (ValueError, AttributeError) as err:
+            # Log debug message for date parsing failures to help with troubleshooting
+            log_verbose(logger, "Failed to parse release date '%s': %s", release_date_str, err)
 
     if popularity is not None:
         metadata.popularity = popularity
@@ -467,50 +462,3 @@ def _create_provider_mapping(
             available=available,
         )
     }
-
-
-def parse_track_by_snapshot_item(provider: MusicProvider, item: SnapshotVideoItem) -> Track | None:
-    """Parse a SnapshotVideoItem into a Track.
-
-    Args:
-        provider: The music provider instance.
-        item: The snapshot video item to parse.
-
-    Returns:
-        Track | None: The parsed track, or None if parsing fails.
-    """
-    if not item.content_id or not item.title:
-        return None
-
-    # Calculate popularity using the same formula as parse_track_by_essential_video
-    popularity = _calculate_popularity(
-        mylist_count=item.mylist_counter,
-        like_count=item.like_counter,
-    )
-
-    # Create track with common metadata
-    track = Track(
-        item_id=item.content_id,
-        provider=provider.lookup_key,
-        name=item.title,
-        duration=item.length_seconds or 0,
-        # Note: SnapshotVideoItem doesn't have owner info, so no artists
-        metadata=_create_track_metadata(
-            description=item.description,
-            release_date_str=item.start_time,
-            popularity=popularity,
-            thumbnail_url=item.thumbnail_url,
-            video_id=item.content_id,
-            provider=provider,
-        ),
-        provider_mappings=_create_provider_mapping(
-            item_id=item.content_id,
-            provider=provider,
-        ),
-    )
-
-    # Trigger async tag caching for this video (fire-and-forget)
-    if hasattr(provider, "tag_manager"):
-        provider.tag_manager.trigger_update(item.content_id)
-
-    return track
