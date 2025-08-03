@@ -68,6 +68,7 @@ Providers are modular components that extend Music Assistant's capabilities:
 Each provider has:
 - `__init__.py` - Main provider logic
 - `manifest.json` - Provider metadata and configuration schema
+- many providers choose to split up the code into several smaller files for readability and maintenance.
 
 Template providers are available in `_template_*_provider` directories.
 
