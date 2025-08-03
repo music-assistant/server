@@ -48,10 +48,12 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
         )
         if not user_video_data or not user_video_data.items:
             return []
-        return [
-            parse_track_by_essential_video(self.adapter.provider, item.essential)
-            for item in user_video_data.items
-        ]
+        tracks = []
+        for item in user_video_data.items:
+            track = parse_track_by_essential_video(self.adapter.provider, item.essential)
+            if track:
+                tracks.append(track)
+        return tracks
 
     async def get_video(self, video_id: str) -> Track | None:
         """Get video details and parse as Track."""

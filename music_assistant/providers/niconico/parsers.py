@@ -183,12 +183,20 @@ def parse_playlist_with_tracks_by_mylist(
 ) -> PlaylistWithTracks:
     """Parse a NicoNico UserMylistItem into a PlaylistWithTracks."""
     playlist = parse_playlist_by_mylist(provider, mylist)
-    tracks = [parse_track_by_essential_video(provider, item.video) for item in mylist.items]
+    tracks = []
+    for item in mylist.items:
+        track = parse_track_by_essential_video(provider, item.video)
+        if track:
+            tracks.append(track)
     return PlaylistWithTracks(playlist, tracks)
 
 
-def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVideo) -> Track:
+def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVideo) -> Track | None:
     """Parse an EssentialVideo object into a Track."""
+    # Skip muted videos
+    if video.is_muted:
+        return None
+
     # Calculate popularity using standard formula
     popularity = _calculate_popularity(
         mylist_count=video.count.mylist,
@@ -323,9 +331,11 @@ def parse_series_to_album_with_tracks(
 ) -> AlbumWithTracks:
     """Parse SeriesData to AlbumWithTracks."""
     album = parse_album_by_series(provider, series_data)
-    tracks = [
-        parse_track_by_essential_video(provider, item.video) for item in series_data.items or []
-    ]
+    tracks = []
+    for item in series_data.items or []:
+        track = parse_track_by_essential_video(provider, item.video)
+        if track:
+            tracks.append(track)
     return AlbumWithTracks(album, tracks)
 
 
