@@ -65,7 +65,7 @@ Providers are modular components that extend Music Assistant's capabilities:
 - **Metadata Providers**: Add metadata sources (cover art, lyrics, etc.)
 - **Plugin Providers**: Add additional functionality
 
-Each provider has:
+Each provider has (at least):
 - `__init__.py` - Main provider logic
 - `manifest.json` - Provider metadata and configuration schema
 - many providers choose to split up the code into several smaller files for readability and maintenance.
