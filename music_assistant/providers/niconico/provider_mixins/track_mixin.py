@@ -42,7 +42,7 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
             return
 
         # Check config settings for including tracks
-        include_following_tracks = self.niconico_config.get_include_following_mylists_tracks()
+        include_following_tracks = self.niconico_config.get_include_followed_mylists_tracks()
         include_own_tracks = self.niconico_config.get_include_own_mylists_tracks()
 
         # Get all library playlists

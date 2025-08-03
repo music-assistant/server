@@ -83,7 +83,7 @@ class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
                 yield playlist
 
         # Include following mylists if enabled in config
-        include_following = self.niconico_config.get_include_following_mylists()
+        include_following = self.niconico_config.get_include_followed_mylists()
         if include_following:
             async with handle_niconico_errors(self.provider.logger, "fetching following mylists"):
                 following_mylists_data = await self.niconico_adapter.user.get_following_mylists()

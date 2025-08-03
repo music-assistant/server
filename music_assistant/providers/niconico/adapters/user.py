@@ -147,6 +147,31 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
                 tracks.append(track)
         return tracks
 
+    async def get_own_videos(self, limit: int = 100) -> list[Track]:
+        """Get user's own uploaded videos from NicoNico."""
+        from music_assistant.providers.niconico.config import NiconicoConfig
+
+        config = NiconicoConfig(self.adapter.provider)
+        sensitive_contents = config.get_sensitive_contents_config()
+
+        # Calculate page_size based on limit
+        page_size = min(limit, 100)  # API max likely 100
+        own_videos = await self.adapter.call_with_throttler(
+            self.adapter.niconico_py_client.user.get_own_videos,
+            page_size=page_size,
+            page=1,
+            sensitive_contents=sensitive_contents,
+        )
+        if not own_videos or not own_videos.items:
+            return []
+
+        tracks = []
+        for item in own_videos.items:
+            track = parse_track_by_essential_video(self.adapter.provider, item.essential)
+            if track:
+                tracks.append(track)
+        return tracks
+
     async def get_following_activities(self, limit: int = 50) -> list[Track]:
         """Get latest activities from followed users."""
         try:

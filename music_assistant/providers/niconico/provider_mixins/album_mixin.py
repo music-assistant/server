@@ -48,6 +48,13 @@ class NiconicoMusicProviderAlbumMixin(NiconicoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider (user's own series)."""
+        if not self.niconico_adapter.auth.is_logged_in():
+            return
+
+        # Check config setting for including own series as albums
+        if not self.niconico_config.get_include_own_series_albums():
+            return
+
         page = 1
         while True:
             albums = await self.niconico_adapter.series.get_own_series_list(

@@ -74,8 +74,8 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
         """Add item to library."""
         if item.media_type == MediaType.ARTIST:
-            # Check if auto-sync artists is enabled
-            auto_sync_enabled = self.niconico_config.get_auto_sync_artists_on_library_change()
+            # Check if follow/unfollow artists is enabled
+            auto_sync_enabled = self.niconico_config.get_use_follow_unfollow_artists()
             if not auto_sync_enabled:
                 return True  # Successfully "added" but no action needed
 
@@ -102,8 +102,8 @@ class NiconicoMusicProviderArtistMixin(NiconicoMusicProviderMixinBase):
     ) -> bool | None:
         """Remove artist from library."""
         if media_type == MediaType.ARTIST:
-            # Check if auto-sync artists is enabled
-            auto_sync_enabled = self.niconico_config.get_auto_sync_artists_on_library_change()
+            # Check if follow/unfollow artists is enabled
+            auto_sync_enabled = self.niconico_config.get_use_follow_unfollow_artists()
             if not auto_sync_enabled:
                 return True  # Successfully "removed" but no action needed
 

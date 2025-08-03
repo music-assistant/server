@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
-    ConfigValueOption,
 )
 from music_assistant_models.enums import ConfigEntryType
 
@@ -14,18 +13,20 @@ from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.config import ConfigController
 from music_assistant.providers.niconico.constants import (
     CONF_AUTO_LIKE_ON_LIBRARY_ADD,
-    CONF_AUTO_SYNC_ARTISTS_ON_LIBRARY_CHANGE,
     CONF_FOLLOWING_ACTIVITIES_COUNT,
     CONF_HISTORY_COUNT,
-    CONF_INCLUDE_FOLLOWING_MYLISTS,
-    CONF_INCLUDE_FOLLOWING_MYLISTS_TRACKS,
+    CONF_INCLUDE_FOLLOWED_MYLISTS,
+    CONF_INCLUDE_FOLLOWED_MYLISTS_TRACKS,
     CONF_INCLUDE_LIBRARY_TRACK_ARTISTS,
     CONF_INCLUDE_OWN_MYLISTS_TRACKS,
+    CONF_INCLUDE_OWN_SERIES_ALBUMS,
+    CONF_INCLUDE_OWN_VIDEOS_TRACKS,
     CONF_MAIL,
     CONF_MFA,
     CONF_RECOMMENDATION_COUNT,
     CONF_REQUIRED_TAGS_FOR_RECOMMENDATIONS,
     CONF_SENSITIVE_CONTENTS,
+    CONF_USE_FOLLOW_UNFOLLOW_ARTISTS,
     CONF_USER_SESSION,
 )
 
@@ -104,16 +105,6 @@ class NiconicoConfig:
         """Get boolean config value."""
         return bool(self._get_config_value(key, default))
 
-    def _cast_sensitive_contents(self, config_value: object) -> Literal["mask", "filter"] | None:
-        """Cast configuration value to valid sensitive content option."""
-        if config_value == "filter":
-            return cast("Literal['filter']", config_value)
-        elif config_value == "mask":
-            # Music Assistant doesn't have mask state, so convert to None (no filtering)
-            return None
-        else:
-            return None
-
     def get_required_tags_for_recommendations(self) -> list[str]:
         """Get required tags for recommendations from provider config."""
         tags_config = self._get_config_value(CONF_REQUIRED_TAGS_FOR_RECOMMENDATIONS)
@@ -139,17 +130,25 @@ class NiconicoConfig:
         """Get auto-like on library add setting."""
         return self.get_bool(CONF_AUTO_LIKE_ON_LIBRARY_ADD)
 
-    def get_auto_sync_artists_on_library_change(self) -> bool:
-        """Get auto-sync artists on library change setting."""
-        return self.get_bool(CONF_AUTO_SYNC_ARTISTS_ON_LIBRARY_CHANGE)
+    def get_use_follow_unfollow_artists(self) -> bool:
+        """Get use follow/unfollow artists setting."""
+        return self.get_bool(CONF_USE_FOLLOW_UNFOLLOW_ARTISTS)
 
-    def get_include_following_mylists(self) -> bool:
-        """Get include following mylists setting."""
-        return self.get_bool(CONF_INCLUDE_FOLLOWING_MYLISTS)
+    def get_include_followed_mylists(self) -> bool:
+        """Get include followed mylists setting."""
+        return self.get_bool(CONF_INCLUDE_FOLLOWED_MYLISTS)
 
-    def get_include_following_mylists_tracks(self) -> bool:
-        """Get include following mylists tracks setting."""
-        return self.get_bool(CONF_INCLUDE_FOLLOWING_MYLISTS_TRACKS)
+    def get_include_followed_mylists_tracks(self) -> bool:
+        """Get include followed mylists tracks setting."""
+        return self.get_bool(CONF_INCLUDE_FOLLOWED_MYLISTS_TRACKS)
+
+    def get_include_own_series_albums(self) -> bool:
+        """Get include own series as albums setting."""
+        return self.get_bool(CONF_INCLUDE_OWN_SERIES_ALBUMS)
+
+    def get_include_own_videos_tracks(self) -> bool:
+        """Get include own videos as tracks setting."""
+        return self.get_bool(CONF_INCLUDE_OWN_VIDEOS_TRACKS)
 
     def get_include_own_mylists_tracks(self) -> bool:
         """Get include own mylists tracks setting."""
@@ -175,8 +174,9 @@ class NiconicoConfig:
 
     def get_sensitive_contents_config(self) -> Literal["mask", "filter"] | None:
         """Get and cast sensitive contents configuration value."""
-        raw_value = self.get_sensitive_contents_handling()
-        return self._cast_sensitive_contents(raw_value)
+        # Since it seems to be automatically controlled by the display settings of niconico users,
+        # “mask” is always returned here.
+        return "mask"
 
     def save_user_session(self, user_session: str) -> None:
         """Save user session to config."""
@@ -236,22 +236,7 @@ async def get_config_entries_impl(
             ),
             category="Authentication",
         ),
-        ConfigEntry(
-            key=CONF_SENSITIVE_CONTENTS,
-            type=ConfigEntryType.STRING,
-            label="Sensitive Content Handling",
-            required=False,
-            default_value=None,
-            options=[
-                ConfigValueOption(title="Default (Request not to filter)", value=None),
-                ConfigValueOption(title="Filter out sensitive content", value="filter"),
-            ],
-            description=(
-                "Choose how to handle sensitive content in searches and recommendations.\n"
-                "Note: NicoNico may still apply additional filtering on their side."
-            ),
-            category="Content",
-        ),
+        # Basic integration features
         ConfigEntry(
             key=CONF_AUTO_LIKE_ON_LIBRARY_ADD,
             type=ConfigEntryType.BOOLEAN,
@@ -260,28 +245,43 @@ async def get_config_entries_impl(
             default_value=True,
             description=(
                 "Automatically like videos on NicoNico when adding tracks to your "
-                "Music Assistant library."
+                "Music Assistant library.\n"
+                "Tracks removed from the library will not be unliked on NicoNico.\n"
             ),
             category="Content",
         ),
         ConfigEntry(
-            key=CONF_AUTO_SYNC_ARTISTS_ON_LIBRARY_CHANGE,
+            key=CONF_USE_FOLLOW_UNFOLLOW_ARTISTS,
             type=ConfigEntryType.BOOLEAN,
-            label="Auto-follow/unfollow artists on NicoNico",
+            label="Use follow/unfollow artists on NicoNico",
             required=False,
             default_value=False,
             description=(
-                "Automatically follow/unfollow artists when adding/removing them from your "
+                "Enable follow/unfollow functionality when adding/removing artists from your "
                 "library.\n"
-                "⚠️ NicoNico limits following to 800 users. Enable only if you understand "
-                "this limitation."
+                "When enabled, adding an artist requires successfully following them on NicoNico.\n"
+                "⚠️ NicoNico limits following to 800 users."
             ),
             category="Content",
         ),
         ConfigEntry(
+            key=CONF_INCLUDE_LIBRARY_TRACK_ARTISTS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Include artists from library tracks",
+            required=False,
+            default_value=True,
+            description=(
+                "Include artists from your library tracks in the artist library.\n"
+                "When enabled, all artists from tracks in your library will appear "
+                "in the artist section, even if you don't explicitly follow them on NicoNico."
+            ),
+            category="Content",
+        ),
+        # Own content settings
+        ConfigEntry(
             key=CONF_INCLUDE_OWN_MYLISTS_TRACKS,
             type=ConfigEntryType.BOOLEAN,
-            label="Include own mylists tracks in library",
+            label="Include tracks from own mylists",
             required=False,
             default_value=True,
             description=(
@@ -292,40 +292,54 @@ async def get_config_entries_impl(
             category="Content",
         ),
         ConfigEntry(
-            key=CONF_INCLUDE_LIBRARY_TRACK_ARTISTS,
+            key=CONF_INCLUDE_OWN_SERIES_ALBUMS,
             type=ConfigEntryType.BOOLEAN,
-            label="Include library track artists",
+            label="Include albums from own uploaded series",
             required=False,
-            default_value=True,
+            default_value=False,
             description=(
-                "Include artists from your library tracks in the artist library.\n"
-                "When enabled, all artists from tracks in your library will appear "
-                "in the artist section, even if you don't explicitly follow them on NicoNico."
+                "Include your own uploaded series as albums in your library.\n"
+                "This allows you to manage whether your created series appear in your "
+                "album library."
             ),
             category="Content",
         ),
         ConfigEntry(
-            key=CONF_INCLUDE_FOLLOWING_MYLISTS,
+            key=CONF_INCLUDE_OWN_VIDEOS_TRACKS,
             type=ConfigEntryType.BOOLEAN,
-            label="Include following users' mylists",
+            label="Include tracks from own uploaded videos",
             required=False,
             default_value=False,
             description=(
-                "Include mylists from users you follow in your library playlists.\n"
+                "Include your own uploaded videos as tracks in your library.\n"
+                "This allows you to manage whether your uploaded content appears in your "
+                "track library."
+            ),
+            category="Content",
+        ),
+        # Followed content settings
+        ConfigEntry(
+            key=CONF_INCLUDE_FOLLOWED_MYLISTS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Include playlists from followed mylists",
+            required=False,
+            default_value=False,
+            description=(
+                "Include mylists you directly follow in your library playlists.\n"
                 "These playlists will be read-only and marked as not editable."
             ),
             category="Content",
         ),
         ConfigEntry(
-            key=CONF_INCLUDE_FOLLOWING_MYLISTS_TRACKS,
+            key=CONF_INCLUDE_FOLLOWED_MYLISTS_TRACKS,
             type=ConfigEntryType.BOOLEAN,
-            label="Include tracks from followed mylists in library",
+            label="Include tracks from followed mylists",
             required=False,
             default_value=False,
             description=(
-                "Include tracks from mylists you follow in your library tracks.\n"
-                "This refers to My Lists that you have explicitly followed,\n"
-                "not to the My Lists of users you have followed."
+                "Include tracks from mylists you directly follow in your library tracks.\n"
+                "This refers to mylists that you have explicitly followed,\n"
+                "not to mylists from users you have followed."
             ),
             category="Content",
         ),
