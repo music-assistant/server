@@ -52,7 +52,7 @@ Always run `pre-commit run --all-files` after a code change to ensure the new co
    - Music providers (Spotify, Apple Music, Tidal, etc.)
    - Player providers (Sonos, Chromecast, AirPlay, etc.)
    - Metadata providers (MusicBrainz, TheAudioDB, etc.)
-   - Plugin providers for additional functionality
+   - Plugin providers for additional functionality (such as spotify connect or lastfm scrobbling)
 
 5. **Helpers (`music_assistant/helpers/`)** - Utility modules for common tasks
 
