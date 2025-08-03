@@ -431,3 +431,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # filter out unavailable tracks
             if x.available
         ]
+
+    async def match_providers(self, db_item: Playlist) -> None:
+        """Try to find match on all (streaming) providers for the provided (database) item.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        raise NotImplementedError

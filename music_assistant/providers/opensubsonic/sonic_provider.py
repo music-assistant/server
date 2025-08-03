@@ -599,10 +599,7 @@ class OpenSonicProvider(MusicProvider):
                 msg = f"Item {item_id} not found"
                 raise MediaNotFoundError(msg) from e
 
-            if item.transcoded_content_type:
-                mime_type = item.transcoded_content_type
-            else:
-                mime_type = item.content_type
+            mime_type = item.transcoded_content_type or item.content_type
 
             self.logger.debug(
                 "Fetching stream details for id %s '%s' with format '%s'",

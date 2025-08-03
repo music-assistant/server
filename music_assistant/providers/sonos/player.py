@@ -11,28 +11,38 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from aiohttp.client_exceptions import ClientConnectorError
+from aiohttp import ClientConnectorError
 from aiosonos.api.models import ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
 from aiosonos.exceptions import ConnectionFailed, FailedCommand
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
+    MediaType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
-    PlayerType,
     RepeatMode,
 )
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.player import PlayerMedia
 
-from .const import (
+from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+    CONF_ENTRY_OUTPUT_CODEC,
+    create_sample_rates_config_entry,
+)
+from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.upnp import get_xml_soap_set_url
+from music_assistant.models.player import Player
+from music_assistant.providers.sonos.const import (
     CONF_AIRPLAY_MODE,
     PLAYBACK_STATE_MAP,
-    PLAYER_FEATURES_BASE,
     PLAYER_SOURCE_MAP,
     SOURCE_AIRPLAY,
     SOURCE_LINE_IN,
@@ -40,6 +50,7 @@ from .const import (
     SOURCE_SPOTIFY,
     SOURCE_TV,
 )
+from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
@@ -47,8 +58,18 @@ if TYPE_CHECKING:
 
     from .provider import SonosPlayerProvider
 
+SUPPORTED_FEATURES = {
+    PlayerFeature.PAUSE,
+    PlayerFeature.NEXT_PREVIOUS,
+    PlayerFeature.SEEK,
+    PlayerFeature.SELECT_SOURCE,
+    PlayerFeature.SELECT_SOURCE,
+    PlayerFeature.ENQUEUE,
+    PlayerFeature.SET_MEMBERS,
+}
 
-class SonosPlayer:
+
+class SonosPlayer(Player):
     """Holds the details of the (discovered) Sonosplayer."""
 
     def __init__(
@@ -56,25 +77,17 @@ class SonosPlayer:
         prov: SonosPlayerProvider,
         player_id: str,
         discovery_info: SonosDiscoveryInfo,
-        ip_address: str,
     ) -> None:
         """Initialize the SonosPlayer."""
-        self.prov = prov
-        self.mass = prov.mass
-        self.player_id = player_id
+        super().__init__(prov, player_id)
         self.discovery_info = discovery_info
-        self.ip_address = ip_address
-        self.logger = prov.logger.getChild(player_id)
         self.connected: bool = False
-        self.client = SonosLocalApiClient(self.ip_address, self.mass.http_session)
-        self.mass_player: Player | None = None
         self._listen_task: asyncio.Task | None = None
         # Sonos speakers can optionally have airplay (most S2 speakers do)
         # and this airplay player can also be a player within MA.
         # We can do some smart stuff if we link them together where possible.
         # The player we can just guess from the sonos player id (mac address).
         self.airplay_player_id = f"ap{self.player_id[7:-5].lower()}"
-        self._on_cleanup_callbacks: list[Callable[[], None]] = []
 
     @property
     def airplay_mode_enabled(self) -> bool:
@@ -90,8 +103,140 @@ class SonosPlayer:
             self.airplay_mode_enabled
             and self.client.player.is_coordinator
             and (airplay_player := self.get_linked_airplay_player(False))
-            and airplay_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+            and airplay_player.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
         )
+
+    @property
+    def synced_to(self) -> str | None:
+        """
+        Return the id of the player this player is synced to (sync leader).
+
+        If this player is not synced to another player (or is the sync leader itself),
+        this should return None.
+        """
+        if self.client.player.is_coordinator:
+            return None
+        if self.client.player.group:
+            return self.client.player.group.coordinator_id
+        return None
+
+    async def setup(self) -> None:
+        """Handle setup of the player."""
+        # connect the player first so we can fail early
+        self.client = SonosLocalApiClient(self.device_info.ip_address, self.mass.http_session)
+        await self._connect(False)
+
+        # collect supported features
+        _supported_features = SUPPORTED_FEATURES.copy()
+        if SonosCapability.AUDIO_CLIP in self.discovery_info["device"]["capabilities"]:
+            _supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        if not self.client.player.has_fixed_volume:
+            _supported_features.add(PlayerFeature.VOLUME_SET)
+            _supported_features.add(PlayerFeature.VOLUME_MUTE)
+        if not self.get_linked_airplay_player(False):
+            _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        self._attr_supported_features = _supported_features
+
+        self._attr_name = (
+            self.discovery_info["device"]["name"]
+            or self.discovery_info["device"]["modelDisplayName"]
+        )
+        self._attr_device_info.model = self.discovery_info["device"]["modelDisplayName"]
+        self._attr_device_info.manufacturer = self._provider.manifest.name
+        self._attr_can_group_with = {self._provider.instance_id}
+
+        if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
+            self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_LINE_IN])
+        if SonosCapability.HT_PLAYBACK in self.discovery_info["device"]["capabilities"]:
+            self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_TV])
+        if SonosCapability.AIRPLAY in self.discovery_info["device"]["capabilities"]:
+            self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_AIRPLAY])
+
+        self.update_attributes()
+        await self.mass.players.register_or_update(self)
+
+        # register callback for state changed
+        self._on_unload_callbacks.append(
+            self.client.subscribe(
+                self.on_player_event,
+                (
+                    SonosEventType.GROUP_UPDATED,
+                    SonosEventType.PLAYER_UPDATED,
+                ),
+            )
+        )
+        # register callback for airplay player state changes
+        self._on_unload_callbacks.append(
+            self.mass.subscribe(
+                self._on_airplay_player_event,
+                (EventType.PLAYER_UPDATED, EventType.PLAYER_ADDED),
+                self.airplay_player_id,
+            )
+        )
+        # register callback for playerqueue state changes
+        # note we don't filter on the player_id here because we also need to catch
+        # events from group players
+        self._on_unload_callbacks.append(
+            self.mass.subscribe(
+                self._on_mass_queue_items_event,
+                EventType.QUEUE_ITEMS_UPDATED,
+            )
+        )
+        self._on_unload_callbacks.append(
+            self.mass.subscribe(
+                self._on_mass_queue_event,
+                (EventType.QUEUE_UPDATED, EventType.QUEUE_ITEMS_UPDATED),
+            )
+        )
+
+    async def get_config_entries(
+        self,
+    ) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the player."""
+        base_entries = [
+            *await super().get_config_entries(),
+            CONF_ENTRY_OUTPUT_CODEC,
+            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
+            create_sample_rates_config_entry(
+                # set safe max bit depth to 16 bits because the older Sonos players
+                # do not support 24 bit playback (e.g. Play:1)
+                max_sample_rate=48000,
+                max_bit_depth=24,
+                safe_max_bit_depth=16,
+                hidden=False,
+            ),
+        ]
+        return [
+            *base_entries,
+            ConfigEntry(
+                key="airplay_detected",
+                type=ConfigEntryType.BOOLEAN,
+                label="airplay_detected",
+                hidden=True,
+                required=False,
+                default_value=self.get_linked_airplay_player(False) is not None,
+            ),
+            ConfigEntry(
+                key=CONF_AIRPLAY_MODE,
+                type=ConfigEntryType.BOOLEAN,
+                label="Enable AirPlay mode",
+                description="Almost all newer Sonos speakers have AirPlay support. "
+                "If you have the AirPlay provider enabled in Music Assistant, "
+                "your Sonos speaker will also be detected as a AirPlay speaker, meaning "
+                "you can group them with other AirPlay speakers.\n\n"
+                "By default, Music Assistant uses the Sonos protocol for playback but with this "
+                "feature enabled, it will use the AirPlay protocol instead by redirecting "
+                "the playback related commands to the linked AirPlay player in Music Assistant, "
+                "allowing you to mix and match Sonos speakers with AirPlay speakers. \n\n"
+                "NOTE: You need to have the AirPlay provider enabled as well as "
+                "the AirPlay version of this player.",
+                required=False,
+                default_value=False,
+                depends_on="airplay_detected",
+                hidden=SonosCapability.AIRPLAY not in self.discovery_info["device"]["capabilities"],
+            ),
+        ]
 
     def get_linked_airplay_player(self, enabled_only: bool = True) -> Player | None:
         """Return the linked airplay player if available/enabled."""
@@ -103,134 +248,77 @@ class SonosPlayer:
             return None
         return airplay_player
 
-    async def setup(self) -> None:
-        """Handle setup of the player."""
-        # connect the player first so we can fail early
-        await self._connect(False)
+    async def volume_set(self, volume_level: int) -> None:
+        """
+        Handle VOLUME_SET command on the player.
 
-        # collect supported features
-        supported_features = set(PLAYER_FEATURES_BASE)
-        if SonosCapability.AUDIO_CLIP in self.discovery_info["device"]["capabilities"]:
-            supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
-        if not self.client.player.has_fixed_volume:
-            supported_features.add(PlayerFeature.VOLUME_SET)
-            supported_features.add(PlayerFeature.VOLUME_MUTE)
-        if not self.get_linked_airplay_player(False):
-            supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        Will only be called if the PlayerFeature.VOLUME_SET is supported.
 
-        # instantiate the MA player
-        self.mass_player = mass_player = Player(
-            player_id=self.player_id,
-            provider=self.prov.instance_id,
-            type=PlayerType.PLAYER,
-            name=self.discovery_info["device"]["name"]
-            or self.discovery_info["device"]["modelDisplayName"],
-            available=True,
-            device_info=DeviceInfo(
-                model=self.discovery_info["device"]["modelDisplayName"],
-                manufacturer=self.prov.manifest.name,
-                ip_address=self.ip_address,
-            ),
-            supported_features=supported_features,
-            # NOTE: strictly taken we can have multiple sonos households
-            # but for now we assume we only have one
-            can_group_with={self.prov.instance_id},
-        )
-        if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
-            mass_player.source_list.append(PLAYER_SOURCE_MAP[SOURCE_LINE_IN])
-        if SonosCapability.HT_PLAYBACK in self.discovery_info["device"]["capabilities"]:
-            mass_player.source_list.append(PLAYER_SOURCE_MAP[SOURCE_TV])
-        if SonosCapability.AIRPLAY in self.discovery_info["device"]["capabilities"]:
-            mass_player.source_list.append(PLAYER_SOURCE_MAP[SOURCE_AIRPLAY])
+        :param volume_level: volume level (0..100) to set on the player.
+        """
+        await self.client.player.set_volume(volume_level)
+        # sync volume level with airplay player
+        if airplay_player := self.get_linked_airplay_player(False):
+            if airplay_player.playback_state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                airplay_player._attr_volume_level = volume_level
 
-        self.update_attributes()
-        await self.mass.players.register_or_update(mass_player)
+    async def volume_mute(self, muted: bool) -> None:
+        """
+        Handle VOLUME MUTE command on the player.
 
-        # register callback for state changed
-        self._on_cleanup_callbacks.append(
-            self.client.subscribe(
-                self.on_player_event,
-                (
-                    SonosEventType.GROUP_UPDATED,
-                    SonosEventType.PLAYER_UPDATED,
-                ),
-            )
-        )
-        # register callback for airplay player state changes
-        self._on_cleanup_callbacks.append(
-            self.mass.subscribe(
-                self._on_airplay_player_event,
-                (EventType.PLAYER_UPDATED, EventType.PLAYER_ADDED),
-                self.airplay_player_id,
-            )
-        )
-        # register callback for playerqueue state changes
-        # note we don't filter on the player_id here because we also need to catch
-        # events from group players
-        self._on_cleanup_callbacks.append(
-            self.mass.subscribe(
-                self._on_mass_queue_items_event,
-                EventType.QUEUE_ITEMS_UPDATED,
-            )
-        )
-        self._on_cleanup_callbacks.append(
-            self.mass.subscribe(
-                self._on_mass_queue_event,
-                (EventType.QUEUE_UPDATED, EventType.QUEUE_ITEMS_UPDATED),
-            )
-        )
+        Will only be called if the PlayerFeature.VOLUME_MUTE is supported.
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """Unload the player (disconnect + cleanup)."""
-        await self._disconnect()
-        self.mass.players.remove(self.player_id, False)
-        for callback in self._on_cleanup_callbacks:
-            callback()
+        :param muted: bool if player should be muted.
+        """
+        await self.client.player.set_volume(muted=muted)
 
-    def reconnect(self, delay: float = 1) -> None:
-        """Reconnect the player."""
-        # use a task_id to prevent multiple reconnects
-        task_id = f"sonos_reconnect_{self.player_id}"
-        self.mass.call_later(delay, self._connect, delay, task_id=task_id)
-
-    async def cmd_stop(self) -> None:
-        """Send STOP command to given player."""
+    async def play(self) -> None:
+        """Handle PLAY command on the player."""
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        if (airplay := self.get_linked_airplay_player(True)) and self.airplay_mode_active:
-            # linked airplay player is active, redirect the command
-            self.logger.debug("Redirecting STOP command to linked airplay player.")
-            if player_provider := self.mass.get_provider(airplay.provider):
-                await player_provider.cmd_stop(airplay.player_id)
-            return
-        await self.client.player.group.stop()
-
-    async def cmd_play(self) -> None:
-        """Send PLAY command to given player."""
-        if self.client.player.is_passive:
-            self.logger.debug("Ignore STOP command: Player is synced to another player.")
-            return
-        if airplay := self.get_linked_airplay_player(True):
+        if airplay_player := self.get_linked_airplay_player(True):
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting PLAY command to linked airplay player.")
-            if player_provider := self.mass.get_provider(airplay.provider):
-                await player_provider.cmd_play(airplay.player_id)
-            return
-        await self.client.player.group.play()
+            await airplay_player.play()
+        else:
+            await self.client.player.group.play()
 
-    async def cmd_pause(self) -> None:
-        """Send PAUSE command to given player."""
+    async def stop(self) -> None:
+        """Handle STOP command on the player."""
         if self.client.player.is_passive:
             self.logger.debug("Ignore STOP command: Player is synced to another player.")
             return
-        if (airplay := self.get_linked_airplay_player(True)) and self.airplay_mode_active:
+        if (airplay_player := self.get_linked_airplay_player(True)) and self.airplay_mode_active:
+            # linked airplay player is active, redirect the command
+            self.logger.debug("Redirecting STOP command to linked airplay player.")
+            await airplay_player.stop()
+        else:
+            await self.client.player.group.stop()
+        self._attr_playback_state = PlaybackState.IDLE
+        self.update_state()
+
+    async def pause(self) -> None:
+        """
+        Handle PAUSE command on the player.
+
+        Will only be called if the player reports PlayerFeature.PAUSE is supported.
+        """
+
+        def _update_state() -> None:
+            self._attr_playback_state = PlaybackState.PAUSED
+            self.update_state()
+
+        if self.client.player.is_passive:
+            self.logger.debug("Ignore STOP command: Player is synced to another player.")
+            return
+        if (airplay_player := self.get_linked_airplay_player(True)) and self.airplay_mode_active:
             # linked airplay player is active, redirect the command
             self.logger.debug("Redirecting PAUSE command to linked airplay player.")
-            if player_provider := self.mass.get_provider(airplay.provider):
-                await player_provider.cmd_pause(airplay.player_id)
+            await airplay_player.pause()
+            _update_state()
             return
-        active_source = self.mass_player.active_source
+        active_source = self._attr_active_source
         if self.mass.player_queues.get(active_source):
             # Sonos seems to be bugged when playing our queue tracks and we send pause,
             # it can't resume the current track and simply aborts/skips it
@@ -238,57 +326,239 @@ class SonosPlayer:
             # https://github.com/music-assistant/support/issues/3758
             # TODO: revisit this later once we implemented support for range requests
             # as I have the feeling the pause issue is related to seek support (=range requests)
-            await self.cmd_stop()
+            await self.stop()
+            _update_state()
             return
         if not self.client.player.group.playback_actions.can_pause:
-            await self.cmd_stop()
+            await self.stop()
+            _update_state()
             return
         await self.client.player.group.pause()
+        _update_state()
 
-    async def cmd_seek(self, position: int) -> None:
-        """Handle SEEK command for given player.
-
-        - position: position in seconds to seek to in the current playing item.
+    async def next_track(self) -> None:
         """
-        if self.client.player.is_passive:
-            self.logger.debug("Ignore STOP command: Player is synced to another player.")
-            return
+        Handle NEXT_TRACK command on the player.
+
+        Will only be called if the player reports PlayerFeature.NEXT_PREVIOUS
+        is supported and the player is not currently playing a MA queue.
+        """
+        await self.client.player.group.skip_to_next_track()
+
+    async def previous_track(self) -> None:
+        """
+        Handle PREVIOUS_TRACK command on the player.
+
+        Will only be called if the player reports PlayerFeature.NEXT_PREVIOUS
+        is supported and the player is not currently playing a MA queue.
+        """
+        await self.client.player.group.skip_to_previous_track()
+
+    async def seek(self, position: int) -> None:
+        """
+        Handle SEEK command on the player.
+
+        Seek to a specific position in the current track.
+        Will only be called if the player reports PlayerFeature.SEEK is
+        supported and the player is NOT currently playing a MA queue.
+
+        :param position: The position to seek to, in seconds.
+        """
         await self.client.player.group.seek(position)
 
-    async def cmd_volume_set(self, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        await self.client.player.set_volume(volume_level)
-        # sync volume level with airplay player
-        if airplay := self.get_linked_airplay_player(False):
-            if airplay.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
-                airplay.volume_level = volume_level
+    async def play_media(
+        self,
+        media: PlayerMedia,
+    ) -> None:
+        """
+        Handle PLAY MEDIA command on given player.
 
-    async def cmd_volume_mute(self, muted: bool) -> None:
-        """Send VOLUME MUTE command to given player."""
-        await self.client.player.set_volume(muted=muted)
+        This is called by the Player controller to start playing Media on the player,
+        which can be a MA queue item/stream or a native source.
+        The provider's own implementation should work out how to handle this request.
+
+        :param media: Details of the item that needs to be played on the player.
+        """
+
+        def _update_state() -> None:
+            self._attr_current_media = media
+            self._attr_playback_state = PlaybackState.PLAYING
+            self.update_state()
+
+        if self.client.player.is_passive:
+            # this should be already handled by the player manager, but just in case...
+            msg = (
+                f"Player {self.display_name} can not "
+                "accept play_media command, it is synced to another player."
+            )
+            raise PlayerCommandFailed(msg)
+        # for now always reset the active session
+        self.client.player.group.active_session_id = None
+        if airplay_player := self.get_linked_airplay_player(True):
+            # airplay mode is enabled, redirect the command
+            self.logger.debug("Redirecting PLAY_MEDIA command to linked airplay player.")
+            await self._play_media_airplay(airplay_player, media)
+            _update_state()
+            return
+
+        if media.media_type in (
+            MediaType.PLUGIN_SOURCE,
+            MediaType.FLOW_STREAM,
+        ) or media.queue_id.startswith(UGP_PREFIX):
+            # flow stream or plugin source playback
+            # always use the legacy (UPNP) playback method for this
+            await self._play_media_legacy(media)
+            _update_state()
+            return
+
+        if media.queue_id:
+            # Regular Queue item playback
+            # create a sonos cloud queue and load it
+            cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
+            mass_queue = self.mass.player_queues.get(media.queue_id)
+            await self.client.player.group.play_cloud_queue(
+                cloud_queue_url,
+                http_authorization=media.queue_id,
+                item_id=media.queue_item_id,
+                queue_version=str(int(mass_queue.items_last_updated)),
+            )
+            self.mass.call_later(5, self.sync_play_modes, media.queue_id)
+            _update_state()
+            return
+
+        # All other playback types
+        # play a single uri/url
+        # note that this most probably will only work for (long running) radio streams
+        # enforce mp3 here because Sonos really does not support FLAC streams without duration
+        media.uri = media.uri.replace(".flac", ".mp3")
+        await self.client.player.group.play_stream_url(
+            media.uri, {"name": media.title, "type": "track"}
+        )
+        _update_state()
 
     async def select_source(self, source: str) -> None:
-        """Handle SELECT SOURCE command on given player."""
+        """
+        Handle SELECT SOURCE command on the player.
+
+        Will only be called if the PlayerFeature.SELECT_SOURCE is supported.
+
+        :param source: The source(id) to select, as defined in the source_list.
+        """
         if source == SOURCE_LINE_IN:
             await self.client.player.group.load_line_in(play_on_completion=True)
         elif source == SOURCE_TV:
             await self.client.player.load_home_theater_playback()
         else:
             # unsupported source - try to clear the queue/player
-            await self.cmd_stop()
+            await self.stop()
+
+    async def enqueue_next_media(self, media: PlayerMedia) -> None:
+        """
+        Handle enqueuing of the next (queue) item on the player.
+
+        Called when player reports it started buffering a queue item
+        and when the queue items updated.
+
+        A PlayerProvider implementation is in itself responsible for handling this
+        so that the queue items keep playing until its empty or the player stopped.
+
+        Will only be called if the player reports PlayerFeature.ENQUEUE is
+        supported and the player is currently playing a MA queue.
+
+        This will NOT be called if the end of the queue is reached (and repeat disabled).
+        This will NOT be called if the player is using flow mode to playback the queue.
+
+         :param media: Details of the item that needs to be enqueued on the player.
+        """
+        if session_id := self.client.player.group.active_session_id:
+            await self.client.api.playback_session.refresh_cloud_queue(session_id)
+
+    async def set_members(
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """
+        Handle SET_MEMBERS command on the player.
+
+        Group or ungroup the given child player(s) to/from this player.
+        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
+
+        :param player_ids_to_add: List of player_id's to add to the group.
+        :param player_ids_to_remove: List of player_id's to remove from the group.
+        """
+        if airplay_player := self.get_linked_airplay_player(False):
+            # if airplay mode is enabled, we could possibly receive child player id's that are
+            # not Sonos players, but AirPlay players. We redirect those.
+            airplay_child_ids = [x for x in player_ids_to_add or [] if x.startswith("ap")]
+            player_ids_to_add = [x for x in player_ids_to_add if x not in airplay_child_ids]
+            if airplay_child_ids:
+                if (
+                    airplay_player.active_source != self._attr_active_source
+                    and airplay_player.playback_state == PlaybackState.PLAYING
+                ):
+                    # edge case player is not playing a MA queue - fail this request
+                    raise PlayerCommandFailed("Player is not playing a Music Assistant queue.")
+                await self.mass.players.cmd_group_many(airplay_player.player_id, airplay_child_ids)
+        if player_ids_to_add:
+            await self.client.player.group.modify_group_members(
+                player_ids_to_add=player_ids_to_add, player_ids_to_remove=[]
+            )
+
+    async def ungroup(self) -> None:
+        """
+        Handle UNGROUP command on the player.
+
+        Remove the player from any (sync)groups it currently is grouped to.
+        If this player is the sync leader (or group player),
+        all child's will be ungrouped and the group dissolved.
+
+        Will only be called if the PlayerFeature.SET_MEMBERS is supported.
+        """
+        await self.client.player.leave_group()
+
+    async def play_announcement(
+        self, announcement: PlayerMedia, volume_level: int | None = None
+    ) -> None:
+        """
+        Handle (native) playback of an announcement on the player.
+
+        Will only be called if the PlayerFeature.PLAY_ANNOUNCEMENT is supported.
+
+        :param announcement: Details of the announcement that needs to be played on the player.
+        :param volume_level: The volume level to play the announcement at (0..100).
+            If not set, the player should use the current volume level.
+        """
+        self.logger.debug(
+            "Playing announcement %s on %s",
+            announcement.uri,
+            self.display_name,
+        )
+        await self.client.player.play_audio_clip(
+            announcement.uri, volume_level, name="Announcement"
+        )
+        # Wait until the announcement is finished playing
+        # This is helpful for people who want to play announcements in a sequence
+        # yeah we can also setup a subscription on the sonos player for this, but this is easier
+        media_info = await async_parse_tags(announcement.uri, require_duration=True)
+        duration = media_info.duration or 10
+        await asyncio.sleep(duration)
+
+    def on_player_event(self, event: SonosEvent | None) -> None:
+        """Handle incoming event from player."""
+        self.update_attributes()
+        self.update_state()
 
     def update_attributes(self) -> None:  # noqa: PLR0915
         """Update the player attributes."""
-        if not self.mass_player:
-            return
-        self.mass_player.available = self.connected
+        self._attr_available = self.connected
         if not self.connected:
             return
         if self.client.player.has_fixed_volume:
-            self.mass_player.volume_level = 100
+            self._attr_volume_level = 100
         else:
-            self.mass_player.volume_level = self.client.player.volume_level or 0
-        self.mass_player.volume_muted = self.client.player.volume_muted
+            self._attr_volume_level = self.client.player.volume_level or 0
+        self._attr_volume_muted = self.client.player.volume_muted
 
         group_parent = None
         airplay_player = self.get_linked_airplay_player(False)
@@ -296,97 +566,94 @@ class SonosPlayer:
             # player is group coordinator
             active_group = self.client.player.group
             if len(self.client.player.group_members) > 1:
-                self.mass_player.group_childs.set(self.client.player.group_members)
+                self._attr_group_members = self.client.player.group_members
             else:
-                self.mass_player.group_childs.clear()
+                self._attr_group_members.clear()
             # append airplay child's to group childs
             if self.airplay_mode_enabled and airplay_player:
                 airplay_childs = [
-                    x for x in airplay_player.group_childs if x != airplay_player.player_id
+                    x for x in airplay_player._attr_group_members if x != airplay_player.player_id
                 ]
-                self.mass_player.group_childs.extend(airplay_childs)
-                airplay_prov = self.mass.get_provider(airplay_player.provider)
-                self.mass_player.can_group_with.update(
+                self._attr_group_members.extend(airplay_childs)
+                airplay_prov = airplay_player.provider
+                self._attr_can_group_with.update(
                     x.player_id
                     for x in airplay_prov.players
                     if x.player_id != airplay_player.player_id
                 )
             else:
-                self.mass_player.can_group_with = {self.prov.instance_id}
-            self.mass_player.synced_to = None
+                self._attr_can_group_with = {self._provider.instance_id}
         else:
             # player is group child (synced to another player)
-            group_parent = self.prov.sonos_players.get(self.client.player.group.coordinator_id)
+            group_parent: SonosPlayer = self.mass.players.get(
+                self.client.player.group.coordinator_id
+            )
             if not group_parent or not group_parent.client or not group_parent.client.player:
                 # handle race condition where the group parent is not yet discovered
                 return
             active_group = group_parent.client.player.group
-            self.mass_player.group_childs.clear()
-            self.mass_player.synced_to = active_group.coordinator_id
-            self.mass_player.active_source = active_group.coordinator_id
+            self._attr_group_members.clear()
 
         # map playback state
-        self.mass_player.state = PLAYBACK_STATE_MAP[active_group.playback_state]
-        self.mass_player.elapsed_time = active_group.position
+        self._playback_state = PLAYBACK_STATE_MAP[active_group.playback_state]
+        self._attr_elapsed_time = active_group.position
 
         # figure out the active source based on the container
         container_type = active_group.container_type
         active_service = active_group.active_service
         container = active_group.playback_metadata.get("container")
         if container_type == ContainerType.LINEIN:
-            self.mass_player.active_source = SOURCE_LINE_IN
+            self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
-            self.mass_player.active_source = SOURCE_TV
+            self._attr_active_source = SOURCE_TV
         elif container_type == ContainerType.AIRPLAY:
             # check if the MA airplay player is active
-            if airplay_player and airplay_player.state in (
-                PlayerState.PLAYING,
-                PlayerState.PAUSED,
+            if airplay_player and airplay_player.playback_state in (
+                PlaybackState.PLAYING,
+                PlaybackState.PAUSED,
             ):
-                self.mass_player.state = airplay_player.state
-                self.mass_player.active_source = airplay_player.active_source
-                self.mass_player.elapsed_time = airplay_player.elapsed_time
-                self.mass_player.elapsed_time_last_updated = (
-                    airplay_player.elapsed_time_last_updated
-                )
-                self.mass_player.current_media = airplay_player.current_media
+                self._attr_playback_state = airplay_player.playback_state
+                self._attr_active_source = airplay_player.active_source
+                self._attr_elapsed_time = airplay_player.elapsed_time
+                self._attr_elapsed_time_last_updated = airplay_player.elapsed_time_last_updated
+                self._attr_current_media = airplay_player.current_media
                 # return early as we dont need further info
                 return
             else:
-                self.mass_player.active_source = SOURCE_AIRPLAY
+                self._attr_active_source = SOURCE_AIRPLAY
         elif container_type == ContainerType.STATION:
-            self.mass_player.active_source = SOURCE_RADIO
+            self._attr_active_source = SOURCE_RADIO
             # add radio to source list if not yet there
-            if SOURCE_RADIO not in [x.id for x in self.mass_player.source_list]:
-                self.mass_player.source_list.append(PLAYER_SOURCE_MAP[SOURCE_RADIO])
+            if SOURCE_RADIO not in [x.id for x in self._attr_source_list]:
+                self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_RADIO])
         elif active_service == MusicService.SPOTIFY:
-            self.mass_player.active_source = SOURCE_SPOTIFY
+            self._attr_active_source = SOURCE_SPOTIFY
             # add spotify to source list if not yet there
-            if SOURCE_SPOTIFY not in [x.id for x in self.mass_player.source_list]:
-                self.mass_player.source_list.append(PLAYER_SOURCE_MAP[SOURCE_SPOTIFY])
+            if SOURCE_SPOTIFY not in [x.id for x in self._attr_source_list]:
+                self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_SPOTIFY])
         elif active_service == MusicService.MUSIC_ASSISTANT:
             if self.client.player.is_coordinator:
-                self.mass_player.active_source = self.mass_player.player_id
+                self._attr_active_source = self._player_id
             elif object_id := container.get("id", {}).get("objectId"):
-                self.mass_player.active_source = object_id.split(":")[-1]
+                self._attr_active_source = object_id.split(":")[-1]
             else:
-                self.mass_player.active_source = None
+                self._attr_active_source = None
         # its playing some service we did not yet map
         elif container and container.get("service", {}).get("name"):
-            self.mass_player.active_source = container["service"]["name"]
+            self._attr_active_source = container["service"]["name"]
         elif container and container.get("name"):
-            self.mass_player.active_source = container["name"]
+            self._attr_active_source = container["name"]
         elif active_service:
-            self.mass_player.active_source = active_service
+            self._attr_active_source = active_service
         elif container_type:
-            self.mass_player.active_source = container_type
+            self._attr_active_source = container_type
         else:
             # the player has nothing loaded at all (empty queue and no service active)
-            self.mass_player.active_source = None
+            self._attr_active_source = None
 
         # parse current media
-        self.mass_player.elapsed_time = self.client.player.group.position
-        self.mass_player.elapsed_time_last_updated = time.time()
+        self._attr_elapsed_time = self.client.player.group.position
+        self._attr_elapsed_time_last_updated = time.time()
         current_media = None
         if (current_item := active_group.playback_metadata.get("currentItem")) and (
             (track := current_item.get("track")) and track.get("name")
@@ -403,7 +670,7 @@ class SonosPlayer:
                 image_url=track_image_url,
             )
             if active_service == MusicService.MUSIC_ASSISTANT:
-                current_media.queue_id = self.mass_player.active_source
+                current_media.queue_id = self._attr_active_source
                 current_media.queue_item_id = current_item["id"]
         # radio stream info
         if container and container.get("name") and active_group.playback_metadata.get("streamInfo"):
@@ -427,7 +694,15 @@ class SonosPlayer:
             if not current_media.uri:
                 current_media.uri = container["id"]["objectId"]
 
-        self.mass_player.current_media = current_media
+        self._attr_current_media = current_media
+
+    def update_elapsed_time(self, elapsed_time: float | None = None) -> None:
+        """Update the elapsed time of the current media."""
+        if elapsed_time is not None:
+            self._attr_elapsed_time = elapsed_time
+        last_updated = time.time()
+        self._attr_elapsed_time_last_updated = last_updated
+        self.update_state()
 
     async def _connect(self, retry_on_fail: int = 0) -> None:
         """Connect to the Sonos player."""
@@ -440,7 +715,7 @@ class SonosPlayer:
             self.logger.warning("Failed to connect to Sonos player: %s", err)
             if not retry_on_fail or not self.mass_player:
                 raise
-            self.mass_player.available = False
+            self._attr_available = False
             self.mass.players.update(self.player_id)
             self.reconnect(min(retry_on_fail + 30, 3600))
             return
@@ -461,12 +736,18 @@ class SonosPlayer:
                     # this should simply try to reconnect once and if that fails
                     # we rely on mdns to pick it up again later
                     await self._disconnect()
-                    self.mass_player.available = False
+                    self._attr_available = False
                     self.mass.players.update(self.player_id)
                     self.reconnect(5)
 
         self._listen_task = self.mass.create_task(_listener())
         await init_ready.wait()
+
+    def reconnect(self, delay: float = 1) -> None:
+        """Reconnect the player."""
+        # use a task_id to prevent multiple reconnects
+        task_id = f"sonos_reconnect_{self.player_id}"
+        self.mass.call_later(delay, self._connect, delay, task_id=task_id)
 
     async def _disconnect(self) -> None:
         """Disconnect the client and cleanup."""
@@ -477,11 +758,6 @@ class SonosPlayer:
             await self.client.disconnect()
         self.logger.debug("Disconnected from player API")
 
-    def on_player_event(self, event: SonosEvent | None) -> None:
-        """Handle incoming event from player."""
-        self.update_attributes()
-        self.mass.players.update(self.player_id)
-
     def _on_airplay_player_event(self, event: MassEvent) -> None:
         """Handle incoming event from linked airplay player."""
         if not self.mass.config.get_raw_player_config_value(self.player_id, CONF_AIRPLAY_MODE):
@@ -489,25 +765,25 @@ class SonosPlayer:
         if event.object_id != self.airplay_player_id:
             return
         self.update_attributes()
-        self.mass.players.update(self.player_id)
+        self.update_state()
 
     async def _on_mass_queue_items_event(self, event: MassEvent) -> None:
         """Handle incoming event from linked MA playerqueue."""
         # If the queue items changed and we have an active sonos queue,
         # we need to inform the sonos queue to refresh the items.
-        if self.mass_player.active_source != event.object_id:
+        if self._attr_active_source != event.object_id:
             return
         if not self.connected:
             return
         queue = self.mass.player_queues.get(event.object_id)
-        if not queue or queue.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
+        if not queue or queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             return
         if session_id := self.client.player.group.active_session_id:
             await self.client.api.playback_session.refresh_cloud_queue(session_id)
 
     async def _on_mass_queue_event(self, event: MassEvent) -> None:
         """Handle incoming event from linked MA playerqueue."""
-        if self.mass_player.active_source != event.object_id:
+        if self._attr_active_source != event.object_id:
             return
         if not self.connected:
             return
@@ -524,7 +800,7 @@ class SonosPlayer:
     async def sync_play_modes(self, queue_id: str) -> None:
         """Sync the play modes between MA and Sonos."""
         queue = self.mass.player_queues.get(queue_id)
-        if not queue or queue.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
+        if not queue or queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             return
         repeat_single_enabled = queue.repeat_mode == RepeatMode.ONE
         repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL
@@ -542,3 +818,55 @@ class SonosPlayer:
                 if "groupCoordinatorChanged" not in str(err):
                     # this may happen at race conditions
                     raise
+
+    async def _play_media_airplay(
+        self,
+        airplay_player: Player,
+        media: PlayerMedia,
+    ) -> None:
+        """Handle PLAY MEDIA using the legacy upnp api."""
+        player_id = self.player_id
+        if (
+            airplay_player.playback_state == PlaybackState.PLAYING
+            and airplay_player.active_source == media.queue_id
+        ):
+            # if the airplay player is already playing,
+            # the stream will be reused so no need to do the whole grouping thing below
+            await self.mass.players.play_media(airplay_player.player_id, media)
+            return
+
+        # Sonos has an annoying bug (for years already, and they dont seem to care),
+        # where it looses its sync childs when airplay playback is (re)started.
+        # Try to handle it here with this workaround.
+        group_childs = [x for x in self.client.player.group.player_ids if x != player_id]
+        if group_childs:
+            await self.mass.players.cmd_ungroup_many(group_childs)
+        await self.mass.players.play_media(airplay_player.player_id, media)
+        if group_childs:
+            # ensure master player is first in the list
+            group_childs = [self.player_id, *group_childs]
+            await asyncio.sleep(5)
+            await self.client.player.group.set_group_members(group_childs)
+
+    async def _play_media_legacy(
+        self,
+        media: PlayerMedia,
+    ) -> None:
+        """Handle PLAY MEDIA using the legacy upnp api."""
+        xml_data, soap_action = get_xml_soap_set_url(media)
+        player_ip = self.device_info.ip_address
+        async with self.mass.http_session.post(
+            f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
+            headers={
+                "SOAPACTION": soap_action,
+                "Content-Type": "text/xml; charset=utf-8",
+                "Connection": "close",
+            },
+            data=xml_data,
+        ) as resp:
+            if resp.status != 200:
+                raise PlayerCommandFailed(
+                    f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
+                )
+            await self.cmd_play(self.player_id)
+            return

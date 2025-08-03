@@ -80,9 +80,10 @@ from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.player import Player
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
+
+    from music_assistant.models.player import Player
 
 
 isfile = wrap(os.path.isfile)
@@ -131,11 +132,17 @@ class StreamsController(CoreController):
         self._audio_cache_dir = os.path.join("/tmp/.audio")  # noqa: S108
         self.allow_cache_default = "auto"
         self._crossfade_data: dict[str, CrossfadeData] = {}
+        self._bind_ip: str = "0.0.0.0"
 
     @property
     def base_url(self) -> str:
         """Return the base_url for the streamserver."""
         return self._server.base_url
+
+    @property
+    def bind_ip(self) -> str:
+        """Return the IP address this streamserver is bound to."""
+        return self._bind_ip
 
     @property
     def audio_cache_dir(self) -> str:
@@ -267,6 +274,7 @@ class StreamsController(CoreController):
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
+        self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
         self.logger.log(
@@ -282,7 +290,7 @@ class StreamsController(CoreController):
             self.publish_port,
         )
         await self._server.setup(
-            bind_ip=config.get_value(CONF_BIND_IP),
+            bind_ip=bind_ip,
             bind_port=self.publish_port,
             base_url=f"http://{self.publish_ip}:{self.publish_port}",
             static_routes=[

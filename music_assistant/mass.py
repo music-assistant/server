@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pathlib
 import threading
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast
@@ -77,7 +78,6 @@ EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
 ]
 
-ENABLE_DEBUG = os.environ.get("PYTHONDEVMODE") == "1"
 LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -127,10 +127,15 @@ class MusicAssistant:
         self.closing = False
         self.running_as_hass_addon: bool = False
         self.version: str = "0.0.0"
+        self.dev_mode = (
+            os.environ.get("PYTHONDEVMODE") == "1"
+            or pathlib.Path(__file__).parent.resolve().parent.resolve().joinpath(".venv").exists()
+        )
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
+        self.loop_thread_id = getattr(self.loop, "_thread_id")  # noqa: B009
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
         # create shared zeroconf instance
@@ -140,7 +145,7 @@ class MusicAssistant:
         self.http_session = ClientSession(
             loop=self.loop,
             connector=TCPConnector(
-                ssl=False,
+                ssl=True,
                 limit=4096,
                 limit_per_host=100,
             ),
@@ -296,10 +301,7 @@ class MusicAssistant:
         if self.closing:
             return
 
-        if ENABLE_DEBUG and not isinstance(threading.current_thread(), threading._MainThread):  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "Non-Async operation detected: This method may only be called from the eventloop."
-            )
+        self.verify_event_loop_thread("signal_event")
 
         if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
             # do not log queue time updated events because that is too chatty
@@ -363,10 +365,7 @@ class MusicAssistant:
                 existing.cancel()
             else:
                 return existing
-        if ENABLE_DEBUG and not isinstance(threading.current_thread(), threading._MainThread):  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "Non-Async operation detected: This method may only be called from the eventloop."
-            )
+        self.verify_event_loop_thread("create_task")
 
         if asyncio.iscoroutinefunction(target):
             # coroutine function
@@ -416,16 +415,13 @@ class MusicAssistant:
 
         Use task_id for debouncing.
         """
+        self.verify_event_loop_thread("call_later")
+
         if not task_id:
             task_id = uuid4().hex
 
         if existing := self._tracked_timers.get(task_id):
             existing.cancel()
-
-        if ENABLE_DEBUG and not isinstance(threading.current_thread(), threading._MainThread):  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "Non-Async operation detected: This method may only be called from the eventloop."
-            )
 
         def _create_task(_target: Coroutine[Any, Any, _R]) -> None:
             self._tracked_timers.pop(task_id)
@@ -578,10 +574,9 @@ class MusicAssistant:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
             if is_player_provider(provider):
-                # mark all players of this provider as unavailable
+                # unregister all players of this provider
                 for player in provider.players:
-                    player.available = False
-                    self.players.update(player.player_id)
+                    await self.players.unregister(player.player_id, permanent=is_removed)
             try:
                 await provider.unload(is_removed)
             except Exception as err:
@@ -597,6 +592,13 @@ class MusicAssistant:
         """Unload a provider when it got into trouble which needs user interaction."""
         self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", error)
         await self.unload_provider(instance_id)
+
+    def verify_event_loop_thread(self, what: str) -> None:
+        """Report and raise if we are not running in the event loop thread."""
+        if self.loop_thread_id != threading.get_ident():
+            raise RuntimeError(
+                f"Non-Async operation detected: {what} may only be called from the eventloop."
+            )
 
     def _register_api_commands(self) -> None:
         """Register all methods decorated as api_command within a class(instance)."""
@@ -699,7 +701,7 @@ class MusicAssistant:
         async def load_provider_manifest(provider_domain: str, provider_path: str) -> None:
             """Preload all available provider manifest files."""
             # get files in subdirectory
-            for file_str in os.listdir(provider_path):  # noqa: PTH208, RUF100
+            for file_str in await asyncio.to_thread(os.listdir, provider_path):  # noqa: PTH208, RUF100
                 file_path = os.path.join(provider_path, file_str)
                 if not await isfile(file_path):
                     continue
@@ -732,11 +734,13 @@ class MusicAssistant:
                     )
 
         async with TaskManager(self) as tg:
-            for dir_str in os.listdir(PROVIDERS_PATH):  # noqa: PTH208, RUF100
-                if dir_str.startswith(("_", ".")):
+            for dir_str in await asyncio.to_thread(os.listdir, PROVIDERS_PATH):  # noqa: PTH208, RUF100
+                if dir_str.startswith("."):
+                    # skip hidden directories
                     continue
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)
-                if dir_str == "test" and not ENABLE_DEBUG:
+                if dir_str.startswith("_") and not self.dev_mode:
+                    # only load demo/test providers if debug mode is enabled (e.g. for development)
                     continue
                 if not await isdir(dir_path):
                     continue

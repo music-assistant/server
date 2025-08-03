@@ -11,7 +11,6 @@ from music_assistant.helpers.process import check_output
 async def get_librespot_binary() -> str:
     """Find the correct librespot binary belonging to the platform."""
 
-    # ruff: noqa: SIM102
     async def check_librespot(librespot_path: str) -> str | None:
         try:
             returncode, output = await check_output(librespot_path, "--version")

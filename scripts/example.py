@@ -7,9 +7,6 @@ from aiorun import run
 
 from music_assistant.client.client import MusicAssistantClient
 
-# ruff: noqa: ANN201,PTH102,PTH112,PTH113,PTH118,PTH123,T201
-
-
 logging.basicConfig(level=logging.DEBUG)
 
 # Get parsed passed in arguments.
