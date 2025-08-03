@@ -7,14 +7,19 @@ from typing import TYPE_CHECKING, Literal, cast
 from music_assistant_models.enums import MediaType
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Album, Playlist
-from niconico.objects.video.search import EssentialMylist, EssentialSeries
+    from music_assistant_models.media_items import Album, Playlist, Track
+from niconico.objects.video.search import (
+    EssentialMylist,
+    EssentialSeries,
+    VideoSearchSortKey,
+    VideoSearchSortOrder,
+)
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
 from music_assistant.providers.niconico.parsers import (
     parse_album_by_series,
     parse_playlist_by_mylist,
-    parse_track_by_snapshot_item,
+    parse_track_by_essential_video,
 )
 
 if TYPE_CHECKING:
@@ -105,31 +110,53 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
 
         return albums
 
-    async def search_videos_by_keyword(
-        self, search_query: str, limit: int, search_result: SearchResults
-    ) -> None:
+    async def search_videos_by_keyword(self, search_query: str, limit: int) -> list[Track]:
         """Search for videos by keyword."""
         video_search_data = await self.adapter.call_with_throttler(
-            self.adapter.niconico_py_client.video.search.search_videos_snapshot,
+            self.adapter.niconico_py_client.video.search.search_videos_by_keyword,
             search_query,
-            ["title", "description", "tags"],
-            "startTime",
-            fields=[
-                "contentId",
-                "title",
-                "description",
-                "viewCounter",
-                "mylistCounter",
-                "likeCounter",
-                "startTime",
-                "thumbnailUrl",
-            ],
-            _limit=limit,
+            page_size=limit,
+            search_by_user=True,
         )
-        if video_search_data:
-            search_result.tracks = list(search_result.tracks)
-            for item in video_search_data.data:
-                if item.content_id:
-                    track = parse_track_by_snapshot_item(self.adapter.provider, item)
-                    if track:
-                        search_result.tracks.append(track)
+        if not video_search_data:
+            return []
+
+        tracks = []
+        for item in video_search_data.items:
+            if item.id_:
+                track = parse_track_by_essential_video(self.adapter.provider, item)
+                if track:
+                    tracks.append(track)
+        return tracks
+
+    async def search_videos_by_tags(
+        self,
+        tags: list[str],
+        limit: int,
+        sort: VideoSearchSortKey,
+        sort_order: VideoSearchSortOrder,
+    ) -> list[Track]:
+        """Search for videos by tags with specified sort order."""
+        if not tags:
+            return []
+
+        tracks = []
+        # Search for each tag separately since search_videos_by_tag only accepts one tag
+        for tag in tags:
+            video_search_data = await self.adapter.call_with_throttler(
+                self.adapter.niconico_py_client.video.search.search_videos_by_tag,
+                tag,
+                page_size=limit,
+                sort_key=sort,
+                sort_order=sort_order,
+                search_by_user=True,
+            )
+
+            if video_search_data:
+                for item in video_search_data.items:
+                    if item.id_:
+                        track = parse_track_by_essential_video(self.adapter.provider, item)
+                        if track:
+                            tracks.append(track)
+
+        return tracks[:limit]  # Limit total results

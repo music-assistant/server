@@ -24,8 +24,10 @@ from music_assistant.providers.niconico.constants import (
     CONF_MAIL,
     CONF_MFA,
     CONF_RECOMMENDATION_COUNT,
-    CONF_REQUIRED_TAGS_FOR_RECOMMENDATIONS,
+    CONF_RECOMMENDATION_FILTER_TAGS,
     CONF_SENSITIVE_CONTENTS,
+    CONF_TAG_RECOMMENDATION_NEW_TRACKS_TAGS,
+    CONF_TAG_RECOMMENDATION_TAGS,
     CONF_USE_FOLLOW_UNFOLLOW_ARTISTS,
     CONF_USER_SESSION,
 )
@@ -105,9 +107,9 @@ class NiconicoConfig:
         """Get boolean config value."""
         return bool(self._get_config_value(key, default))
 
-    def get_required_tags_for_recommendations(self) -> list[str]:
-        """Get required tags for recommendations from provider config."""
-        tags_config = self._get_config_value(CONF_REQUIRED_TAGS_FOR_RECOMMENDATIONS)
+    def get_recommendation_filter_tags(self) -> list[str]:
+        """Get filter tags for recommendations from provider config."""
+        tags_config = self._get_config_value(CONF_RECOMMENDATION_FILTER_TAGS)
         if not tags_config or not isinstance(tags_config, str):
             return []
 
@@ -125,6 +127,22 @@ class NiconicoConfig:
     def get_following_activities_count(self) -> int:
         """Get target following activities count from provider config."""
         return self.get_int(CONF_FOLLOWING_ACTIVITIES_COUNT, default=30, max_val=100)
+
+    def get_tag_recommendation_tags(self) -> list[str]:
+        """Get tags for tag-based recommendation search from provider config."""
+        tags_config = self._get_config_value(CONF_TAG_RECOMMENDATION_TAGS)
+        if not tags_config or not isinstance(tags_config, str):
+            return []
+        # Split by comma and clean up whitespace
+        return [tag.strip() for tag in tags_config.split(",") if tag.strip()]
+
+    def get_tag_recommendation_new_tracks_tags(self) -> list[str]:
+        """Get tags for tag-based new tracks search from provider config."""
+        tags_config = self._get_config_value(CONF_TAG_RECOMMENDATION_NEW_TRACKS_TAGS)
+        if not tags_config or not isinstance(tags_config, str):
+            return []
+        # Split by comma and clean up whitespace
+        return [tag.strip() for tag in tags_config.split(",") if tag.strip()]
 
     def get_auto_like_on_library_add(self) -> bool:
         """Get auto-like on library add setting."""
@@ -344,15 +362,16 @@ async def get_config_entries_impl(
             category="Content",
         ),
         ConfigEntry(
-            key=CONF_REQUIRED_TAGS_FOR_RECOMMENDATIONS,
+            key=CONF_RECOMMENDATION_FILTER_TAGS,
             type=ConfigEntryType.STRING,
-            label="Required tags for recommendations",
+            label="Filter tags for recommendations / similar tracks",
             required=False,
             default_value="",
             description=(
                 "Comma-separated list of tags that tracks must have at least one of "
-                "to appear in recommendations and similar tracks.\n"
+                "to appear in main recommendations and similar tracks.\n"
                 "Leave empty to disable tag filtering.\n"
+                "Not used for tag-based recommendations.\n"
                 "Example: 'VOCALOID,音楽,ボカロ'"
             ),
             category="Recommendations",
@@ -370,6 +389,34 @@ async def get_config_entries_impl(
             ),
             category="Recommendations",
             range=(1, 100),
+        ),
+        ConfigEntry(
+            key=CONF_TAG_RECOMMENDATION_TAGS,
+            type=ConfigEntryType.STRING,
+            label="Tags for tag-based recommendations",
+            required=False,
+            default_value="",
+            description=(
+                "Comma-separated list of tags to search for recommended tracks.\n"
+                "Tracks with these tags will be shown in 'Tag-based Recommendations' section.\n"
+                "Leave empty to disable tag-based recommendations.\n"
+                "Example: 'VOCALOID,音楽,ボカロ'"
+            ),
+            category="Recommendations",
+        ),
+        ConfigEntry(
+            key=CONF_TAG_RECOMMENDATION_NEW_TRACKS_TAGS,
+            type=ConfigEntryType.STRING,
+            label="Tags for tag-based new tracks recommendations",
+            required=False,
+            default_value="",
+            description=(
+                "Comma-separated list of tags to search for new tracks.\n"
+                "Latest tracks with these tags will be shown in 'New Tracks by Tags' section.\n"
+                "Leave empty to disable tag-based new tracks.\n"
+                "Example: 'VOCALOID,音楽,ボカロ'"
+            ),
+            category="Recommendations",
         ),
         ConfigEntry(
             key=CONF_HISTORY_COUNT,
