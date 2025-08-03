@@ -5,6 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal, cast
 
 from music_assistant_models.enums import MediaType
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import Album, Playlist
 from niconico.objects.video import EssentialVideo
 from niconico.objects.video.search import EssentialMylist, EssentialSeries
 
@@ -39,50 +42,69 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
         if not media_types:
             return
 
-        # Determine which types to search for
-        types: list[str] = []
         search_playlists = MediaType.PLAYLIST in media_types
         search_albums = MediaType.ALBUM in media_types
 
+        playlists_to_add = []
+        albums_to_add = []
+
+        # Search for mylists and series separately to work around API bug
+        # where specifying both types returns only series
         if search_playlists:
-            types.append("mylist")
+            mylists = await self._search_mylists_by_keyword(search_query, limit)
+            playlists_to_add.extend(mylists)
+
         if search_albums:
-            types.append("series")
+            albums = await self._search_series_by_keyword(search_query, limit)
+            albums_to_add.extend(albums)
 
-        if not types:
-            return
+        # Add items to search result
+        if playlists_to_add:
+            current_playlists = list(search_result.playlists)
+            current_playlists.extend(playlists_to_add)
+            search_result.playlists = current_playlists
+        if albums_to_add:
+            current_albums = list(search_result.albums)
+            current_albums.extend(albums_to_add)
+            search_result.albums = current_albums
 
-        # Type cast for API call
-        valid_types: list[Literal["mylist", "series"]] | None = [
-            cast("Literal['mylist', 'series']", t) for t in types if t in ("mylist", "series")
-        ] or None
+    async def _search_mylists_by_keyword(self, search_query: str, limit: int) -> list[Playlist]:
+        """Search for mylists by keyword."""
         list_search_data = await self.adapter.call_with_throttler(
             self.adapter.niconico_py_client.video.search.search_lists,
             search_query,
             page_size=limit,
-            types=valid_types,
+            types=cast("list[Literal['mylist', 'series']]", ["mylist"]),
         )
 
-        if list_search_data:
-            playlists_to_add = []
-            albums_to_add = []
+        if not list_search_data:
+            return []
 
-            item: EssentialMylist | EssentialSeries
-            for item in list_search_data.items:
-                if isinstance(item, EssentialMylist) and search_playlists:
-                    playlists_to_add.append(parse_playlist_by_mylist(self.adapter.provider, item))
-                elif isinstance(item, EssentialSeries) and search_albums:
-                    albums_to_add.append(parse_album_by_series(self.adapter.provider, item))
+        playlists = []
+        for item in list_search_data.items:
+            if isinstance(item, EssentialMylist):
+                playlists.append(parse_playlist_by_mylist(self.adapter.provider, item))
 
-            # Add items to search result like search_videos_by_keyword does
-            if playlists_to_add:
-                current_playlists = list(search_result.playlists)
-                current_playlists.extend(playlists_to_add)
-                search_result.playlists = current_playlists
-            if albums_to_add:
-                current_albums = list(search_result.albums)
-                current_albums.extend(albums_to_add)
-                search_result.albums = current_albums
+        return playlists
+
+    async def _search_series_by_keyword(self, search_query: str, limit: int) -> list[Album]:
+        """Search for series by keyword."""
+        list_search_data = await self.adapter.call_with_throttler(
+            self.adapter.niconico_py_client.video.search.search_lists,
+            search_query,
+            page_size=limit,
+            types=cast("list[Literal['mylist', 'series']]", ["series"]),
+        )
+
+        if not list_search_data:
+            return []
+
+        albums = []
+        for item in list_search_data.items:
+            if isinstance(item, EssentialSeries):
+                albums.append(parse_album_by_series(self.adapter.provider, item))
+
+        return albums
 
     async def search_videos_by_keyword(
         self, search_query: str, limit: int, search_result: SearchResults
