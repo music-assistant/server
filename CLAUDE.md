@@ -107,7 +107,7 @@ Template providers are available in `_template_*_provider` directories.
 - **Patch releases**: Cherry-picked from `dev` to `stable` (bugfixes only)
 
 ### Versioning
-- **Beta versions**: Next minor version + beta number (e.g., `2.6.0 BETA 1`, `2.6.0 BETA 2`)
+- **Beta versions**: Next minor version + beta number (e.g., `2.6.0b1`, `2.6.0b2`)
 - **Stable versions**: Standard semantic versioning (e.g., `2.5.5`)
 - **Patch versions**: Increment patch number (e.g., `2.5.5` → `2.5.6`)
 
