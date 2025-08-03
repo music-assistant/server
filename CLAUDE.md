@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Music Assistant is a Python-based music library manager that connects to streaming services and supports various connected speakers. It's designed to run as a server on always-on devices and integrates with Home Assistant.
+Music Assistant is a (async) Python 3 based music library manager that connects to streaming services and supports various connected speakers. It's designed to run as a server on always-on devices and integrates with Home Assistant.
 
 ## Development Commands
 
