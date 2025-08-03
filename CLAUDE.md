@@ -44,6 +44,7 @@ Always run `pre-commit run --all-files` after a code change to ensure the new co
 3. **Models (`music_assistant/models/`)** - Base classes and interfaces:
    - `core_controller.py` - Base class/model for all core controllers
    - `music_provider.py` - Base for music providers
+   - `player.py` - Base for players (provided by player providers)
    - `player_provider.py` - Base for player providers
    - `plugin.py` - Plugin system base
 
