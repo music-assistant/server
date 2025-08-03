@@ -600,13 +600,16 @@ class MetaDataController(CoreController):
                     continue
                     
                 # Stop unnecessary calls to lrclib
-                if provider.lookup_key == "lrclib":
-                    if track.metadata and (track.metadata.lyrics or track.metadata.lrc_lyrics):
-                        self.logger.debug(
-                            "Lyrics already exist for %s, skipping LRCLIB lookup for this track.",
-                            track.name
-                        )
-                        continue
+                if (
+                    provider.lookup_key == "lrclib"
+                    and track.metadata
+                    and (track.metadata.lyrics or track.metadata.lrc_lyrics)
+                ):
+                    self.logger.debug(
+                        "Lyrics already exist for %s, skipping LRCLIB lookup for this track.",
+                        track.name
+                    )
+                    continue
 
                 if metadata := await provider.get_track_metadata(track):
                     track.metadata.update(metadata)
