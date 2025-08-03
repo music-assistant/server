@@ -710,42 +710,98 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         extra_join_parts: list[str] | None = None,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database by building the query."""
-        sql_query = self.base_query
         query_params = extra_query_params or {}
         query_parts: list[str] = extra_query_parts or []
         join_parts: list[str] = extra_join_parts or []
-        already_filtered_favorite = False
-        already_filtered_search = False
 
-        # handle search preprocessing
-        if search:
-            search = create_safe_string(search, True, True)
-            query_params["search"] = f"%{search}%"
+        search = self._preprocess_search(search, query_params)
 
         # create special performant random query
         if order_by and order_by.startswith("random"):
-            sub_query_parts = []
-            # If favorite or search filter is active, add it to the subquery so we limit the number
-            # of results to the correct amount
-            if search:
-                sub_query_parts.append(f"{self.db_table}.search_name LIKE :search")
-                already_filtered_search = True
-            if favorite is not None:
-                sub_query_parts.append(f"{self.db_table}.favorite = :favorite")
-                query_params["favorite"] = favorite
-                already_filtered_favorite = True
-            sub_query = f"SELECT item_id FROM {self.db_table}"
-            if sub_query_parts:
-                sub_query += " WHERE " + " AND ".join(sub_query_parts)
-            sub_query += f" ORDER BY RANDOM() LIMIT {limit}"
-            query_parts.append(f"{self.db_table}.item_id in ({sub_query})")
+            self._apply_random_subquery(
+                query_parts, query_params, join_parts, favorite, search, provider, limit
+            )
+        else:
+            # apply filters
+            self._apply_filters(query_parts, query_params, join_parts, favorite, search, provider)
+
+        # build and execute final query
+        sql_query = self._build_final_query(query_parts, join_parts, order_by)
+
+        return [
+            self.item_cls.from_dict(self._parse_db_row(db_row))
+            for db_row in await self.mass.music.database.get_rows_from_query(
+                sql_query, query_params, limit=limit, offset=offset
+            )
+        ]
+
+    def _preprocess_search(self, search: str | None, query_params: dict[str, Any]) -> str | None:
+        """Preprocess search string and add to query params."""
+        if search:
+            search = create_safe_string(search, True, True)
+            query_params["search"] = f"%{search}%"
+        return search
+
+    @staticmethod
+    def _clean_query_parts(query_parts: list[str]) -> list[str]:
+        """Clean the query parts list by removing duplicate where statements."""
+        return [x[5:] if x.lower().startswith("where ") else x for x in query_parts]
+
+    def _apply_random_subquery(
+        self,
+        query_parts: list[str],
+        query_params: dict[str, Any],
+        join_parts: list[str],
+        favorite: bool | None,
+        search: str | None,
+        provider: str | None,
+        limit: int,
+    ) -> None:
+        """Build a fast random subquery with all filters applied."""
+        sub_query_parts = query_parts.copy()
+        sub_join_parts = join_parts.copy()
+
+        # Apply all filters to the subquery
+        self._apply_filters(
+            sub_query_parts, query_params, sub_join_parts, favorite, search, provider
+        )
+
+        # Build the subquery
+        sub_query = f"SELECT {self.db_table}.item_id FROM {self.db_table}"
+
+        if sub_join_parts:
+            sub_query += f" {' '.join(sub_join_parts)}"
+
+        if sub_query_parts:
+            sub_query += " WHERE " + " AND ".join(self._clean_query_parts(sub_query_parts))
+
+        sub_query += f" ORDER BY RANDOM() LIMIT {limit}"
+
+        # The query now only consists of the random subquery, which applies all filters
+        # within itself
+        query_parts.clear()
+        query_parts.append(f"{self.db_table}.item_id in ({sub_query})")
+        join_parts.clear()
+
+    def _apply_filters(
+        self,
+        query_parts: list[str],
+        query_params: dict[str, Any],
+        join_parts: list[str],
+        favorite: bool | None,
+        search: str | None,
+        provider: str | None,
+    ) -> None:
+        """Apply search, favorite, and provider filters."""
         # handle search
-        if search and not already_filtered_search:
+        if search:
             query_parts.append(f"{self.db_table}.search_name LIKE :search")
+
         # handle favorite filter
-        if favorite is not None and not already_filtered_favorite:
+        if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             query_params["favorite"] = favorite
+
         # handle provider filter
         if provider:
             join_parts.append(
@@ -754,25 +810,33 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 f"AND (provider_mappings.provider_instance = '{provider}' "
                 f"OR provider_mappings.provider_domain = '{provider}')"
             )
-        # prevent duplicate where statement
-        query_parts = [x[5:] if x.lower().startswith("where ") else x for x in query_parts]
-        # concetenate all join and/or where queries
+
+    def _build_final_query(
+        self,
+        query_parts: list[str],
+        join_parts: list[str],
+        order_by: str | None,
+    ) -> str:
+        """Build the final SQL query string."""
+        sql_query = self.base_query
+
+        # Add joins
         if join_parts:
             sql_query += f" {' '.join(join_parts)} "
+
+        # Add where clauses
         if query_parts:
-            sql_query += " WHERE " + " AND ".join(query_parts)
-        # build final query
+            # prevent duplicate where statement
+            sql_query += " WHERE " + " AND ".join(self._clean_query_parts(query_parts))
+
+        # Add grouping and ordering
         sql_query += f" GROUP BY {self.db_table}.item_id"
+
         if order_by:
             if sort_key := SORT_KEYS.get(order_by):
                 sql_query += f" ORDER BY {sort_key}"
-        # return dbresult parsed to media item model
-        return [
-            self.item_cls.from_dict(self._parse_db_row(db_row))
-            for db_row in await self.mass.music.database.get_rows_from_query(
-                sql_query, query_params, limit=limit, offset=offset
-            )
-        ]
+
+        return sql_query
 
     async def _set_provider_mappings(
         self,
