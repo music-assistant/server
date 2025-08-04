@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.socket_client import ConnectionStatus
 
-from .provider import ChromecastProvider
+    from .provider import ChromecastProvider
 
 
 class ChromecastPlayer(Player):
@@ -502,8 +502,7 @@ class ChromecastPlayer(Player):
 
             if new_available and self.type == PlayerType.PLAYER:
                 # Poll current group status
-                provider = self.provider
-                assert isinstance(provider, ChromecastProvider)  # for type checking
+                provider = cast("ChromecastProvider", self.provider)
                 mz_mgr = provider.mz_mgr
                 assert mz_mgr is not None  # for type checking
                 for group_uuid in mz_mgr.get_multizone_memberships(self.cast_info.uuid):
