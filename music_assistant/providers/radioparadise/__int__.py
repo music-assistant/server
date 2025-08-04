@@ -116,7 +116,7 @@ RADIO_PARADISE_CHANNELS = {
 # Stream format configurations
 STREAM_FORMATS = ["flac", "aac-320", "mp3-192", "aac-128", "aac-64"]
 BITRATE_FORMATS = {
-    "flac": {"content_type": ContentType.FLAC, "sample_rate": 48000, "bit_depth": 16},
+    "flac": {"content_type": ContentType.FLAC, "sample_rate": 44100, "bit_depth": 32},
     "aac-320": {"content_type": ContentType.AAC, "sample_rate": 44100, "bit_depth": 16},
     "mp3-192": {"content_type": ContentType.MP3, "sample_rate": 44100, "bit_depth": 16},
     "aac-128": {"content_type": ContentType.AAC, "sample_rate": 44100, "bit_depth": 16},
@@ -219,8 +219,8 @@ class RadioParadiseProvider(MusicProvider):
                     track_duration = current_song.get("time")
 
                     return {
-                        "title": current_song.get("title", ""),
-                        "artist": current_song.get("artist", ""),
+                        "title": current_song.get("title", "TEST"),
+                        "artist": current_song.get("artist", "BLAH"),
                         "album": current_song.get("album", ""),
                         "cover_url": cover_url,
                         # Add the track duration to the metadata dictionary
