@@ -194,13 +194,13 @@ class RadioParadiseProvider(MusicProvider):
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
         for channel_id in self._channels_cache:
-            yield self._parse_radio(channel_id)
+            yield await self._parse_radio(channel_id)
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         if prov_radio_id not in self._channels_cache:
             raise MediaNotFoundError("Station not found")
-        return self._parse_radio(prov_radio_id)
+        return await self._parse_radio(prov_radio_id)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
@@ -218,10 +218,7 @@ class RadioParadiseProvider(MusicProvider):
             (k for k, v in channel_info["stream_urls"].items() if v == stream_url),
             self._stream_format,
         )
-        format_info = cast(
-            "dict[str, int | ContentType]",
-            BITRATE_FORMATS.get(stream_format, BITRATE_FORMATS["flac"]),
-        )
+        format_info = BITRATE_FORMATS.get(stream_format, BITRATE_FORMATS["flac"])
 
         self._current_stream_details = StreamDetails(
             item_id=item_id,
