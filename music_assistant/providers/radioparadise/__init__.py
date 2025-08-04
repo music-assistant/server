@@ -117,7 +117,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
 
 # Stream format configurations
 BITRATE_FORMATS: dict[str, dict[str, int | ContentType]] = {
-    "flac": {"content_type": ContentType.FLAC, "sample_rate": 48000, "bit_depth": 16},
+    "flac": {"content_type": ContentType.FLAC, "sample_rate": 44100, "bit_depth": 32},
     "aac-320": {"content_type": ContentType.AAC, "sample_rate": 44100, "bit_depth": 16},
     "mp3-192": {"content_type": ContentType.MP3, "sample_rate": 44100, "bit_depth": 16},
     "aac-128": {"content_type": ContentType.AAC, "sample_rate": 44100, "bit_depth": 16},
