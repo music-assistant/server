@@ -44,18 +44,23 @@ jobs:
         id: checklabel
         run: |
           echo "PR labels: ${{ steps.prinfo.outputs.pr_labels }}"
-          if [[ "${{ steps.prinfo.outputs.pr_labels }}" != *"backport-to-stable"* ]]; then
-            echo "No backport-to-stable label, skipping."
-            exit 0
+          if [[ "${{ steps.prinfo.outputs.pr_labels }}" == *"backport-to-stable"* ]]; then
+            echo "backport-to-stable label found, proceeding with backport."
+            echo "should_backport=true" >> $GITHUB_OUTPUT
+          else
+            echo "No backport-to-stable label found, skipping backport."
+            echo "should_backport=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Set up Git user
+        if: steps.checklabel.outputs.should_backport == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create or update backport branch
-        id: create_or_update_backport_branch
+      - name: Calculate next patch version
+        if: steps.checklabel.outputs.should_backport == 'true'
+        id: nextver
         run: |
           git fetch origin stable --tags
           latest_tag=$(git tag --merged origin/stable --sort=-v:refname | head -1)
@@ -63,20 +68,54 @@ jobs:
             echo "No tags found on stable branch" >&2
             exit 1
           fi
+          echo "Latest tag: $latest_tag"
+
+          # Remove 'v' prefix if present
           version="$latest_tag"
-          IFS='.' read -r major minor patch <<< "$version"
+          if [[ "$version" =~ ^v ]]; then
+            version="${version#v}"
+          fi
+
+          # Parse version components
+          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+            patch="${BASH_REMATCH[3]}"
+          else
+            echo "Invalid version format: $version" >&2
+            exit 1
+          fi
+
           next_patch=$((patch + 1))
           next_version="$major.$minor.$next_patch"
+
+          echo "Current version: $version"
+          echo "Next version: $next_version"
+          echo "next_patch_version=$next_version" >> $GITHUB_OUTPUT
+
+      - name: Create or update backport branch
+        if: steps.checklabel.outputs.should_backport == 'true'
+        id: create_or_update_backport_branch
+        run: |
+          next_version="${{ steps.nextver.outputs.next_patch_version }}"
           branch_name="backport/$next_version"
+
+          echo "Creating/updating branch: $branch_name"
+
+          # Check if branch already exists on remote
           git fetch origin $branch_name || true
           if git show-ref --verify --quiet refs/remotes/origin/$branch_name; then
+            echo "Branch $branch_name already exists, checking out"
             git checkout -B $branch_name origin/$branch_name
           else
+            echo "Branch $branch_name does not exist, creating from stable"
             git checkout -b $branch_name origin/stable
           fi
+
           echo "branch_name=$branch_name" >> $GITHUB_OUTPUT
 
       - name: Cherry-pick commit
+        if: steps.checklabel.outputs.should_backport == 'true'
         run: |
           git cherry-pick ${{ steps.prinfo.outputs.merge_commit_sha }} || {
             echo 'Cherry-pick failed, please resolve conflicts manually.'
@@ -84,17 +123,26 @@ jobs:
           }
 
       - name: Push backport branch
+        if: steps.checklabel.outputs.should_backport == 'true'
         run: |
           git push origin ${{ steps.create_or_update_backport_branch.outputs.branch_name }}:${{ steps.create_or_update_backport_branch.outputs.branch_name }} --force
 
       - name: Create or update backport PR with cherry-picked commits
+        if: steps.checklabel.outputs.should_backport == 'true'
         uses: actions/github-script@v7
         with:
           script: |
-            const { pr_number } = process.env;
+            const pr_number = process.env.pr_number;
+            const pr_title = process.env.pr_title;
             const next_patch_version = process.env.next_patch_version;
             const branch = process.env.branch_name;
             const cherry_commit = process.env.cherry_commit;
+
+            console.log(`Processing backport for PR #${pr_number}: ${pr_title}`);
+            console.log(`Next patch version: ${next_patch_version}`);
+            console.log(`Branch: ${branch}`);
+            console.log(`Cherry-pick commit: ${cherry_commit}`);
+
             const prs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -102,45 +150,54 @@ jobs:
               head: `${context.repo.owner}:${branch}`,
               base: 'stable'
             });
+
             const commit_url = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${cherry_commit}`;
-            const commit_item = `- [${cherry_commit.substring(0,7)}](${commit_url})`;
+            const commit_item = `- [${cherry_commit.substring(0,7)}](${commit_url}) - ${pr_title} (#${pr_number})`;
+
             if (prs.data.length === 0) {
               // Create new PR with initial commit in body
+              console.log('Creating new backport PR');
               await github.rest.pulls.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 title: `[Backport to stable] ${next_patch_version}`,
                 head: branch,
                 base: 'stable',
-                body: `Automated backport PR stable release ${next_patch_version} with cherry-picked commits:\n${commit_item}`
+                body: `Automated backport PR for stable release ${next_patch_version} with cherry-picked commits:\n\n${commit_item}`
               });
             } else {
               // Update PR body to append new commit if not already present
+              console.log('Updating existing backport PR');
               const pr = prs.data[0];
               let body = pr.body || '';
-              if (!body.includes(commit_item)) {
+
+              if (!body.includes(cherry_commit.substring(0,7))) {
                 // Try to find the start of the list
-                const listMatch = body.match(/(cherry-picked commits:\n)([\s\S]*)/);
+                const listMatch = body.match(/(cherry-picked commits:\n\n)([\s\S]*)/);
                 if (listMatch) {
                   // Append to existing list
                   const before = listMatch[1];
                   const list = listMatch[2].trim();
                   const newList = list + '\n' + commit_item;
-                  body = body.replace(/(cherry-picked commits:\n)([\s\S]*)/, before + newList);
+                  body = body.replace(/(cherry-picked commits:\n\n)([\s\S]*)/, before + newList);
                 } else {
                   // Add new list
-                  body = body.trim() + `\n\nCherry-picked commits:\n${commit_item}`;
+                  body = body.trim() + `\n\nCherry-picked commits:\n\n${commit_item}`;
                 }
+
                 await github.rest.pulls.update({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   pull_number: pr.number,
                   body
                 });
+              } else {
+                console.log('Commit already exists in PR body, skipping update');
               }
             }
         env:
           pr_number: ${{ steps.prinfo.outputs.pr_number }}
+          pr_title: ${{ steps.prinfo.outputs.pr_title }}
           next_patch_version: ${{ steps.nextver.outputs.next_patch_version }}
           branch_name: ${{ steps.create_or_update_backport_branch.outputs.branch_name }}
           cherry_commit: ${{ steps.prinfo.outputs.merge_commit_sha }}

@@ -11,7 +11,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant.constants import MASS_LOGO_ONLINE
 
 if TYPE_CHECKING:
-    from music_assistant_models.player import PlayerMedia
+    from music_assistant.models.player import PlayerMedia
 
 
 # ruff: noqa: E501

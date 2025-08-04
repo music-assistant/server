@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlencode
 
+import pkce
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
@@ -137,7 +138,6 @@ async def get_config_entries(
     if action == CONF_ACTION_AUTH:
         # spotify PKCE auth flow
         # https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
-        import pkce
 
         code_verifier, code_challenge = pkce.generate_pkce_pair()
         async with AuthenticationHelper(mass, cast("str", values["session_id"])) as auth_helper:

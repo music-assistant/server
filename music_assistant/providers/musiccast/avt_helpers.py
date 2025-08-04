@@ -1,7 +1,6 @@
 """Helpers to make an UPnP request."""
 
 import aiohttp
-from music_assistant_models.player import PlayerMedia
 
 from music_assistant.helpers.upnp import (
     get_xml_soap_media_info,
@@ -14,6 +13,7 @@ from music_assistant.helpers.upnp import (
     get_xml_soap_stop,
     get_xml_soap_transport_info,
 )
+from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.musiccast.constants import (
     MC_DEVICE_UPNP_CTRL_ENDPOINT,
     MC_DEVICE_UPNP_PORT,

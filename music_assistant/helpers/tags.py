@@ -383,20 +383,40 @@ class AudioTags:
 
     @property
     def track_loudness(self) -> float | None:
-        """Try to read/calculate the integrated loudness from the tags."""
-        if (tag := self.tags.get("r128trackgain")) is not None:
-            return -23 - float(int(tag.split(" ")[0]) / 256)
-        if (tag := self.tags.get("replaygaintrackgain")) is not None:
-            return -18 - float(tag.split(" ")[0])
+        """Try to read/calculate the integrated loudness from the tags (track level)."""
+        if tag := self.tags.get("r128trackgain"):
+            try:
+                gain_adjustment = int(tag.split(" ")[0]) / 256
+                return -23 - gain_adjustment
+            except (ValueError, IndexError) as e:
+                LOGGER.warning(f"Invalid r128trackgain tag value: {tag!r} — {e}")
+
+        if tag := self.tags.get("replaygaintrackgain"):
+            try:
+                gain_adjustment = float(tag.split(" ")[0])
+                return -18 - gain_adjustment
+            except (ValueError, IndexError) as e:
+                LOGGER.warning(f"Invalid replaygaintrackgain tag value: {tag!r} — {e}")
+
         return None
 
     @property
     def track_album_loudness(self) -> float | None:
         """Try to read/calculate the integrated loudness from the tags (album level)."""
         if tag := self.tags.get("r128albumgain"):
-            return -23 - float(int(tag.split(" ")[0]) / 256)
-        if (tag := self.tags.get("replaygainalbumgain")) is not None:
-            return -18 - float(tag.split(" ")[0])
+            try:
+                gain_adjustment = int(tag.split(" ")[0]) / 256
+                return -23 - gain_adjustment
+            except (ValueError, IndexError) as e:
+                LOGGER.warning(f"Invalid r128albumgain tag value: {tag!r} — {e}")
+
+        if tag := self.tags.get("replaygainalbumgain"):
+            try:
+                gain_adjustment = float(tag.split(" ")[0])
+                return -18 - gain_adjustment
+            except (ValueError, IndexError) as e:
+                LOGGER.warning(f"Invalid replaygainalbumgain tag value: {tag!r} — {e}")
+
         return None
 
     @classmethod

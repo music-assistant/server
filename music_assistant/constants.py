@@ -11,7 +11,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import ConfigEntryType, ContentType, HidePlayerOption
 from music_assistant_models.media_items import AudioFormat
 
-API_SCHEMA_VERSION: Final[int] = 26
+API_SCHEMA_VERSION: Final[int] = 27
 MIN_SCHEMA_VERSION: Final[int] = 24
 
 
@@ -43,6 +43,7 @@ CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
+CONF_NAME: Final[str] = "name"
 CONF_USERNAME: Final[str] = "username"
 CONF_PASSWORD: Final[str] = "password"
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
@@ -63,6 +64,7 @@ CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_CROSSFADE: Final[str] = "crossfade"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
+CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
 CONF_HIDE_PLAYER_IN_UI: Final[str] = "hide_player_in_ui"
 CONF_EXPOSE_PLAYER_TO_HA: Final[str] = "expose_player_to_ha"
 CONF_SYNC_ADJUST: Final[str] = "sync_adjust"
@@ -128,7 +130,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")
-
+SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
 
 ####### REUSABLE CONFIG ENTRIES #######
 
@@ -714,3 +716,13 @@ CACHE_CATEGORY_OPEN_SUBSONIC: Final[int] = 12
 
 # CACHE base keys
 CACHE_KEY_PLAYER_POWER: Final[str] = "player_power"
+
+
+# extra data / extra attributes keys
+ATTR_FAKE_POWER: Final[str] = "fake_power"
+ATTR_FAKE_VOLUME: Final[str] = "fake_volume_level"
+ATTR_FAKE_MUTE: Final[str] = "fake_volume_muted"
+ATTR_ANNOUNCEMENT_IN_PROGRESS: Final[str] = "announcement_in_progress"
+ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
+ATTR_LAST_POLL: Final[str] = "last_poll"
+ATTR_GROUP_MEMBERS: Final[str] = "group_members"
