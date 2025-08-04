@@ -1,10 +1,9 @@
-"""
-Radio Paradise Music Provider for Music Assistant.
-"""
+"""Radio Paradise Music Provider for Music Assistant."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
@@ -19,7 +18,6 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     ImageType,
-    LinkType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -30,10 +28,10 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
-    MediaItemLink,
     MediaItemType,
     ProviderMapping,
     Radio,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -170,7 +168,7 @@ class RadioParadiseProvider(MusicProvider):
         """Initialize the provider."""
         super().__init__(mass, manifest, config)
         self._channels_cache: dict[str, dict[str, Any]] = RADIO_PARADISE_CHANNELS.copy()
-        self._stream_format: str = cast(str, self.config.get_value("stream_format", "flac"))
+        self._stream_format: str = cast("str", self.config.get_value("stream_format", "flac"))
         self._current_stream_details: StreamDetails | None = None
         self._monitor_task: asyncio.Task[None] | None = None
 
@@ -216,21 +214,22 @@ class RadioParadiseProvider(MusicProvider):
             raise ValueError(f"No stream URL found for channel {item_id}")
 
         channel_info = self._channels_cache[item_id]
-        stream_format = self._build_stream_url(item_id)
+        stream_format = next(
+            (k for k, v in channel_info["stream_urls"].items() if v == stream_url),
+            self._stream_format,
+        )
         format_info = cast(
-            dict[str, int | ContentType],
-            BITRATE_FORMATS.get(
-                next((k for k, v in channel_info["stream_urls"].items() if v == stream_url), self._stream_format)
-            ),
+            "dict[str, int | ContentType]",
+            BITRATE_FORMATS.get(stream_format, BITRATE_FORMATS["flac"]),
         )
 
         self._current_stream_details = StreamDetails(
             item_id=item_id,
             provider=self.lookup_key,
             audio_format=AudioFormat(
-                content_type=cast(ContentType, format_info["content_type"]),
-                sample_rate=cast(int, format_info["sample_rate"]),
-                bit_depth=cast(int, format_info["bit_depth"]),
+                content_type=cast("ContentType", format_info["content_type"]),
+                sample_rate=cast("int", format_info["sample_rate"]),
+                bit_depth=cast("int", format_info["bit_depth"]),
                 channels=2,
             ),
             media_type=MediaType.RADIO,
@@ -258,11 +257,11 @@ class RadioParadiseProvider(MusicProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items."""
-        return [self._parse_radio(channel_id) for channel_id in self._channels_cache]
+        return [await self._parse_radio(channel_id) for channel_id in self._channels_cache]
 
-    def _parse_radio(self, channel_id: str) -> Radio:
-        """Create a Radio object from channel information."""
-        channel_info = cast(dict[str, str], self._channels_cache.get(channel_id, {}))
+    async def _parse_radio(self, channel_id: str) -> Radio:
+        """Create a Radio object from channel information and fetch cover art from API."""
+        channel_info = cast("dict[str, str]", self._channels_cache.get(channel_id, {}))
         radio = Radio(
             provider=self.lookup_key,
             item_id=channel_id,
@@ -277,14 +276,22 @@ class RadioParadiseProvider(MusicProvider):
             },
         )
         radio.metadata.description = channel_info.get("description")
-        radio.metadata.images = [
-            MediaItemImage(
-                provider=self.lookup_key,
-                type=ImageType.THUMB,
-                path=f"https://www.radioparadise.com/images/logos/rp_{channel_id}.png",
-                remotely_accessible=True,
-            )
-        ]
+
+        # Fetch the current metadata to get the latest cover image for the browse view.
+        metadata = await self._get_channel_metadata(channel_id)
+        cover_url = cast("str | None", metadata.get("cover_url")) if metadata else None
+
+        if cover_url:
+            images = [
+                MediaItemImage(
+                    provider=self.lookup_key,
+                    type=ImageType.THUMB,
+                    path=cover_url,
+                    remotely_accessible=True,
+                )
+            ]
+            radio.metadata.images = UniqueList(images)
+
         return radio
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
@@ -331,50 +338,35 @@ class RadioParadiseProvider(MusicProvider):
 
         channel_info = self._channels_cache[channel_id]
         stream_urls = channel_info.get("stream_urls", {})
-        
+
         current_format_index = -1
-        try:
+        with contextlib.suppress(ValueError):
             current_format_index = FALLBACK_ORDER.index(self._stream_format)
-        except ValueError:
-            pass
-        
+
         for format_key in FALLBACK_ORDER[current_format_index:]:
             if format_key in stream_urls:
-                return cast(str, stream_urls[format_key])
+                return cast("str", stream_urls[format_key])
 
         return ""
-    
+
     async def _monitor_stream_metadata(self, item_id: str) -> None:
         """Monitor and update the StreamDetails object metadata every 10 seconds."""
         last_track_title = ""
-        while (
-            self.mass.is_running
-            and not self.mass.shutdown_requested
-            and self._current_stream_details
-        ):
-            try:
+
+        try:
+            while self._current_stream_details:
                 metadata = await self._get_channel_metadata(item_id)
                 if metadata and self._current_stream_details:
-                    track_title = cast(str, metadata.get("title", "Unknown Title"))
-                    artist = cast(str, metadata.get("artist", "Unknown Artist"))
-                    cover_url = cast(str | None, metadata.get("cover_url"))
+                    track_title = cast("str", metadata.get("title", "Unknown Title"))
+                    artist = cast("str", metadata.get("artist", "Unknown Artist"))
 
                     if track_title != last_track_title:
                         self.logger.info(
                             f"Updating stream metadata for {item_id}: {artist} - {track_title}"
                         )
                         self._current_stream_details.stream_title = f"{artist} - {track_title}"
-                        if cover_url:
-                            self._current_stream_details.stream_image = MediaItemImage(
-                                type=ImageType.THUMB,
-                                path=cover_url,
-                                remotely_accessible=True,
-                                provider=self.instance_id,
-                            )
                         last_track_title = track_title
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.logger.error(f"Failed to update metadata for {item_id}: {e}")
-            finally:
+
                 await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            self.logger.debug("Monitor task cancelled.")
