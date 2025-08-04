@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "tunein",
+  "stage": "stable",
   "name": "Tune-In Radio",
   "description": "Play your favorite radio stations from Tune-In in Music Assistant.",
   "codeowners": ["@music-assistant"],

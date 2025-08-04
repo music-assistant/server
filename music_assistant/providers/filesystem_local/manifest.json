@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "filesystem_local",
+  "stage": "stable",
   "name": "Filesystem (local disk)",
   "description": "Support for music files that are present on a local accessible disk/folder.",
   "codeowners": ["@music-assistant"],

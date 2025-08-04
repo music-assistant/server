@@ -35,6 +35,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     RecommendationFolder,
     SearchResults,
+    Track,
 )
 from music_assistant_models.provider import SyncTask
 from music_assistant_models.unique_list import UniqueList
@@ -58,12 +59,13 @@ from music_assistant.constants import (
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.compare import create_safe_string
+from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
-from music_assistant.helpers.util import TaskManager
+from music_assistant.helpers.util import TaskManager, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 
 from .media.albums import AlbumsController
@@ -85,7 +87,7 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 17
+DB_SCHEMA_VERSION: Final[int] = 18
 
 
 class MusicController(CoreController):
@@ -960,6 +962,85 @@ class MusicController(CoreController):
             )
             await self.database.commit()
 
+    @api_command("music/track_by_name")
+    async def get_track_by_name(
+        self,
+        track_name: str,
+        artist_name: str | None = None,
+        album_name: str | None = None,
+        track_version: str | None = None,
+    ) -> Track | None:
+        """Get a track by its name, optionally with artist and album."""
+        if track_version is None:
+            track_name, version = parse_title_and_version(track_name)
+        search_query = f"{artist_name} - {track_name}" if artist_name else track_name
+        search_result = await self.mass.music.search(
+            search_query=search_query,
+            media_types=[MediaType.TRACK],
+        )
+        for allow_item_mapping in (False, True):
+            for search_track in search_result.tracks:
+                is_track = isinstance(search_track, Track)
+                if not allow_item_mapping and not is_track:
+                    continue
+                if not compare_strings(track_name, search_track.name):
+                    continue
+                if not compare_version(version, search_track.version):
+                    continue
+                # check optional artist(s)
+                if artist_name and is_track:
+                    for artist in search_track.artists:
+                        if compare_strings(artist_name, artist.name, False):
+                            break
+                    else:
+                        # no artist match found: abort
+                        continue
+                # check optional album
+                if (
+                    album_name
+                    and is_track
+                    and not compare_strings(album_name, search_track.album.name, False)
+                ):
+                    # no album match found: abort
+                    continue
+                    # if we reach this, we found a match
+                if not isinstance(search_track, Track):
+                    # ensure we return an actual Track object
+                    return await self.mass.music.tracks.get(
+                        item_id=search_track.item_id,
+                        provider_instance_id_or_domain=search_track.provider,
+                    )
+                return search_track
+
+        # try to handle case where something is appended to the title
+        for splitter in ("•", "-", "|", "(", "["):
+            if splitter in track_name:
+                return await self.get_track_by_name(
+                    track_name=track_name.split(splitter)[0].strip(),
+                    artist_name=artist_name,
+                    album_name=None,
+                    track_version=track_version,
+                )
+        # try to handle case where multiple artists are given as single string
+        if artist_name and (artists := split_artists(artist_name, True)) and len(artists) > 1:
+            for artist in artists:
+                return await self.get_track_by_name(
+                    track_name=track_name,
+                    artist_name=artist.split(splitter)[0].strip(),
+                    album_name=None,
+                    track_version=track_version,
+                )
+        # allow non-exact album match as fallback
+        if album_name:
+            return await self.get_track_by_name(
+                track_name=track_name,
+                artist_name=artist_name,
+                album_name=None,
+                track_version=track_version,
+            )
+        # no match found
+        return None
+
     async def get_resume_position(self, media_item: Audiobook | PodcastEpisode) -> tuple[bool, int]:
         """
         Get progress (resume point) details for the given audiobook or episode.
@@ -1023,7 +1104,7 @@ class MusicController(CoreController):
             return self.podcasts
         if media_type == MediaType.PODCAST_EPISODE:
             return self.podcasts
-        return None
+        raise NotImplementedError
 
     def get_unique_providers(self) -> set[str]:
         """
@@ -1176,7 +1257,7 @@ class MusicController(CoreController):
                 translation_key="recent_favorite_tracks",
                 icon="mdi-file-music",
                 items=await self.tracks.library_items(
-                    favorite=True, limit=10, order_by="timestamp_added"
+                    favorite=True, limit=10, order_by="timestamp_modified_desc"
                 ),
             ),
             RecommendationFolder(
@@ -1193,7 +1274,7 @@ class MusicController(CoreController):
                 item_id="favorite_radio",
                 provider="library",
                 name="Favorite Radio stations",
-                translation_key="favorite_radio",
+                translation_key="favorite_radio_stations",
                 icon="mdi-access-point",
                 items=await self.radio.library_items(favorite=True, limit=10, order_by="random"),
             ),
@@ -1559,6 +1640,20 @@ class MusicController(CoreController):
                             },
                         )
 
+        if prev_version <= 17:
+            # migrate triggers to auto update timestamps
+            # it had an error in the previous version where it was not created
+            for db_table in (
+                "artists",
+                "albums",
+                "tracks",
+                "playlists",
+                "radios",
+                "audiobooks",
+                "podcasts",
+            ):
+                await self.database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
+
         # save changes
         await self.database.commit()
 
@@ -1905,11 +2000,10 @@ class MusicController(CoreController):
             await self.database.execute(
                 f"""
                 CREATE TRIGGER IF NOT EXISTS update_{db_table}_timestamp
-                AFTER UPDATE ON {db_table} FOR EACH ROW
-                WHEN NEW.timestamp_modified <= OLD.timestamp_modified
+                AFTER UPDATE ON {db_table}
                 BEGIN
-                    UPDATE {db_table} set timestamp_modified=cast(strftime('%s','now') as int)
-                    WHERE item_id=OLD.item_id;
+                    UPDATE {db_table} SET timestamp_modified=cast(strftime('%s','now') as int)
+                    WHERE rowid = new.rowid;
                 END;
                 """
             )

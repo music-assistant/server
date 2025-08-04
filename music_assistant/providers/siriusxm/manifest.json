@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "siriusxm",
+  "stage": "stable",
   "name": "SiriusXM",
   "description": "Support for the SiriusXM streaming radio provider in Music Assistant.",
   "codeowners": ["@btoconnor"],

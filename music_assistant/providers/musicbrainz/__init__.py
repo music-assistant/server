@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import MissingField
@@ -32,8 +32,6 @@ if TYPE_CHECKING:
 
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
-
-_T = TypeVar("_T")
 
 
 async def setup(
@@ -60,17 +58,15 @@ async def get_config_entries(
     return ()  # we do not have any config entries (yet)
 
 
-def replace_hyphens(data: _T) -> _T:
-    """Change all hyphens to underscores."""
+def replace_hyphens(
+    data: dict[str, Any] | list[dict[str, Any]] | Any,
+) -> dict[str, Any] | list[dict[str, Any]] | Any:
+    """Change all hyphened keys to underscores."""
     if isinstance(data, dict):
-        new_values = {}
-        for key, value in data.items():
-            new_key = key.replace("-", "_")
-            new_values[new_key] = replace_hyphens(value)
-        return cast("_T", new_values)
+        return {key.replace("-", "_"): replace_hyphens(value) for key, value in data.items()}
 
     if isinstance(data, list):
-        return cast("_T", [replace_hyphens(x) if isinstance(x, dict) else x for x in data])
+        return [replace_hyphens(x) for x in data]
 
     return data
 
@@ -110,6 +106,14 @@ class MusicBrainzArtist(DataClassDictMixin):
     aliases: list[MusicBrainzAlias] | None = None
     tags: list[MusicBrainzTag] | None = None
 
+    @classmethod
+    def from_raw(cls, data: Any) -> MusicBrainzArtist:
+        """Instantiate object from raw api data."""
+        alt_data = replace_hyphens(data)
+        if TYPE_CHECKING:
+            alt_data = cast("dict[str, Any]", alt_data)
+        return MusicBrainzArtist.from_dict(alt_data)
+
 
 @dataclass
 class MusicBrainzArtistCredit(DataClassDictMixin):
@@ -133,6 +137,14 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
     secondary_type_ids: list[str] | None = None
     artist_credit: list[MusicBrainzArtistCredit] | None = None
 
+    @classmethod
+    def from_raw(cls, data: Any) -> MusicBrainzReleaseGroup:
+        """Instantiate object from raw api data."""
+        alt_data = replace_hyphens(data)
+        if TYPE_CHECKING:
+            alt_data = cast("dict[str, Any]", alt_data)
+        return MusicBrainzReleaseGroup.from_dict(alt_data)
+
 
 @dataclass
 class MusicBrainzTrack(DataClassDictMixin):
@@ -142,6 +154,14 @@ class MusicBrainzTrack(DataClassDictMixin):
     number: str
     title: str
     length: int | None = None
+
+    @classmethod
+    def from_raw(cls, data: Any) -> MusicBrainzTrack:
+        """Instantiate object from raw api data."""
+        alt_data = replace_hyphens(data)
+        if TYPE_CHECKING:
+            alt_data = cast("dict[str, Any]", alt_data)
+        return MusicBrainzTrack.from_dict(alt_data)
 
 
 @dataclass
@@ -175,6 +195,14 @@ class MusicBrainzRelease(DataClassDictMixin):
     disambiguation: str | None = None  # version
     # TODO (if needed): release-events
 
+    @classmethod
+    def from_raw(cls, data: Any) -> MusicBrainzRelease:
+        """Instantiate object from raw api data."""
+        alt_data = replace_hyphens(data)
+        if TYPE_CHECKING:
+            alt_data = cast("dict[str, Any]", alt_data)
+        return MusicBrainzRelease.from_dict(alt_data)
+
 
 @dataclass
 class MusicBrainzRecording(DataClassDictMixin):
@@ -189,6 +217,14 @@ class MusicBrainzRecording(DataClassDictMixin):
     isrcs: list[str] | None = None
     tags: list[MusicBrainzTag] | None = None
     disambiguation: str | None = None  # version (e.g. live, karaoke etc.)
+
+    @classmethod
+    def from_raw(cls, data: Any) -> MusicBrainzRecording:
+        """Instantiate object from raw api data."""
+        alt_data = replace_hyphens(data)
+        if TYPE_CHECKING:
+            alt_data = cast("dict[str, Any]", alt_data)
+        return MusicBrainzRecording.from_dict(alt_data)
 
 
 class MusicbrainzProvider(MetadataProvider):
@@ -246,15 +282,11 @@ class MusicbrainzProvider(MetadataProvider):
                     artist_match: MusicBrainzArtist | None = None
                     for artist in item["artist-credit"]:
                         if compare_strings(artist["artist"]["name"], artistname, strict):
-                            artist_match = MusicBrainzArtist.from_dict(
-                                replace_hyphens(artist["artist"])
-                            )
+                            artist_match = MusicBrainzArtist.from_raw(artist["artist"])
                         else:
                             for alias in artist["artist"].get("aliases", []):
                                 if compare_strings(alias["name"], artistname, strict):
-                                    artist_match = MusicBrainzArtist.from_dict(
-                                        replace_hyphens(artist["artist"])
-                                    )
+                                    artist_match = MusicBrainzArtist.from_raw(artist["artist"])
                     if not artist_match:
                         continue
                     # match album/release
@@ -263,15 +295,13 @@ class MusicbrainzProvider(MetadataProvider):
                         if compare_strings(release["title"], albumname, strict) or compare_strings(
                             release["release-group"]["title"], albumname, strict
                         ):
-                            album_match = MusicBrainzReleaseGroup.from_dict(
-                                replace_hyphens(release["release-group"])
-                            )
+                            album_match = MusicBrainzReleaseGroup.from_raw(release["release-group"])
                             break
                     else:
                         continue
                     # if we reach this point, we got a match on recording,
                     # artist and release(group)
-                    recording = MusicBrainzRecording.from_dict(replace_hyphens(item))
+                    recording = MusicBrainzRecording.from_raw(item)
                     return (artist_match, album_match, recording)
 
         return None
@@ -286,7 +316,7 @@ class MusicbrainzProvider(MetadataProvider):
                 result["id"] = artist_id
             # TODO: Parse all the optional data like relations and such
             try:
-                return MusicBrainzArtist.from_dict(replace_hyphens(result))
+                return MusicBrainzArtist.from_raw(result)
             except MissingField as err:
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz Artist ID provided"
@@ -298,7 +328,7 @@ class MusicbrainzProvider(MetadataProvider):
             if "id" not in result:
                 result["id"] = recording_id
             try:
-                return MusicBrainzRecording.from_dict(replace_hyphens(result))
+                return MusicBrainzRecording.from_raw(result)
             except MissingField as err:
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz recording ID provided"
@@ -311,7 +341,7 @@ class MusicbrainzProvider(MetadataProvider):
             if "id" not in result:
                 result["id"] = album_id
             try:
-                return MusicBrainzRelease.from_dict(replace_hyphens(result))
+                return MusicBrainzRelease.from_raw(result)
             except MissingField as err:
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz Album ID provided"
@@ -324,7 +354,7 @@ class MusicbrainzProvider(MetadataProvider):
             if "id" not in result:
                 result["id"] = releasegroup_id
             try:
-                return MusicBrainzReleaseGroup.from_dict(replace_hyphens(result))
+                return MusicBrainzReleaseGroup.from_raw(result)
             except MissingField as err:
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz ReleaseGroup ID provided"
@@ -394,7 +424,7 @@ class MusicbrainzProvider(MetadataProvider):
             for relation in result.get("relations", []):
                 if not (artist := relation.get("artist")):
                     continue
-                return MusicBrainzArtist.from_dict(replace_hyphens(artist))
+                return MusicBrainzArtist.from_raw(artist)
         return None
 
     @use_cache(86400 * 30)

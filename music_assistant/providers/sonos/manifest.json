@@ -1,6 +1,7 @@
 {
   "type": "player",
   "domain": "sonos",
+  "stage": "stable",
   "name": "SONOS",
   "description": "SONOS Player provider for Music Assistant.",
   "codeowners": ["@music-assistant"],

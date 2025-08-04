@@ -1,6 +1,7 @@
 {
   "type": "player",
   "domain": "bluesound",
+  "stage": "beta",
   "name": "Bluesound",
   "description": "BluOS Player provider for Music Assistant.",
   "codeowners": ["@cyanogenbot"],

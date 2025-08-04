@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "ibroadcast",
+  "stage": "stable",
   "name": "iBroadcast",
   "description": "Support for the iBroadcast streaming provider in Music Assistant.",
   "codeowners": ["@robsonke"],

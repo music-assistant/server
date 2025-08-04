@@ -38,7 +38,6 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
     CONF_ONBOARD_DONE,
-    CONF_OUTPUT_LIMITER,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PROVIDERS,
@@ -304,7 +303,7 @@ class ConfigController:
         if existing["type"] == "player":
             # cleanup entries in player manager
             for player in list(self.mass.players):
-                if player.provider != instance_id:
+                if player.provider.instance_id != instance_id:
                     continue
                 self.mass.players.remove(player.player_id, cleanup_config=True)
             # cleanup remaining player configs
@@ -342,18 +341,15 @@ class ConfigController:
     @api_command("config/players/get")
     async def get_player_config(self, player_id: str) -> PlayerConfig:
         """Return (full) configuration for a single player."""
+        raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
-                raw_conf["provider"] = player.provider
-                prov = self.mass.get_provider(player.provider)
-                conf_entries = await prov.get_player_config_entries(player_id)
+                raw_conf["provider"] = player.provider.lookup_key
+                conf_entries = await player.get_config_entries()
             else:
                 # handle unavailable player and/or provider
-                if prov := self.mass.get_provider(raw_conf["provider"]):
-                    conf_entries = await prov.get_player_config_entries(player_id)
-                else:
-                    conf_entries = ()
+                conf_entries = []
                 raw_conf["available"] = False
                 raw_conf["name"] = raw_conf.get("name")
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
@@ -391,6 +387,20 @@ class ConfigController:
             self.get(f"{CONF_PLAYERS}/{player_id}/{key}", default),
         )
 
+    def get_base_player_config(self, player_id: str, provider: str) -> PlayerConfig:
+        """
+        Return base PlayerConfig for a player.
+
+        This is used to get the base config for a player, without any provider specific values,
+        for initialization purposes.
+        """
+        if not (raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}")):
+            raw_conf = {
+                "player_id": player_id,
+                "provider": provider,
+            }
+        return PlayerConfig.parse([], raw_conf)
+
     @api_command("config/players/save")
     async def save_player_config(
         self, player_id: str, values: dict[str, ConfigValueType]
@@ -406,15 +416,12 @@ class ConfigController:
         # actually store changes (if the above did not raise)
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         self.set(conf_key, config.to_raw())
-        # always update player attributes to calculate e.g. player controls etc.
-        self.mass.players.update(config.player_id, force_update=True)
         # send config updated event
         self.mass.signal_event(
             EventType.PLAYER_CONFIG_UPDATED,
             object_id=config.player_id,
             data=config,
         )
-
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
@@ -428,23 +435,24 @@ class ConfigController:
             msg = f"Player configuration for {player_id} does not exist"
             raise KeyError(msg)
         player = self.mass.players.get(player_id)
-        player_prov = player.provider if player else existing["provider"]
-        player_provider = self.mass.get_provider(player_prov)
+        player_provider = player.provider
         if player_provider and ProviderFeature.REMOVE_PLAYER in player_provider.supported_features:
             # provider supports removal of player (e.g. group player)
             await player_provider.remove_player(player_id)
         elif player and player_provider and player.available:
             # removing a player config while it is active is not allowed
-            # unless the provider repoirts it has the remove_player feature (e.g. group player)
+            # unless the provider reports it has the remove_player feature (e.g. group player)
             raise ActionUnavailable("Can not remove config for an active player!")
         # check for group memberships that need to be updated
-        if player and player.active_group and player_provider:
+        if (
+            player
+            and player.active_group
+            and (group_player := self.mass.players.get(player.active_group))
+        ):
             # try to remove from the group
-            group_player = self.mass.players.get(player.active_group)
             with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await player_provider.set_members(
-                    player.active_group,
-                    [x for x in group_player.group_childs if x != player.player_id],
+                await group_player.set_members(
+                    player_ids_to_remove=[player_id],
                 )
         # tell the player manager to remove the player if its lingering around
         # set cleanup_flag to false otherwise we end up in an infinite loop
@@ -532,8 +540,8 @@ class ConfigController:
         self,
         player_id: str,
         provider: str,
-        name: str,
-        enabled: bool,
+        name: str | None = None,
+        enabled: bool = True,
         values: dict[str, ConfigValueType] | None = None,
     ) -> None:
         """
@@ -804,18 +812,25 @@ class ConfigController:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _migrate(self) -> None:  # noqa: PLR0915
+    async def _migrate(self) -> None:
         changed = False
+
+        # some type hints to help with the code below
+        instance_id: str
+        provider_config: dict[str, Any]
+        player_config: dict[str, Any]
+        values: dict[str, ConfigValueType]
 
         # Older versions of MA can create corrupt entries with no domain if retrying
         # logic runs after a provider has been removed. Remove those corrupt entries.
-        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+        for instance_id, provider_config in {**self._data.get(CONF_PROVIDERS, {})}.items():
             if "domain" not in provider_config:
                 self._data[CONF_PROVIDERS].pop(instance_id, None)
                 LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
                 changed = True
+
         # migrate manual_ips to new format
-        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+        for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
             if not (values := provider_config.get("values")):
                 continue
             if not (ips := values.get("ips")):
@@ -823,8 +838,9 @@ class ConfigController:
             values["manual_discovery_ip_addresses"] = ips.split(",")
             del values["ips"]
             changed = True
+
         # migrate sample_rates config entry
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if not (values := player_config.get("values")):
                 continue
             if not (sample_rates := values.get("sample_rates")):
@@ -838,24 +854,6 @@ class ConfigController:
                 for x in sample_rates
             ]
             changed = True
-        # migrate DSPConfig.output_limiter
-        for player_id, dsp_config in list(self._data.get(CONF_PLAYER_DSP, {}).items()):
-            output_limiter = dsp_config.get("output_limiter")
-            enabled = dsp_config.get("enabled")
-            if output_limiter is None or enabled is None or output_limiter:
-                continue
-
-            if enabled:
-                # The DSP is enabled, and the user disabled the output limiter in a prior version
-                # Migrate the output limiter option to the player config
-                if (players := self._data.get(f"{CONF_PLAYERS}")) and (
-                    player := players.get(player_id)
-                ):
-                    player["values"][CONF_OUTPUT_LIMITER] = False
-            # Delete the old option, so this migration logic will never be called
-            # anymore for this player.
-            del dsp_config["output_limiter"]
-            changed = True
 
         # set 'onboard_done' flag if we have any (non default) provider configs
         if self._data.get(CONF_ONBOARD_DONE) is None:
@@ -865,23 +863,21 @@ class ConfigController:
                     self._data[CONF_ONBOARD_DONE] = True
                     changed = True
                     break
-        # migrate slimproto --> squeezelite
-        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
-            if provider_config.get("domain") == "slimproto":
-                del self._data[CONF_PROVIDERS][instance_id]
-                new_instance_id = instance_id.replace("slimproto", "squeezelite")
-                provider_config["instance_id"] = new_instance_id
-                provider_config["domain"] = "squeezelite"
-                self._data[CONF_PROVIDERS][new_instance_id] = provider_config
-                changed = True
 
-        # migrate "hide_player" -->  "hide_player_in_ui"
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
+        # migrate player_group entries
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            if not player_config.get("provider").startswith("player_group"):
+                continue
             if not (values := player_config.get("values")):
                 continue
-            if values.pop("hide_player", None):
-                player_config["values"]["hide_player_in_ui"] = ["always"]
+            if (group_type := values.pop("group_type", None)) is None:
+                continue
+            # this is a legacy player group, migrate the values
             changed = True
+            if group_type == "universal":
+                player_config["provider"] = "universal_group"
+            else:
+                player_config["provider"] = group_type
 
         if changed:
             await self._async_save()
@@ -942,7 +938,7 @@ class ConfigController:
             if config.type == ProviderType.PLAYER:
                 # cleanup entries in player manager
                 for player in self.mass.players.all(return_unavailable=True, return_disabled=True):
-                    if player.provider != instance_id:
+                    if player.provider.instance_id != instance_id:
                         continue
                     self.mass.players.remove(player.player_id, cleanup_config=False)
         return config

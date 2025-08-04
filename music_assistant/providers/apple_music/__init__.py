@@ -1,4 +1,17 @@
-"""Apple Music musicprovider support for MusicAssistant."""
+"""
+Apple Music musicprovider support for MusicAssistant.
+
+TODO MUSIC_APP_TOKEN expires after 6 months so should have a distribution mechanism outside
+  compulsory application updates. It is only a semi-private key in JWT format so code be refreshed
+  daily by a GitHub action and downloaded by the provider each initialise.
+TODO Widevine keys can be obtained dynamically from Apple Music API rather than copied into Docker
+  build. This is undocumented but @maxlyth has a working example.
+TODO MUSIC_USER_TOKEN must be refreshed (~min 180 days) and needs mechanism to prompt user to
+  re-authenticate in browser.
+TODO Current provider ignores private tracks that are not available in the storefront catalog as
+  streamable url is derived from the catalog id. It is undecumented but @maxlyth has a working
+  example to get a streamable url from the library id.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +20,7 @@ import json
 import os
 import pathlib
 import re
+import time
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
@@ -82,6 +96,7 @@ UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
 
 CONF_MUSIC_APP_TOKEN = "music_app_token"
 CONF_MUSIC_USER_TOKEN = "music_user_token"
+CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
 
 
 async def setup(
@@ -126,42 +141,67 @@ async def get_config_entries(
             default_app_token_valid = True
 
     # Action is to launch MusicKit flow
-    if action == "CONF_ACTION_AUTH":
-        # TODO: check the developer token is valid otherwise user is going to have bad experience
-        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+    if action == "CONF_ACTION_AUTH" and default_app_token_valid:
+        callback_method = "POST"
+        async with AuthenticationHelper(mass, values["session_id"], callback_method) as auth_helper:
             callback_url = auth_helper.callback_url
             flow_base_path = f"apple_music_auth/{values['session_id']}/"
             flow_timeout = 600
             parent_file_path = pathlib.Path(__file__).parent.resolve()
+            base_url = f"{mass.webserver.base_url}/{flow_base_path}"
+            flow_base_url = f"{base_url}index.html"
 
             async def serve_mk_auth_page(request: web.Request) -> web.Response:
                 auth_html_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.html")
-                return web.FileResponse(auth_html_path, headers={"content-type": "text/html"})
+                return web.FileResponse(
+                    auth_html_path,
+                    headers={"content-type": "text/html"},
+                )
 
             async def serve_mk_auth_css(request: web.Request) -> web.Response:
                 auth_css_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.css")
-                return web.FileResponse(auth_css_path, headers={"content-type": "text/css"})
+                return web.FileResponse(
+                    auth_css_path,
+                    headers={
+                        "content-type": "text/css",
+                    },
+                )
 
             async def serve_mk_glue(request: web.Request) -> web.Response:
-                return_html = f"const app_token='{values[CONF_MUSIC_APP_TOKEN]}';"
-                return_html += f"const user_token='{values[CONF_MUSIC_USER_TOKEN]}';"
-                return_html += f"const return_url='{callback_url}';"
-                return_html += f"const flow_timeout={flow_timeout - 10};"
-                return_html += f"const mass_buid='{mass.version}';"
-                return web.Response(body=return_html, headers={"content-type": "text/javascript"})
+                return_html = f"""
+                const return_url='{callback_url}';
+                const base_url='{base_url}';
+                const app_token='{values[CONF_MUSIC_APP_TOKEN]}';
+                const callback_method='{callback_method}';
+                const user_token='{
+                    values[CONF_MUSIC_USER_TOKEN]
+                    if validate_user_token(values[CONF_MUSIC_USER_TOKEN])
+                    else ""
+                }';
+                const user_token_timestamp='{values[CONF_MUSIC_USER_TOKEN_TIMESTAMP]}';
+                const flow_timeout={max([flow_timeout - 10, 60])};
+                const flow_start_time={int(time.time())};
+                const mass_version='{mass.version}';
+                """
+                return web.Response(
+                    body=return_html,
+                    headers={
+                        "content-type": "text/javascript",
+                    },
+                )
 
             mass.webserver.register_dynamic_route(
                 f"/{flow_base_path}index.html", serve_mk_auth_page
             )
             mass.webserver.register_dynamic_route(f"/{flow_base_path}index.css", serve_mk_auth_css)
             mass.webserver.register_dynamic_route(f"/{flow_base_path}index.js", serve_mk_glue)
-            flow_base_url = f"{mass.webserver.base_url}/{flow_base_path}index.html"
+
             try:
-                values[CONF_MUSIC_USER_TOKEN] = (
-                    await auth_helper.authenticate(flow_base_url, flow_timeout)
-                )["music-user-token"]
+                result = await auth_helper.authenticate(flow_base_url, flow_timeout)
+                values[CONF_MUSIC_USER_TOKEN] = result["music-user-token"]
+                values[CONF_MUSIC_USER_TOKEN_TIMESTAMP] = result["music-user-token-timestamp"]
             except KeyError:
-                # no music-user-token URL param was found so user probably cancelled the auth
+                # no music-user-token URL param was found so likely user cancelled the auth
                 pass
             except Exception as error:
                 raise LoginFailed(f"Failed to authenticate with Apple '{error}'.")
@@ -186,9 +226,27 @@ async def get_config_entries(
             label="Music User Token",
             required=True,
             action="CONF_ACTION_AUTH",
-            description="You need to authenticate on Apple Music.",
+            description="Authenticate with Apple Music to retrieve a valid music user token.",
             action_label="Authenticate with Apple Music",
-            value=values.get(CONF_MUSIC_USER_TOKEN) if values else None,
+            value=values.get(CONF_MUSIC_USER_TOKEN)
+            if (
+                values
+                and isinstance(values.get(CONF_MUSIC_USER_TOKEN_TIMESTAMP), int)
+                and (
+                    values.get(CONF_MUSIC_USER_TOKEN_TIMESTAMP) > (time.time() - (3600 * 24 * 150))
+                )
+            )
+            else None,
+        ),
+        ConfigEntry(
+            key=CONF_MUSIC_USER_TOKEN_TIMESTAMP,
+            type=ConfigEntryType.INTEGER,
+            description="Timestamp music user token was updated.",
+            label="Music User Token Timestamp",
+            hidden=True,
+            required=True,
+            default_value=0,
+            value=values.get(CONF_MUSIC_USER_TOKEN_TIMESTAMP) if values else 0,
         ),
     )
 

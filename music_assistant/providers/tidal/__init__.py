@@ -345,10 +345,8 @@ class TidalProvider(MusicProvider):
         # Handle conversion from ISO format to timestamp if needed
         if isinstance(expires_at, str) and "T" in expires_at:
             # This looks like an ISO format date
-            import datetime
-
             try:
-                dt = datetime.datetime.fromisoformat(expires_at)
+                dt = datetime.fromisoformat(expires_at)
                 # Convert to timestamp
                 expires_at = dt.timestamp()
                 # Update the config with the numeric value
@@ -596,13 +594,22 @@ class TidalProvider(MusicProvider):
         item_key: str = "items",
         nested_key: str | None = None,
         limit: int = DEFAULT_LIMIT,
+        cursor_based: bool = False,
         **kwargs: Any,
     ) -> AsyncGenerator[Any, None]:
         """Paginate through all items from a Tidal API endpoint."""
         offset = 0
+        cursor = None
+
         while True:
             # Get a batch of items
-            params = {"limit": limit, "offset": offset}
+            params = {"limit": limit}
+            if cursor_based:
+                if cursor:
+                    params["cursor"] = cursor  # Add cursor if available
+            else:
+                params["offset"] = offset  # Use offset for offset-based pagination
+
             if "params" in kwargs:
                 params.update(kwargs.pop("params"))
 
@@ -620,13 +627,14 @@ class TidalProvider(MusicProvider):
                     yield item[nested_key]
                 else:
                     yield item
+            # Update cursor or offset for the next batch
+            if cursor_based:
+                cursor = response.get("cursor")  # Update cursor from the response
+                if not cursor:
+                    break  # Stop if no next cursor is provided
 
             # Update offset for next batch
             offset += len(items)
-
-            # Stop if we've received fewer items than the limit
-            if len(items) < limit:
-                break
 
     def _extract_data(
         self, api_result: dict[str, Any] | tuple[dict[str, Any], str]
@@ -1447,7 +1455,10 @@ class TidalProvider(MusicProvider):
         mix_path = "favorites/mixes"
 
         async for mix_item in self._paginate_api(
-            mix_path, item_key="items", base_url=self.BASE_URL_V2
+            mix_path,
+            item_key="items",
+            base_url=self.BASE_URL_V2,
+            cursor_based=True,
         ):
             if mix_item and mix_item.get("id"):
                 yield self._parse_playlist(mix_item, is_mix=True)

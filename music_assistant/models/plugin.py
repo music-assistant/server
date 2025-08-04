@@ -7,15 +7,14 @@ from dataclasses import dataclass, field
 
 from mashumaro import field_options, pass_through
 from music_assistant_models.enums import StreamType
-from music_assistant_models.player import PlayerMedia, PlayerSource
-from music_assistant_models.streamdetails import AudioFormat  # noqa: TC002
+from music_assistant_models.media_items.audio_format import AudioFormat  # noqa: TC002
+
+from music_assistant.models.player import PlayerMedia, PlayerSource
 
 from .provider import Provider
 
-# ruff: noqa: ARG001, ARG002
 
-
-@dataclass()
+@dataclass
 class PluginSource(PlayerSource):
     """
     Model for a PluginSource, which is a player (audio)source provided by a plugin.
@@ -72,9 +71,12 @@ class PluginProvider(Provider):
     Plugin Provider implementations should inherit from this base model.
     """
 
-    def get_source(self) -> PluginSource:  # type: ignore[return]
-        """Get (audio)source details for this plugin."""
+    def get_source(self) -> PluginSource:
+        """
+        Get (audio)source details for this plugin.
+
         # Will only be called if ProviderFeature.AUDIO_SOURCE is declared
+        """
         raise NotImplementedError
 
     async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
@@ -86,6 +88,5 @@ class PluginProvider(Provider):
 
         The player_id is the id of the player that is requesting the stream.
         """
-        if False:
-            yield b""
+        yield b""
         raise NotImplementedError

@@ -92,7 +92,7 @@ def parse_arguments(
 
 def parse_utc_timestamp(datetime_string: str) -> datetime:
     """Parse datetime from string."""
-    return datetime.fromisoformat(datetime_string.replace("Z", "+00:00"))
+    return datetime.fromisoformat(datetime_string)
 
 
 def parse_value(  # noqa: PLR0911

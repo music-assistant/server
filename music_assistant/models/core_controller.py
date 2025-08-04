@@ -13,7 +13,7 @@ from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, CoreConfig
 
-    from music_assistant import MusicAssistant
+    from music_assistant.mass import MusicAssistant
 
 
 class CoreController:
@@ -54,7 +54,7 @@ class CoreController:
         await self.close()
         if config is None:
             config = await self.mass.config.get_core_config(self.domain)
-        log_level = config.get_value(CONF_LOG_LEVEL)
+        log_level = str(config.get_value(CONF_LOG_LEVEL))
         self._set_logger(log_level)
         await self.setup(config)
 
@@ -63,8 +63,8 @@ class CoreController:
         mass_logger = logging.getLogger(MASS_LOGGER_NAME)
         self.logger = mass_logger.getChild(self.domain)
         if log_level is None:
-            log_level = self.mass.config.get_raw_core_config_value(
-                self.domain, CONF_LOG_LEVEL, "GLOBAL"
+            log_level = str(
+                self.mass.config.get_raw_core_config_value(self.domain, CONF_LOG_LEVEL, "GLOBAL")
             )
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)

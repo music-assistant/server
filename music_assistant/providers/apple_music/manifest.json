@@ -1,6 +1,7 @@
 {
   "type": "music",
   "domain": "apple_music",
+  "stage": "beta",
   "name": "Apple Music",
   "description": "Support for the Apple Music streaming provider in Music Assistant.",
   "codeowners": ["@MarvinSchenkel"],

@@ -115,7 +115,7 @@ class MusicAssistantControl:
         elif cmd == "SetProperty":
             properties = request["params"]
             logger.debug(f"SetProperty: {property}")
-            if "shuffle" in property:
+            if "shuffle" in properties:
                 self.send_request(
                     "player_queues/shuffle",
                     queue_id=queue_id,
@@ -201,8 +201,8 @@ class MusicAssistantControl:
             "rate": 1.0,
             "position": mass_queue_details["elapsed_time"],
         }
+        image_url: str | None = None
         if current_queue_item and (media_item := current_queue_item.get("media_item")):
-            image_url: str | None = None
             if image_path := current_queue_item.get("image", {}).get("path"):
                 image_path_encoded = urllib.parse.quote_plus(image_path)
                 image_url = (
@@ -269,7 +269,7 @@ class MusicAssistantControl:
         logger.info("Snapcast RPC websocket closed")
 
     def send_request(
-        self, command: str, callback: MessageCallback | None = None, **args: dict[str, Any]
+        self, command: str, callback: MessageCallback | None = None, **args: str | float
     ) -> None:
         """Send request to Music Assistant."""
         msg_id = shortuuid.random(10)
@@ -288,8 +288,9 @@ if __name__ == "__main__":
     # Parse command line
     queue_id = None
     api_port = None
-    streamserver_ip = None
-    streamserver_port = None
+    streamserver_ip: str | None = None
+    streamserver_port: str | None = None
+    stream_id: str | None = None
     for arg in sys.argv:
         if arg.startswith("--stream="):
             stream_id = arg.split("=")[1]
@@ -321,6 +322,8 @@ if __name__ == "__main__":
         "Initializing for stream_id %s, queue_id %s and api_port %s", stream_id, queue_id, api_port
     )
 
+    assert streamserver_ip is not None  # for type checking
+    assert streamserver_port is not None
     ctrl = MusicAssistantControl(queue_id, streamserver_ip, int(streamserver_port), int(api_port))
 
     # keep listening for messages on stdin and forward them

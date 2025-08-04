@@ -1,6 +1,7 @@
 {
   "type": "plugin",
   "domain": "listenbrainz_scrobble",
+  "stage": "beta",
   "name": "ListenBrainz Scrobbler",
   "description": "Scrobble your music to ListenBrainz",
   "codeowners": ["@music-assistant"],

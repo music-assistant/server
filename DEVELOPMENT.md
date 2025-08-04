@@ -27,6 +27,22 @@ We removed support for devcontainers because we do not have anyone willing to ma
 It also is not very convenient due to all the port requirements, binaries etc.
 If somebody is willing to create and maintain a devcontainer with host networking and based on our base alpine image, we will add the support back. Until then: Develop with Python venv on a Linux or macOS machine (see above).
 
+### Developing on the Music Assistant Server Models
+
+If you're working on core Music Assistant features, you may need to modify the shared data models. The **Python models which are shared between client and server** are located in the [`music-assistant/models`](https://github.com/music-assistant/models) repository, while the corresponding **client-side TypeScript interfaces** are in [`interfaces.ts`](https://github.com/music-assistant/frontend/blob/main/src/plugins/api/interfaces.ts) in the [Frontend repository](https://github.com/music-assistant/frontend).
+
+In most cases, you won't need to modify the models. However, if you do need to make changes, here's how to set up your development environment to use a local models repository instead of the one installed via pip:
+
+  * First, clone the [`models` repository](https://github.com/music-assistant/models) to your local machine.
+
+  * Then, install your local `models` clone in "**editable**" mode. This allows your changes to be reflected immediately without a reinstall. Run the following command from the server repository's root:
+
+    ```bash
+    uv pip install -e /path/to/your/cloned/models/repo --config-settings editable_mode=strict
+    ```
+
+**Note:** You must rerun this command whenever you add or remove files from the `models` repository to ensure the changes are picked up.
+
 ## Note on async Python
 The Music Assistant server is fully built in Python. The Python language has no real supported for multi-threading. This is why Music Assistant heavily relies on asyncio to handle blocking IO. It is important to get a good understanding of asynchronous programming before building your first provider. [This](https://www.youtube.com/watch?v=M-UcUs7IMIM) video is an excellent first step in the world of asyncio.
 
