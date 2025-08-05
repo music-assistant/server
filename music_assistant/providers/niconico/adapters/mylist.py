@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.helpers import PlaylistWithTracks
-from music_assistant.providers.niconico.parsers import (
-    parse_playlist_by_mylist,
-    parse_playlist_with_tracks_by_mylist,
+from music_assistant.providers.niconico.converter import (
+    convert_playlist_by_mylist,
+    convert_playlist_with_tracks_by_mylist,
 )
+from music_assistant.providers.niconico.helpers import PlaylistWithTracks
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Playlist
@@ -26,18 +26,18 @@ class NiconicoMylistAdapter(NiconicoBaseAdapter):
         super().__init__(adapter)
 
     async def get_own_mylists(self) -> list[Playlist]:
-        """Get own mylists and parse them."""
+        """Get own mylists and convert them."""
         results = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_own_mylists
         )
         if results is None:
             return []
-        return [parse_playlist_by_mylist(self.adapter.provider, entry) for entry in results]
+        return [convert_playlist_by_mylist(self.adapter.provider, entry) for entry in results]
 
     async def get_mylist(
         self, mylist_id: str, page_size: int = 500, page: int = 1
     ) -> PlaylistWithTracks | None:
-        """Get mylist details and parse as Playlist."""
+        """Get mylist details and convert as Playlist."""
         mylist = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.video.get_mylist,
             mylist_id,
@@ -46,12 +46,12 @@ class NiconicoMylistAdapter(NiconicoBaseAdapter):
         )
         if not mylist:
             return None
-        return parse_playlist_with_tracks_by_mylist(self.adapter.provider, mylist)
+        return convert_playlist_with_tracks_by_mylist(self.adapter.provider, mylist)
 
     async def get_own_mylist(
         self, mylist_id: str, page_size: int = 500, page: int = 1
     ) -> PlaylistWithTracks | None:
-        """Get own mylist details and parse as Playlist."""
+        """Get own mylist details and convert as Playlist."""
         mylist = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_own_mylist,
             mylist_id,
@@ -60,7 +60,7 @@ class NiconicoMylistAdapter(NiconicoBaseAdapter):
         )
         if not mylist:
             return None
-        return parse_playlist_with_tracks_by_mylist(self.adapter.provider, mylist)
+        return convert_playlist_with_tracks_by_mylist(self.adapter.provider, mylist)
 
     async def add_mylist_item(self, mylist_id: str, video_id: str) -> bool:
         """Add a video to mylist."""

@@ -16,10 +16,10 @@ from niconico.objects.video.search import (
 )
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.parsers import (
-    parse_album_by_series,
-    parse_playlist_by_mylist,
-    parse_track_by_essential_video,
+from music_assistant.providers.niconico.converter import (
+    convert_album_by_series,
+    convert_playlist_by_mylist,
+    convert_track_by_essential_video,
 )
 
 if TYPE_CHECKING:
@@ -87,7 +87,7 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
         playlists = []
         for item in list_search_data.items:
             if isinstance(item, EssentialMylist):
-                playlists.append(parse_playlist_by_mylist(self.adapter.provider, item))
+                playlists.append(convert_playlist_by_mylist(self.adapter.provider, item))
 
         return playlists
 
@@ -106,7 +106,7 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
         albums = []
         for item in list_search_data.items:
             if isinstance(item, EssentialSeries):
-                albums.append(parse_album_by_series(self.adapter.provider, item))
+                albums.append(convert_album_by_series(self.adapter.provider, item))
 
         return albums
 
@@ -124,7 +124,7 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
         tracks = []
         for item in video_search_data.items:
             if item.id_:
-                track = parse_track_by_essential_video(self.adapter.provider, item)
+                track = convert_track_by_essential_video(self.adapter.provider, item)
                 if track:
                     tracks.append(track)
         return tracks
@@ -155,7 +155,7 @@ class NiconicoSearchAdapter(NiconicoBaseAdapter):
             if video_search_data:
                 for item in video_search_data.items:
                     if item.id_:
-                        track = parse_track_by_essential_video(self.adapter.provider, item)
+                        track = convert_track_by_essential_video(self.adapter.provider, item)
                         if track:
                             tracks.append(track)
 

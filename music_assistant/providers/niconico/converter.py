@@ -1,7 +1,7 @@
 """
-Parsers for the Niconico provider in Music Assistant.
+Converter for the Niconico provider in Music Assistant.
 
-This module contains functions to parse various Niconico objects such as playlists,
+This module contains functions to convert various Niconico objects such as playlists,
 tracks, and artists into Music Assistant media items.
 """
 
@@ -48,10 +48,10 @@ if TYPE_CHECKING:
     from niconico.objects.video import Mylist
 
 
-def parse_playlist_by_mylist(
+def convert_playlist_by_mylist(
     provider: MusicProvider, mylist: UserMylistItem | Mylist | EssentialMylist
 ) -> Playlist:
-    """Parse a NicoNico UserMylistItem into a Playlist."""
+    """Convert a NicoNico UserMylistItem into a Playlist."""
     playlist = Playlist(
         item_id=str(mylist.id_),
         provider=provider.lookup_key,
@@ -89,20 +89,20 @@ def parse_playlist_by_mylist(
     return playlist
 
 
-def parse_following_playlist_by_mylist(
+def convert_following_playlist_by_mylist(
     provider: MusicProvider, mylist: UserMylistItem | Mylist | EssentialMylist
 ) -> Playlist:
-    """Parse a NicoNico UserMylistItem from following users into a read-only Playlist."""
-    playlist = parse_playlist_by_mylist(provider, mylist)
+    """Convert a NicoNico UserMylistItem from following users into a read-only Playlist."""
+    playlist = convert_playlist_by_mylist(provider, mylist)
     # Mark following mylists as non-editable
     playlist.is_editable = False
     return playlist
 
 
-def parse_album_by_series(
+def convert_album_by_series(
     provider: MusicProvider, series: SeriesData | UserSeriesItem | EssentialSeries
 ) -> Album:
-    """Parse a NicoNico SeriesData, UserSeriesItem, or EssentialSeries into an Album."""
+    """Convert a NicoNico SeriesData, UserSeriesItem, or EssentialSeries into an Album."""
     # Extract common data based on series type
     if isinstance(series, SeriesData):
         item_id = str(series.detail.id_)
@@ -185,21 +185,23 @@ def parse_album_by_series(
     return album
 
 
-def parse_playlist_with_tracks_by_mylist(
+def convert_playlist_with_tracks_by_mylist(
     provider: MusicProvider, mylist: Mylist
 ) -> PlaylistWithTracks:
-    """Parse a NicoNico UserMylistItem into a PlaylistWithTracks."""
-    playlist = parse_playlist_by_mylist(provider, mylist)
+    """Convert a NicoNico UserMylistItem into a PlaylistWithTracks."""
+    playlist = convert_playlist_by_mylist(provider, mylist)
     tracks = []
     for item in mylist.items:
-        track = parse_track_by_essential_video(provider, item.video)
+        track = convert_track_by_essential_video(provider, item.video)
         if track:
             tracks.append(track)
     return PlaylistWithTracks(playlist, tracks)
 
 
-def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVideo) -> Track | None:
-    """Parse an EssentialVideo object into a Track."""
+def convert_track_by_essential_video(
+    provider: MusicProvider, video: EssentialVideo
+) -> Track | None:
+    """Convert an EssentialVideo object into a Track."""
     # Skip muted videos
     if video.is_muted:
         return None
@@ -216,7 +218,7 @@ def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVide
         provider=provider.lookup_key,
         name=video.title,
         duration=video.duration,
-        artists=UniqueList([parse_artist(provider, video.owner)]),
+        artists=UniqueList([convert_artist(provider, video.owner)]),
         # Videos that cannot be played will have a duration of 0.
         is_playable=video.duration > 0 and not video.is_payment_required,
         metadata=_create_track_metadata(
@@ -242,10 +244,10 @@ def parse_track_by_essential_video(provider: MusicProvider, video: EssentialVide
     return track
 
 
-def _parse_video_thumbnails(
+def _convert_video_thumbnails(
     provider: MusicProvider, thumbnail: VideoThumbnail
 ) -> UniqueList[MediaItemImage]:
-    """Parse video thumbnails into multiple image sizes."""
+    """Convert video thumbnails into multiple image sizes."""
     images: UniqueList[MediaItemImage] = UniqueList()
 
     # nhd_url is the largest size, use it as primary
@@ -285,8 +287,8 @@ def _parse_video_thumbnails(
     return images
 
 
-def parse_artist(provider: MusicProvider, owner_or_user: Owner | NicoUser) -> Artist:
-    """Parse an Owner or NicoUser into an Artist."""
+def convert_artist(provider: MusicProvider, owner_or_user: Owner | NicoUser) -> Artist:
+    """Convert an Owner or NicoUser into an Artist."""
     item_id = str(owner_or_user.id_)
     name = str(owner_or_user.name if isinstance(owner_or_user, Owner) else owner_or_user.nickname)
     icon_url = (
@@ -334,14 +336,14 @@ def parse_artist(provider: MusicProvider, owner_or_user: Owner | NicoUser) -> Ar
     return artist
 
 
-def parse_series_to_album_with_tracks(
+def convert_series_to_album_with_tracks(
     provider: MusicProvider, series_data: SeriesData
 ) -> AlbumWithTracks:
-    """Parse SeriesData to AlbumWithTracks."""
-    album = parse_album_by_series(provider, series_data)
+    """Convert SeriesData to AlbumWithTracks."""
+    album = convert_album_by_series(provider, series_data)
     tracks = []
     for item in series_data.items or []:
-        track = parse_track_by_essential_video(provider, item.video)
+        track = convert_track_by_essential_video(provider, item.video)
         if track:
             tracks.append(track)
     return AlbumWithTracks(album, tracks)
@@ -398,7 +400,7 @@ def _create_track_metadata(
                 metadata.release_date = datetime.fromisoformat(release_date_str)
         except (ValueError, AttributeError) as err:
             # Log debug message for date parsing failures to help with troubleshooting
-            log_verbose(logger, "Failed to parse release date '%s': %s", release_date_str, err)
+            log_verbose(logger, "Failed to convert release date '%s': %s", release_date_str, err)
 
     if popularity is not None:
         metadata.popularity = popularity
@@ -406,7 +408,7 @@ def _create_track_metadata(
     # Add thumbnail images with enhanced support
     if thumbnail:
         # Use enhanced thumbnail parsing for multiple sizes
-        metadata.images = _parse_video_thumbnails(provider, thumbnail)
+        metadata.images = _convert_video_thumbnails(provider, thumbnail)
     elif thumbnail_url:
         # Fallback to single thumbnail URL
         metadata.images = UniqueList(

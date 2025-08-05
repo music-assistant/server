@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.helpers import AlbumWithTracks
-from music_assistant.providers.niconico.parsers import (
-    parse_album_by_series,
-    parse_series_to_album_with_tracks,
+from music_assistant.providers.niconico.converter import (
+    convert_album_by_series,
+    convert_series_to_album_with_tracks,
 )
+from music_assistant.providers.niconico.helpers import AlbumWithTracks
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album
@@ -27,7 +27,7 @@ class NiconicoSeriesAdapter(NiconicoBaseAdapter):
     async def get_series(
         self, series_id: str, page: int = 1, page_size: int = 100
     ) -> AlbumWithTracks | None:
-        """Get series details and parse as AlbumWithTracks."""
+        """Get series details and convert as AlbumWithTracks."""
         series_data = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.video.get_series,
             series_id,
@@ -37,12 +37,12 @@ class NiconicoSeriesAdapter(NiconicoBaseAdapter):
         if not series_data:
             return None
 
-        return parse_series_to_album_with_tracks(self.adapter.provider, series_data)
+        return convert_series_to_album_with_tracks(self.adapter.provider, series_data)
 
     async def get_user_series(
         self, user_id: str, page: int = 1, page_size: int = 100
     ) -> list[Album]:
-        """Get user series and parse as Album list."""
+        """Get user series and convert as Album list."""
         user_series_items = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_user_series,
             user_id,
@@ -53,12 +53,12 @@ class NiconicoSeriesAdapter(NiconicoBaseAdapter):
             return []
 
         return [
-            parse_album_by_series(self.adapter.provider, series_item)
+            convert_album_by_series(self.adapter.provider, series_item)
             for series_item in user_series_items
         ]
 
     async def get_own_series_list(self, page: int = 1, page_size: int = 100) -> list[Album]:
-        """Get own series list and parse as Album list."""
+        """Get own series list and convert as Album list."""
         if not self.adapter.auth.is_logged_in():
             return []
 
@@ -71,14 +71,14 @@ class NiconicoSeriesAdapter(NiconicoBaseAdapter):
             return []
 
         return [
-            parse_album_by_series(self.adapter.provider, series_item)
+            convert_album_by_series(self.adapter.provider, series_item)
             for series_item in user_series_items
         ]
 
     async def get_own_series(
         self, series_id: str, page: int = 1, page_size: int = 100
     ) -> AlbumWithTracks | None:
-        """Get own series details and parse as AlbumWithTracks."""
+        """Get own series details and convert as AlbumWithTracks."""
         if not self.adapter.auth.is_logged_in():
             return None
 
@@ -91,4 +91,4 @@ class NiconicoSeriesAdapter(NiconicoBaseAdapter):
         if not series_data:
             return None
 
-        return parse_series_to_album_with_tracks(self.adapter.provider, series_data)
+        return convert_series_to_album_with_tracks(self.adapter.provider, series_data)

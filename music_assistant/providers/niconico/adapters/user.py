@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING, Literal
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.parsers import (
-    parse_artist,
-    parse_following_playlist_by_mylist,
-    parse_track_by_essential_video,
+from music_assistant.providers.niconico.converter import (
+    convert_artist,
+    convert_following_playlist_by_mylist,
+    convert_track_by_essential_video,
 )
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
         user = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_user, user_id
         )
-        return parse_artist(self.adapter.provider, user) if user else None
+        return convert_artist(self.adapter.provider, user) if user else None
 
     async def get_recommendations(
         self,
@@ -65,7 +65,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
 
             # Type check to ensure content is EssentialVideo
             if isinstance(item.content, EssentialVideo):
-                track = parse_track_by_essential_video(self.adapter.provider, item.content)
+                track = convert_track_by_essential_video(self.adapter.provider, item.content)
                 if track:
                     tracks.append(track)
         return tracks
@@ -92,7 +92,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
 
             # Type check to ensure content is EssentialVideo
             if isinstance(item.content, EssentialVideo):
-                track = parse_track_by_essential_video(self.adapter.provider, item.content)
+                track = convert_track_by_essential_video(self.adapter.provider, item.content)
                 if track:
                     tracks.append(track)
         return tracks
@@ -111,7 +111,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
 
         tracks = []
         for item in like_history.items:
-            track = parse_track_by_essential_video(self.adapter.provider, item.video)
+            track = convert_track_by_essential_video(self.adapter.provider, item.video)
             if track:
                 tracks.append(track)
         return tracks
@@ -130,7 +130,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
 
         tracks = []
         for item in history.items:
-            track = parse_track_by_essential_video(self.adapter.provider, item.video)
+            track = convert_track_by_essential_video(self.adapter.provider, item.video)
             if track:
                 tracks.append(track)
         return tracks
@@ -153,7 +153,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
 
         tracks = []
         for item in own_videos.items:
-            track = parse_track_by_essential_video(self.adapter.provider, item.essential)
+            track = convert_track_by_essential_video(self.adapter.provider, item.essential)
             if track:
                 tracks.append(track)
         return tracks
@@ -232,7 +232,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
         if hasattr(followings_data, "items"):
             for item in followings_data.items:
                 if hasattr(item, "user") and item.user:
-                    artist = parse_artist(self.adapter.provider, item.user)
+                    artist = convert_artist(self.adapter.provider, item.user)
                     if artist:
                         artists.append(artist)
 
@@ -260,6 +260,6 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
 
         playlists = []
         for mylist in following_mylists_data.mylists:
-            playlist = parse_following_playlist_by_mylist(self.adapter.provider, mylist.detail)
+            playlist = convert_following_playlist_by_mylist(self.adapter.provider, mylist.detail)
             playlists.append(playlist)
         return playlists

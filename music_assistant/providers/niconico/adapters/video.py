@@ -13,10 +13,10 @@ from music_assistant.providers.niconico.constants import (
     NICONICO_COOKIE_DOMAIN,
     ApiPriority,
 )
+from music_assistant.providers.niconico.converter import convert_track_by_essential_video
 from music_assistant.providers.niconico.helpers import (
     convert_to_netscape,
 )
-from music_assistant.providers.niconico.parsers import parse_track_by_essential_video
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
@@ -34,7 +34,7 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
     async def get_user_videos(
         self, user_id: str, page: int = 1, page_size: int = 50
     ) -> list[Track]:
-        """Get user videos and parse as Track list."""
+        """Get user videos and convert as Track list."""
         config = self.niconico_config
         sensitive_contents = config.get_sensitive_contents_config()
         user_video_data = await self.adapter._call_with_throttler(
@@ -48,17 +48,17 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
             return []
         tracks = []
         for item in user_video_data.items:
-            track = parse_track_by_essential_video(self.adapter.provider, item.essential)
+            track = convert_track_by_essential_video(self.adapter.provider, item.essential)
             if track:
                 tracks.append(track)
         return tracks
 
     async def get_video(self, video_id: str) -> Track | None:
-        """Get video details and parse as Track."""
+        """Get video details and convert as Track."""
         video = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.video.get_video, video_id
         )
-        return parse_track_by_essential_video(self.adapter.provider, video) if video else None
+        return convert_track_by_essential_video(self.adapter.provider, video) if video else None
 
     async def get_video_tags(
         self, video_id: str, priority: ApiPriority = ApiPriority.HIGH
