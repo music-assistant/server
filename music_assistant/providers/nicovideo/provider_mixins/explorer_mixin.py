@@ -72,6 +72,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                     item_id="nicovideo_recommendations",
                     name="nicovideo recommendations",
                     provider=self.provider.lookup_key,
+                    icon="mdi-star-circle-outline",
                     items=UniqueList(tracks),
                 )
             )
@@ -85,6 +86,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                     item_id="nicovideo_history",
                     name="Recently watched  (nicovideo history)",
                     provider=self.provider.lookup_key,
+                    icon="mdi-history",
                     items=UniqueList(history_tracks),
                 )
             )
@@ -100,6 +102,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                     item_id="nicovideo_following_activities",
                     name="New Tracks from Followed Users",
                     provider=self.provider.lookup_key,
+                    icon="mdi-account-plus-outline",
                     items=UniqueList(following_tracks),
                 )
             )
@@ -115,6 +118,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                     item_id="nicovideo_like_history",
                     name="Recently liked (Like history)",
                     provider=self.provider.lookup_key,
+                    icon="mdi-heart-outline",
                     items=UniqueList(like_history_tracks),
                 )
             )
@@ -134,6 +138,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                             item_id=f"nicovideo_tag_recommendations_{tag}",
                             name=f"Tag-based Recommendations: {tag}",
                             provider=self.provider.lookup_key,
+                            icon="mdi-tag-outline",
                             items=UniqueList(tag_recommendation_tracks),
                         )
                     )
@@ -151,6 +156,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                             item_id=f"nicovideo_new_tracks_by_tags_{tag}",
                             name=f"New Tracks by Tags: {tag}",
                             provider=self.provider.lookup_key,
+                            icon="mdi-new-box",
                             items=UniqueList(new_tracks_by_tags),
                         )
                     )
