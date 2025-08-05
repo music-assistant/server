@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Track as TrackModel
@@ -20,8 +20,6 @@ if TYPE_CHECKING:
 
     from music_assistant_models.media_items import Album, Playlist, Track
     from requests.cookies import RequestsCookieJar
-
-T = TypeVar("T")
 
 
 class ErrorState:
@@ -77,7 +75,7 @@ def convert_to_netscape(cookie: RequestsCookieJar, domain: str) -> str:
     return netscape_cookie
 
 
-async def get_library_items(
+async def get_library_items[T](
     provider: MusicProvider,
     cache_key: str,
     query_table: str,

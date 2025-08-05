@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
-from typing import TYPE_CHECKING, ParamSpec, TypeVar
+from typing import TYPE_CHECKING
 
 from niconico import NicoNico
 from niconico.exceptions import LoginFailureError  # Import LoginFailureError
@@ -24,9 +24,6 @@ from music_assistant.providers.niconico.constants import ApiPriority
 
 if TYPE_CHECKING:
     from music_assistant.providers.niconico.config import NiconicoConfig
-
-T = TypeVar("T")
-P = ParamSpec("P")
 
 
 class NicoNicoMusicAssistantAdapter:
@@ -49,7 +46,7 @@ class NicoNicoMusicAssistantAdapter:
         self.search = NiconicoSearchAdapter(self)
         self.user = NicoNicoUserAdapter(self)
 
-    async def _call_with_throttler(
+    async def _call_with_throttler[T, **P](
         self,
         func: Callable[P, T],
         *args: P.args,
@@ -60,7 +57,7 @@ class NicoNicoMusicAssistantAdapter:
             ApiPriority.HIGH, func, *args, **kwargs
         )
 
-    async def _call_with_throttler_with_priority(
+    async def _call_with_throttler_with_priority[T, **P](
         self,
         priority: ApiPriority,
         func: Callable[P, T],
