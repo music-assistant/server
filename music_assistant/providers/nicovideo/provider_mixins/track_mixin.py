@@ -48,6 +48,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         # Check config settings for including tracks
         include_following_tracks = self.nicovideo_config.get_include_followed_mylists_tracks()
         include_own_tracks = self.nicovideo_config.get_include_own_mylists_tracks()
+        include_own_videos_tracks = self.nicovideo_config.get_include_own_videos_tracks()
 
         # Get all library playlists
         playlists = await get_library_items(
@@ -77,6 +78,12 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
                 for track in playlist_tracks:
                     yield track
                 page += 1
+
+        # Include own uploaded videos if enabled
+        if include_own_videos_tracks:
+            own_videos = await self.nicovideo_adapter.user.get_own_videos()
+            for track in own_videos:
+                yield track
 
     async def get_stream_details_for_mixin(
         self, item_id: str, media_type: MediaType
