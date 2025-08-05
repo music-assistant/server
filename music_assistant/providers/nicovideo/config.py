@@ -25,7 +25,6 @@ from music_assistant.providers.nicovideo.constants import (
     CONF_MFA,
     CONF_RECOMMENDATION_COUNT,
     CONF_RECOMMENDATION_FILTER_TAGS,
-    CONF_SENSITIVE_CONTENTS,
     CONF_TAG_RECOMMENDATION_NEW_TRACKS_TAGS,
     CONF_TAG_RECOMMENDATION_TAGS,
     CONF_USE_FOLLOW_UNFOLLOW_ARTISTS,
@@ -184,11 +183,6 @@ class NicovideoConfig:
             mfa=self.get_str_or_none(CONF_MFA),
             user_session=self.get_str_or_none(CONF_USER_SESSION),
         )
-
-    def get_sensitive_contents_handling(self) -> str | None:
-        """Get sensitive contents handling setting."""
-        value = self._get_config_value(CONF_SENSITIVE_CONTENTS, None)
-        return str(value) if value is not None else None
 
     def get_sensitive_contents_config(self) -> Literal["mask", "filter"] | None:
         """Get and cast sensitive contents configuration value."""

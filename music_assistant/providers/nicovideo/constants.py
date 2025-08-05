@@ -15,7 +15,6 @@ class ApiPriority(Enum):
 CONF_MAIL = "mail"
 CONF_MFA = "mfa"
 CONF_USER_SESSION = "user_session"
-CONF_SENSITIVE_CONTENTS = "sensitive_contents"
 CONF_AUTO_LIKE_ON_LIBRARY_ADD = "auto_like_on_library_add"
 CONF_USE_FOLLOW_UNFOLLOW_ARTISTS = "use_follow_unfollow_artists"
 CONF_INCLUDE_FOLLOWED_MYLISTS = "include_followed_mylists"
