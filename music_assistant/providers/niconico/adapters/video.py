@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import yt_dlp
 from music_assistant_models.errors import UnplayableMediaError
@@ -72,13 +72,13 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
         # Extract tag names from Tag objects
         return [tag.name for tag in tags if hasattr(tag, "name")]
 
-    async def get_stream_format(self, item_id: str) -> dict[str, Any]:
+    async def get_stream_format(self, item_id: str) -> dict[str, str]:
         """Use yt-dlp to extract the best stream URL from Niconico."""
         netscape_cookie_str = convert_to_netscape(
             self.adapter.niconico_py_client.session.cookies, NICONICO_COOKIE_DOMAIN
         )
 
-        def _extract() -> dict[str, Any]:
+        def _extract() -> dict[str, str]:
             url = f"https://www.nicovideo.jp/watch/{item_id}"
             ydl_opts = {
                 "quiet": True,

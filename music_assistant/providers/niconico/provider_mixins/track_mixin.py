@@ -95,38 +95,42 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
 
         extra_args = [
             "-user_agent",
-            str(stream_format["user_agent"]),
+            stream_format["user_agent"],
             "-referer",
             "https://www.nicovideo.jp/",
             "-headers",
-            "Cookie: " + str(stream_format["cookies"]) + "\r\n",
+            f"Cookie: {stream_format['cookies']}\r\n",
         ]
+
+        try:
+            content_type = ContentType(stream_format["audio_ext"])
+        except ValueError:
+            content_type = ContentType.UNKNOWN
 
         stream_details = StreamDetails(
             provider=self.provider.instance_id,
-            duration=stream_format.get("duration"),
+            duration=int(stream_format.get("duration", 0)),
             item_id=item_id,
             audio_format=AudioFormat(
-                content_type=ContentType.try_parse(str(stream_format["audio_ext"])),
+                content_type=content_type,
             ),
             stream_type=StreamType.HTTP,
-            path=str(stream_format["url"]),
-            extra_input_args=[str(arg) for arg in extra_args],
+            path=stream_format["url"],
+            extra_input_args=extra_args,
             allow_seek=True,
             can_seek=True,
             # If an expiring URL is used, it may not play when pausing and resuming.
             enable_cache=True,
         )
 
-        if (
-            stream_format.get("audio_channels")
-            and str(stream_format.get("audio_channels")).isdigit()
-        ):
-            stream_details.audio_format.channels = int(
-                str(stream_format.get("audio_channels") or "0")
-            )
-        if stream_format.get("asr"):
-            stream_details.audio_format.sample_rate = int(str(stream_format.get("asr") or "0"))
+        audio_channels = stream_format.get("audio_channels")
+        asr = stream_format.get("asr")
+
+        if audio_channels and audio_channels.isdigit():
+            stream_details.audio_format.channels = int(audio_channels)
+        if asr:
+            stream_details.audio_format.sample_rate = int(asr)
+
         return stream_details
 
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
