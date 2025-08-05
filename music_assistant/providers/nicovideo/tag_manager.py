@@ -32,6 +32,9 @@ class TagManager:
         self._cache_category = CACHE_CATEGORY_MUSIC_PROVIDER_ITEM
         self._cache_expiration = 86400 * 7  # 7 days
 
+        # Limit concurrent cache operations to reduce database load
+        self._cache_semaphore = asyncio.Semaphore(5)
+
         # Start periodic cleanup task
         self._cleanup_timer_id = "nicovideo_tag_cleanup"
         self._start_cleanup_timer()
@@ -113,11 +116,14 @@ class TagManager:
             List of tag strings if cached and valid, None if not cached or invalid
         """
         cache_key = f"tags_{video_id}"
-        cached_tags = await self.provider.mass.cache.get(
-            cache_key,
-            category=self._cache_category,
-            base_key=self.provider.lookup_key,
-        )
+
+        # Use semaphore to limit concurrent cache access and reduce database load
+        async with self._cache_semaphore:
+            cached_tags = await self.provider.mass.cache.get(
+                cache_key,
+                category=self._cache_category,
+                base_key=self.provider.lookup_key,
+            )
 
         if cached_tags is not None:
             # Validate cache data
@@ -147,15 +153,16 @@ class TagManager:
                 video_id, priority=priority
             )
 
-            # Cache the tags
+            # Cache the tags with semaphore protection to reduce database load
             cache_key = f"tags_{video_id}"
-            await self.provider.mass.cache.set(
-                cache_key,
-                tags_data,
-                expiration=self._cache_expiration,
-                category=self._cache_category,
-                base_key=self.provider.lookup_key,
-            )
+            async with self._cache_semaphore:
+                await self.provider.mass.cache.set(
+                    cache_key,
+                    tags_data,
+                    expiration=self._cache_expiration,
+                    category=self._cache_category,
+                    base_key=self.provider.lookup_key,
+                )
 
             log_verbose_operation(
                 self.logger,

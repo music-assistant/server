@@ -116,7 +116,7 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
         # Cancel existing task if any
         self.stop_periodic_relogin_task()
         self._periodic_relogin_task = self.adapter.mass.call_later(
-            30 * 24 * 60 * 60, self._schedule_periodic_relogin()
+            30 * 24 * 60 * 60, self._schedule_periodic_relogin
         )
 
     def stop_periodic_relogin_task(self) -> None:
@@ -130,6 +130,7 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
         try:
             log_verbose(self.adapter.logger, "Performing periodic re-login to refresh the session.")
             await self.try_logout()
+            await asyncio.sleep(3)  # Short delay to ensure logout completes
             await self.try_login()
             self.start_periodic_relogin_task()
         except asyncio.CancelledError:
