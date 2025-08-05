@@ -1,7 +1,7 @@
 """
-MixIn for NiconicoMusicProvider: album-related methods.
+MixIn for NicovideoMusicProvider: album-related methods.
 
-In this section, we treat NicoNico's "series" as an album.
+In this section, we treat niconico's "series" as an album.
 """
 
 from __future__ import annotations
@@ -14,9 +14,9 @@ from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.util import TaskManager
-from music_assistant.providers.niconico.helpers import cache_track
-from music_assistant.providers.niconico.provider_mixins.mixin_base import (
-    NiconicoMusicProviderMixinBase,
+from music_assistant.providers.nicovideo.helpers import cache_track
+from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+    NicovideoMusicProviderMixinBase,
 )
 
 if TYPE_CHECKING:
@@ -25,8 +25,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class NiconicoMusicProviderAlbumMixin(NiconicoMusicProviderMixinBase):
-    """Album-related methods for NiconicoMusicProvider."""
+class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
+    """Album-related methods for NicovideoMusicProvider."""
 
     _supported_features = {
         ProviderFeature.LIBRARY_ALBUMS,
@@ -34,10 +34,9 @@ class NiconicoMusicProviderAlbumMixin(NiconicoMusicProviderMixinBase):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id (series as album)."""
-        # For Niconico, albums are represented as series
-        album_with_tracks = await self.niconico_adapter.series.get_series(prov_album_id)
+        album_with_tracks = await self.nicovideo_adapter.series.get_series(prov_album_id)
         if not album_with_tracks:
-            raise MediaNotFoundError(f"Album with id {prov_album_id} not found on Niconico.")
+            raise MediaNotFoundError(f"Album with id {prov_album_id} not found on nicovideo.")
 
         # Update album information for existing tracks in library
         await self._update_tracks_album_info(album_with_tracks.album, album_with_tracks.tracks)
@@ -48,16 +47,16 @@ class NiconicoMusicProviderAlbumMixin(NiconicoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider (user's own series)."""
-        if not self.niconico_adapter.auth.is_logged_in():
+        if not self.nicovideo_adapter.auth.is_logged_in():
             return
 
         # Check config setting for including own series as albums
-        if not self.niconico_config.get_include_own_series_albums():
+        if not self.nicovideo_config.get_include_own_series_albums():
             return
 
         page = 1
         while True:
-            albums = await self.niconico_adapter.series.get_own_series_list(
+            albums = await self.nicovideo_adapter.series.get_own_series_list(
                 page=page, page_size=100
             )
             if not albums:
@@ -76,7 +75,7 @@ class NiconicoMusicProviderAlbumMixin(NiconicoMusicProviderMixinBase):
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id (series tracks)."""
-        album_with_tracks = await self.niconico_adapter.series.get_series(prov_album_id)
+        album_with_tracks = await self.nicovideo_adapter.series.get_series(prov_album_id)
         if not album_with_tracks:
             return []
 

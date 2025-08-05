@@ -1,7 +1,7 @@
 """
-Converter for the Niconico provider in Music Assistant.
+Converter for the nicovideo provider in Music Assistant.
 
-This module contains functions to convert various Niconico objects such as playlists,
+This module contains functions to convert various nicovideo objects such as playlists,
 tracks, and artists into Music Assistant media items.
 """
 
@@ -32,7 +32,7 @@ from niconico.objects.video import EssentialVideo, Mylist, Owner, VideoThumbnail
 from niconico.objects.video.search import EssentialMylist, EssentialSeries
 
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.niconico.helpers import (
+from music_assistant.providers.nicovideo.helpers import (
     AlbumWithTracks,
     PlaylistWithTracks,
     log_verbose,
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 def convert_playlist_by_mylist(
     provider: MusicProvider, mylist: UserMylistItem | Mylist | EssentialMylist
 ) -> Playlist:
-    """Convert a NicoNico UserMylistItem into a Playlist."""
+    """Convert a nicovideo UserMylistItem into a Playlist."""
     playlist = Playlist(
         item_id=str(mylist.id_),
         provider=provider.lookup_key,
@@ -92,7 +92,7 @@ def convert_playlist_by_mylist(
 def convert_following_playlist_by_mylist(
     provider: MusicProvider, mylist: UserMylistItem | Mylist | EssentialMylist
 ) -> Playlist:
-    """Convert a NicoNico UserMylistItem from following users into a read-only Playlist."""
+    """Convert a nicovideo UserMylistItem from following users into a read-only Playlist."""
     playlist = convert_playlist_by_mylist(provider, mylist)
     # Mark following mylists as non-editable
     playlist.is_editable = False
@@ -102,7 +102,7 @@ def convert_following_playlist_by_mylist(
 def convert_album_by_series(
     provider: MusicProvider, series: SeriesData | UserSeriesItem | EssentialSeries
 ) -> Album:
-    """Convert a NicoNico SeriesData, UserSeriesItem, or EssentialSeries into an Album."""
+    """Convert a nicovideo SeriesData, UserSeriesItem, or EssentialSeries into an Album."""
     # Extract common data based on series type
     if isinstance(series, SeriesData):
         item_id = str(series.detail.id_)
@@ -188,7 +188,7 @@ def convert_album_by_series(
 def convert_playlist_with_tracks_by_mylist(
     provider: MusicProvider, mylist: Mylist
 ) -> PlaylistWithTracks:
-    """Convert a NicoNico UserMylistItem into a PlaylistWithTracks."""
+    """Convert a nicovideo UserMylistItem into a PlaylistWithTracks."""
     playlist = convert_playlist_by_mylist(provider, mylist)
     tracks = []
     for item in mylist.items:

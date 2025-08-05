@@ -1,4 +1,4 @@
-"""niconico support for Music Assistant."""
+"""nicovideo support for Music Assistant."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
-from music_assistant.providers.niconico.config import get_config_entries_impl
-from music_assistant.providers.niconico.provider import NiconicoMusicProvider
+from music_assistant.providers.nicovideo.config import get_config_entries_impl
+from music_assistant.providers.nicovideo.provider import NicovideoMusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
@@ -22,7 +22,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return NiconicoMusicProvider(mass, manifest, config)
+    return NicovideoMusicProvider(mass, manifest, config)
 
 
 async def get_config_entries(

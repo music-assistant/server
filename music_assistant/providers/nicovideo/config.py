@@ -1,4 +1,4 @@
-"""Configuration utilities for NiconicoMusicProvider."""
+"""Configuration utilities for NicovideoMusicProvider."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.config import ConfigController
-from music_assistant.providers.niconico.constants import (
+from music_assistant.providers.nicovideo.constants import (
     CONF_AUTO_LIKE_ON_LIBRARY_ADD,
     CONF_FOLLOWING_ACTIVITIES_COUNT,
     CONF_HISTORY_COUNT,
@@ -52,8 +52,8 @@ class AuthCredentials:
         self.user_session = user_session
 
 
-class NiconicoConfig:
-    """Configuration helper for Niconico provider settings."""
+class NicovideoConfig:
+    """Configuration helper for nicovideo provider settings."""
 
     def __init__(self, provider: Provider) -> None:
         """Initialize config helper with provider instance."""

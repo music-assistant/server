@@ -1,4 +1,4 @@
-"""MixIn for NiconicoMusicProvider: search and recommendations methods."""
+"""MixIn for NicovideoMusicProvider: search and recommendations methods."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.media_items import RecommendationFolder, SearchResults, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.providers.niconico.helpers import log_verbose
-from music_assistant.providers.niconico.provider_mixins.mixin_base import (
-    NiconicoMusicProviderMixinBase,
+from music_assistant.providers.nicovideo.helpers import log_verbose
+from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+    NicovideoMusicProviderMixinBase,
 )
 
 
-class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
-    """Search and recommendations methods for NiconicoMusicProvider."""
+class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
+    """Search and recommendations methods for NicovideoMusicProvider."""
 
     _supported_features = {
         ProviderFeature.SEARCH,
@@ -36,7 +36,7 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
         search_result = SearchResults()
 
         if MediaType.TRACK in media_types:
-            tracks = await self.niconico_adapter.search.search_videos_by_keyword(
+            tracks = await self.nicovideo_adapter.search.search_videos_by_keyword(
                 search_query, limit
             )
             search_result.tracks = tracks
@@ -45,7 +45,7 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
         list_media_types = [mt for mt in media_types if mt in (MediaType.PLAYLIST, MediaType.ALBUM)]
 
         if list_media_types:
-            await self.niconico_adapter.search.search_playlists_and_albums_by_keyword(
+            await self.nicovideo_adapter.search.search_playlists_and_albums_by_keyword(
                 search_query, limit, search_result, list_media_types
             )
 
@@ -61,7 +61,7 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
         recommendation_folders = []
 
         # Get target count from config
-        target_count = self.niconico_config.get_recommendation_count()
+        target_count = self.nicovideo_config.get_recommendation_count()
 
         # General recommendations
         # Start with the target count, but be prepared to fetch more if filtering reduces count
@@ -69,35 +69,35 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
         if tracks:
             recommendation_folders.append(
                 RecommendationFolder(
-                    item_id="niconico_recommendations",
-                    name="niconico recommendations",
+                    item_id="nicovideo_recommendations",
+                    name="nicovideo recommendations",
                     provider=self.provider.lookup_key,
                     items=UniqueList(tracks),
                 )
             )
 
         # History-based recommendations
-        history_count = self.niconico_config.get_history_count()
-        history_tracks = await self.niconico_adapter.user.get_user_history(limit=history_count)
+        history_count = self.nicovideo_config.get_history_count()
+        history_tracks = await self.nicovideo_adapter.user.get_user_history(limit=history_count)
         if history_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
-                    item_id="niconico_history",
-                    name="Recently watched  (niconico history)",
+                    item_id="nicovideo_history",
+                    name="Recently watched  (nicovideo history)",
                     provider=self.provider.lookup_key,
                     items=UniqueList(history_tracks),
                 )
             )
 
         # Following activities recommendations
-        following_count = self.niconico_config.get_following_activities_count()
-        following_tracks = await self.niconico_adapter.user.get_following_activities(
+        following_count = self.nicovideo_config.get_following_activities_count()
+        following_tracks = await self.nicovideo_adapter.user.get_following_activities(
             limit=following_count
         )
         if following_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
-                    item_id="niconico_following_activities",
+                    item_id="nicovideo_following_activities",
                     name="New Tracks from Followed Users",
                     provider=self.provider.lookup_key,
                     items=UniqueList(following_tracks),
@@ -105,14 +105,14 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
             )
 
         # Like History recommendations
-        like_history_count = self.niconico_config.get_history_count()  # Same as history
-        like_history_tracks = await self.niconico_adapter.user.get_like_history(
+        like_history_count = self.nicovideo_config.get_history_count()  # Same as history
+        like_history_tracks = await self.nicovideo_adapter.user.get_like_history(
             limit=like_history_count
         )
         if like_history_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
-                    item_id="niconico_like_history",
+                    item_id="nicovideo_like_history",
                     name="Recently liked (Like history)",
                     provider=self.provider.lookup_key,
                     items=UniqueList(like_history_tracks),
@@ -120,18 +120,18 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
             )
 
         # Tag-based recommendations
-        recommendation_tags = self.niconico_config.get_tag_recommendation_tags()
+        recommendation_tags = self.nicovideo_config.get_tag_recommendation_tags()
         if recommendation_tags:
             for tag in recommendation_tags:
                 tag_recommendation_tracks = (
-                    await self.niconico_adapter.search.search_videos_by_tags(
+                    await self.nicovideo_adapter.search.search_videos_by_tags(
                         [tag], target_count, "personalized", "none"
                     )
                 )
                 if tag_recommendation_tracks:
                     recommendation_folders.append(
                         RecommendationFolder(
-                            item_id=f"niconico_tag_recommendations_{tag}",
+                            item_id=f"nicovideo_tag_recommendations_{tag}",
                             name=f"Tag-based Recommendations: {tag}",
                             provider=self.provider.lookup_key,
                             items=UniqueList(tag_recommendation_tracks),
@@ -139,16 +139,16 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
                     )
 
         # New tracks by tags
-        new_tracks_tags = self.niconico_config.get_tag_recommendation_new_tracks_tags()
+        new_tracks_tags = self.nicovideo_config.get_tag_recommendation_new_tracks_tags()
         if new_tracks_tags:
             for tag in new_tracks_tags:
-                new_tracks_by_tags = await self.niconico_adapter.search.search_videos_by_tags(
+                new_tracks_by_tags = await self.nicovideo_adapter.search.search_videos_by_tags(
                     [tag], target_count, "registeredAt", "desc"
                 )
                 if new_tracks_by_tags:
                     recommendation_folders.append(
                         RecommendationFolder(
-                            item_id=f"niconico_new_tracks_by_tags_{tag}",
+                            item_id=f"nicovideo_new_tracks_by_tags_{tag}",
                             name=f"New Tracks by Tags: {tag}",
                             provider=self.provider.lookup_key,
                             items=UniqueList(new_tracks_by_tags),
@@ -160,7 +160,7 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         # Use config count if limit is default
-        target_count = self.niconico_config.get_recommendation_count() if limit == 25 else limit
+        target_count = self.nicovideo_config.get_recommendation_count() if limit == 25 else limit
 
         return await self._fetch_similar_tracks_with_filtering(prov_track_id, target_count)
 
@@ -179,7 +179,7 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
 
     async def _filter_tracks_by_tags(self, tracks: list[Track]) -> list[Track]:
         """Filter tracks based on required tags from configuration."""
-        required_tags = self.niconico_config.get_recommendation_filter_tags()
+        required_tags = self.nicovideo_config.get_recommendation_filter_tags()
         if not required_tags:
             # No filtering needed
             return tracks
@@ -204,10 +204,10 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
 
     async def _fetch_recommendations_with_filtering(self, target_count: int) -> list[Track]:
         """Fetch recommendations with dynamic count adjustment for tag filtering."""
-        required_tags = self.niconico_config.get_recommendation_filter_tags()
+        required_tags = self.nicovideo_config.get_recommendation_filter_tags()
         if not required_tags:
             # No filtering needed, just fetch the target count
-            return await self.niconico_adapter.user.get_recommendations(limit=target_count)
+            return await self.nicovideo_adapter.user.get_recommendations(limit=target_count)
 
         # With filtering, we need to fetch more to account for filtered out tracks
         max_attempts = 5
@@ -218,7 +218,7 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
             current_limit = target_count * 5
 
             try:
-                batch_tracks = await self.niconico_adapter.user.get_recommendations(
+                batch_tracks = await self.nicovideo_adapter.user.get_recommendations(
                     "video_recommendation_recommend", limit=current_limit
                 )
 
@@ -262,10 +262,10 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
         self, prov_track_id: str, target_count: int
     ) -> list[Track]:
         """Fetch similar tracks with dynamic count adjustment for tag filtering."""
-        required_tags = self.niconico_config.get_recommendation_filter_tags()
+        required_tags = self.nicovideo_config.get_recommendation_filter_tags()
         if not required_tags:
             # No filtering needed, just fetch the target count
-            return await self.niconico_adapter.user.get_similar_tracks(
+            return await self.nicovideo_adapter.user.get_similar_tracks(
                 prov_track_id, limit=target_count
             )
 
@@ -274,7 +274,7 @@ class NiconicoMusicProviderExplorerMixin(NiconicoMusicProviderMixinBase):
         fetch_limit = min(int(target_count * 2.5), 100)  # Fetch 2.5x target, cap at 100
 
         try:
-            tracks = await self.niconico_adapter.user.get_similar_tracks(
+            tracks = await self.nicovideo_adapter.user.get_similar_tracks(
                 prov_track_id, limit=fetch_limit
             )
             filtered_tracks = await self._filter_tracks_by_tags(tracks)

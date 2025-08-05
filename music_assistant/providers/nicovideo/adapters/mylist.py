@@ -1,28 +1,28 @@
-"""Mylist adapter for NicoNico."""
+"""Mylist adapter for nicovideo."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.converter import (
+from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
+from music_assistant.providers.nicovideo.converter import (
     convert_playlist_by_mylist,
     convert_playlist_with_tracks_by_mylist,
 )
-from music_assistant.providers.niconico.helpers import PlaylistWithTracks
+from music_assistant.providers.nicovideo.helpers import PlaylistWithTracks
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Playlist
     from niconico.objects.nvapi import CreateMylistData
 
-    from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
 
 
-class NiconicoMylistAdapter(NiconicoBaseAdapter):
-    """Handles mylist related operations for NicoNico."""
+class NicovideoMylistAdapter(NicovideoBaseAdapter):
+    """Handles mylist related operations for nicovideo."""
 
-    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
-        """Initialize NiconicoMylistAdapter with reference to parent adapter."""
+    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+        """Initialize NicovideoMylistAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
     async def get_own_mylists(self) -> list[Playlist]:

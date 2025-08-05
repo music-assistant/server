@@ -1,7 +1,7 @@
 """
-Niconico playlist mixin for Music Assistant.
+nicovideo playlist mixin for Music Assistant.
 
-In this section, "Mylist" on NicoNico is treated as a playlist.
+In this section, "Mylist" on niconico is treated as a playlist.
 """
 
 from __future__ import annotations
@@ -17,14 +17,14 @@ from music_assistant_models.errors import MediaNotFoundError
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.providers.niconico.helpers import log_verbose
-from music_assistant.providers.niconico.provider_mixins.mixin_base import (
-    NiconicoMusicProviderMixinBase,
+from music_assistant.providers.nicovideo.helpers import log_verbose
+from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+    NicovideoMusicProviderMixinBase,
 )
 
 
-class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
-    """Mixin class for handling playlist-related operations in NiconicoMusicProvider."""
+class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
+    """Mixin class for handling playlist-related operations in NicovideoMusicProvider."""
 
     _supported_features = {
         ProviderFeature.LIBRARY_PLAYLISTS,
@@ -34,15 +34,15 @@ class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        playlist_with_tracks = await self.niconico_adapter.mylist.get_mylist(
+        playlist_with_tracks = await self.nicovideo_adapter.mylist.get_mylist(
             prov_playlist_id, page_size=500
         )
         if not playlist_with_tracks:
-            playlist_with_tracks = await self.niconico_adapter.mylist.get_own_mylist(
+            playlist_with_tracks = await self.nicovideo_adapter.mylist.get_own_mylist(
                 prov_playlist_id, page_size=500
             )
         if not playlist_with_tracks:
-            raise MediaNotFoundError(f"Playlist with id {prov_playlist_id} not found on Niconico.")
+            raise MediaNotFoundError(f"Playlist with id {prov_playlist_id} not found on nicovideo.")
         return playlist_with_tracks.playlist
 
     async def get_playlist_tracks(
@@ -51,11 +51,11 @@ class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
         page: int = 0,
     ) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
-        playlist_with_tracks = await self.niconico_adapter.mylist.get_mylist(
+        playlist_with_tracks = await self.nicovideo_adapter.mylist.get_mylist(
             prov_playlist_id, page_size=500, page=page + 1
         )
         if not playlist_with_tracks:
-            playlist_with_tracks = await self.niconico_adapter.mylist.get_own_mylist(
+            playlist_with_tracks = await self.nicovideo_adapter.mylist.get_own_mylist(
                 prov_playlist_id, page_size=500, page=page + 1
             )
 
@@ -71,24 +71,26 @@ class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Playlist, None]:
         """Retrieve library playlists from the provider."""
-        if not self.niconico_adapter.auth.is_logged_in():
+        if not self.nicovideo_adapter.auth.is_logged_in():
             return
         # Get user's own playlists (editable)
-        own_playlists = await self.niconico_adapter.mylist.get_own_mylists()
+        own_playlists = await self.nicovideo_adapter.mylist.get_own_mylists()
         for playlist in own_playlists:
             yield playlist
 
         # Include following mylists if enabled in config
-        include_following = self.niconico_config.get_include_followed_mylists()
+        include_following = self.nicovideo_config.get_include_followed_mylists()
         if include_following:
-            following_playlists = await self.niconico_adapter.user.get_following_playlists()
+            following_playlists = await self.nicovideo_adapter.user.get_following_playlists()
             for playlist in following_playlists:
                 yield playlist
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         for track_id in prov_track_ids:
-            success = await self.niconico_adapter.mylist.add_mylist_item(prov_playlist_id, track_id)
+            success = await self.nicovideo_adapter.mylist.add_mylist_item(
+                prov_playlist_id, track_id
+            )
             if success:
                 log_verbose(
                     self.provider.logger,
@@ -122,7 +124,7 @@ class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
             )
             return
 
-        success = await self.niconico_adapter.mylist.remove_mylist_items(
+        success = await self.nicovideo_adapter.mylist.remove_mylist_items(
             prov_playlist_id, track_ids_to_remove
         )
         if success:
@@ -140,21 +142,23 @@ class NiconicoMusicProviderPlaylistMixin(NiconicoMusicProviderMixinBase):
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         # Create a new mylist using niconico.py
-        create_result = await self.niconico_adapter.mylist.create_mylist(
+        create_result = await self.nicovideo_adapter.mylist.create_mylist(
             name, description="Created by Music Assistant", is_public=False
         )
 
         if not create_result or not hasattr(create_result, "mylist"):
-            raise MediaNotFoundError(f"Failed to create playlist '{name}' on Niconico.")
+            raise MediaNotFoundError(f"Failed to create playlist '{name}' on nicovideo.")
 
         # Get the created mylist details
         mylist_id = str(create_result.mylist.id_)
-        playlist_with_tracks = await self.niconico_adapter.mylist.get_own_mylist(
+        playlist_with_tracks = await self.nicovideo_adapter.mylist.get_own_mylist(
             mylist_id, page_size=1
         )
 
         if not playlist_with_tracks:
-            raise MediaNotFoundError(f"Failed to retrieve created playlist '{name}' from Niconico.")
+            raise MediaNotFoundError(
+                f"Failed to retrieve created playlist '{name}' from nicovideo."
+            )
 
         log_verbose(
             self.provider.logger, "Successfully created playlist '%s' with ID %s", name, mylist_id

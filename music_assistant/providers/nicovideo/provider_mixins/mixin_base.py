@@ -1,4 +1,4 @@
-"""Abstract base class for NiconicoMusicProvider mixins."""
+"""Abstract base class for NicovideoMusicProvider mixins."""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
-from music_assistant.providers.niconico.config import NiconicoConfig
-from music_assistant.providers.niconico.tag_manager import TagManager
+from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
+from music_assistant.providers.nicovideo.config import NicovideoConfig
+from music_assistant.providers.nicovideo.tag_manager import TagManager
 
 
-class NiconicoMusicProviderMixinBase(ABC):
-    """Abstract base class for NiconicoMusicProvider mixins."""
+class NicovideoMusicProviderMixinBase(ABC):
+    """Abstract base class for NicovideoMusicProvider mixins."""
 
     # Class variable where each mixin declares its supported features
     _supported_features: ClassVar[set[ProviderFeature]] = set()
@@ -25,21 +25,21 @@ class NiconicoMusicProviderMixinBase(ABC):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the mixin base."""
         super().__init__(*args, **kwargs)
-        self._niconico_config: NiconicoConfig | None = None
+        self._nicovideo_config: NicovideoConfig | None = None
         self._tag_manager: TagManager | None = None
 
     @property
-    def niconico_config(self) -> NiconicoConfig:
+    def nicovideo_config(self) -> NicovideoConfig:
         """Get the config helper instance."""
-        if self._niconico_config is None:
-            self._niconico_config = NiconicoConfig(self.provider)
-        return self._niconico_config
+        if self._nicovideo_config is None:
+            self._nicovideo_config = NicovideoConfig(self.provider)
+        return self._nicovideo_config
 
     @property
     def tag_manager(self) -> TagManager:
         """Get the tag manager instance."""
         if self._tag_manager is None:
-            self._tag_manager = TagManager(self.provider, self.niconico_adapter)
+            self._tag_manager = TagManager(self.provider, self.nicovideo_adapter)
         return self._tag_manager
 
     @classmethod
@@ -54,8 +54,8 @@ class NiconicoMusicProviderMixinBase(ABC):
 
     @property
     @abstractmethod
-    def niconico_adapter(self) -> NicoNicoMusicAssistantAdapter:
-        """Return the NicoNicoMusicAssistantAdapter instance associated with this Provider."""
+    def nicovideo_adapter(self) -> NicovideoMusicAssistantAdapter:
+        """Return the NicovideoMusicAssistantAdapter instance associated with this Provider."""
 
     async def get_stream_details_for_mixin(
         self, item_id: str, media_type: MediaType

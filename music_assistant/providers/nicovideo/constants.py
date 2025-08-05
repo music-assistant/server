@@ -1,4 +1,4 @@
-"""Constants for the Niconico provider in Music Assistant."""
+"""Constants for the nicovideo provider in Music Assistant."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from enum import Enum
 
 
 class ApiPriority(Enum):
-    """Priority levels for NicoNico API calls."""
+    """Priority levels for nicovideo API calls."""
 
     HIGH = "high"
     LOW = "low"
@@ -31,4 +31,4 @@ CONF_TAG_RECOMMENDATION_NEW_TRACKS_TAGS = "tag_recommendation_new_tracks_tags"
 CONF_HISTORY_COUNT = "history_count"
 CONF_FOLLOWING_ACTIVITIES_COUNT = "following_activities_count"
 
-NICONICO_COOKIE_DOMAIN = ".nicovideo.jp"
+NICOVIDEO_COOKIE_DOMAIN = ".nicovideo.jp"

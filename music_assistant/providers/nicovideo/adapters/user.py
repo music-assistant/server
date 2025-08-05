@@ -1,4 +1,4 @@
-"""User adapter for NicoNico."""
+"""User adapter for nicovideo."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING, Literal
 
 from music_assistant_models.errors import MediaNotFoundError
 
-from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.converter import (
+from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
+from music_assistant.providers.nicovideo.converter import (
     convert_artist,
     convert_following_playlist_by_mylist,
     convert_track_by_essential_video,
@@ -18,17 +18,17 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Artist, Playlist, Track
     from niconico.objects.nvapi import FollowingMylistsData
 
-    from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
 
 # Import at runtime for isinstance checks
 from niconico.objects.video import EssentialVideo
 
 
-class NicoNicoUserAdapter(NiconicoBaseAdapter):
-    """Get user details from NicoNico."""
+class NicovideoUserAdapter(NicovideoBaseAdapter):
+    """Get user details from nicovideo."""
 
-    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
-        """Initialize NicoNicoUserAdapter with reference to parent adapter."""
+    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+        """Initialize NicovideoUserAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
     async def get_user(self, user_id: str) -> Artist | None:
@@ -45,8 +45,8 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
         ] = "video_watch_recommendation",
         limit: int = 25,
     ) -> list[Track]:
-        """Get recommendations from NicoNico."""
-        config = self.niconico_config
+        """Get recommendations from nicovideo."""
+        config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
         recommendations = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_recommendations,
@@ -72,7 +72,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
 
     async def get_similar_tracks(self, track_id: str, limit: int = 25) -> list[Track]:
         """Get tracks similar to the given track."""
-        config = self.niconico_config
+        config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
         recommendation_api_item = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_recommendations,
@@ -98,7 +98,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
         return tracks
 
     async def get_like_history(self, limit: int = 25) -> list[Track]:
-        """Get user's like history from NicoNico."""
+        """Get user's like history from nicovideo."""
         # Calculate page_size based on limit
         page_size = min(limit, 25)  # API max is 25 for like history
         like_history = await self.adapter._call_with_throttler(
@@ -117,7 +117,7 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
         return tracks
 
     async def get_user_history(self, limit: int = 30) -> list[Track]:
-        """Get user's history from NicoNico."""
+        """Get user's history from nicovideo."""
         # Calculate page_size based on limit
         page_size = min(limit, 100)  # API max is 100
         history = await self.adapter._call_with_throttler(
@@ -136,8 +136,8 @@ class NicoNicoUserAdapter(NiconicoBaseAdapter):
         return tracks
 
     async def get_own_videos(self, limit: int = 100) -> list[Track]:
-        """Get user's own uploaded videos from NicoNico."""
-        config = self.niconico_config
+        """Get user's own uploaded videos from nicovideo."""
+        config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
 
         # Calculate page_size based on limit

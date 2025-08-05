@@ -1,9 +1,9 @@
 {
   "type": "music",
-  "domain": "niconico",
+  "domain": "nicovideo",
   "stage": "experimental",
-  "name": "niconico",
-  "description": "Support for the niconico in Music Assistant",
+  "name": "niconico video",
+  "description": "Support for niconico video(nicovideo) in Music Assistant",
   "codeowners": ["@Shi-553"],
   "requirements": [
     "yt-dlp==2025.6.30",

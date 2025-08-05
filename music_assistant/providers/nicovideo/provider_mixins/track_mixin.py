@@ -1,4 +1,4 @@
-"""MixIn for NiconicoMusicProvider: track-related methods."""
+"""MixIn for NicovideoMusicProvider: track-related methods."""
 
 from __future__ import annotations
 
@@ -10,21 +10,21 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.niconico.helpers import (
+from music_assistant.providers.nicovideo.helpers import (
     get_library_items,
     log_verbose,
     log_verbose_operation,
 )
-from music_assistant.providers.niconico.provider_mixins.mixin_base import (
-    NiconicoMusicProviderMixinBase,
+from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+    NicovideoMusicProviderMixinBase,
 )
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType, Track
 
 
-class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
-    """Track-related methods for NiconicoMusicProvider."""
+class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
+    """Track-related methods for NicovideoMusicProvider."""
 
     _supported_features = {
         ProviderFeature.LIBRARY_TRACKS,
@@ -33,21 +33,21 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        track = await self.niconico_adapter.video.get_video(prov_track_id)
+        track = await self.nicovideo_adapter.video.get_video(prov_track_id)
         if not track:
-            raise MediaNotFoundError(f"Track with id {prov_track_id} not found on Niconico.")
+            raise MediaNotFoundError(f"Track with id {prov_track_id} not found on nicovideo.")
         return track
 
     async def get_library_tracks(
         self,
     ) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        if not self.niconico_adapter.auth.is_logged_in():
+        if not self.nicovideo_adapter.auth.is_logged_in():
             return
 
         # Check config settings for including tracks
-        include_following_tracks = self.niconico_config.get_include_followed_mylists_tracks()
-        include_own_tracks = self.niconico_config.get_include_own_mylists_tracks()
+        include_following_tracks = self.nicovideo_config.get_include_followed_mylists_tracks()
+        include_own_tracks = self.nicovideo_config.get_include_own_mylists_tracks()
 
         # Get all library playlists
         playlists = await get_library_items(
@@ -85,7 +85,7 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
         if media_type != MediaType.TRACK:
             return None
 
-        stream_format = await self.niconico_adapter.video.get_stream_format(item_id=item_id)
+        stream_format = await self.nicovideo_adapter.video.get_stream_format(item_id=item_id)
         log_verbose_operation(
             self.provider.logger,
             "found_stream_format",
@@ -137,7 +137,7 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
         """Add item to provider's library. Return true on success."""
         if item.media_type == MediaType.TRACK:
             # Check if auto-like is enabled
-            auto_like_enabled = self.niconico_config.get_auto_like_on_library_add()
+            auto_like_enabled = self.nicovideo_config.get_auto_like_on_library_add()
             if not auto_like_enabled:
                 return True  # Successfully "added" but no action needed
 
@@ -145,7 +145,7 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
             video_id = item.item_id
 
             # Like the video using niconico.py
-            like_result = await self.niconico_adapter.video.like_video(video_id)
+            like_result = await self.nicovideo_adapter.video.like_video(video_id)
 
             if like_result:
                 log_verbose(self.provider.logger, "Successfully liked video %s", video_id)
@@ -163,7 +163,7 @@ class NiconicoMusicProviderTrackMixin(NiconicoMusicProviderMixinBase):
         """Remove item from provider's library. Return true on success."""
         if media_type == MediaType.TRACK:
             # For now, we don't implement unlike functionality for tracks
-            # because Niconico's "like" feature is more of an optional engagement feature
+            # because niconico's "like" feature is more of an optional engagement feature
             # rather than a core library management feature.
             return True
 

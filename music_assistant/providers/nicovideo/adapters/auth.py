@@ -1,4 +1,4 @@
-"""Authentication adapter for NicoNico."""
+"""Authentication adapter for nicovideo."""
 
 from __future__ import annotations
 
@@ -8,33 +8,33 @@ from typing import TYPE_CHECKING
 from niconico import NicoNico
 from niconico.exceptions import LoginFailureError
 
-from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.helpers import log_verbose
+from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
+from music_assistant.providers.nicovideo.helpers import log_verbose
 
 if TYPE_CHECKING:
     from asyncio import TimerHandle
 
-    from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
 
 
-class NiconicoAuthAdapter(NiconicoBaseAdapter):
-    """Handles authentication and session management for NicoNico."""
+class NicovideoAuthAdapter(NicovideoBaseAdapter):
+    """Handles authentication and session management for nicovideo."""
 
-    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
-        """Initialize the NiconicoAuthAdapter with a reference to the parent adapter."""
+    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+        """Initialize the NicovideoAuthAdapter with a reference to the parent adapter."""
         super().__init__(adapter)
         self._periodic_relogin_task: TimerHandle | None = None
 
     def is_logged_in(self) -> bool:
-        """Check if the user is logged in to NicoNico."""
+        """Check if the user is logged in to niconico."""
         return self.adapter.niconico_py_client.logined
 
     async def try_login(self) -> bool:
-        """Attempt to login to NicoNico with the configured credentials."""
+        """Attempt to login to niconico with the configured credentials."""
         if self.is_logged_in():
             return True
 
-        config = self.niconico_config
+        config = self.nicovideo_config
         credentials = config.get_auth_credentials()
         username = credentials.username
         password = credentials.password
@@ -105,7 +105,7 @@ class NiconicoAuthAdapter(NiconicoBaseAdapter):
         return False
 
     async def try_logout(self) -> None:
-        """Log out from the NicoNico service."""
+        """Log out from the niconico service."""
         if self.adapter.niconico_py_client:
             if self.is_logged_in():
                 await asyncio.to_thread(self.adapter.niconico_py_client.logout)

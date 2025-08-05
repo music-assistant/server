@@ -1,4 +1,4 @@
-"""Tag manager for NicoNico provider with async caching and deduplication."""
+"""Tag manager for nicovideo provider with async caching and deduplication."""
 
 from __future__ import annotations
 
@@ -6,23 +6,23 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import CACHE_CATEGORY_MUSIC_PROVIDER_ITEM
-from music_assistant.providers.niconico.constants import ApiPriority
-from music_assistant.providers.niconico.helpers import log_verbose, log_verbose_operation
+from music_assistant.providers.nicovideo.constants import ApiPriority
+from music_assistant.providers.nicovideo.helpers import log_verbose, log_verbose_operation
 
 if TYPE_CHECKING:
     from music_assistant.models.music_provider import MusicProvider
-    from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
 
 
 class TagManager:
-    """Manages video tag caching and retrieval for NicoNico provider."""
+    """Manages video tag caching and retrieval for nicovideo provider."""
 
     def __init__(
-        self, provider: MusicProvider, niconico_adapter: NicoNicoMusicAssistantAdapter
+        self, provider: MusicProvider, nicovideo_adapter: NicovideoMusicAssistantAdapter
     ) -> None:
         """Initialize TagManager with provider and adapter references."""
         self.provider = provider
-        self.niconico_adapter = niconico_adapter
+        self.nicovideo_adapter = nicovideo_adapter
         self.logger = provider.logger.getChild("tag_manager")
 
         # Track ongoing fetch operations to avoid duplicates
@@ -33,7 +33,7 @@ class TagManager:
         self._cache_expiration = 86400 * 7  # 7 days
 
         # Start periodic cleanup task
-        self._cleanup_timer_id = "niconico_tag_cleanup"
+        self._cleanup_timer_id = "nicovideo_tag_cleanup"
         self._start_cleanup_timer()
 
     def trigger_update(self, video_id: str) -> None:
@@ -53,7 +53,7 @@ class TagManager:
         """Get tags for video from cache or fetch if needed.
 
         Args:
-            video_id: NicoNico video ID
+            video_id: Nicovideo video ID
             wait_if_fetching: If True, wait for ongoing fetch operation
 
         Returns:
@@ -135,7 +135,7 @@ class TagManager:
         """Fetch tags from API and cache them.
 
         Args:
-            video_id: NicoNico video ID
+            video_id: Nicovideo video ID
             priority: API priority level (HIGH or LOW)
 
         Returns:
@@ -143,7 +143,7 @@ class TagManager:
         """
         try:
             # Fetch tags using the video adapter with specified priority
-            tags_data = await self.niconico_adapter.video.get_video_tags(
+            tags_data = await self.nicovideo_adapter.video.get_video_tags(
                 video_id, priority=priority
             )
 

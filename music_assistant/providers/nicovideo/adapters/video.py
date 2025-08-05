@@ -1,4 +1,4 @@
-"""Video adapter for NicoNico."""
+"""Video adapter for nicovideo."""
 
 from __future__ import annotations
 
@@ -8,34 +8,34 @@ from typing import TYPE_CHECKING
 import yt_dlp
 from music_assistant_models.errors import UnplayableMediaError
 
-from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.constants import (
-    NICONICO_COOKIE_DOMAIN,
+from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
+from music_assistant.providers.nicovideo.constants import (
+    NICOVIDEO_COOKIE_DOMAIN,
     ApiPriority,
 )
-from music_assistant.providers.niconico.converter import convert_track_by_essential_video
-from music_assistant.providers.niconico.helpers import (
+from music_assistant.providers.nicovideo.converter import convert_track_by_essential_video
+from music_assistant.providers.nicovideo.helpers import (
     convert_to_netscape,
 )
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
-    from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
 
 
-class NiconicoVideoAdapter(NiconicoBaseAdapter):
-    """Handles video and stream related operations for NicoNico."""
+class NicovideoVideoAdapter(NicovideoBaseAdapter):
+    """Handles video and stream related operations for nicovideo."""
 
-    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
-        """Initialize NiconicoVideoAdapter with reference to parent adapter."""
+    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+        """Initialize NicovideoVideoAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
     async def get_user_videos(
         self, user_id: str, page: int = 1, page_size: int = 50
     ) -> list[Track]:
         """Get user videos and convert as Track list."""
-        config = self.niconico_config
+        config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
         user_video_data = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_user_videos,
@@ -73,9 +73,9 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
         return [tag.name for tag in tags if hasattr(tag, "name")]
 
     async def get_stream_format(self, item_id: str) -> dict[str, str]:
-        """Use yt-dlp to extract the best stream URL from Niconico."""
+        """Use yt-dlp to extract the best stream URL from nicovideo."""
         netscape_cookie_str = convert_to_netscape(
-            self.adapter.niconico_py_client.session.cookies, NICONICO_COOKIE_DOMAIN
+            self.adapter.niconico_py_client.session.cookies, NICOVIDEO_COOKIE_DOMAIN
         )
 
         def _extract() -> dict[str, str]:
@@ -105,7 +105,7 @@ class NiconicoVideoAdapter(NiconicoBaseAdapter):
                         "duration": info.get("duration"),
                     }
                 except Exception as err:
-                    raise UnplayableMediaError(f"Niconico extract error: {err}") from err
+                    raise UnplayableMediaError(f"nicovideo extract error: {err}") from err
 
         result = await self.adapter._call_with_throttler(_extract)
         if result is None:

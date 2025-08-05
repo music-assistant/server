@@ -1,4 +1,4 @@
-"""Search adapter for NicoNico."""
+"""Search adapter for nicovideo."""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ from niconico.objects.video.search import (
     VideoSearchSortOrder,
 )
 
-from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.converter import (
+from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
+from music_assistant.providers.nicovideo.converter import (
     convert_album_by_series,
     convert_playlist_by_mylist,
     convert_track_by_essential_video,
@@ -25,14 +25,14 @@ from music_assistant.providers.niconico.converter import (
 if TYPE_CHECKING:
     from music_assistant_models.media_items import SearchResults
 
-    from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
 
 
-class NiconicoSearchAdapter(NiconicoBaseAdapter):
-    """Handles search related operations for NicoNico."""
+class NicovideoSearchAdapter(NicovideoBaseAdapter):
+    """Handles search related operations for nicovideo."""
 
-    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
-        """Initialize NiconicoSearchAdapter with reference to parent adapter."""
+    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+        """Initialize NicovideoSearchAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
     async def search_playlists_and_albums_by_keyword(

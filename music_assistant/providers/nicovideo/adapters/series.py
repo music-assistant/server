@@ -1,27 +1,27 @@
-"""Series adapter for NicoNico."""
+"""Series adapter for nicovideo."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant.providers.niconico.adapters.base import NiconicoBaseAdapter
-from music_assistant.providers.niconico.converter import (
+from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
+from music_assistant.providers.nicovideo.converter import (
     convert_album_by_series,
     convert_series_to_album_with_tracks,
 )
-from music_assistant.providers.niconico.helpers import AlbumWithTracks
+from music_assistant.providers.nicovideo.helpers import AlbumWithTracks
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album
 
-    from music_assistant.providers.niconico.adapter import NicoNicoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
 
 
-class NiconicoSeriesAdapter(NiconicoBaseAdapter):
-    """Handles series related operations for NicoNico."""
+class NicovideoSeriesAdapter(NicovideoBaseAdapter):
+    """Handles series related operations for nicovideo."""
 
-    def __init__(self, adapter: NicoNicoMusicAssistantAdapter) -> None:
-        """Initialize NiconicoSeriesAdapter with reference to parent adapter."""
+    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+        """Initialize NicovideoSeriesAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
     async def get_series(
