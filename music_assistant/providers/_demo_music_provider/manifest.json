@@ -1,0 +1,9 @@
+{
+  "type": "music",
+  "domain": "_demo_music_provider",
+  "name": "Demo Music Provider",
+  "description": "Test/Example Music Provider for Music Assistant.",
+  "codeowners": ["@yourgithubusername"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/demo/"
+}

@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.mass import MusicAssistant
 
-from .const import CONF_BIND_INTERFACE
 from .provider import AirPlayProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.models import ProviderInstanceType
@@ -34,16 +32,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_BIND_INTERFACE,
-            type=ConfigEntryType.STRING,
-            default_value=cast("str", mass.streams.publish_ip),
-            label="Bind interface",
-            description="Interface to bind to for AirPlay streaming.",
-            category="advanced",
-        ),
-    )
+    return ()
 
 
 async def setup(

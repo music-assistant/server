@@ -132,7 +132,7 @@ SUPPORTED_FEATURES = {
 
 
 # TODO: fix disabled tests
-# ruff: noqa: PLW2901, RET504
+# ruff: noqa: PLW2901
 
 
 async def setup(
