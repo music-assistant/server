@@ -28,6 +28,9 @@ class TagManager:
         # Track ongoing fetch operations to avoid duplicates
         self._fetch_tasks: dict[str, asyncio.Task[list[str]]] = {}
 
+        # Lock to prevent race conditions in task management
+        self._task_lock = asyncio.Lock()
+
         # Cache configuration
         self._cache_category = CACHE_CATEGORY_MUSIC_PROVIDER_ITEM
         self._cache_expiration = 86400 * 7  # 7 days
@@ -44,13 +47,19 @@ class TagManager:
         if not video_id:
             return
 
-        # Don't start new fetch if one is already running
-        if video_id in self._fetch_tasks and not self._fetch_tasks[video_id].done():
-            return
+        # Use async task to handle lock properly
+        self.provider.mass.create_task(self._trigger_update_async(video_id))
 
-        # Start async fetch and cache operation with priority handling
-        task = self.provider.mass.create_task(self._fetch_and_cache_with_priority(video_id))
-        self._fetch_tasks[video_id] = task
+    async def _trigger_update_async(self, video_id: str) -> None:
+        """Async implementation of trigger_update with lock protection."""
+        async with self._task_lock:
+            # Don't start new fetch if one is already running
+            if video_id in self._fetch_tasks and not self._fetch_tasks[video_id].done():
+                return
+
+            # Start async fetch and cache operation with priority handling
+            task = self.provider.mass.create_task(self._fetch_and_cache_with_priority(video_id))
+            self._fetch_tasks[video_id] = task
 
     async def get_tags(self, video_id: str, wait_if_fetching: bool = False) -> list[str]:
         """Get tags for video from cache or fetch if needed.
@@ -70,25 +79,26 @@ class TagManager:
         if cached_tags is not None:
             return cached_tags
 
-        # Check if we're currently fetching this video's tags
-        if video_id in self._fetch_tasks and not self._fetch_tasks[video_id].done():
+        # Use lock to prevent race conditions in task management
+        async with self._task_lock:
+            # Check if we're currently fetching this video's tags
+            if video_id in self._fetch_tasks and not self._fetch_tasks[video_id].done():
+                if wait_if_fetching:
+                    # Cancel existing task to start with HIGH priority
+                    existing_task = self._fetch_tasks[video_id]
+                    existing_task.cancel()
+                    self._fetch_tasks.pop(video_id, None)
+                else:
+                    # Don't wait, return empty list for now
+                    return []
+
+            # Start new fetch if wait_if_fetching is True
             if wait_if_fetching:
                 try:
-                    return await self._fetch_tasks[video_id]
+                    return await self._fetch_and_cache(video_id, priority=ApiPriority.HIGH)
                 except Exception as err:
-                    self.logger.warning("Failed to wait for tag fetch %s: %s", video_id, err)
+                    self.logger.warning("Failed to fetch tags for %s: %s", video_id, err)
                     return []
-            else:
-                # Don't wait, return empty list for now
-                return []
-
-        # No cache and no ongoing fetch - start new fetch if wait_if_fetching is True
-        if wait_if_fetching:
-            try:
-                return await self._fetch_and_cache(video_id, priority=ApiPriority.HIGH)
-            except Exception as err:
-                self.logger.warning("Failed to fetch tags for %s: %s", video_id, err)
-                return []
 
         # Return empty list if we can't get tags immediately
         return []
