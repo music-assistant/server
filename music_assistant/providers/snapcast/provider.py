@@ -227,7 +227,7 @@ class SnapCastProvider(PlayerProvider):
         else:
             return self._get_ma_id(snap_client_id)
 
-    def _handle_player_init(self, snap_client: Snapclient) -> None:
+    def _handle_player_init(self, snap_client: Snapclient) -> SnapCastPlayer:
         """Process Snapcast add to Player controller."""
         player_id = self._generate_and_register_id(snap_client.identifier)
         player = self.mass.players.get(player_id, raise_unavailable=False)
@@ -242,9 +242,12 @@ class SnapCastProvider(PlayerProvider):
                 snap_client_id=self._get_snapclient_id(player_id),
             )
             player.setup()
+        else:
+            player = cast("SnapCastPlayer", player)  # for type checking
         asyncio.run_coroutine_threadsafe(
             self.mass.players.register_or_update(player), loop=self.mass.loop
         )
+        return player
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
@@ -254,9 +257,7 @@ class SnapCastProvider(PlayerProvider):
                     "Detected Snapclient %s without identifier, skipping", snap_client.friendly_name
                 )
                 continue
-            self._handle_player_init(snap_client)
-            if ma_player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
-                assert isinstance(ma_player, SnapCastPlayer)  # for type checking
+            if ma_player := self._handle_player_init(snap_client):
                 snap_client.set_callback(ma_player._handle_player_update)
         for snap_client in self._snapserver.clients:
             if ma_player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
