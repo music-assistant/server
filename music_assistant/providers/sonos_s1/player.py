@@ -99,7 +99,7 @@ class SonosPlayer(Player):
             ip_address=soco.ip_address,
         )
         self._attr_available = True
-        self._attr_can_group_with = {provider.instance_id}
+        self._attr_can_group_with = {provider.lookup_key}
 
         # Cached attributes
         self.crossfade: bool = False
