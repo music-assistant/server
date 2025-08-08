@@ -11,6 +11,7 @@ classifiers = [
 ]
 dependencies = [
   "aiodns>=3.2.0",
+  "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
   "aiohttp==3.12.14",
   "aiohttp-fast-zlib==0.3.0",
