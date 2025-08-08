@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import override
+
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.media_items import RecommendationFolder, SearchResults, Track
 from music_assistant_models.unique_list import UniqueList
@@ -21,6 +23,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         ProviderFeature.SIMILAR_TRACKS,
     }
 
+    @override
     async def search(
         self,
         search_query: str,
@@ -51,6 +54,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
 
         return search_result
 
+    @override
     async def recommendations(self) -> list[RecommendationFolder]:
         """
         Get this provider's recommendations.
@@ -71,7 +75,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 RecommendationFolder(
                     item_id="nicovideo_recommendations",
                     name="nicovideo recommendations",
-                    provider=self.provider.lookup_key,
+                    provider=self.lookup_key,
                     icon="mdi-star-circle-outline",
                     items=UniqueList(tracks),
                 )
@@ -85,7 +89,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 RecommendationFolder(
                     item_id="nicovideo_history",
                     name="Recently watched  (nicovideo history)",
-                    provider=self.provider.lookup_key,
+                    provider=self.lookup_key,
                     icon="mdi-history",
                     items=UniqueList(history_tracks),
                 )
@@ -101,7 +105,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 RecommendationFolder(
                     item_id="nicovideo_following_activities",
                     name="New Tracks from Followed Users",
-                    provider=self.provider.lookup_key,
+                    provider=self.lookup_key,
                     icon="mdi-account-plus-outline",
                     items=UniqueList(following_tracks),
                 )
@@ -117,7 +121,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 RecommendationFolder(
                     item_id="nicovideo_like_history",
                     name="Recently liked (Like history)",
-                    provider=self.provider.lookup_key,
+                    provider=self.lookup_key,
                     icon="mdi-heart-outline",
                     items=UniqueList(like_history_tracks),
                 )
@@ -137,7 +141,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                         RecommendationFolder(
                             item_id=f"nicovideo_tag_recommendations_{tag}",
                             name=f"Tag-based Recommendations: {tag}",
-                            provider=self.provider.lookup_key,
+                            provider=self.lookup_key,
                             icon="mdi-tag-outline",
                             items=UniqueList(tag_recommendation_tracks),
                         )
@@ -155,7 +159,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                         RecommendationFolder(
                             item_id=f"nicovideo_new_tracks_by_tags_{tag}",
                             name=f"New Tracks by Tags: {tag}",
-                            provider=self.provider.lookup_key,
+                            provider=self.lookup_key,
                             icon="mdi-new-box",
                             items=UniqueList(new_tracks_by_tags),
                         )
@@ -163,6 +167,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
 
         return recommendation_folders
 
+    @override
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         # Use config count if limit is default
@@ -200,9 +205,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                     filtered_tracks.append(track)
             except Exception as err:
                 # If we can't get tags, log warning but don't fail entirely
-                self.provider.logger.warning(
-                    "Failed to get tags for track %s: %s", track.item_id, err
-                )
+                self.logger.warning("Failed to get tags for track %s: %s", track.item_id, err)
                 # Include track if tag fetching fails (graceful degradation)
                 filtered_tracks.append(track)
 
@@ -248,14 +251,14 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 # Not enough tracks yet, prepare for next attempt
                 if attempt < max_attempts - 1:
                     log_verbose(
-                        self.provider.logger,
+                        self.logger,
                         "Got %d filtered tracks (target: %d), fetching more...",
                         len(filtered_tracks),
                         target_count,
                     )
 
             except Exception as err:
-                self.provider.logger.warning(
+                self.logger.warning(
                     "Failed to fetch recommendations batch (attempt %d): %s", attempt + 1, err
                 )
                 break
@@ -287,7 +290,5 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             return filtered_tracks[:target_count] if filtered_tracks else []
 
         except Exception as err:
-            self.provider.logger.warning(
-                "Failed to fetch similar tracks for %s: %s", prov_track_id, err
-            )
+            self.logger.warning("Failed to fetch similar tracks for %s: %s", prov_track_id, err)
             return []

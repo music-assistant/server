@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
@@ -32,6 +32,7 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
         ProviderFeature.LIBRARY_ALBUMS,
     }
 
+    @override
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id (series as album)."""
         album_with_tracks = await self.nicovideo_adapter.series.get_series(prov_album_id)
@@ -43,6 +44,7 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
 
         return album_with_tracks.album
 
+    @override
     async def get_library_albums(
         self,
     ) -> AsyncGenerator[Album, None]:
@@ -73,6 +75,7 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
 
             page += 1
 
+    @override
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id (series tracks)."""
         album_with_tracks = await self.nicovideo_adapter.series.get_series(prov_album_id)
@@ -97,9 +100,9 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
         async def update_track_with_album(track: Track) -> None:
             """Update single track with album information and cache it."""
             track.album = album
-            await cache_track(self.provider, track)
+            await cache_track(self, track)
 
         # Process tracks in parallel for better performance with limited concurrency
-        async with TaskManager(self.provider.mass, limit=5) as task_manager:
+        async with TaskManager(self.mass, limit=5) as task_manager:
             for track in tracks:
                 task_manager.create_task(update_track_with_album(track))

@@ -1,43 +1,35 @@
-"""nicovideo music provider module for Music Assistant."""
+"""
+NicovideoMusicProvider: Coordinator that combines all mixins.
+
+This is the main provider class that acts as a coordinator and aggregator:
+- Combines all domain-specific mixins (Track, Playlist, Album, Artist, etc.)
+- Delegates cross-mixin operations through _for_mixin patterns
+- Handles provider-wide operations that span multiple domains
+"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from music_assistant_models.errors import MediaNotFoundError
+
+from music_assistant.providers.nicovideo.mixin_caller import MixinCaller
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import MediaType, ProviderFeature
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.nicovideo.provider_mixins import (
-    NicovideoMusicProviderAlbumMixin,
-    NicovideoMusicProviderArtistMixin,
-    NicovideoMusicProviderCoreMixin,
-    NicovideoMusicProviderExplorerMixin,
-    NicovideoMusicProviderPlaylistMixin,
-    NicovideoMusicProviderTrackMixin,
-)
-
-NICOVIDEO_MIXINS = (
-    NicovideoMusicProviderCoreMixin,
-    NicovideoMusicProviderTrackMixin,
-    NicovideoMusicProviderPlaylistMixin,
-    NicovideoMusicProviderArtistMixin,
-    NicovideoMusicProviderAlbumMixin,
-    NicovideoMusicProviderExplorerMixin,
-)
+from music_assistant.providers.nicovideo.provider_mixins import NICOVIDEO_MIXINS
 
 
 class NicovideoMusicProvider(
     *NICOVIDEO_MIXINS,  # type: ignore[misc]
-    MusicProvider,
 ):
-    """nicovideo music provider for Music Assistant."""
+    """Coordinator combining all nicovideo provider mixins."""
 
     @property
+    @override
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
         all_features: set[ProviderFeature] = set()
@@ -48,33 +40,42 @@ class NicovideoMusicProvider(
 
         return all_features
 
+    @override
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
+        await MixinCaller(self).call_no_return(
+            lambda mixin_class: mixin_class.handle_async_init_for_mixin
+        )
+
+    @override
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        await MixinCaller(self, is_reverse=True).call_no_return(
+            lambda mixin_class: mixin_class.unload_for_mixin, is_removed
+        )
+
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details (streaming URL and format) for given item."""
-        for mixin_class in NICOVIDEO_MIXINS:
-            details = await mixin_class.get_stream_details_for_mixin(self, item_id, media_type)
-            if details:
-                return details
-        raise MediaNotFoundError("Stream unknown")
+        return await MixinCaller(self).call_single_or_raise(
+            MediaNotFoundError("Stream unknown"),
+            lambda mixin_class: mixin_class.get_stream_details_for_mixin,
+            item_id,
+            media_type,
+        )
 
+    @override
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
-        for mixin_class in NICOVIDEO_MIXINS:
-            result = await mixin_class.library_add_for_mixin(self, item)
-            if result is not None:
-                return result
-        # If no mixin handled it, return False (not supported)
-        return False
+        return await MixinCaller(self).call_single(
+            False, lambda mixin_class: mixin_class.library_add_for_mixin, item
+        )
 
+    @override
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from provider's library. Return true on success."""
-        for mixin_class in NICOVIDEO_MIXINS:
-            result = await mixin_class.library_remove_for_mixin(self, prov_item_id, media_type)
-            if result is not None:
-                return result
-        # If no mixin handled it, return False (not supported)
-        return False
-
-    @property
-    def provider(self) -> MusicProvider:
-        """NicovideoMusicProviderProtocol implementation."""
-        return self
+        return await MixinCaller(self).call_single(
+            False,
+            lambda mixin_class: mixin_class.library_remove_for_mixin,
+            prov_item_id,
+            media_type,
+        )

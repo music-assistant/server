@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
@@ -28,6 +28,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
         ProviderFeature.LIBRARY_ARTISTS_EDIT,
     }
 
+    @override
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         artist = await self.nicovideo_adapter.user.get_user(prov_artist_id)
@@ -35,6 +36,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             raise MediaNotFoundError(f"Artist with id {prov_artist_id} not found on nicovideo.")
         return artist
 
+    @override
     async def get_library_artists(
         self,
     ) -> AsyncGenerator[Artist, None]:
@@ -42,10 +44,10 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
         # Get artists from library tracks (if enabled in config)
         if self.nicovideo_config.get_include_library_track_artists():
             tracks = await get_library_items(
-                self.provider,
+                self,
                 cache_key="track",
                 query_table="tracks",
-                query_method=self.provider.mass.music.tracks.library_items,
+                query_method=self.mass.music.tracks.library_items,
             )
             for track in tracks:
                 for artist in track.artists:
@@ -58,10 +60,12 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             for artist in following_artists:
                 yield artist
 
+    @override
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist (user's series)."""
         return await self.nicovideo_adapter.series.get_user_series(prov_artist_id)
 
+    @override
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get newest 50 tracks of an artist."""
         return await self.nicovideo_adapter.video.get_user_videos(
@@ -80,10 +84,10 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
 
             success = await self.nicovideo_adapter.user.follow_user(item.item_id)
             if success:
-                log_verbose(self.provider.logger, "Successfully followed artist %s", item.name)
+                log_verbose(self.logger, "Successfully followed artist %s", item.name)
                 return True
             else:
-                self.provider.logger.warning("Failed to follow artist %s", item.name)
+                self.logger.warning("Failed to follow artist %s", item.name)
                 # Raise error with user-friendly message
                 raise ProviderUnavailableError(
                     f"Failed to follow artist '{item.name}' on niconico video. "
@@ -104,10 +108,10 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
 
             success = await self.nicovideo_adapter.user.unfollow_user(prov_item_id)
             if success:
-                log_verbose(self.provider.logger, "Successfully unfollowed artist %s", prov_item_id)
+                log_verbose(self.logger, "Successfully unfollowed artist %s", prov_item_id)
                 return True
             else:
-                self.provider.logger.warning("Failed to unfollow artist %s", prov_item_id)
+                self.logger.warning("Failed to unfollow artist %s", prov_item_id)
                 # Raise error with user-friendly message
                 raise ProviderUnavailableError(
                     f"Failed to unfollow artist (ID: {prov_item_id}) on niconico video. "

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import MediaNotFoundError
@@ -31,6 +31,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         ProviderFeature.LIBRARY_TRACKS_EDIT,
     }
 
+    @override
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         track = await self.nicovideo_adapter.video.get_video(prov_track_id)
@@ -38,6 +39,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             raise MediaNotFoundError(f"Track with id {prov_track_id} not found on nicovideo.")
         return track
 
+    @override
     async def get_library_tracks(
         self,
     ) -> AsyncGenerator[Track, None]:
@@ -52,10 +54,10 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
 
         # Get all library playlists
         playlists = await get_library_items(
-            self.provider,
+            self,
             cache_key="playlist",
             query_table="playlists",
-            query_method=self.provider.mass.music.playlists.library_items,
+            query_method=self.mass.music.playlists.library_items,
         )
 
         for playlist in playlists:
@@ -72,7 +74,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
                 continue
             page = 0
             while True:
-                playlist_tracks = await self.provider.get_playlist_tracks(prov_map.item_id, page)
+                playlist_tracks = await self.get_playlist_tracks(prov_map.item_id, page)
                 if not playlist_tracks:
                     break
                 for track in playlist_tracks:
@@ -94,7 +96,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
 
         stream_format = await self.nicovideo_adapter.video.get_stream_format(item_id=item_id)
         log_verbose_operation(
-            self.provider.logger,
+            self.logger,
             "found_stream_format",
             item_id,
             audio_ext=stream_format["audio_ext"],
@@ -115,7 +117,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             content_type = ContentType.UNKNOWN
 
         stream_details = StreamDetails(
-            provider=self.provider.instance_id,
+            provider=self.instance_id,
             duration=int(stream_format.get("duration", 0)),
             item_id=item_id,
             audio_format=AudioFormat(
@@ -155,9 +157,9 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             like_result = await self.nicovideo_adapter.video.like_video(video_id)
 
             if like_result:
-                log_verbose(self.provider.logger, "Successfully liked video %s", video_id)
+                log_verbose(self.logger, "Successfully liked video %s", video_id)
             else:
-                self.provider.logger.warning("Failed to like video %s", video_id)
+                self.logger.warning("Failed to like video %s", video_id)
 
             # Always return True for library add, regardless of like success/failure
             return True

@@ -1,9 +1,16 @@
-"""Abstract base class for NicovideoMusicProvider mixins."""
+"""
+NicovideoMusicProviderMixinBase: Interface definitions for _for_mixin patterns.
+
+This abstract base class defines the common interface for all nicovideo provider mixins:
+- Abstract properties for shared resources (config, adapter, tag_manager)
+- _for_mixin method signatures for delegation patterns
+- Default implementations returning None for optional functionality
+"""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar
+from abc import abstractmethod
+from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import MediaType, ProviderFeature
@@ -11,51 +18,44 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
-from music_assistant.providers.nicovideo.config import NicovideoConfig
-from music_assistant.providers.nicovideo.tag_manager import TagManager
+
+if TYPE_CHECKING:
+    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.config import NicovideoConfig
+    from music_assistant.providers.nicovideo.tag_manager import TagManager
 
 
-class NicovideoMusicProviderMixinBase(ABC):
-    """Abstract base class for NicovideoMusicProvider mixins."""
+class NicovideoMusicProviderMixinBase(MusicProvider):
+    """Interface for _for_mixin delegation patterns."""
 
     # Class variable where each mixin declares its supported features
     _supported_features: ClassVar[set[ProviderFeature]] = set()
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Initialize the mixin base."""
-        super().__init__(*args, **kwargs)
-        self._nicovideo_config: NicovideoConfig | None = None
-        self._tag_manager: TagManager | None = None
-
     @property
+    @abstractmethod
     def nicovideo_config(self) -> NicovideoConfig:
         """Get the config helper instance."""
-        if self._nicovideo_config is None:
-            self._nicovideo_config = NicovideoConfig(self.provider)
-        return self._nicovideo_config
 
     @property
+    @abstractmethod
+    def nicovideo_adapter(self) -> NicovideoMusicAssistantAdapter:
+        """Get the nicovideo adapter instance."""
+
+    @property
+    @abstractmethod
     def tag_manager(self) -> TagManager:
         """Get the tag manager instance."""
-        if self._tag_manager is None:
-            self._tag_manager = TagManager(self.provider, self.nicovideo_adapter)
-        return self._tag_manager
+
+    async def handle_async_init_for_mixin(self) -> None:
+        """Handle async initialization for this mixin."""
+
+    async def unload_for_mixin(self, is_removed: bool = False) -> None:
+        """Handle unload/close for this mixin."""
 
     @classmethod
     def get_supported_features_for_mixin(cls) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
         return cls._supported_features.copy()
-
-    @property
-    @abstractmethod
-    def provider(self) -> MusicProvider:
-        """Return the MusicProvider instance associated with this Provider."""
-
-    @property
-    @abstractmethod
-    def nicovideo_adapter(self) -> NicovideoMusicAssistantAdapter:
-        """Return the NicovideoMusicAssistantAdapter instance associated with this Provider."""
 
     async def get_stream_details_for_mixin(
         self, item_id: str, media_type: MediaType

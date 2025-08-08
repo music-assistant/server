@@ -9,11 +9,14 @@ from .explorer_mixin import NicovideoMusicProviderExplorerMixin
 from .playlist_mixin import NicovideoMusicProviderPlaylistMixin
 from .track_mixin import NicovideoMusicProviderTrackMixin
 
-__all__ = [
-    "NicovideoMusicProviderAlbumMixin",
-    "NicovideoMusicProviderArtistMixin",
-    "NicovideoMusicProviderCoreMixin",
-    "NicovideoMusicProviderExplorerMixin",
-    "NicovideoMusicProviderPlaylistMixin",
-    "NicovideoMusicProviderTrackMixin",
-]
+# Defines the inheritance order for the NicovideoMusicProvider mixins.
+NICOVIDEO_MIXINS = (
+    NicovideoMusicProviderCoreMixin,
+    NicovideoMusicProviderTrackMixin,
+    NicovideoMusicProviderPlaylistMixin,
+    NicovideoMusicProviderArtistMixin,
+    NicovideoMusicProviderAlbumMixin,
+    NicovideoMusicProviderExplorerMixin,
+)
+
+__all__ = [cls.__name__ for cls in NICOVIDEO_MIXINS]

@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import Track as TrackModel
 
 from music_assistant.constants import (
@@ -20,28 +19,6 @@ if TYPE_CHECKING:
 
     from music_assistant_models.media_items import Album, Playlist, Track
     from requests.cookies import RequestsCookieJar
-
-
-class ErrorState:
-    """Error state wrapper that can be used as a boolean."""
-
-    exception: Exception | None = None
-
-    def __init__(self) -> None:
-        """Initialize error state as False."""
-        self.exception = None
-
-    def set_error(self, exception: Exception) -> None:
-        """Mark that an error occurred."""
-        self.exception = exception
-
-    def __bool__(self) -> bool:
-        """Return True if an error occurred."""
-        return self.exception is not None
-
-    def raise_error(self) -> None:
-        """Raise the stored exception if one exists, otherwise raise a default error."""
-        raise self.exception or ProviderUnavailableError("No error set")
 
 
 class PlaylistWithTracks:
