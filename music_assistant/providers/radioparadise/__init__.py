@@ -293,10 +293,10 @@ class RadioParadiseProvider(MusicProvider):
         """Get current playing metadata for a channel."""
         if channel_id not in self._channels_cache:
             return None
-    
+
         channel_info = self._channels_cache[channel_id]
         api_url = channel_info["api_url"]
-    
+
         try:
             # Create a ClientTimeout object for the request
             timeout = aiohttp.ClientTimeout(total=10)
@@ -304,7 +304,7 @@ class RadioParadiseProvider(MusicProvider):
                 if response.status != 200:
                     self.logger.debug(f"API call to {api_url} failed with status {response.status}")
                     return None
-    
+
                 data = await response.json()
                 if "artist" in data:
                     current_song = data
@@ -313,7 +313,7 @@ class RadioParadiseProvider(MusicProvider):
                 else:
                     self.logger.debug(f"No song data in API response for channel {channel_id}")
                     return None
-    
+
                 return {
                     "title": current_song.get("title", ""),
                     "artist": current_song.get("artist", ""),
