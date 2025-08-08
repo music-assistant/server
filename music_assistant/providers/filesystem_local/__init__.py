@@ -1708,7 +1708,7 @@ class LocalFileSystemProvider(MusicProvider):
                 if item_tags.track is None:
                     continue
                 chapter_file_tags.append(item_tags)
-            chapter_file_tags.sort(key=lambda x: x.track or 0)
+            chapter_file_tags.sort(key=lambda x: (x.disc or 0, x.track or 0))
             for chapter_tags in chapter_file_tags:
                 assert chapter_tags.duration is not None
                 chapters.append(
