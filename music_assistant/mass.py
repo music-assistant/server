@@ -212,8 +212,8 @@ class MusicAssistant:
         # close/cleanup shared http session
         if self._http_session:
             self._http_session.detach()
-            if self.http_session.connector:
-                await self.http_session.connector.close()
+            if self._http_session.connector:
+                await self._http_session.connector.close()
         if self._http_session_no_ssl:
             self._http_session_no_ssl.detach()
             if self._http_session_no_ssl.connector:
