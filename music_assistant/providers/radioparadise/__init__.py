@@ -117,11 +117,11 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
 
 # Stream format configurations
 BITRATE_FORMATS: dict[str, dict[str, int | ContentType]] = {
-    "flac": {"content_type": ContentType.FLAC, "sample_rate": 44100, "bit_depth": 32},
-    "aac-320": {"content_type": ContentType.AAC, "sample_rate": 44100, "bit_depth": 16},
-    "mp3-192": {"content_type": ContentType.MP3, "sample_rate": 44100, "bit_depth": 16},
-    "aac-128": {"content_type": ContentType.AAC, "sample_rate": 44100, "bit_depth": 16},
-    "aac-64": {"content_type": ContentType.AAC, "sample_rate": 44100, "bit_depth": 16},
+    "flac": {"content_type": ContentType.FLAC},
+    "aac-320": {"content_type": ContentType.AAC},
+    "mp3-192": {"content_type": ContentType.MP3},
+    "aac-128": {"content_type": ContentType.AAC},
+    "aac-64": {"content_type": ContentType.AAC},
 }
 
 # Ordered list of formats for fallback logic
@@ -169,8 +169,6 @@ class RadioParadiseProvider(MusicProvider):
         super().__init__(mass, manifest, config)
         self._channels_cache: dict[str, dict[str, Any]] = RADIO_PARADISE_CHANNELS.copy()
         self._stream_format: str = cast("str", self.config.get_value("stream_format", "flac"))
-        self._current_stream_details: StreamDetails | None = None
-        self._monitor_task: asyncio.Task[None] | None = None
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -185,11 +183,6 @@ class RadioParadiseProvider(MusicProvider):
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return True
-
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        if self.mass and hasattr(self.mass, "music") and hasattr(self.mass.music, "sync_library"):
-            self.mass.create_task(self.mass.music.sync_library(self.instance_id, MediaType.RADIO))
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
@@ -220,13 +213,11 @@ class RadioParadiseProvider(MusicProvider):
         )
         format_info = BITRATE_FORMATS.get(stream_format, BITRATE_FORMATS["flac"])
 
-        self._current_stream_details = StreamDetails(
+        stream_details = StreamDetails(
             item_id=item_id,
             provider=self.lookup_key,
             audio_format=AudioFormat(
                 content_type=cast("ContentType", format_info["content_type"]),
-                sample_rate=cast("int", format_info["sample_rate"]),
-                bit_depth=cast("int", format_info["bit_depth"]),
                 channels=2,
             ),
             media_type=MediaType.RADIO,
@@ -237,9 +228,11 @@ class RadioParadiseProvider(MusicProvider):
             duration=0,
         )
 
-        self._monitor_task = self.mass.create_task(self._monitor_stream_metadata(item_id))
+        # Store the monitoring task in streamdetails.data
+        monitor_task = self.mass.create_task(self._monitor_stream_metadata(stream_details))
+        stream_details.data = {"monitor_task": monitor_task}
 
-        return self._current_stream_details
+        return stream_details
 
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Handle callback when given streamdetails completed streaming."""
@@ -247,10 +240,15 @@ class RadioParadiseProvider(MusicProvider):
             f"Radio Paradise channel {streamdetails.item_id} streamed for "
             f"{streamdetails.seconds_streamed} seconds"
         )
-        if self._monitor_task:
-            self._monitor_task.cancel()
-            self._monitor_task = None
-        self._current_stream_details = None
+
+        # Cancel and clean up the monitoring task
+        if "monitor_task" in streamdetails.data:
+            monitor_task = streamdetails.data["monitor_task"]
+            if not monitor_task.done():
+                monitor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await monitor_task
+            del streamdetails.data["monitor_task"]
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items."""
@@ -300,11 +298,8 @@ class RadioParadiseProvider(MusicProvider):
         api_url = channel_info["api_url"]
 
         try:
-            timeout = aiohttp.ClientTimeout(total=10)
-            async with (
-                aiohttp.ClientSession(timeout=timeout) as session,
-                session.get(api_url) as response,
-            ):
+            # Use the existing aiohttp session from mass
+            async with self.mass.http_session.get(api_url, timeout=10) as response:
                 if response.status != 200:
                     self.logger.debug(f"API call to {api_url} failed with status {response.status}")
                     return None
@@ -324,8 +319,11 @@ class RadioParadiseProvider(MusicProvider):
                     "cover_url": current_song.get("cover"),
                     "duration": current_song.get("time"),
                 }
-        except Exception as exc:
+        except aiohttp.ClientError as exc:
             self.logger.debug(f"Failed to get metadata for channel {channel_id}: {exc}")
+            return None
+        except Exception as exc:
+            self.logger.debug(f"Unexpected error getting metadata for channel {channel_id}: {exc}")
             return None
 
     def _build_stream_url(self, channel_id: str) -> str:
@@ -336,9 +334,11 @@ class RadioParadiseProvider(MusicProvider):
         channel_info = self._channels_cache[channel_id]
         stream_urls = channel_info.get("stream_urls", {})
 
-        current_format_index = -1
-        with contextlib.suppress(ValueError):
+        try:
             current_format_index = FALLBACK_ORDER.index(self._stream_format)
+        except ValueError:
+            # If preferred format not in fallback order, start from beginning
+            current_format_index = 0
 
         for format_key in FALLBACK_ORDER[current_format_index:]:
             if format_key in stream_urls:
@@ -346,14 +346,15 @@ class RadioParadiseProvider(MusicProvider):
 
         return ""
 
-    async def _monitor_stream_metadata(self, item_id: str) -> None:
+    async def _monitor_stream_metadata(self, stream_details: StreamDetails) -> None:
         """Monitor and update the StreamDetails object metadata every 10 seconds."""
         last_track_title = ""
+        item_id = stream_details.item_id
 
         try:
-            while self._current_stream_details:
+            while True:  # Continue until cancelled
                 metadata = await self._get_channel_metadata(item_id)
-                if metadata and self._current_stream_details:
+                if metadata:
                     track_title = cast("str", metadata.get("title", "Unknown Title"))
                     artist = cast("str", metadata.get("artist", "Unknown Artist"))
 
@@ -361,9 +362,12 @@ class RadioParadiseProvider(MusicProvider):
                         self.logger.info(
                             f"Updating stream metadata for {item_id}: {artist} - {track_title}"
                         )
-                        self._current_stream_details.stream_title = f"{artist} - {track_title}"
+                        stream_details.stream_title = f"{artist} - {track_title}"
+
+                        # Future: When streammetadata is added expand this
+
                         last_track_title = track_title
 
                 await asyncio.sleep(10)
         except asyncio.CancelledError:
-            self.logger.debug("Monitor task cancelled.")
+            self.logger.debug(f"Monitor task cancelled for {item_id}")
