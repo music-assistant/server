@@ -70,7 +70,7 @@ jobs:
     steps:
       - name: Retrieve release distributions
         if: ${{ github.event.release.prerelease == false }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: release-dists
           path: dist/
@@ -92,7 +92,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4.1.4
       - name: Retrieve release distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: release-dists
           path: dist/
