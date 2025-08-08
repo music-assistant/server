@@ -25,7 +25,7 @@ class FullyKioskProvider(PlayerProvider):
         else:
             logging.getLogger("fullykiosk").setLevel(self.logger.level + 10)
         fully_kiosk = FullyKiosk(
-            self.mass.http_session,
+            self.mass.http_session_no_ssl,
             self.config.get_value(CONF_IP_ADDRESS),
             self.config.get_value(CONF_PORT),
             self.config.get_value(CONF_PASSWORD),

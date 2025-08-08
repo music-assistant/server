@@ -1037,7 +1037,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
     resolved_url = url
     timeout = ClientTimeout(total=0, connect=10, sock_read=5)
     try:
-        async with mass.http_session.get(
+        async with mass.http_session_no_ssl.get(
             url, headers=HTTP_HEADERS_ICY, allow_redirects=True, timeout=timeout
         ) as resp:
             headers = resp.headers
@@ -1083,7 +1083,7 @@ async def get_icy_radio_stream(
     """Get (radio) audio stream from HTTP, including ICY metadata retrieval."""
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
-    async with mass.http_session.get(
+    async with mass.http_session_no_ssl.get(
         url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
     ) as resp:
         headers = resp.headers
@@ -1133,7 +1133,7 @@ async def get_hls_substream(
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     # fetch master playlist and select (best) child playlist
     # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
-    async with mass.http_session.get(
+    async with mass.http_session_no_ssl.get(
         url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
     ) as resp:
         resp.raise_for_status()
@@ -1173,15 +1173,17 @@ async def get_http_stream(
     url: str,
     streamdetails: StreamDetails,
     seek_position: int = 0,
+    verify_ssl: bool = True,
 ) -> AsyncGenerator[bytes, None]:
     """Get audio stream from HTTP."""
     LOGGER.debug("Start HTTP stream for %s (seek_position %s)", streamdetails.uri, seek_position)
     if seek_position:
         assert streamdetails.duration, "Duration required for seek requests"
+    http_session = mass.http_session if verify_ssl else mass.http_session_no_ssl
     # try to get filesize with a head request
     seek_supported = streamdetails.can_seek
     if seek_position or not streamdetails.size:
-        async with mass.http_session.head(url, allow_redirects=True, headers=HTTP_HEADERS) as resp:
+        async with http_session.head(url, allow_redirects=True, headers=HTTP_HEADERS) as resp:
             resp.raise_for_status()
             if size := resp.headers.get("Content-Length"):
                 streamdetails.size = int(size)
@@ -1215,7 +1217,7 @@ async def get_http_stream(
 
     # start the streaming from http
     bytes_received = 0
-    async with mass.http_session.get(
+    async with http_session.get(
         url, allow_redirects=True, headers=headers, timeout=timeout
     ) as resp:
         is_partial = resp.status == 206
