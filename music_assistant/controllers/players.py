@@ -956,7 +956,7 @@ class PlayerController(CoreController):
             # check if player can be synced/grouped with the target player
             if not (
                 child_player_id in parent_player.can_group_with
-                or child_player.provider.instance_id in parent_player.can_group_with
+                or child_player.provider.lookup_key in parent_player.can_group_with
                 or "*" in parent_player.can_group_with
             ):
                 raise UnsupportedFeaturedException(

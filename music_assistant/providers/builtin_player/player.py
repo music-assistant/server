@@ -37,7 +37,7 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 # If the player does not send an update within this time, it will be considered offline
-DURATION_UNTIL_TIMEOUT = 90  # 30 second extra headroom
+DURATION_UNTIL_TIMEOUT = 120  # 60 second extra headroom
 POLL_INTERVAL = 30
 
 
