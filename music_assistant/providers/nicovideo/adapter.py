@@ -21,6 +21,7 @@ from music_assistant.providers.nicovideo.adapters import (
     NicovideoVideoAdapter,
 )
 from music_assistant.providers.nicovideo.constants import ApiPriority
+from music_assistant.providers.nicovideo.helpers import log_verbose
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.config import NicovideoConfig
@@ -67,8 +68,18 @@ class NicovideoMusicAssistantAdapter:
         """Call function with API throttling (unified method with priority support)."""
         if priority == ApiPriority.HIGH:
             throttler = self.niconico_api_throttler
+            throttler_name = "high_priority"
         else:  # ApiPriority.LOW
             throttler = self.niconico_api_throttler_low_priority
+            throttler_name = "low_priority"
+
+        operation = func.__name__ if hasattr(func, "__name__") else "unknown_function"
+        log_verbose(
+            self.logger,
+            "Acquiring %s throttler for %s",
+            throttler_name,
+            operation,
+        )
 
         try:
             async with throttler.acquire():

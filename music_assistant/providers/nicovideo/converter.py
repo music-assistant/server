@@ -35,7 +35,6 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.nicovideo.helpers import (
     AlbumWithTracks,
     PlaylistWithTracks,
-    log_verbose,
 )
 
 logger = logging.getLogger(__name__)
@@ -316,7 +315,7 @@ def _create_track_metadata_from_watch_video(
                 metadata.release_date = datetime.fromisoformat(video.registered_at)
         except (ValueError, AttributeError) as err:
             # Log debug message for date parsing failures to help with troubleshooting
-            log_verbose(logger, "Failed to convert release date '%s': %s", video.registered_at, err)
+            logger.debug("Failed to convert release date '%s': %s", video.registered_at, err)
 
     if popularity is not None:
         metadata.popularity = popularity
@@ -595,7 +594,7 @@ def _create_track_metadata(
                 metadata.release_date = datetime.fromisoformat(release_date_str)
         except (ValueError, AttributeError) as err:
             # Log debug message for date parsing failures to help with troubleshooting
-            log_verbose(logger, "Failed to convert release date '%s': %s", release_date_str, err)
+            logger.debug("Failed to convert release date '%s': %s", release_date_str, err)
 
     if popularity is not None:
         metadata.popularity = popularity

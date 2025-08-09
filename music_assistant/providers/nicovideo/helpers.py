@@ -108,20 +108,3 @@ def log_verbose(logger: logging.Logger, message: str, *args: object) -> None:
     """
     if logger.isEnabledFor(VERBOSE_LOG_LEVEL):
         logger.log(VERBOSE_LOG_LEVEL, message, *args)
-
-
-def log_verbose_operation(
-    logger: logging.Logger, operation: str, item_id: str, **details: object
-) -> None:
-    """Log verbose information about an operation with structured details.
-
-    Args:
-        logger: Logger instance
-        operation: Operation name (e.g., "cached_tags", "auth_attempt")
-        item_id: Item identifier
-        **details: Additional details to include in the log
-    """
-    if logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-        detail_parts = [f"{k}={v}" for k, v in details.items()]
-        detail_str = f" ({', '.join(detail_parts)})" if detail_parts else ""
-        logger.log(VERBOSE_LOG_LEVEL, "%s for %s%s", operation, item_id, detail_str)

@@ -45,22 +45,20 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
         async with self.adapter.niconico_api_throttler.bypass():
             for attempt in range(max_retries):
                 try:
-                    log_verbose(
-                        self.adapter.logger,
+                    self.adapter.logger.debug(
                         "Trying to log in... (Number of attempts: %d/%d)",
                         attempt + 1,
                         max_retries,
                     )
                     if user_session:
-                        log_verbose(self.adapter.logger, "Using user_session for login.")
+                        self.adapter.logger.debug("Using user_session for login.")
                         await asyncio.to_thread(
                             self.adapter.niconico_py_client.login_with_session, str(user_session)
                         )
                     else:
-                        log_verbose(self.adapter.logger, "Using mail and password for login.")
+                        self.adapter.logger.debug("Using mail and password for login.")
                         if not username or not password:
-                            log_verbose(
-                                self.adapter.logger,
+                            self.adapter.logger.debug(
                                 "Username and password are not set in the configuration.",
                             )
                             return False
@@ -70,13 +68,18 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
                             str(password),
                             str(mfa) if mfa else None,
                         )
-                    log_verbose(self.adapter.logger, "Successful login!")
+                    self.adapter.logger.info("Successfully authenticated with Nicovideo!")
                     # Clear MFA code after successful use (one-time password should not be reused)
                     if mfa:
                         config.clear_mfa_code()
                     session = self.adapter.niconico_py_client.get_user_session()
                     if session:
                         config.save_user_session(session)
+                        log_verbose(
+                            self.adapter.logger,
+                            "Saved user session for future logins (length: %d chars)",
+                            len(session),
+                        )
                     return True
                 except LoginFailureError as err:
                     if user_session:
@@ -128,11 +131,11 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
     async def _schedule_periodic_relogin(self) -> None:
         """Periodic re-login every 30 days."""
         try:
-            log_verbose(self.adapter.logger, "Performing periodic re-login to refresh the session.")
+            self.adapter.logger.debug("Performing periodic re-login to refresh the session.")
             await self.try_logout()
             await asyncio.sleep(3)  # Short delay to ensure logout completes
             await self.try_login()
             self.start_periodic_relogin_task()
         except asyncio.CancelledError:
-            log_verbose(self.adapter.logger, "Periodic relogin task was cancelled.")
+            self.adapter.logger.debug("Periodic relogin task was cancelled.")
             raise

@@ -17,7 +17,6 @@ from music_assistant_models.errors import MediaNotFoundError
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.providers.nicovideo.helpers import log_verbose
 from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
     NicovideoMusicProviderMixinBase,
 )
@@ -96,8 +95,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
                 prov_playlist_id, track_id
             )
             if success:
-                log_verbose(
-                    self.logger,
+                self.logger.debug(
                     "Successfully added track %s to playlist %s",
                     track_id,
                     prov_playlist_id,
@@ -133,8 +131,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
             prov_playlist_id, track_ids_to_remove
         )
         if success:
-            log_verbose(
-                self.logger,
+            self.logger.debug(
                 "Successfully removed %d tracks from playlist %s",
                 len(track_ids_to_remove),
                 prov_playlist_id,
@@ -164,5 +161,5 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
                 f"Failed to retrieve created playlist '{name}' from nicovideo."
             )
 
-        log_verbose(self.logger, "Successfully created playlist '%s' with ID %s", name, mylist_id)
+        self.logger.info("Successfully created playlist '%s' with ID %s", name, mylist_id)
         return playlist_with_tracks.playlist

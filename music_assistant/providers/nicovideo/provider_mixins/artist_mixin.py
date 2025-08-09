@@ -9,7 +9,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Artist, MediaItemType
 
-from music_assistant.providers.nicovideo.helpers import get_library_items, log_verbose
+from music_assistant.providers.nicovideo.helpers import get_library_items
 from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
     NicovideoMusicProviderMixinBase,
 )
@@ -84,7 +84,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
 
             success = await self.nicovideo_adapter.user.follow_user(item.item_id)
             if success:
-                log_verbose(self.logger, "Successfully followed artist %s", item.name)
+                self.logger.debug("Successfully followed artist %s", item.name)
                 return True
             else:
                 self.logger.warning("Failed to follow artist %s", item.name)
@@ -108,7 +108,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
 
             success = await self.nicovideo_adapter.user.unfollow_user(prov_item_id)
             if success:
-                log_verbose(self.logger, "Successfully unfollowed artist %s", prov_item_id)
+                self.logger.debug("Successfully unfollowed artist %s", prov_item_id)
                 return True
             else:
                 self.logger.warning("Failed to unfollow artist %s", prov_item_id)

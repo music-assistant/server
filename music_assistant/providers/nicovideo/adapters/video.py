@@ -18,6 +18,7 @@ from music_assistant.providers.nicovideo.converter import (
 )
 from music_assistant.providers.nicovideo.helpers import (
     convert_to_netscape,
+    log_verbose,
 )
 
 if TYPE_CHECKING:
@@ -72,6 +73,11 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
 
         def _extract() -> dict[str, str]:
             url = f"https://www.nicovideo.jp/watch/{item_id}"
+            log_verbose(
+                self.adapter.logger,
+                "Starting yt-dlp stream extraction for video %s",
+                item_id,
+            )
             ydl_opts = {
                 "quiet": True,
                 "format": "bestaudio/best",
@@ -87,6 +93,15 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
                     )
                     if not best_format:
                         raise UnplayableMediaError("No suitable audio stream found")
+
+                    log_verbose(
+                        self.adapter.logger,
+                        "Successfully extracted stream format for %s: %s (%s)",
+                        item_id,
+                        best_format["ext"],
+                        best_format.get("acodec", "unknown"),
+                    )
+
                     return {
                         "url": best_format["url"],
                         "audio_ext": best_format["ext"],

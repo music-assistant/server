@@ -12,8 +12,6 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.nicovideo.helpers import (
     get_library_items,
-    log_verbose,
-    log_verbose_operation,
 )
 from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
     NicovideoMusicProviderMixinBase,
@@ -95,11 +93,10 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             return None
 
         stream_format = await self.nicovideo_adapter.video.get_stream_format(item_id=item_id)
-        log_verbose_operation(
-            self.logger,
-            "found_stream_format",
+        self.logger.debug(
+            "Found stream format for %s (audio_ext: %s)",
             item_id,
-            audio_ext=stream_format["audio_ext"],
+            stream_format["audio_ext"],
         )
 
         extra_args = [
@@ -157,7 +154,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             like_result = await self.nicovideo_adapter.video.like_video(video_id)
 
             if like_result:
-                log_verbose(self.logger, "Successfully liked video %s", video_id)
+                self.logger.debug("Successfully liked video %s", video_id)
             else:
                 self.logger.warning("Failed to like video %s", video_id)
 
