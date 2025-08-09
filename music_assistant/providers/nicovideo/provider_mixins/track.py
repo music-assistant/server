@@ -77,6 +77,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             for track in own_videos:
                 yield track
 
+    @override
     async def get_stream_details_for_mixin(
         self, item_id: str, media_type: MediaType
     ) -> StreamDetails | None:
@@ -142,6 +143,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             enable_cache=True,
         )
 
+    @override
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
         """Add item to provider's library. Return true on success."""
         if item.media_type == MediaType.TRACK:
@@ -166,6 +168,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
 
         return None  # Not handled by this mixin
 
+    @override
     async def library_remove_for_mixin(
         self, prov_item_id: str, media_type: MediaType
     ) -> bool | None:

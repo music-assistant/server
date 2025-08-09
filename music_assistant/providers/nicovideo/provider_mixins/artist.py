@@ -69,6 +69,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             page_size=50,
         )
 
+    @override
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
         """Add item to library."""
         if item.media_type == MediaType.ARTIST:
@@ -91,6 +92,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
 
         return None  # Not handled by this mixin
 
+    @override
     async def library_remove_for_mixin(
         self, prov_item_id: str, media_type: MediaType
     ) -> bool | None:
