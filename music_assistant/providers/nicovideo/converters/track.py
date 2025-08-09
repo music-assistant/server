@@ -17,10 +17,6 @@ from music_assistant_models.unique_list import UniqueList
 from niconico.objects.video import EssentialVideo, Owner, VideoThumbnail
 
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
-from music_assistant.providers.nicovideo.converters.utilities import (
-    calculate_popularity,
-    create_provider_mapping,
-)
 
 if TYPE_CHECKING:
     from niconico.objects.video.watch import WatchData, WatchVideo, WatchVideoThumbnail
@@ -36,7 +32,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             return None
 
         # Calculate popularity using standard formula
-        popularity = calculate_popularity(
+        popularity = self.helper.calculate_popularity(
             mylist_count=video.count.mylist,
             like_count=video.count.like,
         )
@@ -54,7 +50,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             provider=self.provider.lookup_key,
             name=video.title,
             duration=video.duration,
-            artists=UniqueList([self.item_mapper.get_artist_mapping(video.owner)]),
+            artists=UniqueList([self.helper.create_artist_mapping(video.owner)]),
             # Videos that cannot be played will have a duration of 0.
             is_playable=video.duration > 0 and not video.is_payment_required,
             metadata=self._create_track_metadata(
@@ -65,10 +61,10 @@ class NicovideoTrackConverter(NicovideoConverterBase):
                 popularity=popularity,
                 thumbnail=video.thumbnail,
             ),
-            provider_mappings=create_provider_mapping(
+            provider_mappings=self.helper.create_provider_mapping(
                 item_id=video.id_,
-                provider=self.provider,
-                available=not video.is_payment_required and not video.is_muted,
+                url_path="watch",
+                available=self.is_video_available(video),
                 audio_format=audio_format,
             ),
         )
@@ -82,7 +78,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             return None
 
         # Calculate popularity using standard formula
-        popularity = calculate_popularity(
+        popularity = self.helper.calculate_popularity(
             mylist_count=video.count.mylist,
             like_count=video.count.like,
         )
@@ -118,7 +114,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             provider=self.provider.lookup_key,
             name=video.title,
             duration=video.duration,
-            artists=UniqueList([self.item_mapper.get_artist_mapping(owner)]),
+            artists=UniqueList([self.helper.create_artist_mapping(owner)]),
             # Videos that cannot be played will have a duration of 0.
             is_playable=video.duration > 0 and not video.is_authentication_required,
             metadata=self._create_track_metadata_from_watch_video(
@@ -126,17 +122,17 @@ class NicovideoTrackConverter(NicovideoConverterBase):
                 watch_data=watch_data,
                 popularity=popularity,
             ),
-            provider_mappings=create_provider_mapping(
+            provider_mappings=self.helper.create_provider_mapping(
                 item_id=video.id_,
-                provider=self.provider,
-                available=not video.is_authentication_required and not video.is_deleted,
+                url_path="watch",
+                available=self.is_video_available(video),
                 audio_format=audio_format,
             ),
         )
 
         # Add album information if series data is available
         if watch_data.series:
-            track.album = self.item_mapper.get_album_mapping(
+            track.album = self.helper.create_album_mapping(
                 album_id=str(watch_data.series.id_),
                 album_name=watch_data.series.title,
             )
@@ -374,3 +370,22 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             )
 
         return images
+
+    def is_video_available(self, video: EssentialVideo | WatchVideo) -> bool:
+        """Check if a video is available for playback.
+
+        Args:
+            video: Either EssentialVideo or WatchVideo object.
+
+        Returns:
+            True if the video is available for playback, False otherwise.
+        """
+        # Common check: duration must be greater than 0
+        if video.duration <= 0:
+            return False
+
+        # Type-specific availability checks
+        if isinstance(video, EssentialVideo):
+            return not video.is_payment_required and not video.is_muted
+        else:  # WatchVideo
+            return not video.is_deleted

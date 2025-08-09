@@ -101,7 +101,7 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
         # Update album information in cached tracks
         async def update_track_with_album(track: Track) -> None:
             """Update single track with album information and cache it."""
-            track.album = self.service_manager.converter_manager.item_mapper.get_album_mapping(
+            track.album = self.service_manager.converter_manager.helper.create_album_mapping(
                 album.item_id, album.name
             )
             await cache_track(self, track)

@@ -13,7 +13,7 @@ from niconico.objects.user import NicoUser
 from niconico.objects.video import Owner
 
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
-from music_assistant.providers.nicovideo.converters.utilities import create_provider_mapping
+from music_assistant.providers.nicovideo.converters.utilities import NicovideoUrlPath
 
 
 class NicovideoArtistConverter(NicovideoConverterBase):
@@ -32,7 +32,7 @@ class NicovideoArtistConverter(NicovideoConverterBase):
         )
 
         # Determine URL path based on owner type
-        url_path = "user"  # Default for users and NicoUser
+        url_path: NicovideoUrlPath = "user"  # Default for users and NicoUser
         if isinstance(owner_or_user, Owner) and owner_or_user.owner_type == "channel":
             url_path = "channel"
 
@@ -45,10 +45,8 @@ class NicovideoArtistConverter(NicovideoConverterBase):
                 if isinstance(owner_or_user, NicoUser)
                 else None,
             ),
-            provider_mappings=create_provider_mapping(
+            provider_mappings=self.helper.create_provider_mapping(
                 item_id=item_id,
-                provider=self.provider,
-                available=True,
                 url_path=url_path,
             ),
         )

@@ -15,9 +15,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant.providers.nicovideo.converters.album import NicovideoAlbumConverter
 from music_assistant.providers.nicovideo.converters.artist import NicovideoArtistConverter
-from music_assistant.providers.nicovideo.converters.item_mappings import (
-    ItemMappingConverter,
-)
+from music_assistant.providers.nicovideo.converters.helper import NicovideoConverterHelper
 from music_assistant.providers.nicovideo.converters.playlist import (
     NicovideoPlaylistConverter,
 )
@@ -34,7 +32,7 @@ class NicovideoConverterManager:
         """Initialize with provider and create specialized converters."""
         self.provider = provider
         self.logger = logger
-        self.item_mapper = ItemMappingConverter(self)
+        self.helper = NicovideoConverterHelper(self)
 
         # Initialize specialized converters
         self.track = NicovideoTrackConverter(self)

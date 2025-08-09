@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from music_assistant.models.music_provider import MusicProvider
-    from music_assistant.providers.nicovideo.converters.item_mappings import ItemMappingConverter
+    from music_assistant.providers.nicovideo.converters.helper import NicovideoConverterHelper
     from music_assistant.providers.nicovideo.converters.manager import (
         NicovideoConverterManager,
     )
@@ -26,6 +26,6 @@ class NicovideoConverterBase:
         return self.converter_manager.provider
 
     @property
-    def item_mapper(self) -> ItemMappingConverter:
-        """Get the item mapper instance."""
-        return self.converter_manager.item_mapper
+    def helper(self) -> NicovideoConverterHelper:
+        """Get the helper instance."""
+        return self.converter_manager.helper

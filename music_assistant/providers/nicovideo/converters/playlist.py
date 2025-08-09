@@ -15,7 +15,6 @@ from music_assistant_models.unique_list import UniqueList
 from niconico.objects.video.search import EssentialMylist
 
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
-from music_assistant.providers.nicovideo.converters.utilities import create_provider_mapping
 from music_assistant.providers.nicovideo.helpers import PlaylistWithTracks
 
 if TYPE_CHECKING:
@@ -43,12 +42,7 @@ class NicovideoPlaylistConverter(NicovideoConverterBase):
                     )
                 },
             ),
-            provider_mappings=create_provider_mapping(
-                item_id=str(mylist.id_),
-                provider=self.provider,
-                available=True,
-                url_path="mylist",
-            ),
+            provider_mappings=self.helper.create_provider_mapping(str(mylist.id_), "mylist"),
         )
 
         if mylist.owner.icon_url:

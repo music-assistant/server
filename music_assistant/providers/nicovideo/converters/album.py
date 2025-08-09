@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from niconico.objects.user import UserSeriesItem
 
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
-from music_assistant.providers.nicovideo.converters.utilities import create_provider_mapping
 from music_assistant.providers.nicovideo.helpers import AlbumWithTracks
 
 
@@ -74,11 +73,7 @@ class NicovideoAlbumConverter(NicovideoConverterBase):
                     )
                 },
             ),
-            provider_mappings=create_provider_mapping(
-                item_id=item_id,
-                provider=self.provider,
-                url_path="series",
-            ),
+            provider_mappings=self.helper.create_provider_mapping(item_id, "series"),
         )
 
         # Add artist (series owner) if available
@@ -87,9 +82,8 @@ class NicovideoAlbumConverter(NicovideoConverterBase):
                 item_id=str(owner_id),
                 provider=self.provider.lookup_key,
                 name=owner_name if owner_name else "",
-                provider_mappings=create_provider_mapping(
+                provider_mappings=self.helper.create_provider_mapping(
                     item_id=str(owner_id),
-                    provider=self.provider,
                     url_path="user",
                 ),
             )
