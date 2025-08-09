@@ -8,12 +8,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, ProviderMapping
 
 if TYPE_CHECKING:
-    from niconico.objects.video.watch import WatchData
-
     from music_assistant.models.music_provider import MusicProvider
 
 
@@ -35,45 +32,6 @@ def calculate_popularity(
         return min(100, max(0, int((mylist_count * 3 + like_count) / 10)))
 
     return 0
-
-
-def create_audio_format_from_watch_data(watch_data: WatchData) -> AudioFormat | None:
-    """Create AudioFormat from WatchData audio information.
-
-    Args:
-        watch_data: WatchData object containing media information.
-
-    Returns:
-        AudioFormat object if audio information is available, None otherwise.
-    """
-    if not watch_data.media or not watch_data.media.domand or not watch_data.media.domand.audios:
-        return None
-
-    # Use the first available audio stream (typically the highest quality)
-    audio = watch_data.media.domand.audios[0]
-
-    if not audio.is_available:
-        return None
-
-    # Determine channels - niconico videos are typically stereo (2 channels)
-    # Since niconico doesn't explicitly provide channel info, we assume stereo
-    channels = 2
-
-    # Determine bit depth - niconico typically uses 16-bit audio
-    # Since this info isn't available, we use a reasonable default
-    bit_depth = 16
-
-    return AudioFormat(
-        content_type=ContentType.MP4,  # niconico primarily uses MP4
-        codec_type=ContentType.AAC,
-        sample_rate=audio.sampling_rate,
-        bit_depth=bit_depth,
-        channels=channels,
-        bit_rate=audio.bit_rate,
-        output_format_str=(
-            f"AAC {audio.sampling_rate // 1000}kHz/{bit_depth}bit/{channels}ch {audio.bit_rate}kbps"
-        ),
-    )
 
 
 def create_provider_mapping(
