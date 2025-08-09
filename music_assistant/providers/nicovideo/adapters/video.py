@@ -11,9 +11,11 @@ from music_assistant_models.errors import UnplayableMediaError
 from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
 from music_assistant.providers.nicovideo.constants import (
     NICOVIDEO_COOKIE_DOMAIN,
-    ApiPriority,
 )
-from music_assistant.providers.nicovideo.converter import convert_track_by_essential_video
+from music_assistant.providers.nicovideo.converter import (
+    convert_track_by_essential_video,
+    convert_track_by_watch_data,
+)
 from music_assistant.providers.nicovideo.helpers import (
     convert_to_netscape,
 )
@@ -54,23 +56,13 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
         return tracks
 
     async def get_video(self, video_id: str) -> Track | None:
-        """Get video details and convert as Track."""
-        video = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.video.get_video, video_id
+        """Get video details using WatchData and convert as Track."""
+        watch_data = await self.adapter._call_with_throttler(
+            self.adapter.niconico_py_client.video.watch.get_watch_data, video_id
         )
-        return convert_track_by_essential_video(self.adapter.provider, video) if video else None
-
-    async def get_video_tags(
-        self, video_id: str, priority: ApiPriority = ApiPriority.HIGH
-    ) -> list[str]:
-        """Get video tags as list of strings with specified priority."""
-        tags = await self.adapter._call_with_throttler_with_priority(
-            priority, self.adapter.niconico_py_client.video.get_video_tags, video_id
+        return (
+            convert_track_by_watch_data(self.adapter.provider, watch_data) if watch_data else None
         )
-        if not tags:
-            return []
-        # Extract tag names from Tag objects
-        return [tag.name for tag in tags if hasattr(tag, "name")]
 
     async def get_stream_format(self, item_id: str) -> dict[str, str]:
         """Use yt-dlp to extract the best stream URL from nicovideo."""

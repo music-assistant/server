@@ -33,7 +33,7 @@ class MixinCaller:
         """Get the list of mixin classes."""
         return NICOVIDEO_MIXINS[::-1] if self.is_reverse else NICOVIDEO_MIXINS
 
-    async def call_no_return[T, **P](
+    async def invoke_all[T, **P](
         self,
         func_getter: MixinMethodGetter[T, P],
         *args: P.args,
@@ -44,7 +44,7 @@ class MixinCaller:
             method = func_getter(mixin_class)
             await method(self.provider, *args, **kwargs)
 
-    async def call_single[T, U, **P](
+    async def invoke_first_valid[T, U, **P](
         self,
         default: U,
         func_getter: MixinMethodGetter[T, P],
@@ -59,7 +59,7 @@ class MixinCaller:
                 return result
         return default
 
-    async def call_single_or_raise[T, **P](
+    async def invoke_first_valid_or_raise[T, **P](
         self,
         exception: Exception,
         func_getter: MixinMethodGetter[T, P],
@@ -67,7 +67,7 @@ class MixinCaller:
         **kwargs: P.kwargs,
     ) -> T:
         """Call mixin method and raise exception if no result is found."""
-        result = await self.call_single(None, func_getter, *args, **kwargs)
+        result = await self.invoke_first_valid(None, func_getter, *args, **kwargs)
         if result is None:
             raise exception
         return result

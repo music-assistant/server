@@ -43,20 +43,20 @@ class NicovideoMusicProvider(
     @override
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        await MixinCaller(self).call_no_return(
+        await MixinCaller(self).invoke_all(
             lambda mixin_class: mixin_class.handle_async_init_for_mixin
         )
 
     @override
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        await MixinCaller(self, is_reverse=True).call_no_return(
+        await MixinCaller(self, is_reverse=True).invoke_all(
             lambda mixin_class: mixin_class.unload_for_mixin, is_removed
         )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details (streaming URL and format) for given item."""
-        return await MixinCaller(self).call_single_or_raise(
+        return await MixinCaller(self).invoke_first_valid_or_raise(
             MediaNotFoundError("Stream unknown"),
             lambda mixin_class: mixin_class.get_stream_details_for_mixin,
             item_id,
@@ -66,14 +66,14 @@ class NicovideoMusicProvider(
     @override
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
-        return await MixinCaller(self).call_single(
+        return await MixinCaller(self).invoke_first_valid(
             False, lambda mixin_class: mixin_class.library_add_for_mixin, item
         )
 
     @override
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from provider's library. Return true on success."""
-        return await MixinCaller(self).call_single(
+        return await MixinCaller(self).invoke_first_valid(
             False,
             lambda mixin_class: mixin_class.library_remove_for_mixin,
             prov_item_id,

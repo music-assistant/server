@@ -2,7 +2,7 @@
 NicovideoMusicProviderCoreMixin: Core functionality not belonging to specific domains.
 
 This mixin handles core functionality that doesn't belong to any specific feature area:
-- Instance management (adapter, config, tag_manager)
+- Instance management (adapter, config)
 - Authentication and session management
 - Provider lifecycle management (initialization/cleanup)
 - Basic provider properties
@@ -19,7 +19,6 @@ from music_assistant.providers.nicovideo.config import NicovideoConfig
 from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
     NicovideoMusicProviderMixinBase,
 )
-from music_assistant.providers.nicovideo.tag_manager import TagManager
 
 
 class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
@@ -30,7 +29,6 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
         super().__init__(*args, **kwargs)
         self._nicovideo_config = NicovideoConfig(self)
         self._nicovideo_adapter = NicovideoMusicAssistantAdapter(self, self.nicovideo_config)
-        self._tag_manager = TagManager(self, self.nicovideo_adapter)
 
     @property
     @override
@@ -43,12 +41,6 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
     def nicovideo_adapter(self) -> NicovideoMusicAssistantAdapter:
         """Get the nicovideo adapter instance."""
         return self._nicovideo_adapter
-
-    @property
-    @override
-    def tag_manager(self) -> TagManager:
-        """Get the tag manager instance."""
-        return self._tag_manager
 
     @property
     @override
@@ -93,6 +85,3 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
                 self.logger.debug("nicovideo provider unloaded successfully")
         except Exception as err:
             self.logger.warning("Error during nicovideo provider unload: %s", err)
-        finally:
-            # Stop TagManager if it was created
-            self.tag_manager.stop()

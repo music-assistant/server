@@ -8,7 +8,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.media_items import RecommendationFolder, SearchResults, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.providers.nicovideo.helpers import log_verbose
+from music_assistant.providers.nicovideo.helpers import get_cached_track, log_verbose
 from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
     NicovideoMusicProviderMixinBase,
 )
@@ -198,11 +198,31 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         filtered_tracks = []
         for track in tracks:
             try:
-                # Get tags from cache first, wait if currently fetching
-                tag_names = await self.tag_manager.get_tags(track.item_id, wait_if_fetching=True)
+                # First try to get tags from Track metadata (genres)
+                tag_names = list(track.metadata.genres) if track.metadata.genres else []
+                current_track = track
+
+                # If no tags available, check cache first then get fresh data if needed
+                if not tag_names:
+                    # Check if we have a cached version with more details
+                    cached_track = await get_cached_track(self, track.item_id)
+                    if cached_track and cached_track.metadata.genres:
+                        current_track = cached_track
+                        tag_names = list(cached_track.metadata.genres)
+                    else:
+                        # No cache or no genres in cache, get fresh data using get_video
+                        # get_video already returns a Track, no need for double conversion
+                        updated_track = await self.nicovideo_adapter.video.get_video(track.item_id)
+                        if updated_track:
+                            current_track = updated_track
+                            tag_names = (
+                                list(current_track.metadata.genres)
+                                if current_track.metadata.genres
+                                else []
+                            )
 
                 if self._track_has_required_tags(tag_names, required_tags):
-                    filtered_tracks.append(track)
+                    filtered_tracks.append(current_track)
             except Exception as err:
                 # If we can't get tags, log warning but don't fail entirely
                 self.logger.warning("Failed to get tags for track %s: %s", track.item_id, err)

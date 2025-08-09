@@ -2,7 +2,7 @@
 NicovideoMusicProviderMixinBase: Interface definitions for _for_mixin patterns.
 
 This abstract base class defines the common interface for all nicovideo provider mixins:
-- Abstract properties for shared resources (config, adapter, tag_manager)
+- Abstract properties for shared resources (config, adapter)
 - _for_mixin method signatures for delegation patterns
 - Default implementations returning None for optional functionality
 """
@@ -22,7 +22,6 @@ from music_assistant.models.music_provider import MusicProvider
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
     from music_assistant.providers.nicovideo.config import NicovideoConfig
-    from music_assistant.providers.nicovideo.tag_manager import TagManager
 
 
 class NicovideoMusicProviderMixinBase(MusicProvider):
@@ -40,11 +39,6 @@ class NicovideoMusicProviderMixinBase(MusicProvider):
     @abstractmethod
     def nicovideo_adapter(self) -> NicovideoMusicAssistantAdapter:
         """Get the nicovideo adapter instance."""
-
-    @property
-    @abstractmethod
-    def tag_manager(self) -> TagManager:
-        """Get the tag manager instance."""
 
     async def handle_async_init_for_mixin(self) -> None:
         """Handle async initialization for this mixin."""
