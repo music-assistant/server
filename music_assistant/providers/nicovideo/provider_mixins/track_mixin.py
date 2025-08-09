@@ -29,7 +29,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        track = await self.nicovideo_adapter.video.get_video(prov_track_id)
+        track = await self.adapter_hub.video.get_video(prov_track_id)
         if not track:
             raise MediaNotFoundError(f"Track with id {prov_track_id} not found on nicovideo.")
         return track
@@ -39,7 +39,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        if not self.nicovideo_adapter.auth.is_logged_in():
+        if not self.adapter_hub.auth.is_logged_in():
             return
 
         # Check config settings for including tracks
@@ -73,7 +73,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
 
         # Include own uploaded videos if enabled
         if include_own_videos_tracks:
-            own_videos = await self.nicovideo_adapter.user.get_own_videos()
+            own_videos = await self.adapter_hub.user.get_own_videos()
             for track in own_videos:
                 yield track
 
@@ -84,35 +84,56 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         if media_type != MediaType.TRACK:
             return None
 
-        stream_format = await self.nicovideo_adapter.video.get_stream_format(item_id=item_id)
-        self.logger.debug(
-            "Found stream format for %s (audio_ext: %s)",
-            item_id,
-            stream_format["audio_ext"],
-        )
+        stream_format = await self.adapter_hub.video.get_stream_format(item_id=item_id)
+
+        # Get http_headers safely - it may be a dict or None
+        http_headers = stream_format.get("http_headers")
+        user_agent = "Mozilla/5.0"
+        if isinstance(http_headers, dict):
+            user_agent = http_headers.get("User-Agent", "Mozilla/5.0")
 
         extra_args = [
             "-user_agent",
-            stream_format["user_agent"],
+            user_agent,
             "-referer",
             "https://www.nicovideo.jp/",
             "-headers",
             f"Cookie: {stream_format['cookies']}\r\n",
         ]
 
-        try:
-            content_type = ContentType(stream_format["audio_ext"])
-        except ValueError:
-            content_type = ContentType.UNKNOWN
+        # Set both content_type and codec_type for accurate format detection
+        content_type = ContentType.try_parse(stream_format.get("audio_ext", "unknown"))
+        codec_type = ContentType.try_parse(stream_format.get("acodec", "unknown"))
 
-        stream_details = StreamDetails(
+        # Calculate estimated file size if available
+        duration = int(stream_format.get("duration", 0))
+        bit_rate = int(stream_format.get("abr", 0)) if stream_format.get("abr") else None
+
+        # Get track information for stream title
+        track = await self.get_track(item_id)
+        stream_title = track.name if track else None
+
+        self.logger.debug(
+            "Found stream format for %s (audio_ext: %s, acodec: %s)",
+            item_id,
+            str(content_type),
+            str(codec_type),
+        )
+
+        return StreamDetails(
             provider=self.instance_id,
-            duration=int(stream_format.get("duration", 0)),
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=content_type,
+                codec_type=codec_type,
+                sample_rate=int(stream_format.get("asr", 44100)),
+                channels=int(stream_format.get("channels", 2)),
+                bit_rate=bit_rate,
             ),
+            media_type=MediaType.TRACK,
             stream_type=StreamType.HTTP,
+            duration=duration,
+            stream_title=stream_title,
             path=stream_format["url"],
             extra_input_args=extra_args,
             allow_seek=True,
@@ -120,16 +141,6 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             # If an expiring URL is used, it may not play when pausing and resuming.
             enable_cache=True,
         )
-
-        audio_channels = stream_format.get("audio_channels")
-        asr = stream_format.get("asr")
-
-        if audio_channels and audio_channels.isdigit():
-            stream_details.audio_format.channels = int(audio_channels)
-        if asr:
-            stream_details.audio_format.sample_rate = int(asr)
-
-        return stream_details
 
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
         """Add item to provider's library. Return true on success."""
@@ -143,7 +154,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             video_id = item.item_id
 
             # Like the video using niconico.py
-            like_result = await self.nicovideo_adapter.video.like_video(video_id)
+            like_result = await self.adapter_hub.video.like_video(video_id)
 
             if like_result:
                 self.logger.debug("Successfully liked video %s", video_id)

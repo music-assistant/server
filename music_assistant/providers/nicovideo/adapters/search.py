@@ -16,22 +16,17 @@ from niconico.objects.video.search import (
 )
 
 from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
-from music_assistant.providers.nicovideo.converter import (
-    convert_album_by_series,
-    convert_playlist_by_mylist,
-    convert_track_by_essential_video,
-)
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import SearchResults
 
-    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
 
 
 class NicovideoSearchAdapter(NicovideoBaseAdapter):
     """Handles search related operations for nicovideo."""
 
-    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+    def __init__(self, adapter: NicovideoAdapterHub) -> None:
         """Initialize NicovideoSearchAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
@@ -87,7 +82,7 @@ class NicovideoSearchAdapter(NicovideoBaseAdapter):
         playlists = []
         for item in list_search_data.items:
             if isinstance(item, EssentialMylist):
-                playlists.append(convert_playlist_by_mylist(self.adapter.provider, item))
+                playlists.append(self.converter_hub.playlist.convert_by_mylist(item))
 
         return playlists
 
@@ -106,7 +101,7 @@ class NicovideoSearchAdapter(NicovideoBaseAdapter):
         albums = []
         for item in list_search_data.items:
             if isinstance(item, EssentialSeries):
-                albums.append(convert_album_by_series(self.adapter.provider, item))
+                albums.append(self.converter_hub.album.convert_by_series(item))
 
         return albums
 
@@ -124,7 +119,7 @@ class NicovideoSearchAdapter(NicovideoBaseAdapter):
         tracks = []
         for item in video_search_data.items:
             if item.id_:
-                track = convert_track_by_essential_video(self.adapter.provider, item)
+                track = self.converter_hub.track.convert_by_essential_video(item)
                 if track:
                     tracks.append(track)
         return tracks
@@ -155,7 +150,7 @@ class NicovideoSearchAdapter(NicovideoBaseAdapter):
             if video_search_data:
                 for item in video_search_data.items:
                     if item.id_:
-                        track = convert_track_by_essential_video(self.adapter.provider, item)
+                        track = self.converter_hub.track.convert_by_essential_video(item)
                         if track:
                             tracks.append(track)
 

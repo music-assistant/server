@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from io import StringIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import yt_dlp
 from music_assistant_models.errors import UnplayableMediaError
@@ -12,25 +13,20 @@ from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapt
 from music_assistant.providers.nicovideo.constants import (
     NICOVIDEO_COOKIE_DOMAIN,
 )
-from music_assistant.providers.nicovideo.converter import (
-    convert_track_by_essential_video,
-    convert_track_by_watch_data,
-)
 from music_assistant.providers.nicovideo.helpers import (
     convert_to_netscape,
-    log_verbose,
 )
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
-    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
 
 
 class NicovideoVideoAdapter(NicovideoBaseAdapter):
     """Handles video and stream related operations for nicovideo."""
 
-    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+    def __init__(self, adapter: NicovideoAdapterHub) -> None:
         """Initialize NicovideoVideoAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
@@ -51,7 +47,7 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
             return []
         tracks = []
         for item in user_video_data.items:
-            track = convert_track_by_essential_video(self.adapter.provider, item.essential)
+            track = self.converter_hub.track.convert_by_essential_video(item.essential)
             if track:
                 tracks.append(track)
         return tracks
@@ -63,57 +59,37 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
         )
 
         if watch_data:
-            return convert_track_by_watch_data(self.adapter.provider, watch_data)
+            return self.converter_hub.track.convert_by_watch_data(watch_data)
 
         return None
 
-    async def get_stream_format(self, item_id: str) -> dict[str, str]:
+    async def get_stream_format(self, item_id: str) -> dict[str, Any]:
         """Use yt-dlp to extract the best stream URL from nicovideo."""
         netscape_cookie_str = convert_to_netscape(
             self.adapter.niconico_py_client.session.cookies, NICOVIDEO_COOKIE_DOMAIN
         )
 
-        def _extract() -> dict[str, str]:
+        def _extract() -> dict[str, Any]:
             url = f"https://www.nicovideo.jp/watch/{item_id}"
-            log_verbose(
-                self.adapter.logger,
-                "Starting yt-dlp stream extraction for video %s",
-                item_id,
-            )
             ydl_opts = {
-                "quiet": True,
+                "quiet": self.logger.level > logging.DEBUG,
+                "cookiefile": StringIO(netscape_cookie_str),
                 "format": "bestaudio/best",
                 "nocheckcertificate": True,
                 "noplaylist": True,
-                "cookiefile": StringIO(netscape_cookie_str),
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 try:
                     info = ydl.extract_info(url, download=False)
-                    best_format = next(
-                        (f for f in info["formats"] if f.get("acodec") != "none"), None
-                    )
-                    if not best_format:
-                        raise UnplayableMediaError("No suitable audio stream found")
-
-                    log_verbose(
-                        self.adapter.logger,
-                        "Successfully extracted stream format for %s: %s (%s)",
-                        item_id,
-                        best_format["ext"],
-                        best_format.get("acodec", "unknown"),
-                    )
-
-                    return {
-                        "url": best_format["url"],
-                        "audio_ext": best_format["ext"],
-                        "audio_channels": best_format.get("channels"),
-                        "asr": best_format.get("asr"),
-                        "cookies": best_format["cookies"],
-                        "user_agent": best_format["http_headers"].get("User-Agent", "Mozilla/5.0"),
-                        "duration": info.get("duration"),
-                    }
-                except Exception as err:
+                    # Use yt-dlp's format selector like YouTube Music does
+                    format_selector = ydl.build_format_selector("bestaudio")
+                    if not (
+                        stream_format := next(format_selector({"formats": info["formats"]}), None)
+                    ):
+                        raise UnplayableMediaError("No stream formats found")
+                    # Return the format as-is like YouTube Music does
+                    return cast("dict[str, Any]", stream_format)
+                except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(f"nicovideo extract error: {err}") from err
 
         result = await self.adapter._call_with_throttler(_extract)

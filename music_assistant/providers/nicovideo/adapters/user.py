@@ -8,17 +8,12 @@ from typing import TYPE_CHECKING, Literal
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
-from music_assistant.providers.nicovideo.converter import (
-    convert_artist,
-    convert_following_playlist_by_mylist,
-    convert_track_by_essential_video,
-)
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Artist, Playlist, Track
     from niconico.objects.nvapi import FollowingMylistsData
 
-    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
 
 # Import at runtime for isinstance checks
 from niconico.objects.video import EssentialVideo
@@ -27,7 +22,7 @@ from niconico.objects.video import EssentialVideo
 class NicovideoUserAdapter(NicovideoBaseAdapter):
     """Get user details from nicovideo."""
 
-    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+    def __init__(self, adapter: NicovideoAdapterHub) -> None:
         """Initialize NicovideoUserAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
@@ -36,7 +31,7 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
         user = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.user.get_user, user_id
         )
-        return convert_artist(self.adapter.provider, user) if user else None
+        return self.converter_hub.artist.convert_by_owner_or_user(user) if user else None
 
     async def get_recommendations(
         self,
@@ -65,7 +60,7 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
             # Type check to ensure content is EssentialVideo
             if isinstance(item.content, EssentialVideo):
-                track = convert_track_by_essential_video(self.adapter.provider, item.content)
+                track = self.converter_hub.track.convert_by_essential_video(item.content)
                 if track:
                     tracks.append(track)
         return tracks
@@ -92,7 +87,7 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
             # Type check to ensure content is EssentialVideo
             if isinstance(item.content, EssentialVideo):
-                track = convert_track_by_essential_video(self.adapter.provider, item.content)
+                track = self.converter_hub.track.convert_by_essential_video(item.content)
                 if track:
                     tracks.append(track)
         return tracks
@@ -111,7 +106,7 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
         tracks = []
         for item in like_history.items:
-            track = convert_track_by_essential_video(self.adapter.provider, item.video)
+            track = self.converter_hub.track.convert_by_essential_video(item.video)
             if track:
                 tracks.append(track)
         return tracks
@@ -130,7 +125,7 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
         tracks = []
         for item in history.items:
-            track = convert_track_by_essential_video(self.adapter.provider, item.video)
+            track = self.converter_hub.track.convert_by_essential_video(item.video)
             if track:
                 tracks.append(track)
         return tracks
@@ -153,7 +148,7 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
         tracks = []
         for item in own_videos.items:
-            track = convert_track_by_essential_video(self.adapter.provider, item.essential)
+            track = self.converter_hub.track.convert_by_essential_video(item.essential)
             if track:
                 tracks.append(track)
         return tracks
@@ -232,7 +227,7 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
         if hasattr(followings_data, "items"):
             for item in followings_data.items:
                 if hasattr(item, "user") and item.user:
-                    artist = convert_artist(self.adapter.provider, item.user)
+                    artist = self.converter_hub.artist.convert_by_owner_or_user(item.user)
                     if artist:
                         artists.append(artist)
 
@@ -260,6 +255,6 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
         playlists = []
         for mylist in following_mylists_data.mylists:
-            playlist = convert_following_playlist_by_mylist(self.adapter.provider, mylist.detail)
+            playlist = self.converter_hub.playlist.convert_following_by_mylist(mylist.detail)
             playlists.append(playlist)
         return playlists

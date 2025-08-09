@@ -1,0 +1,35 @@
+"""Hub converter class for nicovideo objects."""
+
+from __future__ import annotations
+
+from logging import Logger
+from typing import TYPE_CHECKING
+
+from music_assistant.providers.nicovideo.converters.album import NicovideoAlbumConverter
+from music_assistant.providers.nicovideo.converters.artist import NicovideoArtistConverter
+from music_assistant.providers.nicovideo.converters.item_mappings import (
+    ItemMappingConverter,
+)
+from music_assistant.providers.nicovideo.converters.playlist import (
+    NicovideoPlaylistConverter,
+)
+from music_assistant.providers.nicovideo.converters.track import NicovideoTrackConverter
+
+if TYPE_CHECKING:
+    from music_assistant.models.music_provider import MusicProvider
+
+
+class NicovideoConverterHub:
+    """Central hub for all nicovideo converters to Music Assistant media items."""
+
+    def __init__(self, provider: MusicProvider, logger: Logger) -> None:
+        """Initialize with provider and create specialized converters."""
+        self.provider = provider
+        self.logger = logger
+        self.item_mapper = ItemMappingConverter(self)
+
+        # Initialize specialized converters
+        self.track = NicovideoTrackConverter(self)
+        self.album = NicovideoAlbumConverter(self)
+        self.playlist = NicovideoPlaylistConverter(self)
+        self.artist = NicovideoArtistConverter(self)

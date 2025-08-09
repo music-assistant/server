@@ -1,0 +1,333 @@
+"""Track converter for nicovideo objects."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+from music_assistant_models.enums import ContentType, ImageType, LinkType
+from music_assistant_models.media_items import (
+    AudioFormat,
+    MediaItemImage,
+    MediaItemLink,
+    MediaItemMetadata,
+    Track,
+)
+from music_assistant_models.unique_list import UniqueList
+from niconico.objects.video import EssentialVideo, Owner, VideoThumbnail
+
+from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
+from music_assistant.providers.nicovideo.converters.utilities import (
+    calculate_popularity,
+    create_audio_format_from_watch_data,
+    create_provider_mapping,
+)
+
+if TYPE_CHECKING:
+    from niconico.objects.video.watch import WatchData, WatchVideo, WatchVideoThumbnail
+
+
+class NicovideoTrackConverter(NicovideoConverterBase):
+    """Handles track conversion for nicovideo."""
+
+    def convert_by_essential_video(self, video: EssentialVideo) -> Track | None:
+        """Convert an EssentialVideo object into a Track."""
+        # Skip muted videos
+        if video.is_muted:
+            return None
+
+        # Calculate popularity using standard formula
+        popularity = calculate_popularity(
+            mylist_count=video.count.mylist,
+            like_count=video.count.like,
+        )
+
+        # Create basic audio format with default/estimated values for EssentialVideo
+        # Since EssentialVideo doesn't have detailed audio format info, we use defaults
+        audio_format = AudioFormat(
+            content_type=ContentType.MP4,  # niconico primarily uses MP4
+            codec_type=ContentType.AAC,
+        )
+
+        # Create base track with enhanced metadata
+        return Track(
+            item_id=video.id_,
+            provider=self.provider.lookup_key,
+            name=video.title,
+            duration=video.duration,
+            artists=UniqueList([self.item_mapper.get_artist_mapping(video.owner)]),
+            # Videos that cannot be played will have a duration of 0.
+            is_playable=video.duration > 0 and not video.is_payment_required,
+            metadata=self._create_track_metadata(
+                video_id=video.id_,
+                description=video.short_description,
+                explicit=video.require_sensitive_masking,
+                release_date_str=video.registered_at,
+                popularity=popularity,
+                thumbnail=video.thumbnail,
+            ),
+            provider_mappings=create_provider_mapping(
+                item_id=video.id_,
+                provider=self.provider,
+                available=not video.is_payment_required and not video.is_muted,
+                audio_format=audio_format,
+            ),
+        )
+
+    def convert_by_watch_data(self, watch_data: WatchData) -> Track | None:
+        """Convert a WatchData object into a Track."""
+        video = watch_data.video
+
+        # Skip deleted, private, or muted videos
+        if video.is_deleted or video.is_private:
+            return None
+
+        # Calculate popularity using standard formula
+        popularity = calculate_popularity(
+            mylist_count=video.count.mylist,
+            like_count=video.count.like,
+        )
+
+        # Create owner object for artist conversion based on channel vs user video
+        if watch_data.channel:
+            # Channel video case
+            owner = Owner(
+                ownerType="channel",
+                type="channel",
+                visibility="visible",
+                id=watch_data.channel.id_,
+                name=watch_data.channel.name,
+                iconUrl=watch_data.channel.thumbnail.url if watch_data.channel.thumbnail else None,
+            )
+        else:
+            # User video case
+            owner = Owner(
+                ownerType="user",
+                type="user",
+                visibility="visible",
+                id=str(watch_data.owner.id_) if watch_data.owner else None,
+                name=watch_data.owner.nickname if watch_data.owner else None,
+                iconUrl=watch_data.owner.icon_url if watch_data.owner else None,
+            )
+
+        # Create audio format from watch data
+        audio_format = create_audio_format_from_watch_data(watch_data)
+
+        # Create base track with enhanced metadata
+        track = Track(
+            item_id=video.id_,
+            provider=self.provider.lookup_key,
+            name=video.title,
+            duration=video.duration,
+            artists=UniqueList([self.item_mapper.get_artist_mapping(owner)]),
+            # Videos that cannot be played will have a duration of 0.
+            is_playable=video.duration > 0 and not video.is_authentication_required,
+            metadata=self._create_track_metadata_from_watch_video(
+                video=video,
+                watch_data=watch_data,
+                popularity=popularity,
+            ),
+            provider_mappings=create_provider_mapping(
+                item_id=video.id_,
+                provider=self.provider,
+                available=not video.is_authentication_required and not video.is_deleted,
+                audio_format=audio_format,
+            ),
+        )
+
+        # Add album information if series data is available
+        if watch_data.series:
+            track.album = self.item_mapper.get_album_mapping(
+                album_id=str(watch_data.series.id_),
+                album_name=watch_data.series.title,
+            )
+
+        return track
+
+    def _create_track_metadata_from_watch_video(
+        self,
+        video: WatchVideo,
+        watch_data: WatchData,
+        *,
+        popularity: int | None = None,
+    ) -> MediaItemMetadata:
+        """Create track metadata from WatchVideo object."""
+        metadata = MediaItemMetadata()
+
+        if video.description:
+            metadata.description = video.description
+
+        if video.registered_at:
+            try:
+                # Handle both direct ISO format and Z-suffixed format
+                if video.registered_at.endswith("Z"):
+                    clean_date_str = video.registered_at.replace("Z", "+00:00")
+                    metadata.release_date = datetime.fromisoformat(clean_date_str)
+                else:
+                    metadata.release_date = datetime.fromisoformat(video.registered_at)
+            except (ValueError, AttributeError) as err:
+                # Log debug message for date parsing failures to help with troubleshooting
+                self.logger.debug(
+                    "Failed to convert release date '%s': %s", video.registered_at, err
+                )
+
+        if popularity is not None:
+            metadata.popularity = popularity
+
+        # Add tag information as genres
+        if watch_data.tag and watch_data.tag.items:
+            # Extract tag names from tag items and create genres set
+            tag_names = []
+            for tag_item in watch_data.tag.items:
+                # Tag items might be Tag objects or dictionaries
+                if hasattr(tag_item, "name"):
+                    tag_names.append(tag_item.name)
+                elif isinstance(tag_item, dict) and "name" in tag_item:
+                    tag_names.append(tag_item["name"])
+                elif isinstance(tag_item, str):
+                    tag_names.append(tag_item)
+
+            if tag_names:
+                metadata.genres = set(tag_names)
+
+        # Add thumbnail images
+        if video.thumbnail:
+            metadata.images = self._convert_watch_video_thumbnails(video.thumbnail)
+
+        # Add video link
+        metadata.links = {
+            MediaItemLink(
+                type=LinkType.WEBSITE,
+                url=f"https://www.nicovideo.jp/watch/{video.id_}",
+            )
+        }
+
+        return metadata
+
+    def _convert_watch_video_thumbnails(
+        self, thumbnail: WatchVideoThumbnail
+    ) -> UniqueList[MediaItemImage]:
+        """Convert WatchVideo thumbnails into multiple image sizes."""
+        images: UniqueList[MediaItemImage] = UniqueList()
+
+        def _add_thumbnail_image(url: str) -> None:
+            images.append(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=url,
+                    provider=self.provider.lookup_key,
+                    remotely_accessible=True,
+                )
+            )
+
+        # Add main thumbnail URLs
+        if thumbnail.url:
+            _add_thumbnail_image(thumbnail.url)
+        if thumbnail.middle_url:
+            _add_thumbnail_image(thumbnail.middle_url)
+        if thumbnail.large_url:
+            _add_thumbnail_image(thumbnail.large_url)
+
+        return images
+
+    def _create_track_metadata(
+        self,
+        video_id: str,
+        *,
+        description: str | None = None,
+        explicit: bool | None = None,
+        release_date_str: str | None = None,
+        popularity: int | None = None,
+        thumbnail: VideoThumbnail | None = None,
+        thumbnail_url: str | None = None,
+    ) -> MediaItemMetadata:
+        """Create track metadata with common fields."""
+        metadata = MediaItemMetadata()
+
+        if description:
+            metadata.description = description
+
+        if explicit is not None:
+            metadata.explicit = explicit
+
+        if release_date_str:
+            try:
+                # Handle both direct ISO format and Z-suffixed format
+                if release_date_str.endswith("Z"):
+                    clean_date_str = release_date_str.replace("Z", "+00:00")
+                    metadata.release_date = datetime.fromisoformat(clean_date_str)
+                else:
+                    metadata.release_date = datetime.fromisoformat(release_date_str)
+            except (ValueError, AttributeError) as err:
+                # Log debug message for date parsing failures to help with troubleshooting
+                self.logger.debug("Failed to convert release date '%s': %s", release_date_str, err)
+
+        if popularity is not None:
+            metadata.popularity = popularity
+
+        # Add thumbnail images with enhanced support
+        if thumbnail:
+            # Use enhanced thumbnail parsing for multiple sizes
+            metadata.images = self._convert_video_thumbnails(thumbnail)
+        elif thumbnail_url:
+            # Fallback to single thumbnail URL
+            metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=thumbnail_url,
+                        provider=self.provider.lookup_key,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
+
+        # Add video link
+        metadata.links = {
+            MediaItemLink(
+                type=LinkType.WEBSITE,
+                url=f"https://www.nicovideo.jp/watch/{video_id}",
+            )
+        }
+
+        return metadata
+
+    def _convert_video_thumbnails(self, thumbnail: VideoThumbnail) -> UniqueList[MediaItemImage]:
+        """Convert video thumbnails into multiple image sizes."""
+        images: UniqueList[MediaItemImage] = UniqueList()
+
+        # nhd_url is the largest size, use it as primary
+        if thumbnail.nhd_url:
+            images.append(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumbnail.nhd_url,
+                    provider=self.provider.lookup_key,
+                    remotely_accessible=True,
+                )
+            )
+
+        # large_url as secondary (if different from nhd_url)
+        if thumbnail.large_url and thumbnail.large_url != thumbnail.nhd_url:
+            images.append(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumbnail.large_url,
+                    provider=self.provider.lookup_key,
+                    remotely_accessible=True,
+                )
+            )
+
+        # middle_url and listing_url are same size, skip them if nhd_url exists
+        # Only add if nhd_url is not available
+        if not thumbnail.nhd_url and thumbnail.middle_url:
+            images.append(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumbnail.middle_url,
+                    provider=self.provider.lookup_key,
+                    remotely_accessible=True,
+                )
+            )
+
+        return images

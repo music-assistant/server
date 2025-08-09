@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
     from music_assistant.providers.nicovideo.config import NicovideoConfig
 
 
@@ -37,7 +37,7 @@ class NicovideoMusicProviderMixinBase(MusicProvider):
 
     @property
     @abstractmethod
-    def nicovideo_adapter(self) -> NicovideoMusicAssistantAdapter:
+    def adapter_hub(self) -> NicovideoAdapterHub:
         """Get the nicovideo adapter instance."""
 
     async def handle_async_init_for_mixin(self) -> None:

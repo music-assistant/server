@@ -34,11 +34,11 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        playlist_with_tracks = await self.nicovideo_adapter.mylist.get_mylist(
+        playlist_with_tracks = await self.adapter_hub.mylist.get_mylist(
             prov_playlist_id, page_size=500
         )
         if not playlist_with_tracks:
-            playlist_with_tracks = await self.nicovideo_adapter.mylist.get_own_mylist(
+            playlist_with_tracks = await self.adapter_hub.mylist.get_own_mylist(
                 prov_playlist_id, page_size=500
             )
         if not playlist_with_tracks:
@@ -52,11 +52,11 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         page: int = 0,
     ) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
-        playlist_with_tracks = await self.nicovideo_adapter.mylist.get_mylist(
+        playlist_with_tracks = await self.adapter_hub.mylist.get_mylist(
             prov_playlist_id, page_size=500, page=page + 1
         )
         if not playlist_with_tracks:
-            playlist_with_tracks = await self.nicovideo_adapter.mylist.get_own_mylist(
+            playlist_with_tracks = await self.adapter_hub.mylist.get_own_mylist(
                 prov_playlist_id, page_size=500, page=page + 1
             )
 
@@ -73,17 +73,17 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Playlist, None]:
         """Retrieve library playlists from the provider."""
-        if not self.nicovideo_adapter.auth.is_logged_in():
+        if not self.adapter_hub.auth.is_logged_in():
             return
         # Get user's own playlists (editable)
-        own_playlists = await self.nicovideo_adapter.mylist.get_own_mylists()
+        own_playlists = await self.adapter_hub.mylist.get_own_mylists()
         for playlist in own_playlists:
             yield playlist
 
         # Include following mylists if enabled in config
         include_following = self.nicovideo_config.get_include_followed_mylists()
         if include_following:
-            following_playlists = await self.nicovideo_adapter.user.get_following_playlists()
+            following_playlists = await self.adapter_hub.user.get_following_playlists()
             for playlist in following_playlists:
                 yield playlist
 
@@ -91,9 +91,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         for track_id in prov_track_ids:
-            success = await self.nicovideo_adapter.mylist.add_mylist_item(
-                prov_playlist_id, track_id
-            )
+            success = await self.adapter_hub.mylist.add_mylist_item(prov_playlist_id, track_id)
             if success:
                 self.logger.debug(
                     "Successfully added track %s to playlist %s",
@@ -127,7 +125,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
             )
             return
 
-        success = await self.nicovideo_adapter.mylist.remove_mylist_items(
+        success = await self.adapter_hub.mylist.remove_mylist_items(
             prov_playlist_id, track_ids_to_remove
         )
         if success:
@@ -143,7 +141,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         # Create a new mylist using niconico.py
-        create_result = await self.nicovideo_adapter.mylist.create_mylist(
+        create_result = await self.adapter_hub.mylist.create_mylist(
             name, description="Created by Music Assistant", is_public=False
         )
 
@@ -152,9 +150,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
 
         # Get the created mylist details
         mylist_id = str(create_result.mylist.id_)
-        playlist_with_tracks = await self.nicovideo_adapter.mylist.get_own_mylist(
-            mylist_id, page_size=1
-        )
+        playlist_with_tracks = await self.adapter_hub.mylist.get_own_mylist(mylist_id, page_size=1)
 
         if not playlist_with_tracks:
             raise MediaNotFoundError(

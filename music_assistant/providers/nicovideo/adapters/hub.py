@@ -1,4 +1,4 @@
-"""Adapter for niconico API to MusicAssistant."""
+"""Hub adapter for niconico API to MusicAssistant."""
 
 from __future__ import annotations
 
@@ -13,23 +13,24 @@ from pydantic import ValidationError
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.nicovideo.adapters import (
-    NicovideoAuthAdapter,
-    NicovideoMylistAdapter,
-    NicovideoSearchAdapter,
-    NicovideoSeriesAdapter,
-    NicovideoUserAdapter,
-    NicovideoVideoAdapter,
-)
+from music_assistant.providers.nicovideo.adapters.auth import NicovideoAuthAdapter
+from music_assistant.providers.nicovideo.adapters.mylist import NicovideoMylistAdapter
+from music_assistant.providers.nicovideo.adapters.search import NicovideoSearchAdapter
+from music_assistant.providers.nicovideo.adapters.series import NicovideoSeriesAdapter
+from music_assistant.providers.nicovideo.adapters.user import NicovideoUserAdapter
+from music_assistant.providers.nicovideo.adapters.video import NicovideoVideoAdapter
 from music_assistant.providers.nicovideo.constants import ApiPriority
+from music_assistant.providers.nicovideo.converters.hub import (
+    NicovideoConverterHub,
+)
 from music_assistant.providers.nicovideo.helpers import log_verbose
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.config import NicovideoConfig
 
 
-class NicovideoMusicAssistantAdapter:
-    """Bridge niconico API and MusicAssistant."""
+class NicovideoAdapterHub:
+    """Central hub for all niconico adapters and MusicAssistant bridge."""
 
     def __init__(self, provider: MusicProvider, nicovideo_config: NicovideoConfig) -> None:
         """Initialize adapter with provider and config."""
@@ -37,16 +38,23 @@ class NicovideoMusicAssistantAdapter:
         self.nicovideo_config = nicovideo_config
         self.mass = provider.mass
         self.niconico_py_client = NicoNico()
+
         self.niconico_api_throttler = ThrottlerManager(rate_limit=1, period=0)
         # Low priority throttler for background tag updates (slower rate)
         self.niconico_api_throttler_low_priority = ThrottlerManager(rate_limit=1, period=0.3)
-        self.logger = provider.logger.getChild("NicovideoMusicAssistantAdapter")
+
+        self.logger = provider.logger
+
+        # Initialize adapters for different functionality
         self.auth = NicovideoAuthAdapter(self)
         self.video = NicovideoVideoAdapter(self)
         self.series = NicovideoSeriesAdapter(self)
         self.mylist = NicovideoMylistAdapter(self)
         self.search = NicovideoSearchAdapter(self)
         self.user = NicovideoUserAdapter(self)
+
+        # Initialize converter
+        self.converter_hub = NicovideoConverterHub(provider, self.logger)
 
     async def _call_with_throttler[T, **P](
         self,

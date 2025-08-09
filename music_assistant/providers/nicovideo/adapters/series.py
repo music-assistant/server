@@ -5,22 +5,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
-from music_assistant.providers.nicovideo.converter import (
-    convert_album_by_series,
-    convert_series_to_album_with_tracks,
-)
 from music_assistant.providers.nicovideo.helpers import AlbumWithTracks
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album
 
-    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
 
 
 class NicovideoSeriesAdapter(NicovideoBaseAdapter):
     """Handles series related operations for nicovideo."""
 
-    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+    def __init__(self, adapter: NicovideoAdapterHub) -> None:
         """Initialize NicovideoSeriesAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
@@ -37,7 +33,7 @@ class NicovideoSeriesAdapter(NicovideoBaseAdapter):
         if not series_data:
             return None
 
-        return convert_series_to_album_with_tracks(self.adapter.provider, series_data)
+        return self.converter_hub.album.convert_series_to_album_with_tracks(series_data)
 
     async def get_user_series(
         self, user_id: str, page: int = 1, page_size: int = 100
@@ -53,7 +49,7 @@ class NicovideoSeriesAdapter(NicovideoBaseAdapter):
             return []
 
         return [
-            convert_album_by_series(self.adapter.provider, series_item)
+            self.converter_hub.album.convert_by_series(series_item)
             for series_item in user_series_items
         ]
 
@@ -71,7 +67,7 @@ class NicovideoSeriesAdapter(NicovideoBaseAdapter):
             return []
 
         return [
-            convert_album_by_series(self.adapter.provider, series_item)
+            self.converter_hub.album.convert_by_series(series_item)
             for series_item in user_series_items
         ]
 
@@ -91,4 +87,4 @@ class NicovideoSeriesAdapter(NicovideoBaseAdapter):
         if not series_data:
             return None
 
-        return convert_series_to_album_with_tracks(self.adapter.provider, series_data)
+        return self.converter_hub.album.convert_series_to_album_with_tracks(series_data)

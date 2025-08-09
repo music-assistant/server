@@ -14,13 +14,13 @@ from music_assistant.providers.nicovideo.helpers import log_verbose
 if TYPE_CHECKING:
     from asyncio import TimerHandle
 
-    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
 
 
 class NicovideoAuthAdapter(NicovideoBaseAdapter):
     """Handles authentication and session management for nicovideo."""
 
-    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+    def __init__(self, adapter: NicovideoAdapterHub) -> None:
         """Initialize the NicovideoAuthAdapter with a reference to the parent adapter."""
         super().__init__(adapter)
         self._periodic_relogin_task: TimerHandle | None = None
@@ -45,20 +45,20 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
         async with self.adapter.niconico_api_throttler.bypass():
             for attempt in range(max_retries):
                 try:
-                    self.adapter.logger.debug(
+                    self.logger.debug(
                         "Trying to log in... (Number of attempts: %d/%d)",
                         attempt + 1,
                         max_retries,
                     )
                     if user_session:
-                        self.adapter.logger.debug("Using user_session for login.")
+                        self.logger.debug("Using user_session for login.")
                         await asyncio.to_thread(
                             self.adapter.niconico_py_client.login_with_session, str(user_session)
                         )
                     else:
-                        self.adapter.logger.debug("Using mail and password for login.")
+                        self.logger.debug("Using mail and password for login.")
                         if not username or not password:
-                            self.adapter.logger.debug(
+                            self.logger.debug(
                                 "Username and password are not set in the configuration.",
                             )
                             return False
@@ -68,7 +68,7 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
                             str(password),
                             str(mfa) if mfa else None,
                         )
-                    self.adapter.logger.info("Successfully authenticated with Nicovideo!")
+                    self.logger.info("Successfully authenticated with Nicovideo!")
                     # Clear MFA code after successful use (one-time password should not be reused)
                     if mfa:
                         config.clear_mfa_code()
@@ -76,7 +76,7 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
                     if session:
                         config.save_user_session(session)
                         log_verbose(
-                            self.adapter.logger,
+                            self.logger,
                             "Saved user session for future logins (length: %d chars)",
                             len(session),
                         )
@@ -84,9 +84,9 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
                 except LoginFailureError as err:
                     if user_session:
                         user_session = None  # Clear session on failure
-                        self.adapter.logger.warning("Login with user_session failed: %s", err)
+                        self.logger.warning("Login with user_session failed: %s", err)
                     else:
-                        self.adapter.logger.error("Login with mail and password failed: %s", err)
+                        self.logger.error("Login with mail and password failed: %s", err)
                         return False
                 except Exception as e:
                     if (
@@ -94,15 +94,15 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
                         or "Max retries exceeded" in str(e)
                         or "ConnectionError" in str(e)
                     ):
-                        self.adapter.logger.warning(
+                        self.logger.warning(
                             f"Network or DNS error occurred: {e}. "
                             f"Retrying in {retry_delay_seconds} seconds..."
                         )
                         await asyncio.sleep(retry_delay_seconds)
                     else:
-                        self.adapter.logger.error("An unexpected error has occurred.: %s", e)
+                        self.logger.error("An unexpected error has occurred.: %s", e)
                         return False
-        self.adapter.logger.error(
+        self.logger.error(
             f"Could not login after exceeding the maximum number of retries ({max_retries})."
         )
         return False
@@ -131,11 +131,11 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
     async def _schedule_periodic_relogin(self) -> None:
         """Periodic re-login every 30 days."""
         try:
-            self.adapter.logger.debug("Performing periodic re-login to refresh the session.")
+            self.logger.debug("Performing periodic re-login to refresh the session.")
             await self.try_logout()
             await asyncio.sleep(3)  # Short delay to ensure logout completes
             await self.try_login()
             self.start_periodic_relogin_task()
         except asyncio.CancelledError:
-            self.adapter.logger.debug("Periodic relogin task was cancelled.")
+            self.logger.debug("Periodic relogin task was cancelled.")
             raise

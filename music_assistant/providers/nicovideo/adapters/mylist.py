@@ -5,23 +5,19 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
-from music_assistant.providers.nicovideo.converter import (
-    convert_playlist_by_mylist,
-    convert_playlist_with_tracks_by_mylist,
-)
 from music_assistant.providers.nicovideo.helpers import PlaylistWithTracks
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Playlist
     from niconico.objects.nvapi import CreateMylistData
 
-    from music_assistant.providers.nicovideo.adapter import NicovideoMusicAssistantAdapter
+    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
 
 
 class NicovideoMylistAdapter(NicovideoBaseAdapter):
     """Handles mylist related operations for nicovideo."""
 
-    def __init__(self, adapter: NicovideoMusicAssistantAdapter) -> None:
+    def __init__(self, adapter: NicovideoAdapterHub) -> None:
         """Initialize NicovideoMylistAdapter with reference to parent adapter."""
         super().__init__(adapter)
 
@@ -32,7 +28,7 @@ class NicovideoMylistAdapter(NicovideoBaseAdapter):
         )
         if results is None:
             return []
-        return [convert_playlist_by_mylist(self.adapter.provider, entry) for entry in results]
+        return [self.converter_hub.playlist.convert_by_mylist(entry) for entry in results]
 
     async def get_mylist(
         self, mylist_id: str, page_size: int = 500, page: int = 1
@@ -46,7 +42,7 @@ class NicovideoMylistAdapter(NicovideoBaseAdapter):
         )
         if not mylist:
             return None
-        return convert_playlist_with_tracks_by_mylist(self.adapter.provider, mylist)
+        return self.converter_hub.playlist.convert_with_tracks_by_mylist(mylist)
 
     async def get_own_mylist(
         self, mylist_id: str, page_size: int = 500, page: int = 1
@@ -60,7 +56,7 @@ class NicovideoMylistAdapter(NicovideoBaseAdapter):
         )
         if not mylist:
             return None
-        return convert_playlist_with_tracks_by_mylist(self.adapter.provider, mylist)
+        return self.converter_hub.playlist.convert_with_tracks_by_mylist(mylist)
 
     async def add_mylist_item(self, mylist_id: str, video_id: str) -> bool:
         """Add a video to mylist."""

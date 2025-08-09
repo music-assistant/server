@@ -35,7 +35,7 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id (series as album)."""
-        album_with_tracks = await self.nicovideo_adapter.series.get_series(prov_album_id)
+        album_with_tracks = await self.adapter_hub.series.get_series(prov_album_id)
         if not album_with_tracks:
             raise MediaNotFoundError(f"Album with id {prov_album_id} not found on nicovideo.")
 
@@ -49,7 +49,7 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider (user's own series)."""
-        if not self.nicovideo_adapter.auth.is_logged_in():
+        if not self.adapter_hub.auth.is_logged_in():
             return
 
         # Check config setting for including own series as albums
@@ -58,9 +58,7 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
 
         page = 1
         while True:
-            albums = await self.nicovideo_adapter.series.get_own_series_list(
-                page=page, page_size=100
-            )
+            albums = await self.adapter_hub.series.get_own_series_list(page=page, page_size=100)
             if not albums:
                 break
 
@@ -78,7 +76,7 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id (series tracks)."""
-        album_with_tracks = await self.nicovideo_adapter.series.get_series(prov_album_id)
+        album_with_tracks = await self.adapter_hub.series.get_series(prov_album_id)
         if not album_with_tracks:
             return []
 
@@ -91,7 +89,11 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
     ) -> None:
         """Update album information for existing tracks in the library."""
         if not tracks:
-            tracks = await self.get_album_tracks(album.item_id)
+            # Get tracks directly from adapter to avoid infinite recursion
+            album_with_tracks = await self.adapter_hub.series.get_series(album.item_id)
+            if not album_with_tracks:
+                return
+            tracks = album_with_tracks.tracks
 
         if not tracks:
             return
@@ -99,7 +101,9 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
         # Update album information in cached tracks
         async def update_track_with_album(track: Track) -> None:
             """Update single track with album information and cache it."""
-            track.album = album
+            track.album = self.adapter_hub.converter_hub.item_mapper.get_album_mapping(
+                album.item_id, album.name
+            )
             await cache_track(self, track)
 
         # Process tracks in parallel for better performance with limited concurrency
