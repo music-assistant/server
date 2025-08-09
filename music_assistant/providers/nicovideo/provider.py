@@ -62,6 +62,7 @@ class NicovideoMusicProvider(
             lambda mixin_class: mixin_class.unload_for_mixin, is_removed
         )
 
+    @override
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details (streaming URL and format) for given item."""
         return await MixinCaller(self).invoke_first_valid_or_raise(
