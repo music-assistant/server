@@ -2,23 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, cast
-
-from music_assistant_models.media_items import Track as TrackModel
+from typing import TYPE_CHECKING
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_LIBRARY_ITEMS,
     CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     import logging
 
     from music_assistant_models.media_items import Album, Playlist, Track
     from requests.cookies import RequestsCookieJar
+
+    from music_assistant.models.music_provider import MusicProvider
 
 
 class PlaylistWithTracks:
@@ -52,28 +49,14 @@ def convert_to_netscape(cookie: RequestsCookieJar, domain: str) -> str:
     return netscape_cookie
 
 
-async def get_library_items[T](
-    provider: MusicProvider,
-    cache_key: str,
-    query_table: str,
-    query_method: Callable[..., Awaitable[list[T]]],
-) -> list[T]:
-    """Get library items from cache or query method."""
-    library_item_ids = await provider.mass.cache.get(
-        cache_key,
-        category=CACHE_CATEGORY_LIBRARY_ITEMS,
-        base_key=provider.instance_id,
-    )
-    if not library_item_ids:
-        return []
-    library_item_ids = cast("list[int]", library_item_ids)
-    query = f"{query_table}.item_id in :ids"
-    query_params = {"ids": library_item_ids}
-    return await query_method(extra_query=query, extra_query_params=query_params)
-
-
 async def cache_track(provider: MusicProvider, track: Track) -> None:
-    """Cache single track with provider item cache."""
+    """Cache single track with provider item cache.
+
+    Note: While MusicAssistant's get_provider_item automatically handles cache retrieval
+    and storage, this helper function is needed for explicit cache updates (e.g., when
+    adding album information to tracks) since MusicAssistant doesn't provide a dedicated
+    cache-only update function.
+    """
     cache_key = f"track.{track.item_id}"
     await provider.mass.cache.set(
         cache_key,
@@ -81,21 +64,6 @@ async def cache_track(provider: MusicProvider, track: Track) -> None:
         category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
         base_key=provider.lookup_key,
     )
-
-
-async def get_cached_track(provider: MusicProvider, track_id: str) -> Track | None:
-    """Get track from cache or return None if not found."""
-    cache_key = f"track.{track_id}"
-    cached_track_data = await provider.mass.cache.get(
-        cache_key,
-        category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
-        base_key=provider.lookup_key,
-    )
-
-    if cached_track_data:
-        return TrackModel.from_dict(cached_track_data)
-
-    return None
 
 
 def log_verbose(logger: logging.Logger, message: str, *args: object) -> None:

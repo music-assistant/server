@@ -10,9 +10,6 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.nicovideo.helpers import (
-    get_library_items,
-)
 from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
     NicovideoMusicProviderMixinBase,
 )
@@ -50,15 +47,10 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         include_own_tracks = self.nicovideo_config.get_include_own_mylists_tracks()
         include_own_videos_tracks = self.nicovideo_config.get_include_own_videos_tracks()
 
-        # Get all library playlists
-        playlists = await get_library_items(
-            self,
-            cache_key="playlist",
-            query_table="playlists",
-            query_method=self.mass.music.playlists.library_items,
-        )
-
-        for playlist in playlists:
+        # Process all library playlists for this provider
+        async for playlist in self.mass.music.playlists.iter_library_items(
+            provider=self.instance_id,
+        ):
             # Filter based on playlist type and config settingげ
             # Own mylists are editable (is_editable=True)
             # Following mylists are not editable (is_editable=False)

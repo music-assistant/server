@@ -61,9 +61,11 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
         watch_data = await self.adapter._call_with_throttler(
             self.adapter.niconico_py_client.video.watch.get_watch_data, video_id
         )
-        return (
-            convert_track_by_watch_data(self.adapter.provider, watch_data) if watch_data else None
-        )
+
+        if watch_data:
+            return convert_track_by_watch_data(self.adapter.provider, watch_data)
+
+        return None
 
     async def get_stream_format(self, item_id: str) -> dict[str, str]:
         """Use yt-dlp to extract the best stream URL from nicovideo."""

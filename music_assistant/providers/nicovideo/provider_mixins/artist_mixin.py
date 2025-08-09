@@ -9,7 +9,6 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Artist, MediaItemType
 
-from music_assistant.providers.nicovideo.helpers import get_library_items
 from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
     NicovideoMusicProviderMixinBase,
 )
@@ -43,13 +42,9 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
         """Retrieve library artists from the provider."""
         # Get artists from library tracks (if enabled in config)
         if self.nicovideo_config.get_include_library_track_artists():
-            tracks = await get_library_items(
-                self,
-                cache_key="track",
-                query_table="tracks",
-                query_method=self.mass.music.tracks.library_items,
-            )
-            for track in tracks:
+            async for track in self.mass.music.tracks.iter_library_items(
+                provider=self.instance_id,
+            ):
                 for artist in track.artists:
                     if isinstance(artist, Artist):
                         yield artist
