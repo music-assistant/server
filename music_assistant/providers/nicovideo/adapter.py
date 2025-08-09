@@ -8,7 +8,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from niconico import NicoNico
-from niconico.exceptions import LoginFailureError  # Import LoginFailureError
+from niconico.exceptions import LoginFailureError
+from pydantic import ValidationError
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.models.music_provider import MusicProvider
@@ -121,6 +122,20 @@ class NicovideoMusicAssistantAdapter:
                 self.logger.warning(
                     "Network error %s called from %s: %s", operation, caller_info, err
                 )
+            elif isinstance(err, ValidationError):
+                # This is a Pydantic ValidationError
+                try:
+                    detailed_errors = err.errors()
+                    self.logger.warning(
+                        "Validation error %s called from %s: %s\nDetailed errors: %s",
+                        operation,
+                        caller_info,
+                        err,
+                        detailed_errors,
+                    )
+                except Exception:
+                    # Fallback if error() method fails
+                    self.logger.warning("Error %s called from %s: %s", operation, caller_info, err)
             else:
                 self.logger.warning("Error %s called from %s: %s", operation, caller_info, err)
             return None
