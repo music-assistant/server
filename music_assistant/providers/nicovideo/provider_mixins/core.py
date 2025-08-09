@@ -18,7 +18,7 @@ from music_assistant.providers.nicovideo.config import NicovideoConfig
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
-from music_assistant.providers.nicovideo.services.hub import NicovideoServiceHub
+from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
 
 class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
@@ -28,7 +28,7 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
         """Initialize the core mixin."""
         super().__init__(*args, **kwargs)
         self._nicovideo_config = NicovideoConfig(self)
-        self._service_hub = NicovideoServiceHub(self, self.nicovideo_config)
+        self._service_manager = NicovideoServiceManager(self, self.nicovideo_config)
 
     @property
     @override
@@ -38,9 +38,9 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
 
     @property
     @override
-    def service_hub(self) -> NicovideoServiceHub:
-        """Get the nicovideo service hub instance."""
-        return self._service_hub
+    def service_manager(self) -> NicovideoServiceManager:
+        """Get the nicovideo service manager instance."""
+        return self._service_manager
 
     @property
     @override
@@ -61,10 +61,10 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
 
             if has_credentials:
                 # Try login if credentials are provided
-                login_success = await self.service_hub.auth.try_login()
+                login_success = await self.service_manager.auth.try_login()
                 if not login_success:
                     raise LoginFailed("Login failed with provided credentials")
-                self.service_hub.auth.start_periodic_relogin_task()
+                self.service_manager.auth.start_periodic_relogin_task()
                 self.logger.debug("nicovideo provider initialized successfully with login")
             else:
                 # No credentials provided - initialize without login
@@ -77,11 +77,11 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
     async def unload_for_mixin(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         try:
-            if hasattr(self, "_nicovideo_adapter") and self._service_hub:
+            if hasattr(self, "_nicovideo_adapter") and self._service_manager:
                 # Stop the periodic relogin task
-                self.service_hub.auth.stop_periodic_relogin_task()
+                self.service_manager.auth.stop_periodic_relogin_task()
                 # Logout from niconico
-                await self.service_hub.auth.try_logout()
+                await self.service_manager.auth.try_logout()
                 self.logger.debug("nicovideo provider unloaded successfully")
         except Exception as err:
             self.logger.warning("Error during nicovideo provider unload: %s", err)

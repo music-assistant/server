@@ -7,8 +7,8 @@ Coordinates API calls through niconico.py, manages rate limiting, and delegates 
 
 from __future__ import annotations
 
-from music_assistant.providers.nicovideo.services.hub import NicovideoServiceHub
+from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
 __all__ = [
-    "NicovideoServiceHub",
+    "NicovideoServiceManager",
 ]

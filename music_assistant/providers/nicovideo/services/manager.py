@@ -1,5 +1,5 @@
 """
-Hub service for niconico API integration with MusicAssistant.
+Manager service for niconico API integration with MusicAssistant.
 
 Services Layer: API integration and data transformation coordination
 - Coordinates API calls through niconico.py adapter
@@ -22,8 +22,8 @@ from pydantic import ValidationError
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.nicovideo.constants import ApiPriority
-from music_assistant.providers.nicovideo.converters.hub import (
-    NicovideoConverterHub,
+from music_assistant.providers.nicovideo.converters.manager import (
+    NicovideoConverterManager,
 )
 from music_assistant.providers.nicovideo.helpers import log_verbose
 from music_assistant.providers.nicovideo.services.auth import NicovideoAuthService
@@ -37,11 +37,11 @@ if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.config import NicovideoConfig
 
 
-class NicovideoServiceHub:
-    """Central hub for all niconico services and MusicAssistant integration."""
+class NicovideoServiceManager:
+    """Central manager for all niconico services and MusicAssistant integration."""
 
     def __init__(self, provider: MusicProvider, nicovideo_config: NicovideoConfig) -> None:
-        """Initialize service hub with provider and config."""
+        """Initialize service manager with provider and config."""
         self.provider = provider
         self.nicovideo_config = nicovideo_config
         self.mass = provider.mass
@@ -62,7 +62,7 @@ class NicovideoServiceHub:
         self.user = NicovideoUserService(self)
 
         # Initialize converter
-        self.converter_hub = NicovideoConverterHub(provider, self.logger)
+        self.converter_manager = NicovideoConverterManager(provider, self.logger)
 
     async def _call_with_throttler[T, **P](
         self,

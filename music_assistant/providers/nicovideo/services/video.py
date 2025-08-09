@@ -20,15 +20,15 @@ from music_assistant.providers.nicovideo.services.base import NicovideoBaseServi
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
-    from music_assistant.providers.nicovideo.services.hub import NicovideoServiceHub
+    from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
 
 class NicovideoVideoService(NicovideoBaseService):
     """Handles video and stream related operations for nicovideo."""
 
-    def __init__(self, service_hub: NicovideoServiceHub) -> None:
-        """Initialize NicovideoVideoService with reference to parent service hub."""
-        super().__init__(service_hub)
+    def __init__(self, service_manager: NicovideoServiceManager) -> None:
+        """Initialize NicovideoVideoService with reference to parent service manager."""
+        super().__init__(service_manager)
 
     async def get_user_videos(
         self, user_id: str, page: int = 1, page_size: int = 50
@@ -36,8 +36,8 @@ class NicovideoVideoService(NicovideoBaseService):
         """Get user videos and convert as Track list."""
         config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
-        user_video_data = await self.service_hub._call_with_throttler(
-            self.service_hub.niconico_py_client.user.get_user_videos,
+        user_video_data = await self.service_manager._call_with_throttler(
+            self.service_manager.niconico_py_client.user.get_user_videos,
             user_id,
             page=page,
             page_size=page_size,
@@ -47,26 +47,26 @@ class NicovideoVideoService(NicovideoBaseService):
             return []
         tracks = []
         for item in user_video_data.items:
-            track = self.converter_hub.track.convert_by_essential_video(item.essential)
+            track = self.converter_manager.track.convert_by_essential_video(item.essential)
             if track:
                 tracks.append(track)
         return tracks
 
     async def get_video(self, video_id: str) -> Track | None:
         """Get video details using WatchData and convert as Track."""
-        watch_data = await self.service_hub._call_with_throttler(
-            self.service_hub.niconico_py_client.video.watch.get_watch_data, video_id
+        watch_data = await self.service_manager._call_with_throttler(
+            self.service_manager.niconico_py_client.video.watch.get_watch_data, video_id
         )
 
         if watch_data:
-            return self.converter_hub.track.convert_by_watch_data(watch_data)
+            return self.converter_manager.track.convert_by_watch_data(watch_data)
 
         return None
 
     async def get_stream_format(self, item_id: str) -> dict[str, Any]:
         """Use yt-dlp to extract the best stream URL from nicovideo."""
         netscape_cookie_str = convert_to_netscape(
-            self.service_hub.niconico_py_client.session.cookies, NICOVIDEO_COOKIE_DOMAIN
+            self.service_manager.niconico_py_client.session.cookies, NICOVIDEO_COOKIE_DOMAIN
         )
 
         def _extract() -> dict[str, Any]:
@@ -92,14 +92,14 @@ class NicovideoVideoService(NicovideoBaseService):
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(f"nicovideo extract error: {err}") from err
 
-        result = await self.service_hub._call_with_throttler(_extract)
+        result = await self.service_manager._call_with_throttler(_extract)
         if result is None:
             raise UnplayableMediaError("Failed to extract stream format")
         return result
 
     async def like_video(self, video_id: str) -> bool:
         """Like a video."""
-        result = await self.service_hub._call_with_throttler(
-            self.service_hub.niconico_py_client.video.like_video, video_id
+        result = await self.service_manager._call_with_throttler(
+            self.service_manager.niconico_py_client.video.like_video, video_id
         )
         return bool(result)

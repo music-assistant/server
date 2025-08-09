@@ -21,7 +21,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.config import NicovideoConfig
-    from music_assistant.providers.nicovideo.services.hub import NicovideoServiceHub
+    from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
 
 class NicovideoMusicProviderMixinBase(MusicProvider):
@@ -37,8 +37,8 @@ class NicovideoMusicProviderMixinBase(MusicProvider):
 
     @property
     @abstractmethod
-    def service_hub(self) -> NicovideoServiceHub:
-        """Get the nicovideo service hub instance."""
+    def service_manager(self) -> NicovideoServiceManager:
+        """Get the nicovideo service manager instance."""
 
     async def handle_async_init_for_mixin(self) -> None:
         """Handle async initialization for this mixin."""

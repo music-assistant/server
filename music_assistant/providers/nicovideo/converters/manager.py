@@ -1,5 +1,5 @@
 """
-Hub converter class for nicovideo objects.
+Manager class for nicovideo converters.
 
 Converters Layer: Data transformation
 - Converts niconico.py objects to Music Assistant models
@@ -27,8 +27,8 @@ if TYPE_CHECKING:
     from music_assistant.models.music_provider import MusicProvider
 
 
-class NicovideoConverterHub:
-    """Central hub for all nicovideo converters to Music Assistant media items."""
+class NicovideoConverterManager:
+    """Central manager for all nicovideo converters to Music Assistant media items."""
 
     def __init__(self, provider: MusicProvider, logger: Logger) -> None:
         """Initialize with provider and create specialized converters."""

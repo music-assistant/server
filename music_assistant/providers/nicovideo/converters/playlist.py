@@ -78,7 +78,7 @@ class NicovideoPlaylistConverter(NicovideoConverterBase):
         playlist = self.convert_by_mylist(mylist)
         tracks = []
         for item in mylist.items:
-            track = self.converter_hub.track.convert_by_essential_video(item.video)
+            track = self.converter_manager.track.convert_by_essential_video(item.video)
             if track:
                 tracks.append(track)
         return PlaylistWithTracks(playlist, tracks)

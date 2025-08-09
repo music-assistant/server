@@ -115,7 +115,7 @@ class NicovideoAlbumConverter(NicovideoConverterBase):
         album = self.convert_by_series(series_data)
         tracks = []
         for item in series_data.items or []:
-            track = self.converter_hub.track.convert_by_essential_video(item.video)
+            track = self.converter_manager.track.convert_by_essential_video(item.video)
             if track:
                 tracks.append(track)
         return AlbumWithTracks(album, tracks)

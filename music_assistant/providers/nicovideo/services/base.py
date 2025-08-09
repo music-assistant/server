@@ -6,24 +6,24 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.config import NicovideoConfig
-    from music_assistant.providers.nicovideo.converters import NicovideoConverterHub
-    from music_assistant.providers.nicovideo.services.hub import NicovideoServiceHub
+    from music_assistant.providers.nicovideo.converters import NicovideoConverterManager
+    from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
 
 class NicovideoBaseService:
     """Base service for MusicAssistant integration classes."""
 
-    def __init__(self, service_hub: NicovideoServiceHub) -> None:
-        """Initialize the NicovideoBaseService with a reference to the parent service hub."""
-        self.service_hub = service_hub
-        self.logger = service_hub.logger.getChild(self.__class__.__name__)
+    def __init__(self, service_manager: NicovideoServiceManager) -> None:
+        """Initialize the NicovideoBaseService with a reference to the parent service manager."""
+        self.service_manager = service_manager
+        self.logger = service_manager.logger.getChild(self.__class__.__name__)
 
     @property
     def nicovideo_config(self) -> NicovideoConfig:
         """Get the config helper instance."""
-        return self.service_hub.nicovideo_config
+        return self.service_manager.nicovideo_config
 
     @property
-    def converter_hub(self) -> NicovideoConverterHub:
+    def converter_manager(self) -> NicovideoConverterManager:
         """Get the main converter instance."""
-        return self.service_hub.converter_hub
+        return self.service_manager.converter_manager

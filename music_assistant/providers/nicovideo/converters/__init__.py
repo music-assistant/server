@@ -8,8 +8,8 @@ Handles metadata mapping, normalization, and cross-references between items.
 
 from __future__ import annotations
 
-from music_assistant.providers.nicovideo.converters.hub import (
-    NicovideoConverterHub,
+from music_assistant.providers.nicovideo.converters.manager import (
+    NicovideoConverterManager,
 )
 
-__all__ = ["NicovideoConverterHub"]
+__all__ = ["NicovideoConverterManager"]

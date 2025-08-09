@@ -20,13 +20,13 @@ from music_assistant.providers.nicovideo.services.base import NicovideoBaseServi
 if TYPE_CHECKING:
     from music_assistant_models.media_items import SearchResults
 
-    from music_assistant.providers.nicovideo.services.hub import NicovideoServiceHub
+    from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
 
 class NicovideoSearchService(NicovideoBaseService):
     """Handles search related operations for nicovideo."""
 
-    def __init__(self, adapter: NicovideoServiceHub) -> None:
+    def __init__(self, adapter: NicovideoServiceManager) -> None:
         """Initialize NicovideoSearchService with reference to parent adapter."""
         super().__init__(adapter)
 
@@ -69,8 +69,8 @@ class NicovideoSearchService(NicovideoBaseService):
 
     async def _search_mylists_by_keyword(self, search_query: str, limit: int) -> list[Playlist]:
         """Search for mylists by keyword."""
-        list_search_data = await self.service_hub._call_with_throttler(
-            self.service_hub.niconico_py_client.video.search.search_lists,
+        list_search_data = await self.service_manager._call_with_throttler(
+            self.service_manager.niconico_py_client.video.search.search_lists,
             search_query,
             page_size=limit,
             types=["mylist"],
@@ -82,14 +82,14 @@ class NicovideoSearchService(NicovideoBaseService):
         playlists = []
         for item in list_search_data.items:
             if isinstance(item, EssentialMylist):
-                playlists.append(self.converter_hub.playlist.convert_by_mylist(item))
+                playlists.append(self.converter_manager.playlist.convert_by_mylist(item))
 
         return playlists
 
     async def _search_series_by_keyword(self, search_query: str, limit: int) -> list[Album]:
         """Search for series by keyword."""
-        list_search_data = await self.service_hub._call_with_throttler(
-            self.service_hub.niconico_py_client.video.search.search_lists,
+        list_search_data = await self.service_manager._call_with_throttler(
+            self.service_manager.niconico_py_client.video.search.search_lists,
             search_query,
             page_size=limit,
             types=["series"],
@@ -101,14 +101,14 @@ class NicovideoSearchService(NicovideoBaseService):
         albums = []
         for item in list_search_data.items:
             if isinstance(item, EssentialSeries):
-                albums.append(self.converter_hub.album.convert_by_series(item))
+                albums.append(self.converter_manager.album.convert_by_series(item))
 
         return albums
 
     async def search_videos_by_keyword(self, search_query: str, limit: int) -> list[Track]:
         """Search for videos by keyword."""
-        video_search_data = await self.service_hub._call_with_throttler(
-            self.service_hub.niconico_py_client.video.search.search_videos_by_keyword,
+        video_search_data = await self.service_manager._call_with_throttler(
+            self.service_manager.niconico_py_client.video.search.search_videos_by_keyword,
             search_query,
             page_size=limit,
             search_by_user=True,
@@ -119,7 +119,7 @@ class NicovideoSearchService(NicovideoBaseService):
         tracks = []
         for item in video_search_data.items:
             if item.id_:
-                track = self.converter_hub.track.convert_by_essential_video(item)
+                track = self.converter_manager.track.convert_by_essential_video(item)
                 if track:
                     tracks.append(track)
         return tracks
@@ -138,8 +138,8 @@ class NicovideoSearchService(NicovideoBaseService):
         tracks = []
         # Search for each tag separately since search_videos_by_tag only accepts one tag
         for tag in tags:
-            video_search_data = await self.service_hub._call_with_throttler(
-                self.service_hub.niconico_py_client.video.search.search_videos_by_tag,
+            video_search_data = await self.service_manager._call_with_throttler(
+                self.service_manager.niconico_py_client.video.search.search_videos_by_tag,
                 tag,
                 page_size=limit,
                 sort_key=sort,
@@ -150,7 +150,7 @@ class NicovideoSearchService(NicovideoBaseService):
             if video_search_data:
                 for item in video_search_data.items:
                     if item.id_:
-                        track = self.converter_hub.track.convert_by_essential_video(item)
+                        track = self.converter_manager.track.convert_by_essential_video(item)
                         if track:
                             tracks.append(track)
 
