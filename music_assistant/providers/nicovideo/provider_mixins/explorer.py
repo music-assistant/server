@@ -38,14 +38,14 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         search_result = SearchResults()
 
         if MediaType.TRACK in media_types:
-            tracks = await self.adapter_hub.search.search_videos_by_keyword(search_query, limit)
+            tracks = await self.service_hub.search.search_videos_by_keyword(search_query, limit)
             search_result.tracks = tracks
 
         # Search for both playlists and albums in a single API call for efficiency
         list_media_types = [mt for mt in media_types if mt in (MediaType.PLAYLIST, MediaType.ALBUM)]
 
         if list_media_types:
-            await self.adapter_hub.search.search_playlists_and_albums_by_keyword(
+            await self.service_hub.search.search_playlists_and_albums_by_keyword(
                 search_query, limit, search_result, list_media_types
             )
 
@@ -80,7 +80,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
 
         # History-based recommendations
         history_count = self.nicovideo_config.get_history_count()
-        history_tracks = await self.adapter_hub.user.get_user_history(limit=history_count)
+        history_tracks = await self.service_hub.user.get_user_history(limit=history_count)
         if history_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
@@ -94,7 +94,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
 
         # Following activities recommendations
         following_count = self.nicovideo_config.get_following_activities_count()
-        following_tracks = await self.adapter_hub.user.get_following_activities(
+        following_tracks = await self.service_hub.user.get_following_activities(
             limit=following_count
         )
         if following_tracks:
@@ -110,7 +110,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
 
         # Like History recommendations
         like_history_count = self.nicovideo_config.get_history_count()  # Same as history
-        like_history_tracks = await self.adapter_hub.user.get_like_history(limit=like_history_count)
+        like_history_tracks = await self.service_hub.user.get_like_history(limit=like_history_count)
         if like_history_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
@@ -126,7 +126,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         recommendation_tags = self.nicovideo_config.get_tag_recommendation_tags()
         if recommendation_tags:
             for tag in recommendation_tags:
-                tag_recommendation_tracks = await self.adapter_hub.search.search_videos_by_tags(
+                tag_recommendation_tracks = await self.service_hub.search.search_videos_by_tags(
                     [tag], target_count, "personalized", "none"
                 )
                 if tag_recommendation_tracks:
@@ -144,7 +144,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         new_tracks_tags = self.nicovideo_config.get_tag_recommendation_new_tracks_tags()
         if new_tracks_tags:
             for tag in new_tracks_tags:
-                new_tracks_by_tags = await self.adapter_hub.search.search_videos_by_tags(
+                new_tracks_by_tags = await self.service_hub.search.search_videos_by_tags(
                     [tag], target_count, "registeredAt", "desc"
                 )
                 if new_tracks_by_tags:
@@ -224,7 +224,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         required_tags = self.nicovideo_config.get_recommendation_filter_tags()
         if not required_tags:
             # No filtering needed, just fetch the target count
-            return await self.adapter_hub.user.get_recommendations(limit=target_count)
+            return await self.service_hub.user.get_recommendations(limit=target_count)
 
         # With filtering, we need to fetch more to account for filtered out tracks
         max_attempts = 5
@@ -235,7 +235,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             current_limit = target_count * 5
 
             try:
-                batch_tracks = await self.adapter_hub.user.get_recommendations(
+                batch_tracks = await self.service_hub.user.get_recommendations(
                     "video_recommendation_recommend", limit=current_limit
                 )
 
@@ -281,14 +281,14 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         required_tags = self.nicovideo_config.get_recommendation_filter_tags()
         if not required_tags:
             # No filtering needed, just fetch the target count
-            return await self.adapter_hub.user.get_similar_tracks(prov_track_id, limit=target_count)
+            return await self.service_hub.user.get_similar_tracks(prov_track_id, limit=target_count)
 
         # With filtering, we need to fetch more to account for filtered out tracks
         # For similar tracks, we have less control over pagination, so we use a simpler approach
         fetch_limit = min(int(target_count * 2.5), 100)  # Fetch 2.5x target, cap at 100
 
         try:
-            tracks = await self.adapter_hub.user.get_similar_tracks(
+            tracks = await self.service_hub.user.get_similar_tracks(
                 prov_track_id, limit=fetch_limit
             )
             filtered_tracks = await self._filter_tracks_by_tags(tracks)

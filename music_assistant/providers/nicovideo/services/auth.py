@@ -1,4 +1,4 @@
-"""Authentication adapter for nicovideo."""
+"""Authentication service for nicovideo."""
 
 from __future__ import annotations
 
@@ -8,26 +8,26 @@ from typing import TYPE_CHECKING
 from niconico import NicoNico
 from niconico.exceptions import LoginFailureError
 
-from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
 from music_assistant.providers.nicovideo.helpers import log_verbose
+from music_assistant.providers.nicovideo.services.base import NicovideoBaseService
 
 if TYPE_CHECKING:
     from asyncio import TimerHandle
 
-    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
+    from music_assistant.providers.nicovideo.services.hub import NicovideoServiceHub
 
 
-class NicovideoAuthAdapter(NicovideoBaseAdapter):
+class NicovideoAuthService(NicovideoBaseService):
     """Handles authentication and session management for nicovideo."""
 
-    def __init__(self, adapter: NicovideoAdapterHub) -> None:
-        """Initialize the NicovideoAuthAdapter with a reference to the parent adapter."""
-        super().__init__(adapter)
+    def __init__(self, service_hub: NicovideoServiceHub) -> None:
+        """Initialize the NicovideoAuthService with a reference to the parent service hub."""
+        super().__init__(service_hub)
         self._periodic_relogin_task: TimerHandle | None = None
 
     def is_logged_in(self) -> bool:
         """Check if the user is logged in to niconico."""
-        return self.adapter.niconico_py_client.logined
+        return self.service_hub.niconico_py_client.logined
 
     async def try_login(self) -> bool:
         """Attempt to login to niconico with the configured credentials."""
@@ -42,7 +42,7 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
         user_session = credentials.user_session
         max_retries = 3
         retry_delay_seconds = 1
-        async with self.adapter.niconico_api_throttler.bypass():
+        async with self.service_hub.niconico_api_throttler.bypass():
             for attempt in range(max_retries):
                 try:
                     self.logger.debug(
@@ -53,7 +53,8 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
                     if user_session:
                         self.logger.debug("Using user_session for login.")
                         await asyncio.to_thread(
-                            self.adapter.niconico_py_client.login_with_session, str(user_session)
+                            self.service_hub.niconico_py_client.login_with_session,
+                            str(user_session),
                         )
                     else:
                         self.logger.debug("Using mail and password for login.")
@@ -63,7 +64,7 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
                             )
                             return False
                         await asyncio.to_thread(
-                            self.adapter.niconico_py_client.login_with_mail,
+                            self.service_hub.niconico_py_client.login_with_mail,
                             str(username),
                             str(password),
                             str(mfa) if mfa else None,
@@ -72,7 +73,7 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
                     # Clear MFA code after successful use (one-time password should not be reused)
                     if mfa:
                         config.clear_mfa_code()
-                    session = self.adapter.niconico_py_client.get_user_session()
+                    session = self.service_hub.niconico_py_client.get_user_session()
                     if session:
                         config.save_user_session(session)
                         log_verbose(
@@ -109,16 +110,16 @@ class NicovideoAuthAdapter(NicovideoBaseAdapter):
 
     async def try_logout(self) -> None:
         """Log out from the niconico service."""
-        if self.adapter.niconico_py_client:
+        if self.service_hub.niconico_py_client:
             if self.is_logged_in():
-                await asyncio.to_thread(self.adapter.niconico_py_client.logout)
-            self.adapter.niconico_py_client = NicoNico()
+                await asyncio.to_thread(self.service_hub.niconico_py_client.logout)
+            self.service_hub.niconico_py_client = NicoNico()
 
     def start_periodic_relogin_task(self) -> None:
         """Start the periodic re-login task."""
         # Cancel existing task if any
         self.stop_periodic_relogin_task()
-        self._periodic_relogin_task = self.adapter.mass.call_later(
+        self._periodic_relogin_task = self.service_hub.mass.call_later(
             30 * 24 * 60 * 60, self._schedule_periodic_relogin
         )
 

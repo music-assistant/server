@@ -1,4 +1,4 @@
-"""Video adapter for nicovideo."""
+"""Video service for nicovideo."""
 
 from __future__ import annotations
 
@@ -9,26 +9,26 @@ from typing import TYPE_CHECKING, Any, cast
 import yt_dlp
 from music_assistant_models.errors import UnplayableMediaError
 
-from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
 from music_assistant.providers.nicovideo.constants import (
     NICOVIDEO_COOKIE_DOMAIN,
 )
 from music_assistant.providers.nicovideo.helpers import (
     convert_to_netscape,
 )
+from music_assistant.providers.nicovideo.services.base import NicovideoBaseService
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
-    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
+    from music_assistant.providers.nicovideo.services.hub import NicovideoServiceHub
 
 
-class NicovideoVideoAdapter(NicovideoBaseAdapter):
+class NicovideoVideoService(NicovideoBaseService):
     """Handles video and stream related operations for nicovideo."""
 
-    def __init__(self, adapter: NicovideoAdapterHub) -> None:
-        """Initialize NicovideoVideoAdapter with reference to parent adapter."""
-        super().__init__(adapter)
+    def __init__(self, service_hub: NicovideoServiceHub) -> None:
+        """Initialize NicovideoVideoService with reference to parent service hub."""
+        super().__init__(service_hub)
 
     async def get_user_videos(
         self, user_id: str, page: int = 1, page_size: int = 50
@@ -36,8 +36,8 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
         """Get user videos and convert as Track list."""
         config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
-        user_video_data = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.get_user_videos,
+        user_video_data = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.get_user_videos,
             user_id,
             page=page,
             page_size=page_size,
@@ -54,8 +54,8 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
 
     async def get_video(self, video_id: str) -> Track | None:
         """Get video details using WatchData and convert as Track."""
-        watch_data = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.video.watch.get_watch_data, video_id
+        watch_data = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.video.watch.get_watch_data, video_id
         )
 
         if watch_data:
@@ -66,7 +66,7 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
     async def get_stream_format(self, item_id: str) -> dict[str, Any]:
         """Use yt-dlp to extract the best stream URL from nicovideo."""
         netscape_cookie_str = convert_to_netscape(
-            self.adapter.niconico_py_client.session.cookies, NICOVIDEO_COOKIE_DOMAIN
+            self.service_hub.niconico_py_client.session.cookies, NICOVIDEO_COOKIE_DOMAIN
         )
 
         def _extract() -> dict[str, Any]:
@@ -92,14 +92,14 @@ class NicovideoVideoAdapter(NicovideoBaseAdapter):
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(f"nicovideo extract error: {err}") from err
 
-        result = await self.adapter._call_with_throttler(_extract)
+        result = await self.service_hub._call_with_throttler(_extract)
         if result is None:
             raise UnplayableMediaError("Failed to extract stream format")
         return result
 
     async def like_video(self, video_id: str) -> bool:
         """Like a video."""
-        result = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.video.like_video, video_id
+        result = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.video.like_video, video_id
         )
         return bool(result)

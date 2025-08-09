@@ -1,4 +1,12 @@
-"""Hub converter class for nicovideo objects."""
+"""
+Hub converter class for nicovideo objects.
+
+Converters Layer: Data transformation
+- Converts niconico.py objects to Music Assistant models
+- Handles metadata mapping and normalization
+- Manages item relationships and cross-references
+- Provides consistent data format for provider mixins
+"""
 
 from __future__ import annotations
 

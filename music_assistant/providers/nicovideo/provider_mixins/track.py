@@ -29,7 +29,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        track = await self.adapter_hub.video.get_video(prov_track_id)
+        track = await self.service_hub.video.get_video(prov_track_id)
         if not track:
             raise MediaNotFoundError(f"Track with id {prov_track_id} not found on nicovideo.")
         return track
@@ -39,7 +39,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        if not self.adapter_hub.auth.is_logged_in():
+        if not self.service_hub.auth.is_logged_in():
             return
 
         # Check config settings for including tracks
@@ -73,7 +73,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
 
         # Include own uploaded videos if enabled
         if include_own_videos_tracks:
-            own_videos = await self.adapter_hub.user.get_own_videos()
+            own_videos = await self.service_hub.user.get_own_videos()
             for track in own_videos:
                 yield track
 
@@ -84,7 +84,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         if media_type != MediaType.TRACK:
             return None
 
-        stream_format = await self.adapter_hub.video.get_stream_format(item_id=item_id)
+        stream_format = await self.service_hub.video.get_stream_format(item_id=item_id)
 
         # Get http_headers safely - it may be a dict or None
         http_headers = stream_format.get("http_headers")
@@ -154,7 +154,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             video_id = item.item_id
 
             # Like the video using niconico.py
-            like_result = await self.adapter_hub.video.like_video(video_id)
+            like_result = await self.service_hub.video.like_video(video_id)
 
             if like_result:
                 self.logger.debug("Successfully liked video %s", video_id)

@@ -7,29 +7,29 @@ from typing import TYPE_CHECKING, Literal
 
 from music_assistant_models.errors import MediaNotFoundError
 
-from music_assistant.providers.nicovideo.adapters.base import NicovideoBaseAdapter
+from music_assistant.providers.nicovideo.services.base import NicovideoBaseService
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Artist, Playlist, Track
     from niconico.objects.nvapi import FollowingMylistsData
 
-    from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
+    from music_assistant.providers.nicovideo.services.hub import NicovideoServiceHub
 
 # Import at runtime for isinstance checks
 from niconico.objects.video import EssentialVideo
 
 
-class NicovideoUserAdapter(NicovideoBaseAdapter):
+class NicovideoUserService(NicovideoBaseService):
     """Get user details from nicovideo."""
 
-    def __init__(self, adapter: NicovideoAdapterHub) -> None:
-        """Initialize NicovideoUserAdapter with reference to parent adapter."""
-        super().__init__(adapter)
+    def __init__(self, service_hub: NicovideoServiceHub) -> None:
+        """Initialize NicovideoUserService with reference to parent service hub."""
+        super().__init__(service_hub)
 
     async def get_user(self, user_id: str) -> Artist | None:
         """Get user details as Artist."""
-        user = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.get_user, user_id
+        user = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.get_user, user_id
         )
         return self.converter_hub.artist.convert_by_owner_or_user(user) if user else None
 
@@ -43,8 +43,8 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
         """Get recommendations from nicovideo."""
         config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
-        recommendations = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.get_recommendations,
+        recommendations = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.get_recommendations,
             recipe_id,
             limit=limit,
             sensitive_contents=sensitive_contents,
@@ -69,8 +69,8 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
         """Get tracks similar to the given track."""
         config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
-        recommendation_api_item = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.get_recommendations,
+        recommendation_api_item = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.get_recommendations,
             "video_watch_recommendation",
             video_id=track_id,
             limit=limit,
@@ -96,8 +96,8 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
         """Get user's like history from nicovideo."""
         # Calculate page_size based on limit
         page_size = min(limit, 25)  # API max is 25 for like history
-        like_history = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.video.get_like_history,
+        like_history = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.video.get_like_history,
             page_size=page_size,
             page=1,
         )
@@ -115,8 +115,8 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
         """Get user's history from nicovideo."""
         # Calculate page_size based on limit
         page_size = min(limit, 100)  # API max is 100
-        history = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.video.get_history,
+        history = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.video.get_history,
             page_size=page_size,
             page=1,
         )
@@ -137,8 +137,8 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
         # Calculate page_size based on limit
         page_size = min(limit, 100)  # API max likely 100
-        own_videos = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.get_own_videos,
+        own_videos = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.get_own_videos,
             page_size=page_size,
             page=1,
             sensitive_contents=sensitive_contents,
@@ -155,8 +155,8 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
     async def get_following_activities(self, limit: int = 50) -> list[Track]:
         """Get latest activities from followed users."""
-        feed_data = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.get_following_activities,
+        feed_data = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.get_following_activities,
             context="header_timeline",
             cursor=None,
         )
@@ -186,8 +186,8 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
         async def get_track_with_limit(video_id: str) -> Track | None:
             async with semaphore:
                 try:
-                    return await self.adapter.provider.mass.music.tracks.get_provider_item(
-                        video_id, self.adapter.provider.instance_id
+                    return await self.service_hub.provider.mass.music.tracks.get_provider_item(
+                        video_id, self.service_hub.provider.instance_id
                     )
                 except MediaNotFoundError:
                     return None
@@ -208,15 +208,15 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
     async def get_following_mylists(self) -> FollowingMylistsData | None:
         """Get mylists from users you follow."""
-        following_mylists = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.get_own_following_mylists,
+        following_mylists = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.get_own_following_mylists,
         )
         return following_mylists if following_mylists else None
 
     async def get_own_followings(self) -> list[Artist]:
         """Get users you are following as Artists."""
-        followings_data = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.get_own_followings,
+        followings_data = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.get_own_followings,
         )
 
         if not followings_data:
@@ -235,15 +235,15 @@ class NicovideoUserAdapter(NicovideoBaseAdapter):
 
     async def follow_user(self, user_id: str) -> bool:
         """Follow a user."""
-        result = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.follow_user, user_id
+        result = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.follow_user, user_id
         )
         return bool(result)
 
     async def unfollow_user(self, user_id: str) -> bool:
         """Unfollow a user."""
-        result = await self.adapter._call_with_throttler(
-            self.adapter.niconico_py_client.user.unfollow_user, user_id
+        result = await self.service_hub._call_with_throttler(
+            self.service_hub.niconico_py_client.user.unfollow_user, user_id
         )
         return bool(result)
 

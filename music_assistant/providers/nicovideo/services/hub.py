@@ -1,4 +1,12 @@
-"""Hub adapter for niconico API to MusicAssistant."""
+"""
+Hub service for niconico API integration with MusicAssistant.
+
+Services Layer: API integration and data transformation coordination
+- Coordinates API calls through niconico.py adapter
+- Manages authentication and session management
+- Handles API rate limiting and throttling
+- Delegates data transformation to converters
+"""
 
 from __future__ import annotations
 
@@ -13,27 +21,27 @@ from pydantic import ValidationError
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.nicovideo.adapters.auth import NicovideoAuthAdapter
-from music_assistant.providers.nicovideo.adapters.mylist import NicovideoMylistAdapter
-from music_assistant.providers.nicovideo.adapters.search import NicovideoSearchAdapter
-from music_assistant.providers.nicovideo.adapters.series import NicovideoSeriesAdapter
-from music_assistant.providers.nicovideo.adapters.user import NicovideoUserAdapter
-from music_assistant.providers.nicovideo.adapters.video import NicovideoVideoAdapter
 from music_assistant.providers.nicovideo.constants import ApiPriority
 from music_assistant.providers.nicovideo.converters.hub import (
     NicovideoConverterHub,
 )
 from music_assistant.providers.nicovideo.helpers import log_verbose
+from music_assistant.providers.nicovideo.services.auth import NicovideoAuthService
+from music_assistant.providers.nicovideo.services.mylist import NicovideoMylistService
+from music_assistant.providers.nicovideo.services.search import NicovideoSearchService
+from music_assistant.providers.nicovideo.services.series import NicovideoSeriesService
+from music_assistant.providers.nicovideo.services.user import NicovideoUserService
+from music_assistant.providers.nicovideo.services.video import NicovideoVideoService
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.config import NicovideoConfig
 
 
-class NicovideoAdapterHub:
-    """Central hub for all niconico adapters and MusicAssistant bridge."""
+class NicovideoServiceHub:
+    """Central hub for all niconico services and MusicAssistant integration."""
 
     def __init__(self, provider: MusicProvider, nicovideo_config: NicovideoConfig) -> None:
-        """Initialize adapter with provider and config."""
+        """Initialize service hub with provider and config."""
         self.provider = provider
         self.nicovideo_config = nicovideo_config
         self.mass = provider.mass
@@ -45,13 +53,13 @@ class NicovideoAdapterHub:
 
         self.logger = provider.logger
 
-        # Initialize adapters for different functionality
-        self.auth = NicovideoAuthAdapter(self)
-        self.video = NicovideoVideoAdapter(self)
-        self.series = NicovideoSeriesAdapter(self)
-        self.mylist = NicovideoMylistAdapter(self)
-        self.search = NicovideoSearchAdapter(self)
-        self.user = NicovideoUserAdapter(self)
+        # Initialize services for different functionality
+        self.auth = NicovideoAuthService(self)
+        self.video = NicovideoVideoService(self)
+        self.series = NicovideoSeriesService(self)
+        self.mylist = NicovideoMylistService(self)
+        self.search = NicovideoSearchService(self)
+        self.user = NicovideoUserService(self)
 
         # Initialize converter
         self.converter_hub = NicovideoConverterHub(provider, self.logger)

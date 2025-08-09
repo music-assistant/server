@@ -30,7 +30,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        artist = await self.adapter_hub.user.get_user(prov_artist_id)
+        artist = await self.service_hub.user.get_user(prov_artist_id)
         if not artist:
             raise MediaNotFoundError(f"Artist with id {prov_artist_id} not found on nicovideo.")
         return artist
@@ -50,20 +50,20 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
                         yield artist
 
         # Include followed artists if user is logged in
-        if self.adapter_hub.auth.is_logged_in():
-            following_artists = await self.adapter_hub.user.get_own_followings()
+        if self.service_hub.auth.is_logged_in():
+            following_artists = await self.service_hub.user.get_own_followings()
             for artist in following_artists:
                 yield artist
 
     @override
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist (user's series)."""
-        return await self.adapter_hub.series.get_user_series(prov_artist_id)
+        return await self.service_hub.series.get_user_series(prov_artist_id)
 
     @override
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get newest 50 tracks of an artist."""
-        return await self.adapter_hub.video.get_user_videos(
+        return await self.service_hub.video.get_user_videos(
             prov_artist_id,
             page=1,
             page_size=50,
@@ -77,7 +77,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             if not auto_sync_enabled:
                 return True  # Successfully "added" but no action needed
 
-            success = await self.adapter_hub.user.follow_user(item.item_id)
+            success = await self.service_hub.user.follow_user(item.item_id)
             if success:
                 self.logger.debug("Successfully followed artist %s", item.name)
                 return True
@@ -101,7 +101,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             if not auto_sync_enabled:
                 return True  # Successfully "removed" but no action needed
 
-            success = await self.adapter_hub.user.unfollow_user(prov_item_id)
+            success = await self.service_hub.user.unfollow_user(prov_item_id)
             if success:
                 self.logger.debug("Successfully unfollowed artist %s", prov_item_id)
                 return True

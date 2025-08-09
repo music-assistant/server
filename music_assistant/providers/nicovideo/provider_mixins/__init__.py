@@ -1,4 +1,10 @@
-"""nicovideo provider mixins package."""
+"""
+nicovideo provider mixins package.
+
+Provider Mixins Layer: Business logic
+Implements Music Assistant provider interface methods.
+Each mixin handles specific media types and provider capabilities.
+"""
 
 from __future__ import annotations
 

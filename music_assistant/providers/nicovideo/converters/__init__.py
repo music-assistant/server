@@ -1,8 +1,9 @@
 """
 Nicovideo converters module.
 
-This module contains converter classes to transform nicovideo objects
-into Music Assistant media items using an adapter pattern.
+Converters Layer: Data transformation
+Transforms nicovideo objects into Music Assistant media items using an adapter pattern.
+Handles metadata mapping, normalization, and cross-references between items.
 """
 
 from __future__ import annotations
