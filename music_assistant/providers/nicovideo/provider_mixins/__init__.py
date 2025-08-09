@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from .album_mixin import NicovideoMusicProviderAlbumMixin
-from .artist_mixin import NicovideoMusicProviderArtistMixin
-from .core_mixin import NicovideoMusicProviderCoreMixin
-from .explorer_mixin import NicovideoMusicProviderExplorerMixin
-from .playlist_mixin import NicovideoMusicProviderPlaylistMixin
-from .track_mixin import NicovideoMusicProviderTrackMixin
+from .album import NicovideoMusicProviderAlbumMixin
+from .artist import NicovideoMusicProviderArtistMixin
+from .core import NicovideoMusicProviderCoreMixin
+from .explorer import NicovideoMusicProviderExplorerMixin
+from .playlist import NicovideoMusicProviderPlaylistMixin
+from .track import NicovideoMusicProviderTrackMixin
 
 # Defines the inheritance order for the NicovideoMusicProvider mixins.
 NICOVIDEO_MIXINS = (

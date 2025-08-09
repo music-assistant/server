@@ -16,7 +16,7 @@ from music_assistant_models.errors import LoginFailed
 
 from music_assistant.providers.nicovideo.adapters.hub import NicovideoAdapterHub
 from music_assistant.providers.nicovideo.config import NicovideoConfig
-from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
 

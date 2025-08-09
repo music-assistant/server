@@ -17,7 +17,7 @@ from music_assistant_models.errors import MediaNotFoundError
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
 

@@ -8,7 +8,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.media_items import RecommendationFolder, SearchResults, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
 

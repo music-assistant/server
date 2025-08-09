@@ -9,7 +9,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Artist, MediaItemType
 
-from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
 

@@ -15,7 +15,7 @@ from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.util import TaskManager
 from music_assistant.providers.nicovideo.helpers import cache_track
-from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
 

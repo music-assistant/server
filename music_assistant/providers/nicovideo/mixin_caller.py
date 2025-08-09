@@ -9,7 +9,7 @@ from music_assistant.providers.nicovideo.provider_mixins import NICOVIDEO_MIXINS
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.provider import NicovideoMusicProvider
-    from music_assistant.providers.nicovideo.provider_mixins.mixin_base import (
+    from music_assistant.providers.nicovideo.provider_mixins.base import (
         NicovideoMusicProviderMixinBase,
     )
 
