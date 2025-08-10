@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
@@ -49,7 +50,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "name": "Radio Paradise - Main Mix",
         "description": "Eclectic mix of music - hand-picked by real humans",
         "stream_urls": {
-            "flac": "https://stream.radioparadise.com/flacm",
+            "flac": "https://stream.radioparadise.com/flac",
             "aac-320": "https://stream.radioparadise.com/aac-320",
             "mp3-192": "https://stream.radioparadise.com/mp3-192",
             "aac-128": "https://stream.radioparadise.com/aac-128",
@@ -61,7 +62,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "name": "Radio Paradise - Mellow Mix",
         "description": "A mellower selection from the RP music library",
         "stream_urls": {
-            "flac": "https://stream.radioparadise.com/mellow-flacm",
+            "flac": "https://stream.radioparadise.com/mellow-flac",
             "aac-320": "https://stream.radioparadise.com/mellow-320",
             "mp3-192": "https://stream.radioparadise.com/mellow-192",
             "aac-128": "https://stream.radioparadise.com/mellow-128",
@@ -73,7 +74,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "name": "Radio Paradise - Rock Mix",
         "description": "Heavier selections from the RP music library",
         "stream_urls": {
-            "flac": "https://stream.radioparadise.com/rock-flacm",
+            "flac": "https://stream.radioparadise.com/rock-flac",
             "aac-320": "https://stream.radioparadise.com/rock-320",
             "mp3-192": "https://stream.radioparadise.com/rock-192",
             "aac-128": "https://stream.radioparadise.com/rock-128",
@@ -85,7 +86,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "name": "Radio Paradise - Global",
         "description": "Global music and experimental selections",
         "stream_urls": {
-            "flac": "https://stream.radioparadise.com/global-flacm",
+            "flac": "https://stream.radioparadise.com/global-flac",
             "aac-320": "https://stream.radioparadise.com/global-320",
             "mp3-192": "https://stream.radioparadise.com/global-192",
             "aac-128": "https://stream.radioparadise.com/global-128",
@@ -97,7 +98,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "name": "Radio Paradise - Beyond",
         "description": "Exploring the frontiers of improvisational music",
         "stream_urls": {
-            "flac": "https://stream.radioparadise.com/beyond-flacm",
+            "flac": "https://stream.radioparadise.com/beyond-flac",
             "aac-320": "https://stream.radioparadise.com/beyond-320",
             "mp3-192": "https://stream.radioparadise.com/beyond-192",
             "aac-128": "https://stream.radioparadise.com/beyond-128",
@@ -255,7 +256,7 @@ class RadioParadiseProvider(MusicProvider):
         return [await self._parse_radio(channel_id) for channel_id in self._channels_cache]
 
     async def _parse_radio(self, channel_id: str) -> Radio:
-        """Create a Radio object from channel information and fetch cover art from API."""
+        """Create a Radio object with enhanced metadata from block API."""
         channel_info = cast("dict[str, str]", self._channels_cache.get(channel_id, {}))
         radio = Radio(
             provider=self.lookup_key,
@@ -270,61 +271,66 @@ class RadioParadiseProvider(MusicProvider):
                 )
             },
         )
-        radio.metadata.description = channel_info.get("description")
 
-        # Fetch the current metadata to get the latest cover image for the browse view.
+        # Get enhanced metadata from block API
         metadata = await self._get_channel_metadata(channel_id)
-        cover_url = cast("str | None", metadata.get("cover_url")) if metadata else None
+        if metadata and metadata.get("current"):
+            current_song = metadata["current"]
 
-        if cover_url:
-            images = [
-                MediaItemImage(
-                    provider=self.lookup_key,
-                    type=ImageType.THUMB,
-                    path=cover_url,
-                    remotely_accessible=True,
-                )
-            ]
-            radio.metadata.images = UniqueList(images)
+            # Use current track's cover art
+            cover_path = current_song.get("cover")
+            if cover_path:
+                cover_url = f"https://img.radioparadise.com/{cover_path}"
+                images = [
+                    MediaItemImage(
+                        provider=self.lookup_key,
+                        type=ImageType.THUMB,
+                        path=cover_url,
+                        remotely_accessible=True,
+                    )
+                ]
+                radio.metadata.images = UniqueList(images)
 
         return radio
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
-        """Get current playing metadata for a channel."""
+        """Get current playing metadata and upcoming tracks from block API."""
         if channel_id not in self._channels_cache:
             return None
 
-        channel_info = self._channels_cache[channel_id]
-        api_url = channel_info["api_url"]
-
         try:
-            # Create a ClientTimeout object for the request
+            # Use block API for much richer data
+            api_url = (
+                f"https://api.radioparadise.com/api/get_block?bitrate=4&info=true&chan={channel_id}"
+            )
             timeout = aiohttp.ClientTimeout(total=10)
+
             async with self.mass.http_session.get(api_url, timeout=timeout) as response:
                 if response.status != 200:
-                    self.logger.debug(f"API call to {api_url} failed with status {response.status}")
+                    self.logger.debug(f"Block API call failed with status {response.status}")
                     return None
 
                 data = await response.json()
-                if "artist" in data:
-                    current_song = data
-                elif "song" in data and len(data["song"]) > 0:
-                    current_song = data["song"][0]
-                else:
-                    self.logger.debug(f"No song data in API response for channel {channel_id}")
+
+                # Find currently playing song based on elapsed time
+                current_time_ms = self._get_current_block_position(data)
+                current_song = self._find_current_song(data.get("song", {}), current_time_ms)
+
+                if not current_song:
+                    self.logger.debug(f"No current song found for channel {channel_id}")
                     return None
 
-                return {
-                    "title": current_song.get("title", ""),
-                    "artist": current_song.get("artist", ""),
-                    "cover_url": current_song.get("cover"),
-                    "duration": current_song.get("time"),
-                }
+                # Get next song
+                next_song = self._get_next_song(data.get("song", {}), current_song)
+
+                return {"current": current_song, "next": next_song, "block_data": data}
         except aiohttp.ClientError as exc:
-            self.logger.debug(f"Failed to get metadata for channel {channel_id}: {exc}")
+            self.logger.debug(f"Failed to get block metadata for channel {channel_id}: {exc}")
             return None
         except Exception as exc:
-            self.logger.debug(f"Unexpected error getting metadata for channel {channel_id}: {exc}")
+            self.logger.debug(
+                f"Unexpected error getting block metadata for channel {channel_id}: {exc}"
+            )
             return None
 
     def _build_stream_url(self, channel_id: str) -> str:
@@ -348,27 +354,113 @@ class RadioParadiseProvider(MusicProvider):
         return ""
 
     async def _monitor_stream_metadata(self, stream_details: StreamDetails) -> None:
-        """Monitor and update the StreamDetails object metadata every 10 seconds."""
-        last_track_title = ""
+        """Monitor and update the StreamDetails with rich metadata every 10 seconds."""
+        last_track_event = ""
         item_id = stream_details.item_id
 
         try:
-            while True:  # Continue until cancelled
+            while True:
                 metadata = await self._get_channel_metadata(item_id)
-                if metadata:
-                    track_title = cast("str", metadata.get("title", "Unknown Title"))
-                    artist = cast("str", metadata.get("artist", "Unknown Artist"))
+                if metadata and metadata.get("current"):
+                    current_song = metadata["current"]
+                    next_song = metadata.get("next")
+                    block_data = metadata.get("block_data")  # Get the full block data
 
-                    if track_title != last_track_title:
-                        self.logger.info(
-                            f"Updating stream metadata for {item_id}: {artist} - {track_title}"
+                    current_event = current_song.get("event", "")
+
+                    if current_event != last_track_event:
+                        # Build rich stream title with block data for "Later" section
+                        stream_title = self._build_rich_stream_title(
+                            current_song, next_song, block_data
                         )
-                        stream_details.stream_title = f"{artist} - {track_title}"
 
-                        # Future: When streammetadata is added expand this
+                        self.logger.debug(f"Updating stream metadata for {item_id}: {stream_title}")
+                        stream_details.stream_title = stream_title
 
-                        last_track_title = track_title
+                        last_track_event = current_event
 
                 await asyncio.sleep(10)
         except asyncio.CancelledError:
             self.logger.debug(f"Monitor task cancelled for {item_id}")
+
+    def _get_current_block_position(self, block_data: dict) -> int:
+        """Calculate current position in block based on scheduled time."""
+        current_time_ms = int(time.time() * 1000)
+        sched_time = block_data.get("sched_time_millis", current_time_ms)
+        return current_time_ms - sched_time
+
+    def _find_current_song(self, songs: dict, current_time_ms: int) -> dict | None:
+        """Find which song should be playing based on elapsed time."""
+        for song_key in sorted(songs.keys(), key=int):
+            song = songs[song_key]
+            song_start = song.get("elapsed", 0)
+            song_duration = song.get("duration", 0)
+            song_end = song_start + song_duration
+
+            if song_start <= current_time_ms < song_end:
+                return song
+
+        # If no exact match, return first song
+        return songs.get("0") if songs else None
+
+    def _get_next_song(self, songs: dict, current_song: dict) -> dict | None:
+        """Get the next song after current song."""
+        current_event = current_song.get("event")
+        for song_key in sorted(songs.keys(), key=int):
+            song = songs[song_key]
+            if song.get("event") != current_event and song.get("elapsed", 0) > current_song.get(
+                "elapsed", 0
+            ):
+                return song
+        return None
+
+    def _build_rich_stream_title(
+        self, current_song: dict, next_song: dict | None, block_data: dict | None = None
+    ) -> str:
+        """Build a rich, scrolling stream title with all the metadata."""
+        # Current track info
+        artist = current_song.get("artist", "Unknown Artist")
+        title = current_song.get("title", "Unknown Title")
+        year = current_song.get("year", "----")
+        # Add remaining time for current track
+        duration = current_song.get("duration", 0) // 1000
+        mins, secs = divmod(duration, 60)
+
+        # Build main title
+        stream_title = f"Now: {artist} - {title} ({year}) ⏱️ {mins}:{secs:02d}"
+
+        # Add next track info
+        if next_song:
+            next_artist = next_song.get("artist", "")
+            next_title = next_song.get("title", "")
+            if next_artist and next_title:
+                stream_title += f" | Up Next: {next_artist} - {next_title}"
+
+        # Add later artists from remaining songs in block
+        if block_data and "song" in block_data:
+            current_event = current_song.get("event")
+            later_artists = []
+
+            # Get all songs after the next song
+            for song_key in sorted(block_data["song"].keys(), key=int):
+                song = block_data["song"][song_key]
+                song_event = song.get("event")
+
+                # Skip current and next song
+                if song_event == current_event or (
+                    next_song and song_event == next_song.get("event")
+                ):
+                    continue
+
+                # Only include songs that come after current song
+                if song.get("elapsed", 0) > current_song.get("elapsed", 0):
+                    artist_name = song.get("artist", "")
+                    if artist_name and artist_name not in later_artists:
+                        later_artists.append(artist_name)
+
+            # Add later artists to stream title
+            if later_artists:
+                artists_list = ", ".join(later_artists[:4])  # Limit to 4 artists to avoid too long
+                stream_title += f" | Later: {artists_list}"
+
+        return stream_title
