@@ -598,16 +598,17 @@ class SpotifyProvider(MusicProvider):
 
         # we retry twice in case librespot fails to start
         for attempt in (1, 2):
+            log_librespot = self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) or attempt == 2
             async with AsyncProcess(
                 args,
                 stdout=True,
-                stderr=None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False,
+                stderr=None if log_librespot else False,
                 name="librespot",
             ) as librespot_proc:
                 # get first chunk with timeout, to catch the issue where librespot is not starting
                 # which seems to happen from time to time (but rarely)
                 try:
-                    chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=5 * attempt)
+                    chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=10 * attempt)
                     if not chunk:
                         raise AudioError
                     yield chunk
