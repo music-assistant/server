@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -11,7 +12,6 @@ from io import StringIO
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
-import yt_dlp
 from aiohttp import ClientConnectorError
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -52,6 +52,7 @@ from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.util import install_package
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -115,6 +116,7 @@ YT_PERSONAL_PLAYLISTS = (
     "RDTMAK5uy_mZtXeU08kxXJOUhL0ETdAuZTh1z7aAFAo",  # Archive Mix
 )
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
+PACKAGES_TO_INSTALL = ("yt-dlp", "bgutil-ytdlp-pot-provider")
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -194,6 +196,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
         logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
+        await self._install_packages()
         self._cookie = self.config.get_value(CONF_COOKIE)
         self._po_token_server_url = (
             self.config.get_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
@@ -920,6 +923,7 @@ class YoutubeMusicProvider(MusicProvider):
         """Figure out the stream URL to use and return the highest quality."""
 
         def _extract_best_stream_url_format() -> dict[str, Any]:
+            yt_dlp = importlib.import_module("yt_dlp")
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
             ydl_opts = {
                 "quiet": self.logger.level > logging.DEBUG,
@@ -1013,3 +1017,11 @@ class YoutubeMusicProvider(MusicProvider):
                 )
             )
         return result
+
+    async def _install_packages(self) -> None:
+        """Install frequently changing packages dynamically."""
+        # NOTE: Google breaks things quite often which requires us to update
+        # some packages very frequently. Installing them dynamically prevents
+        # us from having to update MA to ensure this provider works.
+        for package_name in PACKAGES_TO_INSTALL:
+            await install_package(package_name)
