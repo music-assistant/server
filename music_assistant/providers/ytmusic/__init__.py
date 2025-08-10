@@ -27,6 +27,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    SetupFailedError,
     UnplayableMediaError,
 )
 from music_assistant_models.media_items import (
@@ -1025,3 +1026,8 @@ class YoutubeMusicProvider(MusicProvider):
         # us from having to update MA to ensure this provider works.
         for package_name in PACKAGES_TO_INSTALL:
             await install_package(package_name)
+        # verify if the yt_dlp package is usable
+        try:
+            await asyncio.to_thread(importlib.import_module, "yt_dlp")
+        except ImportError:
+            raise SetupFailedError("Package yt_dlp failed to install")
