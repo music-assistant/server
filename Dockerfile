@@ -8,8 +8,6 @@ FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS builder
 ADD dist dist
 COPY requirements_all.txt .
 
-# ensure UV is installed
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 # create venv which will be copied to the final image
 ENV VIRTUAL_ENV=/app/venv
 RUN uv venv $VIRTUAL_ENV
