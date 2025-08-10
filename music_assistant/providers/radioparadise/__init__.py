@@ -383,13 +383,15 @@ class RadioParadiseProvider(MusicProvider):
         except asyncio.CancelledError:
             self.logger.debug(f"Monitor task cancelled for {item_id}")
 
-    def _get_current_block_position(self, block_data: dict) -> int:
+    def _get_current_block_position(self, block_data: dict[str, Any]) -> int:
         """Calculate current position in block based on scheduled time."""
         current_time_ms = int(time.time() * 1000)
         sched_time = block_data.get("sched_time_millis", current_time_ms)
-        return current_time_ms - sched_time
+        return int(current_time_ms - sched_time)
 
-    def _find_current_song(self, songs: dict, current_time_ms: int) -> dict | None:
+    def _find_current_song(
+        self, songs: dict[str, Any], current_time_ms: int
+    ) -> dict[str, Any] | None:
         """Find which song should be playing based on elapsed time."""
         for song_key in sorted(songs.keys(), key=int):
             song = songs[song_key]
@@ -403,7 +405,9 @@ class RadioParadiseProvider(MusicProvider):
         # If no exact match, return first song
         return songs.get("0") if songs else None
 
-    def _get_next_song(self, songs: dict, current_song: dict) -> dict | None:
+    def _get_next_song(
+        self, songs: dict[str, Any], current_song: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Get the next song after current song."""
         current_event = current_song.get("event")
         for song_key in sorted(songs.keys(), key=int):
@@ -415,7 +419,10 @@ class RadioParadiseProvider(MusicProvider):
         return None
 
     def _build_rich_stream_title(
-        self, current_song: dict, next_song: dict | None, block_data: dict | None = None
+        self,
+        current_song: dict[str, Any],
+        next_song: dict[str, Any] | None,
+        block_data: dict[str, Any] | None = None,
     ) -> str:
         """Build a rich, scrolling stream title with all the metadata."""
         # Current track info
