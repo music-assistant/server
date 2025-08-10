@@ -35,6 +35,7 @@ class Webserver:
         self._static_routes: list[tuple[str, str, Handler]] | None = None
         self._dynamic_routes: dict[str, Callable] | None = {} if enable_dynamic_routes else None
         self._bind_port: int | None = None
+        self._ingress_tcp_site: web.TCPSite | None = None
 
     async def setup(
         self,
@@ -43,6 +44,7 @@ class Webserver:
         base_url: str,
         static_routes: list[tuple[str, str, Handler]] | None = None,
         static_content: tuple[str, str, str] | None = None,
+        ingress_tcp_site_params: tuple[str, int] | None = None,
     ) -> None:
         """Async initialize of module."""
         self._base_url = base_url.removesuffix("/")
@@ -83,12 +85,24 @@ class Webserver:
             )
             self._tcp_site = web.TCPSite(self._apprunner, host=None, port=bind_port)
             await self._tcp_site.start()
+        # start additional ingress TCP site if configured
+        # this is only used if we're running in the context of an HA add-on
+        # which proxies our frontend and api through ingress
+        if ingress_tcp_site_params:
+            self._ingress_tcp_site = web.TCPSite(
+                self._apprunner,
+                host=ingress_tcp_site_params[0],
+                port=ingress_tcp_site_params[1],
+            )
+            await self._ingress_tcp_site.start()
 
     async def close(self) -> None:
         """Cleanup on exit."""
         # stop/clean webserver
         if self._tcp_site:
             await self._tcp_site.stop()
+        if self._ingress_tcp_site:
+            await self._ingress_tcp_site.stop()
         if self._apprunner:
             await self._apprunner.cleanup()
         if self._webapp:
