@@ -394,28 +394,32 @@ class RadioParadiseProvider(MusicProvider):
     ) -> dict[str, Any] | None:
         """Find which song should be playing based on elapsed time."""
         for song_key in sorted(songs.keys(), key=int):
-            song = songs[song_key]
-            song_start = song.get("elapsed", 0)
-            song_duration = song.get("duration", 0)
+            song = cast("dict[str, Any]", songs[song_key])
+            song_start = int(song.get("elapsed", 0))
+            song_duration = int(song.get("duration", 0))
             song_end = song_start + song_duration
 
             if song_start <= current_time_ms < song_end:
                 return song
 
         # If no exact match, return first song
-        return songs.get("0") if songs else None
+        first_song = songs.get("0")
+        return cast("dict[str, Any]", first_song) if first_song is not None else None
 
     def _get_next_song(
         self, songs: dict[str, Any], current_song: dict[str, Any]
     ) -> dict[str, Any] | None:
         """Get the next song after current song."""
         current_event = current_song.get("event")
+        current_elapsed = int(current_song.get("elapsed", 0))
+
         for song_key in sorted(songs.keys(), key=int):
-            song = songs[song_key]
-            if song.get("event") != current_event and song.get("elapsed", 0) > current_song.get(
-                "elapsed", 0
-            ):
+            song = cast("dict[str, Any]", songs[song_key])
+            song_elapsed = int(song.get("elapsed", 0))
+
+            if song.get("event") != current_event and song_elapsed > current_elapsed:
                 return song
+
         return None
 
     def _build_rich_stream_title(
@@ -430,7 +434,7 @@ class RadioParadiseProvider(MusicProvider):
         title = current_song.get("title", "Unknown Title")
         year = current_song.get("year", "----")
         # Add remaining time for current track
-        duration = current_song.get("duration", 0) // 1000
+        duration = int(current_song.get("duration", 0)) // 1000
         mins, secs = divmod(duration, 60)
 
         # Build main title
@@ -460,7 +464,9 @@ class RadioParadiseProvider(MusicProvider):
                     continue
 
                 # Only include songs that come after current song
-                if song.get("elapsed", 0) > current_song.get("elapsed", 0):
+                current_elapsed = int(current_song.get("elapsed", 0))
+                song_elapsed = int(song.get("elapsed", 0))
+                if song_elapsed > current_elapsed:
                     artist_name = song.get("artist", "")
                     if artist_name and artist_name not in later_artists:
                         later_artists.append(artist_name)
