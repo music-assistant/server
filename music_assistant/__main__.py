@@ -35,10 +35,7 @@ def get_arguments() -> argparse.Namespace:
     """Arguments handling."""
     parser = argparse.ArgumentParser(description="MusicAssistant")
 
-    default_data_dir = os.getenv("APPDATA") if os.name == "nt" else os.path.expanduser("~")
-    if not default_data_dir:
-        parser.error("Unable to find default data dir")
-    default_data_dir = os.path.join(default_data_dir, ".musicassistant")
+    default_data_dir = os.path.join(os.path.expanduser("~"), ".musicassistant")
 
     parser.add_argument(
         "-c",
