@@ -24,9 +24,6 @@ RUN set -x \
 COPY --from=mwader/static-ffmpeg:7.1.1 /ffmpeg /usr/local/bin/
 COPY --from=mwader/static-ffmpeg:7.1.1 /ffprobe /usr/local/bin/
 
-# ensure UV is installed into the base image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
 # Copy widevine client files to container
 RUN mkdir -p /usr/local/bin/widevine_cdm
 COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
