@@ -11,8 +11,9 @@ classifiers = [
 ]
 dependencies = [
   "aiodns>=3.2.0",
+  "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.12.14",
+  "aiohttp==3.12.15",
   "aiohttp-fast-zlib==0.3.0",
   "aiofiles==24.1.0",
   "aiorun==2025.1.1",
@@ -54,7 +55,7 @@ test = [
   "pytest-cov==6.2.1",
   "syrupy==4.9.1",
   "tomli==2.2.1",
-  "ruff==0.12.5",
+  "ruff==0.12.7",
 ]
 
 [project.scripts]

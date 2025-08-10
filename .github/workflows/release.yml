@@ -70,7 +70,7 @@ jobs:
     steps:
       - name: Retrieve release distributions
         if: ${{ github.event.release.prerelease == false }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: release-dists
           path: dist/
@@ -92,12 +92,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4.1.4
       - name: Retrieve release distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: release-dists
           path: dist/
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v3.4.0
+        uses: docker/login-action@v3.5.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}

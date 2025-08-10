@@ -169,7 +169,9 @@ class FanartTvMetadataProvider(MetadataProvider):
             headers["client_key"] = client_key
         async with (
             self.throttler,
-            self.mass.http_session.get(url, params=kwargs, headers=headers, ssl=False) as response,
+            self.mass.http_session_no_ssl.get(
+                url, params=kwargs, headers=headers, ssl=False
+            ) as response,
         ):
             try:
                 result = await response.json()

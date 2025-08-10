@@ -63,7 +63,7 @@ class SonosPlayerProvider(PlayerProvider):
         for ip_address in manual_ip_config:
             try:
                 # get discovery info from SONOS speaker so we can provide an ID & other info
-                discovery_info = await get_discovery_info(self.mass.http_session, ip_address)
+                discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, ip_address)
             except ClientError as err:
                 self.logger.debug(
                     "Ignoring %s (manual IP) as it is not reachable: %s", ip_address, str(err)
@@ -142,7 +142,7 @@ class SonosPlayerProvider(PlayerProvider):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", name)
             return
         try:
-            discovery_info = await get_discovery_info(self.mass.http_session, address)
+            discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, address)
         except ClientError as err:
             self.logger.debug("Ignoring %s in discovery as it is not reachable: %s", name, str(err))
             return

@@ -13,7 +13,6 @@ from uuid import uuid4
 
 import aiofiles
 from aiofiles.os import wrap
-from aiohttp import ClientSession, TCPConnector
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.enums import EventType, ProviderType
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
@@ -46,6 +45,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.webserver import WebserverController
+from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.images import get_icon_string
 from music_assistant.helpers.util import (
@@ -62,6 +62,7 @@ from music_assistant.models.player_provider import PlayerProvider
 if TYPE_CHECKING:
     from types import TracebackType
 
+    from aiohttp import ClientSession
     from music_assistant_models.config_entries import ProviderConfig
 
     from music_assistant.models.core_controller import CoreController
@@ -100,7 +101,6 @@ class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
     loop: asyncio.AbstractEventLoop
-    http_session: ClientSession
     aiozc: AsyncZeroconf
     config: ConfigController
     webserver: WebserverController
@@ -131,6 +131,8 @@ class MusicAssistant:
             os.environ.get("PYTHONDEVMODE") == "1"
             or pathlib.Path(__file__).parent.resolve().parent.resolve().joinpath(".venv").exists()
         )
+        self._http_session: ClientSession | None = None
+        self._http_session_no_ssl: ClientSession | None = None
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
@@ -141,15 +143,6 @@ class MusicAssistant:
         # create shared zeroconf instance
         # TODO: enumerate interfaces and enable IPv6 support
         self.aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only, interfaces=InterfaceChoice.Default)
-        # create shared aiohttp ClientSession
-        self.http_session = ClientSession(
-            loop=self.loop,
-            connector=TCPConnector(
-                ssl=True,
-                limit=4096,
-                limit_per_host=100,
-            ),
-        )
         # load all available providers from manifest files
         await self.__load_provider_manifests()
         # setup config controller first and fetch important config values
@@ -217,8 +210,14 @@ class MusicAssistant:
         await self.config.close()
         await self.cache.close()
         # close/cleanup shared http session
-        if self.http_session:
-            await self.http_session.close()
+        if self._http_session:
+            self._http_session.detach()
+            if self._http_session.connector:
+                await self._http_session.connector.close()
+        if self._http_session_no_ssl:
+            self._http_session_no_ssl.detach()
+            if self._http_session_no_ssl.connector:
+                await self._http_session_no_ssl.connector.close()
 
     @property
     def server_id(self) -> str:
@@ -226,6 +225,28 @@ class MusicAssistant:
         if not self.config.initialized:
             return ""
         return self.config.get(CONF_SERVER_ID)  # type: ignore[no-any-return]
+
+    @property
+    def http_session(self) -> ClientSession:
+        """
+        Return the shared HTTP Client session (with SSL).
+
+        NOTE: May only be called from the event loop.
+        """
+        if self._http_session is None:
+            self._http_session = create_clientsession(self, verify_ssl=True)
+        return self._http_session
+
+    @property
+    def http_session_no_ssl(self) -> ClientSession:
+        """
+        Return the shared HTTP Client session (without SSL).
+
+        NOTE: May only be called from the event loop thread.
+        """
+        if self._http_session_no_ssl is None:
+            self._http_session_no_ssl = create_clientsession(self, verify_ssl=False)
+        return self._http_session_no_ssl
 
     @api_command("info")
     def get_server_info(self) -> ServerInfoMessage:

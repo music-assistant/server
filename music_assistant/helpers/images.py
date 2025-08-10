@@ -39,7 +39,7 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
     # handle HTTP location
     if path_or_url.startswith("http"):
         try:
-            async with mass.http_session.get(path_or_url, raise_for_status=True) as resp:
+            async with mass.http_session_no_ssl.get(path_or_url, raise_for_status=True) as resp:
                 return await resp.read()
         except ClientError as err:
             raise FileNotFoundError from err

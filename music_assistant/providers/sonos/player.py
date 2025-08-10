@@ -123,7 +123,9 @@ class SonosPlayer(Player):
     async def setup(self) -> None:
         """Handle setup of the player."""
         # connect the player first so we can fail early
-        self.client = SonosLocalApiClient(self.device_info.ip_address, self.mass.http_session)
+        self.client = SonosLocalApiClient(
+            self.device_info.ip_address, self.mass.http_session_no_ssl
+        )
         await self._connect(False)
 
         # collect supported features
@@ -855,7 +857,7 @@ class SonosPlayer(Player):
         """Handle PLAY MEDIA using the legacy upnp api."""
         xml_data, soap_action = get_xml_soap_set_url(media)
         player_ip = self.device_info.ip_address
-        async with self.mass.http_session.post(
+        async with self.mass.http_session_no_ssl.post(
             f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
             headers={
                 "SOAPACTION": soap_action,
