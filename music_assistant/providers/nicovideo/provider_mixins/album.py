@@ -6,7 +6,6 @@ In this section, we treat niconico's "series" as an album.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, override
 
@@ -21,8 +20,6 @@ from music_assistant.providers.nicovideo.provider_mixins.base import (
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Track
-
-logger = logging.getLogger(__name__)
 
 
 class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
