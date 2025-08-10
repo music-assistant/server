@@ -598,7 +598,7 @@ class MetaDataController(CoreController):
             for provider in self.providers:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
-                    
+
                 # Stop unnecessary calls to lrclib
                 if (
                     provider.lookup_key == "lrclib"
