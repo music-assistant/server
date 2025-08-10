@@ -424,32 +424,12 @@ def empty_queue[T](q: asyncio.Queue[T]) -> None:
             pass
 
 
-async def install_package(package: str, prefer_uv: bool = True) -> None:
+async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
     LOGGER.debug("Installing python package %s", package)
-    if await get_package_version("uv") is None:
-        # uv is not present on this system
-        prefer_uv = False
-    # determine args (either uv pip or regular pip)
-    if prefer_uv:
-        args = ["uv", "pip", "install", "--no-cache", "--find-links", HA_WHEELS, package]
-    else:
-        args = [
-            "pip",
-            "install",
-            "--no-cache-dir",
-            "--no-input",
-            "--find-links",
-            HA_WHEELS,
-            package,
-        ]
+    args = ["uv", "pip", "install", "--no-cache", "--find-links", HA_WHEELS, package]
     return_code, output = await check_output(*args)
     if return_code != 0:
-        if "Permission denied" in output.decode() and prefer_uv:
-            # try again with regular pip
-            # uv pip seems to have issues with permissions on docker installs
-            await install_package(package, prefer_uv=False)
-            return
         msg = f"Failed to install package {package}\n{output.decode()}"
         raise RuntimeError(msg)
 
