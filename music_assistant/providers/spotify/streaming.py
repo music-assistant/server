@@ -17,7 +17,7 @@ from music_assistant.helpers.process import AsyncProcess
 from .constants import LIBRESPOT_PROFILES, LibrespotProfile
 
 if TYPE_CHECKING:
-    from . import SpotifyProvider
+    from .provider import SpotifyProvider
 
 
 class LibrespotStreamer:
@@ -265,4 +265,5 @@ class LibrespotStreamer:
                 f"({len(chunk)} bytes) on attempt {attempt_label}"
             )
             return 1, [chunk]
+
 
