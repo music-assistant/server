@@ -34,7 +34,7 @@ from music_assistant_models.media_items import (
     Radio,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.models.music_provider import MusicProvider
 
@@ -117,7 +117,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
 }
 
 # Stream format configurations
-BITRATE_FORMATS: dict[str, dict[str, int | ContentType]] = {
+BITRATE_FORMATS: dict[str, dict[str, ContentType]] = {
     "flac": {"content_type": ContentType.FLAC},
     "aac-320": {"content_type": ContentType.AAC},
     "mp3-192": {"content_type": ContentType.MP3},
@@ -177,7 +177,6 @@ class RadioParadiseProvider(MusicProvider):
         return {
             ProviderFeature.BROWSE,
             ProviderFeature.LIBRARY_RADIOS,
-            ProviderFeature.TRACK_METADATA,
         }
 
     @property
@@ -247,7 +246,7 @@ class RadioParadiseProvider(MusicProvider):
             monitor_task = streamdetails.data["monitor_task"]
             if not monitor_task.done():
                 monitor_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
+                with contextlib.suppress(Exception):
                     await monitor_task
             del streamdetails.data["monitor_task"]
 
@@ -324,6 +323,7 @@ class RadioParadiseProvider(MusicProvider):
                 next_song = self._get_next_song(data.get("song", {}), current_song)
 
                 return {"current": current_song, "next": next_song, "block_data": data}
+
         except aiohttp.ClientError as exc:
             self.logger.debug(f"Failed to get block metadata for channel {channel_id}: {exc}")
             return None
@@ -332,6 +332,37 @@ class RadioParadiseProvider(MusicProvider):
                 f"Unexpected error getting block metadata for channel {channel_id}: {exc}"
             )
             return None
+
+    def _get_current_block_position(self, block_data: dict) -> int:
+        """Calculate current position in block based on scheduled time."""
+        current_time_ms = int(time.time() * 1000)
+        sched_time = block_data.get("sched_time_millis", current_time_ms)
+        return current_time_ms - sched_time
+
+    def _find_current_song(self, songs: dict, current_time_ms: int) -> dict | None:
+        """Find which song should be playing based on elapsed time."""
+        for song_key in sorted(songs.keys(), key=int):
+            song = songs[song_key]
+            song_start = song.get("elapsed", 0)
+            song_duration = song.get("duration", 0)
+            song_end = song_start + song_duration
+
+            if song_start <= current_time_ms < song_end:
+                return song
+
+        # If no exact match, return first song
+        return songs.get("0") if songs else None
+
+    def _get_next_song(self, songs: dict, current_song: dict) -> dict | None:
+        """Get the next song after current song."""
+        current_event = current_song.get("event")
+        for song_key in sorted(songs.keys(), key=int):
+            song = songs[song_key]
+            if song.get("event") != current_event and song.get("elapsed", 0) > current_song.get(
+                "elapsed", 0
+            ):
+                return song
+        return None
 
     def _build_stream_url(self, channel_id: str) -> str:
         """Build stream URL for a channel with fallback to other formats."""
@@ -363,117 +394,111 @@ class RadioParadiseProvider(MusicProvider):
                 metadata = await self._get_channel_metadata(item_id)
                 if metadata and metadata.get("current"):
                     current_song = metadata["current"]
-                    next_song = metadata.get("next")
-                    block_data = metadata.get("block_data")  # Get the full block data
-
                     current_event = current_song.get("event", "")
 
                     if current_event != last_track_event:
-                        # Build rich stream title with block data for "Later" section
-                        stream_title = self._build_rich_stream_title(
-                            current_song, next_song, block_data
-                        )
+                        # Create StreamMetadata object with full track info
+                        stream_metadata = self._build_stream_metadata(current_song, metadata)
 
-                        self.logger.debug(f"Updating stream metadata for {item_id}: {stream_title}")
-                        stream_details.stream_title = stream_title
+                        self.logger.info(
+                            f"Updating stream metadata for {item_id}: "
+                            f"{stream_metadata.artist} - {stream_metadata.title}"
+                        )
+                        stream_details.stream_metadata = stream_metadata
 
                         last_track_event = current_event
 
                 await asyncio.sleep(10)
-        except asyncio.CancelledError:
+        except Exception:
             self.logger.debug(f"Monitor task cancelled for {item_id}")
 
-    def _get_current_block_position(self, block_data: dict[str, Any]) -> int:
-        """Calculate current position in block based on scheduled time."""
-        current_time_ms = int(time.time() * 1000)
-        sched_time = block_data.get("sched_time_millis", current_time_ms)
-        return int(current_time_ms - sched_time)
-
-    def _find_current_song(
-        self, songs: dict[str, Any], current_time_ms: int
-    ) -> dict[str, Any] | None:
-        """Find which song should be playing based on elapsed time."""
-        for song_key in sorted(songs.keys(), key=int):
-            song = cast("dict[str, Any]", songs[song_key])
-            song_start = int(song.get("elapsed", 0))
-            song_duration = int(song.get("duration", 0))
-            song_end = song_start + song_duration
-
-            if song_start <= current_time_ms < song_end:
-                return song
-
-        # If no exact match, return first song
-        first_song = songs.get("0")
-        return cast("dict[str, Any]", first_song) if first_song is not None else None
-
-    def _get_next_song(
-        self, songs: dict[str, Any], current_song: dict[str, Any]
-    ) -> dict[str, Any] | None:
-        """Get the next song after current song."""
-        current_event = current_song.get("event")
-        current_elapsed = int(current_song.get("elapsed", 0))
-
-        for song_key in sorted(songs.keys(), key=int):
-            song = cast("dict[str, Any]", songs[song_key])
-            song_elapsed = int(song.get("elapsed", 0))
-
-            if song.get("event") != current_event and song_elapsed > current_elapsed:
-                return song
-
-        return None
-
-    def _build_rich_stream_title(
-        self,
-        current_song: dict[str, Any],
-        next_song: dict[str, Any] | None,
-        block_data: dict[str, Any] | None = None,
-    ) -> str:
-        """Build a rich, scrolling stream title with all the metadata."""
-        # Current track info
+    def _build_stream_metadata(
+        self, current_song: dict[str, Any], metadata: dict[str, Any]
+    ) -> StreamMetadata:
+        """Build StreamMetadata object with current track information."""
+        # Extract track info
         artist = current_song.get("artist", "Unknown Artist")
         title = current_song.get("title", "Unknown Title")
-        year = current_song.get("year", "----")
-        # Add remaining time for current track
-        duration = int(current_song.get("duration", 0)) // 1000
-        mins, secs = divmod(duration, 60)
+        album = current_song.get("album")
+        year = current_song.get("year")
 
-        # Build main title
-        stream_title = f"Now: {artist} - {title} ({year}) ⏱️ {mins}:{secs:02d}"
+        # Build album string with year if available
+        album_display = album
+        if album and year:
+            album_display = f"{album} ({year})"
+        elif year:
+            album_display = str(year)
+
+        # Get cover image URL
+        cover_path = current_song.get("cover")
+        image_url = None
+        if cover_path:
+            image_url = f"https://img.radioparadise.com/{cover_path}"
+
+        # Debug log the image URL
+        self.logger.debug(f"Cover art URL for {artist} - {title}: {image_url}")
+
+        # Get track duration
+        duration = current_song.get("duration")
+        if duration:
+            duration = int(duration) // 1000  # Convert from ms to seconds
+
+        # Add upcoming tracks info to title for scrolling display
+        next_song = metadata.get("next")
+        block_data = metadata.get("block_data")
+        enhanced_title = self._enhance_title_with_upcoming(
+            title, current_song, next_song, block_data
+        )
+
+        return StreamMetadata(
+            title=enhanced_title,
+            artist=artist,
+            album=album_display,
+            image_url=image_url,
+            duration=duration,
+        )
+
+    def _enhance_title_with_upcoming(
+        self, title: str, current_song: dict, next_song: dict | None, block_data: dict | None
+    ) -> str:
+        """Enhance the title with upcoming track info."""
+        enhanced_title = title
 
         # Add next track info
         if next_song:
             next_artist = next_song.get("artist", "")
             next_title = next_song.get("title", "")
             if next_artist and next_title:
-                stream_title += f" | Up Next: {next_artist} - {next_title}"
+                enhanced_title += f" | Up Next: {next_artist} - {next_title}"
 
-        # Add later artists from remaining songs in block
+        # Add later artists
         if block_data and "song" in block_data:
-            current_event = current_song.get("event")
-            later_artists = []
-
-            # Get all songs after the next song
-            for song_key in sorted(block_data["song"].keys(), key=int):
-                song = block_data["song"][song_key]
-                song_event = song.get("event")
-
-                # Skip current and next song
-                if song_event == current_event or (
-                    next_song and song_event == next_song.get("event")
-                ):
-                    continue
-
-                # Only include songs that come after current song
-                current_elapsed = int(current_song.get("elapsed", 0))
-                song_elapsed = int(song.get("elapsed", 0))
-                if song_elapsed > current_elapsed:
-                    artist_name = song.get("artist", "")
-                    if artist_name and artist_name not in later_artists:
-                        later_artists.append(artist_name)
-
-            # Add later artists to stream title
+            later_artists = self._get_later_artists(current_song, next_song, block_data)
             if later_artists:
-                artists_list = ", ".join(later_artists[:4])  # Limit to 4 artists to avoid too long
-                stream_title += f" | Later: {artists_list}"
+                artists_list = ", ".join(later_artists[:4])
+                enhanced_title += f" | Later: {artists_list}"
 
-        return stream_title
+        return enhanced_title
+
+    def _get_later_artists(
+        self, current_song: dict, next_song: dict | None, block_data: dict
+    ) -> list[str]:
+        """Get list of upcoming artists after next song."""
+        current_event = current_song.get("event")
+        later_artists = []
+
+        for song_key in sorted(block_data["song"].keys(), key=int):
+            song = block_data["song"][song_key]
+            song_event = song.get("event")
+
+            # Skip current and next song
+            if song_event == current_event or (next_song and song_event == next_song.get("event")):
+                continue
+
+            # Only include songs that come after current song
+            if song.get("elapsed", 0) > current_song.get("elapsed", 0):
+                artist_name = song.get("artist", "")
+                if artist_name and artist_name not in later_artists:
+                    later_artists.append(artist_name)
+
+        return later_artists
