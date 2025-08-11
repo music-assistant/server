@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-from asyncio import Task
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import AudioError
@@ -20,23 +18,6 @@ from .constants import LIBRESPOT_PROFILES, LibrespotProfile
 
 if TYPE_CHECKING:
     from . import SpotifyProvider
-
-
-class StderrAnalysis(TypedDict):
-    """Analysis results from monitoring librespot stderr output.
-
-    Contains categorized error counts and messages for debugging
-    streaming issues with librespot audio processing.
-
-    Attributes:
-        audio_key_errors: Number of audio key retrieval errors encountered
-        decoder_errors: List of decoder-specific error messages (e.g., Ogg capture issues)
-        cdn_issues: List of CDN-related error messages (e.g., URL parsing failures)
-    """
-
-    audio_key_errors: int
-    decoder_errors: list[str]
-    cdn_issues: list[str]
 
 
 class LibrespotStreamer:
@@ -70,12 +51,8 @@ class LibrespotStreamer:
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        if streamdetails.data == "episode":
-            async for chunk in self._stream_episode_via_librespot(streamdetails, seek_position):
-                yield chunk
-        else:
-            async for chunk in self._stream_track_via_librespot(streamdetails, seek_position):
-                yield chunk
+        async for chunk in self._stream_via_librespot(streamdetails, seek_position):
+            yield chunk
 
     def _get_librespot_args(
         self, spotify_uri: str, profile: str, seek_position: int = 0
@@ -111,136 +88,157 @@ class LibrespotStreamer:
 
         return args
 
-    async def _stream_track_via_librespot(
+    async def _stream_via_librespot(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Stream track using librespot."""
-        spotify_uri = f"spotify://track:{streamdetails.item_id}"
+        """Stream track or episode using librespot with retry logic."""
+        is_episode = streamdetails.data == "episode"
+        media_type = "episode" if is_episode else "track"
+        spotify_uri = f"spotify:{media_type}:{streamdetails.item_id}"
+
         self.logger.log(VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot")
-        self.logger.info(f"Starting librespot for track: {spotify_uri}")
+        self.logger.info(f"Starting librespot for {media_type}: {spotify_uri}")
 
-        for attempt in (1, 2):
-            args = self._get_librespot_args(spotify_uri, "track", seek_position)
-            self.logger.debug(f"Librespot command: {' '.join(args)}")
+        config = self._get_streaming_config(is_episode)
 
-            async with AsyncProcess(
-                args,
-                stdout=True,
-                stderr=None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False,
-                name="librespot",
-            ) as librespot_proc:
-                chunks_received = 0
+        for profile_num in range(1, config["max_profiles"] + 1):
+            # Get profile name
+            profile = f"episode_{profile_num}" if is_episode else "track"
+
+            for attempt in range(1, config["attempts_per_profile"] + 1):
+                # Calculate timeout and attempt label
+                timeout = config["timeout_base"] if is_episode else config["timeout_base"] * attempt
+                attempt_label = f"{profile_num}.{attempt}" if is_episode else str(attempt)
 
                 try:
-                    chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=5 * attempt)
-
-                    if not chunk:
-                        raise AudioError("No audio received from librespot - empty chunk")
-
-                    self.logger.debug(
-                        f"Successfully received initial audio chunk ({len(chunk)} bytes) "
-                        f"on attempt {attempt}"
-                    )
-                    yield chunk
-                    chunks_received = 1
-
-                    async for chunk in librespot_proc.iter_chunked():
-                        chunks_received += 1
+                    async for chunk in self._attempt_stream(
+                        spotify_uri,
+                        profile,
+                        seek_position,
+                        timeout,
+                        attempt_label,
+                        config,
+                        is_episode,
+                        media_type,
+                        streamdetails.item_id,
+                    ):
                         yield chunk
+                    return  # Success - exit completely
 
-                    self.logger.debug(
-                        f"Completed streaming track - total chunks: {chunks_received}"
-                    )
-                    return
+                except (TimeoutError, AudioError) as e:
+                    # Check if this is the last attempt
+                    is_last_profile = profile_num == config["max_profiles"]
+                    is_last_attempt = attempt == config["attempts_per_profile"]
 
-                except (TimeoutError, AudioError):
-                    if chunks_received > 50:
-                        self.logger.warning(
-                            f"Stream interrupted after receiving {chunks_received} chunks - "
-                            f"treating as successful completion"
-                        )
-                        return
+                    if is_last_profile and is_last_attempt:
+                        error_msg = f"All attempts failed for {media_type} {streamdetails.item_id}"
+                        self.logger.error(error_msg)
+                        raise AudioError(str(e))
 
-                    err_msg = "No audio received from librespot within timeout"
+                    await self._handle_retry_delay(is_episode, attempt_label, e, config)
 
-                    if attempt == 2:
-                        self.logger.error(f"All attempts failed for track {streamdetails.item_id}")
-                        raise AudioError(err_msg)
-                    else:
-                        self.logger.warning(f"{err_msg} - will retry once")
-                        continue
+    def _get_streaming_config(self, is_episode: bool) -> dict[str, int]:
+        """Get streaming configuration based on media type."""
+        if is_episode:
+            return {
+                "max_profiles": 3,
+                "attempts_per_profile": 2,
+                "timeout_base": 2,
+                "initial_read_size": 8192,
+            }
+        else:
+            return {
+                "max_profiles": 1,
+                "attempts_per_profile": 2,
+                "timeout_base": 5,
+                "initial_read_size": 64000,
+            }
 
-    async def _stream_episode_via_librespot(
-        self, streamdetails: StreamDetails, seek_position: int = 0
+    async def _handle_retry_delay(
+        self, is_episode: bool, attempt_label: str, error: Exception, config: dict[str, int]
+    ) -> None:
+        """Handle delay and logging before retry."""
+        media_type = "Podcast" if is_episode else "Track"
+        error_msg = str(error).strip() or f"{type(error).__name__} (no details)"
+        self.logger.warning(f"{media_type} Stream Attempt {attempt_label} failed - {error_msg}")
+
+        if is_episode:
+            self.logger.debug(f"Waiting {config['timeout_base']} secs before next attempt...")
+            await asyncio.sleep(config["timeout_base"])  # 2 seconds for episodes
+        else:
+            self.logger.warning(f"{error_msg} - will retry once")
+            await asyncio.sleep(config["timeout_base"])  # 5 seconds for tracks
+
+    async def _attempt_stream(
+        self,
+        spotify_uri: str,
+        profile: str,
+        seek_position: int,
+        timeout: int,
+        attempt_label: str,
+        config: dict[str, int],
+        is_episode: bool,
+        media_type: str,
+        item_id: str,
     ) -> AsyncGenerator[bytes, None]:
-        """Stream episode using librespot with retry logic."""
-        self.logger.info(f"Episode {streamdetails.item_id}")
-        spotify_uri = f"spotify:episode:{streamdetails.item_id}"
+        """Attempt to stream using librespot with the given parameters."""
+        self.logger.debug(
+            f"{media_type.title()} streaming attempt {attempt_label} with {timeout}s timeout"
+        )
+        args = self._get_librespot_args(spotify_uri, profile, seek_position)
 
-        for attempt_type in (1, 2):
-            profile = f"episode_{attempt_type}"
-            for sub_attempt in range(1, 4):
-                timeout = 2
-                attempt_label = f"{attempt_type}.{sub_attempt}"
+        if not is_episode:
+            self.logger.debug(f"Librespot command: {' '.join(args)}")
+
+        async with AsyncProcess(
+            args,
+            stdout=True,
+            stderr=None if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else False,
+            name="librespot",
+        ) as librespot_proc:
+            chunks_received = 0
+
+            # Get initial chunk(s)
+            if is_episode:
+                chunks_received, initial_chunks = await self._process_initial_chunk(
+                    librespot_proc, timeout, attempt_label, config["initial_read_size"]
+                )
+                for chunk in initial_chunks:
+                    yield chunk
+            else:
+                chunk = await asyncio.wait_for(
+                    librespot_proc.read(config["initial_read_size"]), timeout=timeout
+                )
+                if not chunk:
+                    raise AudioError("No audio received from librespot - empty chunk")
 
                 self.logger.debug(
-                    f"Episode streaming attempt {attempt_label} with {timeout}s timeout"
+                    f"Successfully received initial audio chunk ({len(chunk)} bytes) "
+                    f"on attempt {attempt_label}"
                 )
-                args = self._get_librespot_args(spotify_uri, profile, seek_position)
+                yield chunk
+                chunks_received = 1
 
-                async with AsyncProcess(
-                    args, stdout=True, stderr=True, name="librespot"
-                ) as librespot_proc:
-                    stderr_task: Task[StderrAnalysis] = asyncio.create_task(
-                        self._monitor_librespot_stderr_enhanced(librespot_proc, attempt_label)
-                    )
-                    chunks_received = 0
+            # Stream remaining chunks
+            async for chunk in librespot_proc.iter_chunked():
+                chunks_received += 1
+                yield chunk
 
-                    try:
-                        chunks_received, initial_chunks = await self._process_episode_initial_chunk(
-                            librespot_proc, timeout, attempt_label
-                        )
+            # Check for interrupted but successful streams
+            if chunks_received > 50:
+                self.logger.warning(
+                    f"Stream interrupted after receiving {chunks_received} chunks - "
+                    f"treating as successful completion"
+                )
+                return
 
-                        for chunk in initial_chunks:
-                            yield chunk
+            self.logger.debug(f"Completed streaming {media_type} - total chunks: {chunks_received}")
 
-                        async for chunk in librespot_proc.iter_chunked():
-                            chunks_received += 1
-                            yield chunk
-
-                        self.logger.info(
-                            f"Completed streaming episode - total chunks: {chunks_received}"
-                        )
-                        return
-
-                    except (TimeoutError, AudioError) as e:
-                        if chunks_received > 50:
-                            self.logger.warning(
-                                f"Stream interrupted after receiving {chunks_received} chunks - "
-                                f"treating as success"
-                            )
-                            return
-
-                        await self._handle_episode_stream_error(stderr_task, attempt_label, e)
-
-                        if not (attempt_type == 2 and sub_attempt == 3):
-                            self.logger.debug(f"Waiting {timeout} secs before next attempt...")
-                            await asyncio.sleep(timeout)
-
-                    finally:
-                        if stderr_task and not stderr_task.done():
-                            stderr_task.cancel()
-                            with contextlib.suppress(asyncio.CancelledError):
-                                await stderr_task
-
-        error_msg = "Episode streaming failed after all attempts"
-        raise AudioError(error_msg)
-
-    async def _process_episode_initial_chunk(
-        self, librespot_proc: AsyncProcess, timeout: int, attempt_label: str
+    async def _process_initial_chunk(
+        self, librespot_proc: AsyncProcess, timeout: int, attempt_label: str, read_size: int
     ) -> tuple[int, list[bytes]]:
-        """Process initial chunk and handle small chunk scenarios."""
-        chunk = await asyncio.wait_for(librespot_proc.read(8192), timeout=timeout)
+        """Process initial chunk and handle small chunk scenarios for episodes."""
+        chunk = await asyncio.wait_for(librespot_proc.read(read_size), timeout=timeout)
 
         if not chunk:
             raise AudioError("No audio received from librespot - empty chunk")
@@ -250,7 +248,7 @@ class LibrespotStreamer:
                 f"Received small chunk ({len(chunk)} bytes) - checking for continuation..."
             )
             try:
-                next_chunk = await asyncio.wait_for(librespot_proc.read(8192), timeout=3)
+                next_chunk = await asyncio.wait_for(librespot_proc.read(read_size), timeout=3)
                 if next_chunk and len(next_chunk) > 1000:
                     self.logger.debug(f"Got valid continuation chunk ({len(next_chunk)} bytes)")
                     return 2, [chunk, next_chunk]
@@ -267,91 +265,3 @@ class LibrespotStreamer:
                 f"({len(chunk)} bytes) on attempt {attempt_label}"
             )
             return 1, [chunk]
-
-    async def _handle_episode_stream_error(
-        self,
-        stderr_task: Task[StderrAnalysis] | None,
-        attempt_label: str,
-        error: Exception,
-    ) -> None:
-        """Handle episode streaming error and log analysis."""
-        error_analysis = None
-        if stderr_task and not stderr_task.done():
-            stderr_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                error_analysis = await stderr_task
-
-        if error_analysis:
-            self.logger.warning(
-                f"Attempt {attempt_label} failed - "
-                f"CDN issues: {len(error_analysis.get('cdn_issues', []))}, "
-                f"Audio key errors: {error_analysis.get('audio_key_errors', 0)}, "
-                f"Decoder errors: {len(error_analysis.get('decoder_errors', []))} - {error!s}"
-            )
-        else:
-            self.logger.warning(f"Attempt {attempt_label} failed - {error!s}")
-
-    async def _monitor_librespot_stderr_enhanced(
-        self, librespot_proc: AsyncProcess, attempt: str
-    ) -> StderrAnalysis:
-        """Enhanced stderr monitoring with CDN-specific diagnostics."""
-        """This was used for debugging so could be removed in production? """
-        audio_key_errors = 0
-        decoder_errors = []
-        cdn_issues = []
-
-        try:
-            while True:
-                try:
-                    stderr_data = await asyncio.wait_for(librespot_proc.read_stderr(), timeout=1.0)
-                    if not stderr_data:
-                        break
-                    line = stderr_data.decode("utf-8", errors="ignore").strip()
-                    if line:
-                        self.logger.log(
-                            VERBOSE_LOG_LEVEL, f"Librespot stderr (attempt {attempt}): {line}"
-                        )
-                        # Track different error types
-                        if "error audio key" in line:
-                            audio_key_errors += 1
-                            self.logger.warning(f"Audio key error #{audio_key_errors}: {line}")
-                        # CDN-specific issues
-                        if "Cannot parse CDN URL" in line:
-                            cdn_issues.append(line)
-                            self.logger.warning(f"CDN URL parsing issue: {line}")
-                            # Extract the problematic URL for analysis
-                            if "verify=" in line:
-                                verify_param = (
-                                    line.split("verify=")[1].split("'")[0]
-                                    if "verify=" in line
-                                    else "unknown"
-                                )
-                                self.logger.info(f"CDN verify parameter: {verify_param}")
-                        # Decoder-specific errors
-                        decoder_error_patterns = [
-                            "No Ogg capture pattern found",
-                            "Deadline expired before operation could complete",
-                            "Passthrough Decoder Error",
-                            "Symphonia Decoder Error",
-                            "Invalid audio format",
-                            "Unsupported codec",
-                        ]
-                        for pattern in decoder_error_patterns:
-                            if pattern in line:
-                                decoder_errors.append(pattern)
-                                self.logger.warning(f"Decoder error detected: {pattern}")
-                        # General error logging
-                        if " WARN " in line or " ERROR " in line:
-                            self.logger.warning(f"Librespot potential error detected: {line}")
-                except TimeoutError:
-                    continue
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            self.logger.debug(f"Error monitoring stderr: {e}")
-
-        return {
-            "audio_key_errors": audio_key_errors,
-            "decoder_errors": decoder_errors,
-            "cdn_issues": cdn_issues,
-        }
