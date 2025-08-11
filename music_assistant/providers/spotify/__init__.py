@@ -1,4 +1,4 @@
-"""Spotify musicprovider support for MusicAssistant with Podcast Support -Modular Implementation."""
+"""Spotify music provider support for Music Assistant."""
 
 from __future__ import annotations
 
@@ -188,3 +188,4 @@ async def setup(
         msg = "Re-Authentication required"
         raise SetupFailedError(msg)
     return SpotifyProvider(mass, manifest, config)
+
