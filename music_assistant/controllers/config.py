@@ -22,7 +22,7 @@ from music_assistant_models.config_entries import (
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant_models.dsp import DSPConfig, ToneControlFilter
+from music_assistant_models.dsp import DSPConfig, DSPConfigPreset, ToneControlFilter
 from music_assistant_models.enums import EventType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     ActionUnavailable,
@@ -39,6 +39,7 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_TREBLE,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
+    CONF_PLAYER_DSP_PRESETS,
     CONF_PLAYERS,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
@@ -535,6 +536,49 @@ class ConfigController:
             data=config,
         )
         return config
+
+    @api_command("config/dsp_presets/get")
+    async def get_dsp_presets(self) -> list[DSPConfigPreset]:
+        """Return all user-defined DSP presets."""
+        raw_presets = self.get(CONF_PLAYER_DSP_PRESETS, {})
+        return [DSPConfigPreset.from_dict(preset) for preset in raw_presets.values()]
+
+    @api_command("config/dsp_presets/save")
+    async def save_dsp_presets(self, preset: DSPConfigPreset) -> DSPConfigPreset:
+        """
+        Save/update a user-defined DSP presets.
+
+        This method will validate the config before saving it to the persistent storage.
+        """
+        preset.validate()
+
+        if preset.preset_id is None:
+            # Generate a new preset_id if it does not exist
+            preset.preset_id = shortuuid.random(8).lower()
+
+        # Save the preset to the persistent storage
+        self.set(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset.preset_id}", preset.to_dict())
+
+        all_presets = await self.get_dsp_presets()
+
+        self.mass.signal_event(
+            EventType.DSP_PRESETS_UPDATED,
+            data=all_presets,
+        )
+
+        return preset
+
+    @api_command("config/dsp_presets/remove")
+    async def remove_dsp_preset(self, preset_id: str) -> None:
+        """Remove a user-defined DSP preset."""
+        self.mass.config.remove(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset_id}")
+
+        all_presets = await self.get_dsp_presets()
+
+        self.mass.signal_event(
+            EventType.DSP_PRESETS_UPDATED,
+            data=all_presets,
+        )
 
     def create_default_player_config(
         self,
