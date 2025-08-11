@@ -1,4 +1,4 @@
-"""Helpers/utils for the Spotify musicprovider."""
+"""Helper functions for Spotify provider."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ async def get_librespot_binary() -> str:
             returncode, output = await check_output(librespot_path, "--version")
             if returncode == 0 and b"librespot" in output:
                 return librespot_path
+            return None
         except OSError:
             return None
 
@@ -23,10 +24,10 @@ async def get_librespot_binary() -> str:
     system = platform.system().lower().replace("darwin", "macos")
     architecture = platform.machine().lower()
 
-    if bridge_binary := await check_librespot(
+    if librespot_binary := await check_librespot(
         os.path.join(base_path, f"librespot-{system}-{architecture}")
     ):
-        return bridge_binary
+        return librespot_binary
 
     msg = f"Unable to locate Librespot for {system}/{architecture}"
     raise RuntimeError(msg)
