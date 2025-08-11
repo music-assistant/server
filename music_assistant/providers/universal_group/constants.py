@@ -18,7 +18,7 @@ CONF_ENTRY_SAMPLE_RATES_UGP = create_sample_rates_config_entry(
 )
 CONFIG_ENTRY_UGP_NOTE = ConfigEntry(
     key="ugp_note",
-    type=ConfigEntryType.LABEL,
+    type=ConfigEntryType.ALERT,
     label="Please note that although the Universal Group "
     "allows you to group any player, it will not (and can not) enable audio sync "
     "between players of different ecosystems. It is advised to always use native "
