@@ -150,7 +150,7 @@ class LibrespotStreamer:
             return {
                 "max_profiles": 1,
                 "attempts_per_profile": 2,
-                "timeout_base": 5,
+                "timeout_base": 10,
                 "initial_read_size": 64000,
             }
 
@@ -164,10 +164,10 @@ class LibrespotStreamer:
 
         if is_episode:
             self.logger.debug(f"Waiting {config['timeout_base']} secs before next attempt...")
-            await asyncio.sleep(config["timeout_base"])  # 2 seconds for episodes
+            await asyncio.sleep(config["timeout_base"])
         else:
             self.logger.warning(f"{error_msg} - will retry once")
-            await asyncio.sleep(config["timeout_base"])  # 5 seconds for tracks
+            await asyncio.sleep(config["timeout_base"])
 
     async def _attempt_stream(
         self,
@@ -265,3 +265,4 @@ class LibrespotStreamer:
                 f"({len(chunk)} bytes) on attempt {attempt_label}"
             )
             return 1, [chunk]
+
