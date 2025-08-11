@@ -23,7 +23,7 @@ from music_assistant_models.media_items import (
 from music_assistant.helpers.util import parse_title_and_version
 
 if TYPE_CHECKING:
-    from . import SpotifyProvider
+    from .provider import SpotifyProvider
 
 
 def parse_images(
@@ -367,3 +367,4 @@ def sync_episode_status_to_ma(
 
     if should_mark_played:
         provider.logger.debug(f"Synced played status from Spotify for episode {episode.item_id}")
+
