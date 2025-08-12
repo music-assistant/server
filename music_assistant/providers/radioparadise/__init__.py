@@ -217,7 +217,7 @@ class RadioParadiseProvider(MusicProvider):
             item_id=item_id,
             provider=self.lookup_key,
             audio_format=AudioFormat(
-                content_type=cast("ContentType", format_info["content_type"]),
+                content_type=format_info["content_type"],
                 channels=2,
             ),
             media_type=MediaType.RADIO,
@@ -333,33 +333,38 @@ class RadioParadiseProvider(MusicProvider):
             )
             return None
 
-    def _get_current_block_position(self, block_data: dict) -> int:
+    def _get_current_block_position(self, block_data: dict[str, Any]) -> int:
         """Calculate current position in block based on scheduled time."""
         current_time_ms = int(time.time() * 1000)
-        sched_time = block_data.get("sched_time_millis", current_time_ms)
+        sched_time = int(block_data.get("sched_time_millis", current_time_ms))
         return current_time_ms - sched_time
 
-    def _find_current_song(self, songs: dict, current_time_ms: int) -> dict | None:
+    def _find_current_song(
+        self, songs: dict[str, Any], current_time_ms: int
+    ) -> dict[str, Any] | None:
         """Find which song should be playing based on elapsed time."""
         for song_key in sorted(songs.keys(), key=int):
-            song = songs[song_key]
-            song_start = song.get("elapsed", 0)
-            song_duration = song.get("duration", 0)
+            song = cast("dict[str, Any]", songs[song_key])
+            song_start = int(song.get("elapsed", 0))
+            song_duration = int(song.get("duration", 0))
             song_end = song_start + song_duration
 
             if song_start <= current_time_ms < song_end:
                 return song
 
         # If no exact match, return first song
-        return songs.get("0") if songs else None
+        first_song = songs.get("0")
+        return cast("dict[str, Any]", first_song) if first_song is not None else None
 
-    def _get_next_song(self, songs: dict, current_song: dict) -> dict | None:
+    def _get_next_song(
+        self, songs: dict[str, Any], current_song: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Get the next song after current song."""
         current_event = current_song.get("event")
         for song_key in sorted(songs.keys(), key=int):
-            song = songs[song_key]
-            if song.get("event") != current_event and song.get("elapsed", 0) > current_song.get(
-                "elapsed", 0
+            song = cast("dict[str, Any]", songs[song_key])
+            if song.get("event") != current_event and int(song.get("elapsed", 0)) > int(
+                current_song.get("elapsed", 0)
             ):
                 return song
         return None
@@ -427,16 +432,13 @@ class RadioParadiseProvider(MusicProvider):
         if album and year:
             album_display = f"{album} ({year})"
         elif year:
-            album_display = str(year)
+            album_display = year
 
         # Get cover image URL
         cover_path = current_song.get("cover")
         image_url = None
         if cover_path:
             image_url = f"https://img.radioparadise.com/{cover_path}"
-
-        # Debug log the image URL
-        self.logger.debug(f"Cover art URL for {artist} - {title}: {image_url}")
 
         # Get track duration
         duration = current_song.get("duration")
@@ -459,7 +461,11 @@ class RadioParadiseProvider(MusicProvider):
         )
 
     def _enhance_title_with_upcoming(
-        self, title: str, current_song: dict, next_song: dict | None, block_data: dict | None
+        self,
+        title: str,
+        current_song: dict[str, Any],
+        next_song: dict[str, Any] | None,
+        block_data: dict[str, Any] | None,
     ) -> str:
         """Enhance the title with upcoming track info."""
         enhanced_title = title
@@ -481,7 +487,10 @@ class RadioParadiseProvider(MusicProvider):
         return enhanced_title
 
     def _get_later_artists(
-        self, current_song: dict, next_song: dict | None, block_data: dict
+        self,
+        current_song: dict[str, Any],
+        next_song: dict[str, Any] | None,
+        block_data: dict[str, Any],
     ) -> list[str]:
         """Get list of upcoming artists after next song."""
         current_event = current_song.get("event")
