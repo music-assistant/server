@@ -54,13 +54,13 @@ def get_arguments() -> argparse.Namespace:
         "--config",
         metavar="path_to_data_dir",
         default=data_dir,
-        help="Directory that contains MusicAssistant data",
+        help="Directory that contains MusicAssistant persistent data",
     )
     parser.add_argument(
         "--cache-dir",
         metavar="path_to_cache_dir",
         default=cache_dir,
-        help="Directory that contains MusicAssistant cache",
+        help="Directory that contains MusicAssistant cache data",
     )
     parser.add_argument(
         "--log-level",
