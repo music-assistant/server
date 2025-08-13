@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .provider import ResonatePlayerprovider
+from .provider import ResonateProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -22,7 +22,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return ResonatePlayerprovider(mass, manifest, config)
+    return ResonateProvider(mass, manifest, config)
 
 
 async def get_config_entries(

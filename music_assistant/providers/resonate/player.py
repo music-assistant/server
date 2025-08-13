@@ -11,13 +11,13 @@ from music_assistant_models.player import PlayerSource
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
-    from .provider import ResonatePlayerprovider
+    from .provider import ResonateProvider
 
 
 class ResonatePlayer(Player):
     """A resonate audio player in Music Assistant."""
 
-    def __init__(self, provider: ResonatePlayerprovider, player_id: str) -> None:
+    def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
         # init some static variables

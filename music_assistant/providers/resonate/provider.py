@@ -1,4 +1,4 @@
-"""Resonate Player Provider implementation."""
+"""Player Provider for Resonate."""
 
 from __future__ import annotations
 
@@ -21,22 +21,8 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
 
-class ResonatePlayerprovider(PlayerProvider):
-    """
-    Example/demo Player provider.
-
-    Note that this is always subclassed from PlayerProvider,
-    which in turn is a subclass of the generic Provider model.
-
-    The base implementation already takes care of some convenience methods,
-    such as the mass object and the logger. Take a look at the base class
-    for more information on what is available.
-
-    Just like with any other subclass, make sure that if you override
-    any of the default methods (such as __init__), you call the super() method.
-    In most cases its not needed to override any of the builtin methods and you only
-    implement the abc methods with your actual implementation.
-    """
+class ResonateProvider(PlayerProvider):
+    """Player Provider for Resonate."""
 
     server: ResonateServer
 
