@@ -20,6 +20,7 @@ class ResonatePlayer(Player):
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
+        self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
         self._attr_name = f"Demo Player {player_id}"
         self._attr_type = PlayerType.PLAYER
@@ -31,24 +32,21 @@ class ResonatePlayer(Player):
     @override
     async def play(self) -> None:
         """Play command."""
-        logger = self.provider.logger.getChild(self.player_id)
-        logger.info("Received PLAY command on player %s", self.display_name)
+        self.logger.info("Received PLAY command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
     @override
     async def stop(self) -> None:
         """Stop command."""
-        logger = self.provider.logger.getChild(self.player_id)
-        logger.info("Received STOP command on player %s", self.display_name)
+        self.logger.info("Received STOP command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
     @override
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        logger = self.provider.logger.getChild(self.player_id)
-        logger.info(
+        self.logger.info(
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
         self._attr_current_media = media
