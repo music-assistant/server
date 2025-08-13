@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import PlaybackState, PlayerType
@@ -28,6 +28,7 @@ class ResonatePlayer(Player):
         self._attr_device_info = DeviceInfo()
         self._set_attributes()
 
+    @override
     async def play(self) -> None:
         """Play command."""
         logger = self.provider.logger.getChild(self.player_id)
@@ -35,6 +36,7 @@ class ResonatePlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
+    @override
     async def stop(self) -> None:
         """Stop command."""
         logger = self.provider.logger.getChild(self.player_id)
@@ -42,6 +44,7 @@ class ResonatePlayer(Player):
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
+    @override
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
         logger = self.provider.logger.getChild(self.player_id)
@@ -52,6 +55,7 @@ class ResonatePlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
+    @override
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         # OPTIONAL
