@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, override
 
-from aioresonate.server import ResonateEvent, ResonateServer
+from aioresonate.server import PlayerAddedEvent, PlayerRemovedEvent, ResonateEvent, ResonateServer
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import (
@@ -14,6 +14,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.resonate.player import ResonatePlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -39,6 +40,14 @@ class ResonateProvider(PlayerProvider):
     async def event_cb(self, event: ResonateEvent) -> None:
         """Event callback registered to the resonate server."""
         self.logger.debug("Received ResonateEvent: %s", event)
+        match event:
+            case PlayerAddedEvent(player_id):
+                player = ResonatePlayer(self, player_id)
+                await self.mass.players.register_or_update(player)
+            case PlayerRemovedEvent(player_id):
+                pass  # TODO: implement
+            case _:
+                self.logger.error("Unknown resonate event: %s", event)
 
     @property
     @override
