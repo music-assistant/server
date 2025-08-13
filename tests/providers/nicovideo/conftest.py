@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
-from tests.providers.nicovideo.fixtures.mappings import (
-    FixtureTestMappingRegistry,
+from tests.providers.nicovideo.fixtures.type_to_converter_mapping import (
+    TypeToConverterMappingRegistry,
 )
 from tests.providers.nicovideo.helpers import create_converter_manager
 
@@ -27,6 +27,6 @@ def converter_manager() -> NicovideoConverterManager:
 
 
 @pytest.fixture
-def mapping_registry() -> FixtureTestMappingRegistry:
-    """Provide a FixtureTestMappingRegistry."""
-    return FixtureTestMappingRegistry()
+def mapping_registry() -> TypeToConverterMappingRegistry:
+    """Provide a TypeToConverterMappingRegistry."""
+    return TypeToConverterMappingRegistry()

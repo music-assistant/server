@@ -1,4 +1,4 @@
-"""FixtureTestMapping registry and constant definitions."""
+"""API type to converter function mappings."""
 
 from __future__ import annotations
 
@@ -35,25 +35,25 @@ type ConvertedResult = SnapshotableItem | list[SnapshotableItem] | None
 
 
 @dataclass(frozen=True)
-class FixtureTestMapping[T: BaseModel]:
-    """Integrated type test mapping."""
+class TypeToConverterMapping[T: BaseModel]:
+    """Maps API type to converter function."""
 
     source_type: type[T]
     convert_func: Callable[[T, NicovideoConverterManager], ConvertedResult]
 
 
-# Constant mapping definitions - using converter functions directly
-FIXTURE_TEST_MAPPINGS: list[FixtureTestMapping[Any]] = [
+# API type to converter function mappings
+TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
     # Track Types
-    FixtureTestMapping[EssentialVideo](
+    TypeToConverterMapping[EssentialVideo](
         source_type=EssentialVideo,
         convert_func=lambda data, cm: cm.track.convert_by_essential_video(data),
     ),
-    FixtureTestMapping[WatchData](
+    TypeToConverterMapping[WatchData](
         source_type=WatchData,
         convert_func=lambda data, cm: cm.track.convert_by_watch_data(data),
     ),
-    FixtureTestMapping[UserVideosData](
+    TypeToConverterMapping[UserVideosData](
         source_type=UserVideosData,
         convert_func=lambda data, cm: [
             track
@@ -61,7 +61,7 @@ FIXTURE_TEST_MAPPINGS: list[FixtureTestMapping[Any]] = [
             if (track := cm.track.convert_by_essential_video(item.essential)) is not None
         ],
     ),
-    FixtureTestMapping[OwnVideosData](
+    TypeToConverterMapping[OwnVideosData](
         source_type=OwnVideosData,
         convert_func=lambda data, cm: [
             track
@@ -70,42 +70,42 @@ FIXTURE_TEST_MAPPINGS: list[FixtureTestMapping[Any]] = [
         ],
     ),
     # Playlist Types
-    FixtureTestMapping[Mylist](
+    TypeToConverterMapping[Mylist](
         source_type=Mylist,
         convert_func=lambda data, cm: cm.playlist.convert_with_tracks_by_mylist(data),
     ),
-    FixtureTestMapping[UserMylistItem](
+    TypeToConverterMapping[UserMylistItem](
         source_type=UserMylistItem,
         convert_func=lambda data, cm: cm.playlist.convert_by_mylist(data),
     ),
-    FixtureTestMapping[FollowingMylistsData](
+    TypeToConverterMapping[FollowingMylistsData](
         source_type=FollowingMylistsData,
         convert_func=lambda data, cm: [
             cm.playlist.convert_following_by_mylist(item) for item in data.mylists
         ],
     ),
     # Album Types
-    FixtureTestMapping[SeriesData](
+    TypeToConverterMapping[SeriesData](
         source_type=SeriesData,
         convert_func=lambda data, cm: cm.album.convert_by_series(data),
     ),
-    FixtureTestMapping[UserSeriesItem](
+    TypeToConverterMapping[UserSeriesItem](
         source_type=UserSeriesItem,
         convert_func=lambda data, cm: cm.album.convert_by_series(data),
     ),
     # Artist Types
-    FixtureTestMapping[RelationshipUsersData](
+    TypeToConverterMapping[RelationshipUsersData](
         source_type=RelationshipUsersData,
         convert_func=lambda data, cm: [
             cm.artist.convert_by_owner_or_user(item) for item in data.items
         ],
     ),
-    FixtureTestMapping[NicoUser](
+    TypeToConverterMapping[NicoUser](
         source_type=NicoUser,
         convert_func=lambda data, cm: cm.artist.convert_by_owner_or_user(data),
     ),
     # Search Types
-    FixtureTestMapping[VideoSearchData](
+    TypeToConverterMapping[VideoSearchData](
         source_type=VideoSearchData,
         convert_func=lambda data, cm: [
             track
@@ -113,7 +113,7 @@ FIXTURE_TEST_MAPPINGS: list[FixtureTestMapping[Any]] = [
             if (track := cm.track.convert_by_essential_video(item)) is not None
         ],
     ),
-    FixtureTestMapping[ListSearchData](
+    TypeToConverterMapping[ListSearchData](
         source_type=ListSearchData,
         convert_func=lambda data, cm: [
             cm.playlist.convert_by_mylist(item)
@@ -123,7 +123,7 @@ FIXTURE_TEST_MAPPINGS: list[FixtureTestMapping[Any]] = [
         ],
     ),
     # History Types
-    FixtureTestMapping[HistoryData](
+    TypeToConverterMapping[HistoryData](
         source_type=HistoryData,
         convert_func=lambda data, cm: [
             track
@@ -131,7 +131,7 @@ FIXTURE_TEST_MAPPINGS: list[FixtureTestMapping[Any]] = [
             if (track := cm.track.convert_by_essential_video(item.video)) is not None
         ],
     ),
-    FixtureTestMapping[LikeHistoryData](
+    TypeToConverterMapping[LikeHistoryData](
         source_type=LikeHistoryData,
         convert_func=lambda data, cm: [
             track
@@ -140,7 +140,7 @@ FIXTURE_TEST_MAPPINGS: list[FixtureTestMapping[Any]] = [
         ],
     ),
     # Recommendation Types
-    FixtureTestMapping[RecommendData](
+    TypeToConverterMapping[RecommendData](
         source_type=RecommendData,
         convert_func=lambda data, cm: [
             track
@@ -152,26 +152,26 @@ FIXTURE_TEST_MAPPINGS: list[FixtureTestMapping[Any]] = [
 ]
 
 
-class FixtureTestMappingRegistry:
-    """Type-safe mapping registry."""
+class TypeToConverterMappingRegistry:
+    """Maps API response types to converter functions."""
 
     def __init__(self) -> None:
         """Initialize the registry."""
-        self._registry: dict[type, FixtureTestMapping[BaseModel]] = {}
-        for mapping in FIXTURE_TEST_MAPPINGS:
+        self._registry: dict[type, TypeToConverterMapping[BaseModel]] = {}
+        for mapping in TYPE_TO_CONVERTER_MAPPINGS:
             self.register(mapping)
 
-    def register[T: BaseModel](self, mapping: FixtureTestMapping[T]) -> None:
+    def register[T: BaseModel](self, mapping: TypeToConverterMapping[T]) -> None:
         """Register mapping."""
-        self._registry[mapping.source_type] = cast("FixtureTestMapping[BaseModel]", mapping)
+        self._registry[mapping.source_type] = cast("TypeToConverterMapping[BaseModel]", mapping)
 
-    def get_by_type(self, source_type: type) -> FixtureTestMapping[BaseModel] | None:
+    def get_by_type(self, source_type: type) -> TypeToConverterMapping[BaseModel] | None:
         """O(1) type-based search."""
         return self._registry.get(source_type)
 
     def get_by_data[T: BaseModel](
         self, api_data: FixtureAPIResultOptional[T]
-    ) -> FixtureTestMapping[BaseModel] | None:
+    ) -> TypeToConverterMapping[BaseModel] | None:
         """Get mapping and data type for the API data."""
         if api_data is None:
             return None
@@ -190,6 +190,6 @@ class FixtureTestMappingRegistry:
 
         return mapping
 
-    def get_all_mappings(self) -> list[FixtureTestMapping[BaseModel]]:
+    def get_all_mappings(self) -> list[TypeToConverterMapping[BaseModel]]:
         """Get all mappings."""
         return list(self._registry.values())

@@ -1,10 +1,8 @@
-"""Type mapping and fixture generation utilities."""
+"""Fixture file path to type mapping utilities."""
 
 from __future__ import annotations
 
-import json
 import logging
-import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -12,18 +10,13 @@ from typing import TextIO
 from pydantic import BaseModel
 
 from tests.providers.nicovideo.constants import GENERATED_DIR
-from tests.providers.nicovideo.types import (
-    FixtureAPIResult,
-    FixtureCategory,
-    JsonContainer,
-    JsonList,
-)
+from tests.providers.nicovideo.types import FixtureAPIResult
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class FixtureMapping:
+class FixturePathToTypeMapping:
     """Class for managing fixture type information."""
 
     key: str  # "tracks/user_history"
@@ -58,20 +51,20 @@ class FixtureMapping:
         return
 
 
-class FixtureTypeManager:
-    """Manages fixture type mappings and code generation."""
+class PathToTypeMapper:
+    """Maps fixture file paths to their corresponding API response types."""
 
     def __init__(self) -> None:
-        """Initialize the fixture type manager."""
-        self.fixture_mappings: dict[str, FixtureMapping] = {}
+        """Initialize the path to type mapping."""
+        self.fixture_mappings: dict[str, FixturePathToTypeMapping] = {}
 
     def record_type_mapping[T: BaseModel](
-        self, response: FixtureAPIResult[T], category: FixtureCategory, name: str
-    ) -> FixtureMapping:
+        self, response: FixtureAPIResult[T], category: str, name: str
+    ) -> FixturePathToTypeMapping:
         """Record type mapping for automatic generation."""
         key = f"{category}/{name}.json"
 
-        mapping = FixtureMapping(key=key, fixture_type=None)
+        mapping = FixturePathToTypeMapping(key=key, fixture_type=None)
         mapping.auto_detect_fixture_type(response)
         self.fixture_mappings[key] = mapping
         return mapping
@@ -164,35 +157,3 @@ class FixtureTypeManager:
 
         logger.info(f"Generated path->type mapping at {fixture_types_path}")
         logger.info(f"Generated __init__ at {GENERATED_DIR / '__init__.py'}")
-
-
-class FixtureDataProcessor:
-    """Processes fixture data for serialization."""
-
-    def convert_to_json_serializable[T: BaseModel](
-        self, response: FixtureAPIResult[T]
-    ) -> JsonContainer:
-        """Convert response to JSON serializable format."""
-        # Check for Pydantic models first
-        if isinstance(response, BaseModel):
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                return response.model_dump(by_alias=True)
-
-        data: JsonList = []
-        for item in response:
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                data.append(item.model_dump(by_alias=True))
-        return data
-
-    def save_fixture_data(self, data: JsonContainer, fixture_path: Path) -> None:
-        """Save fixture data to file."""
-        # Create directory
-        fixture_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Save file
-        with fixture_path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-        logger.info(f"Saved fixture: {fixture_path}")

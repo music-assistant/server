@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import TYPE_CHECKING, TypeVar
 from unittest.mock import Mock
 
@@ -18,11 +19,11 @@ from tests.providers.nicovideo.constants import (
     DUMMY_THUMBNAIL_URL,
     DUMMY_TRACK_ID,
 )
-from tests.providers.nicovideo.types import JsonDict
+from tests.providers.nicovideo.types import FixtureAPIResult, JsonContainer, JsonDict, JsonList
 
 if TYPE_CHECKING:
     from mashumaro import DataClassDictMixin
-    from pydantic import BaseModel, JsonValue
+    from pydantic import JsonValue
 
 from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
 
@@ -43,7 +44,7 @@ def create_converter_manager() -> NicovideoConverterManager:
     return NicovideoConverterManager(mock_provider, mock_logger)
 
 
-def sort_dict_keys_and_lists_for_snapshot(obj: JsonValue) -> JsonValue:
+def sort_dict_keys_and_lists(obj: JsonValue) -> JsonValue:
     """Sort dictionary keys and list elements for consistent snapshot comparison.
 
     This function ensures deterministic ordering by:
@@ -55,10 +56,10 @@ def sort_dict_keys_and_lists_for_snapshot(obj: JsonValue) -> JsonValue:
     """
     if isinstance(obj, dict):
         # Sort dictionary keys and recursively process values
-        return {key: sort_dict_keys_and_lists_for_snapshot(obj[key]) for key in sorted(obj.keys())}
+        return {key: sort_dict_keys_and_lists(obj[key]) for key in sorted(obj.keys())}
     elif isinstance(obj, list):
         # Recursively process list items first
-        sorted_items = [sort_dict_keys_and_lists_for_snapshot(item) for item in obj]
+        sorted_items = [sort_dict_keys_and_lists(item) for item in obj]
         try:
             # Sort items for deterministic ordering (handles serialized sets)
             return sorted(sorted_items, key=lambda x: (type(x).__name__, str(x)))
@@ -70,21 +71,13 @@ def sort_dict_keys_and_lists_for_snapshot(obj: JsonValue) -> JsonValue:
         return obj
 
 
-def to_dict_with_sorted_keys_and_lists(media_item: DataClassDictMixin) -> JsonDict:
-    """Convert DataClassDictMixin to dict with sorted keys and lists for snapshot comparison.
-
-    This function creates a dictionary representation with deterministic ordering by:
-    - Sorting all dictionary keys alphabetically
-    - Sorting all list elements by type and string representation
-
-    Particularly useful for ensuring that serialized sets have consistent ordering
-    across test runs for reliable snapshot comparison.
-    """
+def to_dict_for_snapshot(media_item: DataClassDictMixin) -> JsonDict:
+    """Convert DataClassDictMixin to dict with sorted keys and lists for snapshot comparison."""
     # Get the standard to_dict representation
     item_dict = media_item.to_dict()
 
     # Recursively sort all nested structures, especially sets
-    sorted_result = sort_dict_keys_and_lists_for_snapshot(item_dict)
+    sorted_result = sort_dict_keys_and_lists(item_dict)
 
     # Ensure we return the expected dict type
     if isinstance(sorted_result, dict):
@@ -94,8 +87,25 @@ def to_dict_with_sorted_keys_and_lists(media_item: DataClassDictMixin) -> JsonDi
         return item_dict
 
 
-def stabilize_counts_for_fixture[T: BaseModel](data: T | list[T]) -> T | list[T]:
-    """Stabilize count values in API responses for consistent fixture generation.
+def to_dict_for_fixture[T: BaseModel](response: FixtureAPIResult[T]) -> JsonContainer:
+    """Convert response to JSON serializable format."""
+    # Check for Pydantic models first
+    if isinstance(response, BaseModel):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return response.model_dump(by_alias=True)
+    data: JsonList = []
+    for item in response:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            data.append(item.model_dump(by_alias=True))
+    return data
+
+
+def stabilize_dynamic_fields_for_fixture[T: BaseModel](
+    data: FixtureAPIResult[T],
+) -> FixtureAPIResult[T]:
+    """Stabilize dynamic fields in API responses for consistent fixture generation.
 
     This function replaces all count-related numeric values with DUMMY_COUNT
     to ensure fixtures are stable across different API response states.

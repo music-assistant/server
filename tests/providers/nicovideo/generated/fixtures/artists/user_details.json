@@ -1,7 +1,7 @@
 {
-  "description": "",
-  "decoratedDescriptionHtml": "",
-  "strippedDescription": "",
+  "description": "This is a dummy description for testing purposes.",
+  "decoratedDescriptionHtml": "This is a dummy description for testing purposes.",
+  "strippedDescription": "This is a dummy description for testing purposes.",
   "isPremium": false,
   "registeredVersion": "(GINZA)",
   "followeeCount": 1,

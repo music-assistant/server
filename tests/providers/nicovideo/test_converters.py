@@ -10,7 +10,7 @@ import pytest
 
 from tests.providers.nicovideo.fixtures.fixture_manager import FixtureManager
 from tests.providers.nicovideo.helpers import (
-    to_dict_with_sorted_keys_and_lists,
+    to_dict_for_snapshot,
 )
 
 if TYPE_CHECKING:
@@ -18,9 +18,9 @@ if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion
 
     from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
-    from tests.providers.nicovideo.fixtures.mappings import (
-        FixtureTestMappingRegistry,
+    from tests.providers.nicovideo.fixtures.type_to_converter_mapping import (
         SnapshotableItem,
+        TypeToConverterMappingRegistry,
     )
 
 
@@ -32,7 +32,7 @@ class ConverterTestRunner:
 
     def __init__(
         self,
-        mapping_registry: FixtureTestMappingRegistry,
+        mapping_registry: TypeToConverterMappingRegistry,
         converter_manager: NicovideoConverterManager,
         fixture_manager: FixtureManager,
         snapshot: SnapshotAssertion,
@@ -122,7 +122,7 @@ class ConverterTestRunner:
         converted: SnapshotableItem,
     ) -> None:
         """Process a single converted result and compare with snapshot."""
-        stable_dict = to_dict_with_sorted_keys_and_lists(converted)
+        stable_dict = to_dict_for_snapshot(converted)
 
         # Compare with snapshot
         converted_snapshot = self.snapshot(name=snapshot_id)
@@ -155,7 +155,7 @@ class ConverterTestRunner:
 
 
 def test_converter_with_fixture(
-    mapping_registry: FixtureTestMappingRegistry,
+    mapping_registry: TypeToConverterMappingRegistry,
     converter_manager: NicovideoConverterManager,
     fixture_manager: FixtureManager,
     snapshot: SnapshotAssertion,
