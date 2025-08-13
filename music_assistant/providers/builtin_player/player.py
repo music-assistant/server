@@ -248,7 +248,7 @@ class BuiltinPlayer(Player):
         if (range_header := request.headers.get("Range")) and range_header == "bytes=0-1":
             self.logger.debug("Client is probing the stream.")
             # We don't early exit here since playback would otherwise never start
-            # when using iOS with Home Assistant OS
+            # on iOS devices with Home Assistant OS installations.
 
         media = player.current_media
         if queue is None or media is None:
