@@ -5,7 +5,19 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TypeVar
 from unittest.mock import Mock
 
-from tests.providers.nicovideo.constants import DUMMY_COUNT
+from pydantic import BaseModel
+
+from tests.providers.nicovideo.constants import (
+    DUMMY_COUNT,
+    DUMMY_DATETIME,
+    DUMMY_DESCRIPTION,
+    DUMMY_IS_PEAK_TIME,
+    DUMMY_JWT_TOKEN,
+    DUMMY_NICOSID,
+    DUMMY_SEARCH_ID,
+    DUMMY_THUMBNAIL_URL,
+    DUMMY_TRACK_ID,
+)
 from tests.providers.nicovideo.types import JsonDict
 
 if TYPE_CHECKING:
@@ -99,6 +111,43 @@ def _stabilize_model_counts[T: BaseModel](data: T) -> T:
     data_dict = data.model_dump(by_alias=True)
     stabilized_dict = _stabilize_count_values(data_dict)
     return data.__class__.model_validate(stabilized_dict)
+
+
+def _stabilize_dynamic_field_values(data: JsonValue) -> JsonValue:
+    """Recursively stabilize dynamic field values in dictionary data."""
+    if isinstance(data, dict):
+        stabilized: JsonDict = {}
+        for key, value in data.items():
+            # Stabilize specific dynamic fields
+            if key == "searchId":
+                stabilized[key] = DUMMY_SEARCH_ID
+            elif key in ("lastViewedAt", "serverTime", "registeredAt"):
+                stabilized[key] = DUMMY_DATETIME
+            elif key == "nicosid":
+                stabilized[key] = DUMMY_NICOSID
+            elif "description" in key.lower():
+                stabilized[key] = DUMMY_DESCRIPTION
+            elif key == "watchTrackId":
+                stabilized[key] = DUMMY_TRACK_ID
+            elif key == "isPeakTime":
+                stabilized[key] = DUMMY_IS_PEAK_TIME
+            elif key == "thumbnailUrl":
+                stabilized[key] = DUMMY_THUMBNAIL_URL
+            elif key in ("threadKey", "accessRightKey", "editKey"):
+                stabilized[key] = DUMMY_JWT_TOKEN
+            elif key == "views" and isinstance(value, int):
+                # Stabilize view counts in history
+                stabilized[key] = DUMMY_COUNT
+            else:
+                # Recursively process nested data
+                stabilized[key] = _stabilize_dynamic_field_values(value)
+        return stabilized
+
+    elif isinstance(data, list):
+        return [_stabilize_dynamic_field_values(item) for item in data]
+
+    # Return other values as-is
+    return data
 
 
 def _stabilize_count_values(data: JsonValue, in_count_property: bool = False) -> JsonValue:

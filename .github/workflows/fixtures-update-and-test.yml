@@ -1,0 +1,141 @@
+name: Provider Fixtures Update and Test
+
+on:
+  # Weekly execution
+  schedule:
+    - cron:  '00 0 * * *'
+
+  # Manual execution
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: 'Provider to update fixtures for (or "all" for all providers)'
+        required: true
+        default: 'nicovideo'
+        type: choice
+        options:
+          - nicovideo
+          - all
+
+      run_tests:
+        description: 'Run tests after updating fixtures'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  setup-and-update-fixtures:
+    name: Update NicoVideo Fixtures and Run Tests
+    runs-on: ubuntu-latest
+    if: github.event.inputs.provider == 'nicovideo' || github.event.inputs.provider == 'all' || github.event_name == 'schedule' || github.event_name == 'push'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/uv
+          key: ${{ runner.os }}-python-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml', '**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-python-${{ env.PYTHON_VERSION }}-
+            ${{ runner.os }}-python-
+
+      - name: Cache virtual environment
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml', '**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-${{ env.PYTHON_VERSION }}-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Set up development environment
+        run: |
+          if [ ! -d ".venv" ] || [ "${{ steps.cache-venv.outputs.cache-hit }}" != "true" ]; then
+            ./scripts/setup.sh
+          else
+            echo "Using cached virtual environment"
+          fi
+
+      - name: Verify environment setup
+        run: |
+          source .venv/bin/activate
+          python --version
+          pip --version
+          echo "Environment setup completed successfully"
+
+      - name: Save virtual environment cache
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .venv
+          key: ${{ runner.os }}-venv-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml', '**/requirements*.txt') }}
+
+      - name: Update NicoVideo fixtures
+        env:
+          NICONICO_SESSION: ${{ secrets.NICONICO_SESSION }}
+        run: |
+          source .venv/bin/activate
+          cd tests/providers/nicovideo/fixtures/scripts
+          set -o pipefail
+          python main.py 2>&1 | tee fixture-update.log
+
+      - name: Check for fixture changes
+        id: check_changes
+        run: |
+          if git diff --quiet; then
+            echo "changes=false" >> $GITHUB_OUTPUT
+            echo "No fixture changes detected"
+          else
+            echo "changes=true" >> $GITHUB_OUTPUT
+            echo "Fixture changes detected"
+            git diff --name-only
+          fi
+
+      - name: Run NicoVideo Tests
+        if: steps.check_changes.outputs.changes == 'true' && (github.event.inputs.run_tests == 'true' || github.event_name == 'schedule' || github.event_name == 'push')
+        run: |
+          source .venv/bin/activate
+          pytest --durations 10 \
+                 --cov-report term-missing \
+                 --cov=music_assistant.providers.nicovideo \
+                 --cov-report=xml \
+                 tests/providers/nicovideo/ \
+                 -v \
+                 --tb=short
+
+      - name: Upload fixture artifacts
+        if: failure() || steps.check_changes.outputs.changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: updated-nicovideo-fixtures
+          path: tests/providers/nicovideo/fixtures/scripts/fixture-update.log
+          retention-days: 30
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: pytest-results.xml
+          retention-days: 30
+
+    outputs:
+      fixtures-updated: ${{ steps.check_changes.outputs.changes }}
