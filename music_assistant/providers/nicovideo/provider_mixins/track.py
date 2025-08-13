@@ -7,15 +7,15 @@ from typing import TYPE_CHECKING, override
 
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.media_items import AudioFormat, Track
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import MediaItemType, Track
+    from music_assistant_models.media_items import MediaItemType
 
 
 class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
@@ -112,7 +112,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
 
         # Get track information for stream title
         track = await self.get_track(item_id)
-        stream_title = track.name if track else None
+        stream_title = track.name if track else ""
 
         self.logger.debug(
             "Found stream format for %s (audio_ext: %s, acodec: %s)",
@@ -120,7 +120,9 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             str(content_type),
             str(codec_type),
         )
-
+        # Do not use album image intentionally
+        image = super(Track, track).image if track else None
+        album = track.album if track else None
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -134,7 +136,12 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             media_type=MediaType.TRACK,
             stream_type=StreamType.HTTP,
             duration=duration,
-            stream_title=stream_title,
+            stream_metadata=StreamMetadata(
+                title=stream_title,
+                artist=track.artist_str if track else None,
+                album=album.name if album else None,
+                image_url=image.path if image else None,
+            ),
             path=stream_format["url"],
             extra_input_args=extra_args,
             allow_seek=True,
