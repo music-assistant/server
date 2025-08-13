@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
@@ -32,6 +32,7 @@ class ResonatePlayerprovider(PlayerProvider):
     """
 
     @property
+    @override
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
         # MANDATORY
@@ -40,6 +41,7 @@ class ResonatePlayerprovider(PlayerProvider):
         # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
         return {ProviderFeature.SYNC_PLAYERS}
 
+    @override
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # OPTIONAL
@@ -50,6 +52,7 @@ class ResonatePlayerprovider(PlayerProvider):
         # such as loading configuration, setting up connections, etc.
         self.logger.info("Initializing DemoPlayerProvider with config: %s", self.config)
 
+    @override
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         # OPTIONAL
@@ -61,6 +64,7 @@ class ResonatePlayerprovider(PlayerProvider):
         self.logger.info("DemoPlayerProvider loaded")
         await self.discover_players()
 
+    @override
     async def unload(self, is_removed: bool = False) -> None:
         """
         Handle unload/close of the provider.
@@ -79,12 +83,14 @@ class ResonatePlayerprovider(PlayerProvider):
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
 
+    @override
     def on_player_enabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets enabled."""
         # OPTIONAL
         # this is an optional method that you can implement if
         # you want to do something special when a player is enabled.
 
+    @override
     def on_player_disabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets disabled."""
         # OPTIONAL
@@ -92,11 +98,13 @@ class ResonatePlayerprovider(PlayerProvider):
         # you want to do something special when a player is disabled.
         # e.g. you can stop polling the player or disconnect from it.
 
+    @override
     async def remove_player(self, player_id: str) -> None:
         """Remove a player from this provider."""
         # OPTIONAL - required only if you specified ProviderFeature.REMOVE_PLAYER
         # this is used to actually remove a player.
 
+    @override
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
