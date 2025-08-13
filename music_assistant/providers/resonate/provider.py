@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, override
 
-from aioresonate.server import ResonateServer
+from aioresonate.server import ResonateEvent, ResonateServer
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import (
@@ -25,6 +26,7 @@ class ResonateProvider(PlayerProvider):
     """Player Provider for Resonate."""
 
     server: ResonateServer
+    unsub_event_cb: Callable[[], None]
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -32,6 +34,11 @@ class ResonateProvider(PlayerProvider):
         """Initialize a new Resonate player provider."""
         super().__init__(mass, manifest, config)
         self.server = ResonateServer(self.mass.loop)
+        self.unsub_event_cb = self.server.add_event_listener(self.event_cb)
+
+    async def event_cb(self, event: ResonateEvent) -> None:
+        """Event callback registered to the resonate server."""
+        self.logger.debug("Received ResonateEvent: %s", event)
 
     @property
     @override
