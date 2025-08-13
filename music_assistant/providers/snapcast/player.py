@@ -88,7 +88,7 @@ class SnapCastPlayer(Player):
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PLAY_ANNOUNCEMENT,
         }
-        self._attr_can_group_with = {self.provider.instance_id}
+        self._attr_can_group_with = {self.provider.lookup_key}
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""

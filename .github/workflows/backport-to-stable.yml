@@ -63,12 +63,13 @@ jobs:
         id: nextver
         run: |
           git fetch origin stable --tags
-          latest_tag=$(git tag --merged origin/stable --sort=-v:refname | head -1)
+          # Filter out beta/rc tags and get only stable versions (e.g., 2.5.5, v2.5.5)
+          latest_tag=$(git tag --merged origin/stable --sort=-v:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
           if [[ -z "$latest_tag" ]]; then
-            echo "No tags found on stable branch" >&2
+            echo "No stable tags found on stable branch" >&2
             exit 1
           fi
-          echo "Latest tag: $latest_tag"
+          echo "Latest stable tag: $latest_tag"
 
           # Remove 'v' prefix if present
           version="$latest_tag"

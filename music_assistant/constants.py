@@ -11,6 +11,9 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import ConfigEntryType, ContentType, HidePlayerOption
 from music_assistant_models.media_items import AudioFormat
 
+APPLICATION_NAME: Final = "Music Assistant"
+
+
 API_SCHEMA_VERSION: Final[int] = 27
 MIN_SCHEMA_VERSION: Final[int] = 24
 
@@ -53,6 +56,7 @@ CONF_DEPRECATED_EQ_BASS: Final[str] = "eq_bass"
 CONF_DEPRECATED_EQ_MID: Final[str] = "eq_mid"
 CONF_DEPRECATED_EQ_TREBLE: Final[str] = "eq_treble"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
+CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_LOG_LEVEL: Final[str] = "log_level"
@@ -675,15 +679,15 @@ def create_sample_rates_config_entry(
 
 
 DEFAULT_STREAM_HEADERS = {
-    "Server": "Music Assistant",
+    "Server": APPLICATION_NAME,
     "transferMode.dlna.org": "Streaming",
     "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
 }
 ICY_HEADERS = {
-    "icy-name": "Music Assistant",
-    "icy-description": "Music Assistant - Your personal music assistant",
+    "icy-name": APPLICATION_NAME,
+    "icy-description": f"{APPLICATION_NAME} - Your personal music assistant",
     "icy-version": "1",
     "icy-logo": MASS_LOGO_ONLINE,
 }

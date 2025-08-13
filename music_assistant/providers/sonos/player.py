@@ -123,7 +123,9 @@ class SonosPlayer(Player):
     async def setup(self) -> None:
         """Handle setup of the player."""
         # connect the player first so we can fail early
-        self.client = SonosLocalApiClient(self.device_info.ip_address, self.mass.http_session)
+        self.client = SonosLocalApiClient(
+            self.device_info.ip_address, self.mass.http_session_no_ssl
+        )
         await self._connect(False)
 
         # collect supported features
@@ -143,7 +145,7 @@ class SonosPlayer(Player):
         )
         self._attr_device_info.model = self.discovery_info["device"]["modelDisplayName"]
         self._attr_device_info.manufacturer = self._provider.manifest.name
-        self._attr_can_group_with = {self._provider.instance_id}
+        self._attr_can_group_with = {self._provider.lookup_key}
 
         if SonosCapability.LINE_IN in self.discovery_info["device"]["capabilities"]:
             self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_LINE_IN])
@@ -582,7 +584,7 @@ class SonosPlayer(Player):
                     if x.player_id != airplay_player.player_id
                 )
             else:
-                self._attr_can_group_with = {self._provider.instance_id}
+                self._attr_can_group_with = {self._provider.lookup_key}
         else:
             # player is group child (synced to another player)
             group_parent: SonosPlayer = self.mass.players.get(
@@ -855,7 +857,7 @@ class SonosPlayer(Player):
         """Handle PLAY MEDIA using the legacy upnp api."""
         xml_data, soap_action = get_xml_soap_set_url(media)
         player_ip = self.device_info.ip_address
-        async with self.mass.http_session.post(
+        async with self.mass.http_session_no_ssl.post(
             f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
             headers={
                 "SOAPACTION": soap_action,

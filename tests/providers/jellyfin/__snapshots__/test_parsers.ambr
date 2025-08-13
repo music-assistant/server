@@ -379,6 +379,7 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'da9c458e425584680765ddc3a89cbc0c',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
@@ -478,6 +479,7 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'b5319fb11cde39fca2023184fcfa9862',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
@@ -557,6 +559,7 @@
     'favorite': False,
     'is_playable': True,
     'item_id': '54918f75ee8f6c8b8dc5efd680644f29',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
@@ -675,6 +678,7 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'fb12a77f49616a9fc56a6fab2b94174c',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,

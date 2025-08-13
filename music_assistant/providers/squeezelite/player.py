@@ -106,7 +106,7 @@ class SqueezelitePlayer(Player):
             ip_address=client.device_address,
             manufacturer=client.device_type,
         )
-        self._attr_can_group_with = {provider.instance_id}
+        self._attr_can_group_with = {provider.lookup_key}
 
     async def setup(self) -> None:
         """Set up the player."""
