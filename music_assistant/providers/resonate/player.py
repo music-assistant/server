@@ -11,18 +11,26 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
+    from aioresonate.instance import PlayerInstance
+
     from .provider import ResonateProvider
 
 
 class ResonatePlayer(Player):
     """A resonate audio player in Music Assistant."""
 
+    player: PlayerInstance
+
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
+        player = provider.server.get_player(player_id)
+        assert player is not None
+        self.player = player
+
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
-        self._attr_name = f"Demo Player {player_id}"
+        self._attr_name = player.name
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = set()
         self._attr_power_control = PLAYER_CONTROL_NONE
