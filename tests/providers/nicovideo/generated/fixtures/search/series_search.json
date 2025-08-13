@@ -1,0 +1,26 @@
+{
+  "searchId": "f19193ff-5ad7-492d-88b8-1209162b67ea",
+  "totalCount": 1,
+  "hasNext": false,
+  "items": [
+    {
+      "id": 527007,
+      "type": "series",
+      "title": "テストシリーズ68461151-527007",
+      "description": "テストシリーズの説明文",
+      "thumbnailUrl": "https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.M",
+      "videoCount": 1,
+      "owner": {
+        "ownerType": "user",
+        "type": "user",
+        "visibility": "visible",
+        "id": "68461151",
+        "name": "ゲスト",
+        "iconUrl": "https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg"
+      },
+      "isMuted": false,
+      "isFollowing": false,
+      "followerCount": 1
+    }
+  ]
+}

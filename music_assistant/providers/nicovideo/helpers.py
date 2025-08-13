@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from mashumaro import DataClassDictMixin
+from music_assistant_models.media_items import (  # noqa: TC002 - Used by DataClassDictMixin
+    Album,
+    Playlist,
+    Track,
+)
 
 from music_assistant.constants import (
     CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
@@ -12,28 +20,25 @@ from music_assistant.constants import (
 if TYPE_CHECKING:
     import logging
 
-    from music_assistant_models.media_items import Album, Playlist, Track
     from requests.cookies import RequestsCookieJar
 
     from music_assistant.models.music_provider import MusicProvider
 
 
-class PlaylistWithTracks:
+@dataclass
+class PlaylistWithTracks(DataClassDictMixin):
     """Helper class to hold playlist and its tracks."""
 
-    def __init__(self, playlist: Playlist, tracks: list[Track]) -> None:
-        """Initialize with playlist and its tracks."""
-        self.playlist = playlist
-        self.tracks = tracks
+    playlist: Playlist
+    tracks: list[Track]
 
 
-class AlbumWithTracks:
+@dataclass
+class AlbumWithTracks(DataClassDictMixin):
     """Helper class to hold album and its tracks."""
 
-    def __init__(self, album: Album, tracks: list[Track]) -> None:
-        """Initialize with album and its tracks."""
-        self.album = album
-        self.tracks = tracks
+    album: Album
+    tracks: list[Track]
 
 
 def convert_to_netscape(cookie: RequestsCookieJar, domain: str) -> str:

@@ -1,0 +1,26 @@
+{
+  "searchId": "d547dfd3-e6b0-4408-af85-e9f15844d3d7",
+  "totalCount": 1,
+  "hasNext": false,
+  "items": [
+    {
+      "id": 78597499,
+      "type": "mylist",
+      "title": "テストマイリスト68461151-78597499",
+      "description": "マイリスト説明テスト",
+      "thumbnailUrl": "https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.M",
+      "videoCount": 1,
+      "owner": {
+        "ownerType": "user",
+        "type": "user",
+        "visibility": "visible",
+        "id": "68461151",
+        "name": "ゲスト",
+        "iconUrl": "https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg"
+      },
+      "isMuted": false,
+      "isFollowing": true,
+      "followerCount": 1
+    }
+  ]
+}

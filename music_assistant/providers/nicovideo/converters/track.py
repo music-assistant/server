@@ -216,15 +216,9 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         # Add tag information as genres
         if watch_data.tag and watch_data.tag.items:
             # Extract tag names from tag items and create genres set
-            tag_names = []
+            tag_names: list[str] = []
             for tag_item in watch_data.tag.items:
-                # Tag items might be Tag objects or dictionaries
-                if hasattr(tag_item, "name"):
-                    tag_names.append(tag_item.name)
-                elif isinstance(tag_item, dict) and "name" in tag_item:
-                    tag_names.append(tag_item["name"])
-                elif isinstance(tag_item, str):
-                    tag_names.append(tag_item)
+                tag_names.append(tag_item.name)
 
             if tag_names:
                 metadata.genres = set(tag_names)

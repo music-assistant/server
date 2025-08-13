@@ -157,24 +157,18 @@ class NicovideoUserService(NicovideoBaseService):
         """Get latest activities from followed users."""
         feed_data = await self.service_manager._call_with_throttler(
             self.service_manager.niconico_py_client.user.get_following_activities,
+            endpoint="video",
             context="header_timeline",
             cursor=None,
         )
 
-        if not feed_data or not hasattr(feed_data, "activities"):
+        if not feed_data:
             return []
 
         # Collect video IDs first
         video_ids = []
         for activity in feed_data.activities:
-            if (
-                hasattr(activity, "content")
-                and activity.content
-                and hasattr(activity.content, "video")
-                and activity.content.video
-                and hasattr(activity, "kind")
-                and "video" in activity.kind.lower()
-            ):
+            if activity.content and activity.content.video and "video" in activity.kind.lower():
                 video_ids.append(activity.content.id_)
                 if len(video_ids) >= limit:
                     break
@@ -224,12 +218,10 @@ class NicovideoUserService(NicovideoBaseService):
 
         # Extract users from followings data and convert to Artist objects
         artists: list[Artist] = []
-        if hasattr(followings_data, "items"):
-            for item in followings_data.items:
-                if hasattr(item, "user") and item.user:
-                    artist = self.converter_manager.artist.convert_by_owner_or_user(item.user)
-                    if artist:
-                        artists.append(artist)
+        for item in followings_data.items:
+            artist = self.converter_manager.artist.convert_by_owner_or_user(item)
+            if artist:
+                artists.append(artist)
 
         return artists
 
@@ -255,6 +247,6 @@ class NicovideoUserService(NicovideoBaseService):
 
         playlists = []
         for mylist in following_mylists_data.mylists:
-            playlist = self.converter_manager.playlist.convert_following_by_mylist(mylist.detail)
+            playlist = self.converter_manager.playlist.convert_following_by_mylist(mylist)
             playlists.append(playlist)
         return playlists

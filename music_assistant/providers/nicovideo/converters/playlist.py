@@ -18,6 +18,7 @@ from music_assistant.providers.nicovideo.converters.base import NicovideoConvert
 from music_assistant.providers.nicovideo.helpers import PlaylistWithTracks
 
 if TYPE_CHECKING:
+    from niconico.objects.nvapi import FollowingMylistItem
     from niconico.objects.user import UserMylistItem
     from niconico.objects.video import Mylist
 
@@ -34,7 +35,7 @@ class NicovideoPlaylistConverter(NicovideoConverterBase):
             owner=mylist.owner.id_ or "",
             is_editable=True,  # Own mylists are editable by default
             metadata=MediaItemMetadata(
-                description=getattr(mylist, "description", ""),
+                description=mylist.description,
                 links={
                     MediaItemLink(
                         type=LinkType.WEBSITE,
@@ -58,11 +59,9 @@ class NicovideoPlaylistConverter(NicovideoConverterBase):
             )
         return playlist
 
-    def convert_following_by_mylist(
-        self, mylist: UserMylistItem | Mylist | EssentialMylist
-    ) -> Playlist:
+    def convert_following_by_mylist(self, mylist: FollowingMylistItem) -> Playlist:
         """Convert a nicovideo UserMylistItem from following users into a read-only Playlist."""
-        playlist = self.convert_by_mylist(mylist)
+        playlist = self.convert_by_mylist(mylist.detail)
         # Mark following mylists as non-editable
         playlist.is_editable = False
         return playlist

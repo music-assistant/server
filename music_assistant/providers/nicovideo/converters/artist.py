@@ -9,30 +9,36 @@ from music_assistant_models.media_items import (
     MediaItemLink,
     MediaItemMetadata,
 )
-from niconico.objects.user import NicoUser
+from niconico.objects.user import NicoUser, RelationshipUser
 from niconico.objects.video import Owner
 
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
-from music_assistant.providers.nicovideo.converters.utilities import NicovideoUrlPath
+from music_assistant.providers.nicovideo.converters.helper import NicovideoUrlPath
 
 
 class NicovideoArtistConverter(NicovideoConverterBase):
     """Handles artist conversion for nicovideo."""
 
-    def convert_by_owner_or_user(self, owner_or_user: Owner | NicoUser) -> Artist:
-        """Convert an Owner or NicoUser into an Artist."""
+    def convert_by_owner_or_user(
+        self, owner_or_user: Owner | NicoUser | RelationshipUser
+    ) -> Artist:
+        """Convert an Owner, NicoUser, or RelationshipUser into an Artist."""
         item_id = str(owner_or_user.id_)
-        name = str(
-            owner_or_user.name if isinstance(owner_or_user, Owner) else owner_or_user.nickname
-        )
-        icon_url = (
-            owner_or_user.icon_url
-            if isinstance(owner_or_user, Owner)
-            else owner_or_user.icons.large
-        )
+
+        # Handle name extraction for different types
+        if isinstance(owner_or_user, Owner):
+            name = str(owner_or_user.name)
+        else:  # NicoUser or RelationshipUser
+            name = str(owner_or_user.nickname)
+
+        # Handle icon URL extraction for different types
+        if isinstance(owner_or_user, Owner):
+            icon_url = owner_or_user.icon_url
+        else:  # NicoUser or RelationshipUser
+            icon_url = owner_or_user.icons.large
 
         # Determine URL path based on owner type
-        url_path: NicovideoUrlPath = "user"  # Default for users and NicoUser
+        url_path: NicovideoUrlPath = "user"  # Default for users, NicoUser, and RelationshipUser
         if isinstance(owner_or_user, Owner) and owner_or_user.owner_type == "channel":
             url_path = "channel"
 
@@ -42,7 +48,7 @@ class NicovideoArtistConverter(NicovideoConverterBase):
             name=name,
             metadata=MediaItemMetadata(
                 description=owner_or_user.description
-                if isinstance(owner_or_user, NicoUser)
+                if isinstance(owner_or_user, (NicoUser, RelationshipUser))
                 else None,
             ),
             provider_mappings=self.helper.create_provider_mapping(
