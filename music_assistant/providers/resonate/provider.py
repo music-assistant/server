@@ -4,13 +4,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, override
 
+from aioresonate.server import ResonateServer
 from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
 
-from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
+from music_assistant.helpers.util import (
+    get_port_from_zeroconf,
+    get_primary_ip_address_from_zeroconf,
+)
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -30,6 +37,15 @@ class ResonatePlayerprovider(PlayerProvider):
     In most cases its not needed to override any of the builtin methods and you only
     implement the abc methods with your actual implementation.
     """
+
+    server: ResonateServer
+
+    def __init__(
+        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> None:
+        """Initialize a new Resonate player provider."""
+        super().__init__(mass, manifest, config)
+        self.server = ResonateServer(self.mass.loop)
 
     @property
     @override
@@ -109,57 +125,20 @@ class ResonatePlayerprovider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
-        # MANDATORY IF YOU WANT TO USE MDNS DISCOVERY
-        # OPTIONAL if you dont use mdns for discovery of players
-        # If you specify a mdns service type in the manifest.json, this method will be called
-        # automatically on mdns changes for the specified service type.
-
-        # If no mdns service type is specified, this method is omitted and you
-        # can completely remove it from your provider implementation.
-
+        if state_change == ServiceStateChange.Removed:
+            # we don't listen for removed players here.
+            # instead we just wait for the player connection to fail
+            return
         if not info:
             return  # guard
 
-        # NOTE: If you do not use mdns for discovery of players on the network,
-        # you must implement your own discovery mechanism and logic to add new players
-        # and update them on state changes when needed.
-        # Below is a bit of example implementation but we advise to look at existing
-        # player providers for more inspiration.
         name = name.split("@", 1)[1] if "@" in name else name
-        player_id = info.decoded_properties["uuid"]  # this is just an example!
-        if not player_id:
-            return  # guard, we need a player_id to work with
+        if path := info.properties.get(b"path"):
+            ip = get_primary_ip_address_from_zeroconf(info)
+            assert ip
+            url = "ws://" + ip + ":" + str(get_port_from_zeroconf(info)) + path.decode()
 
-        # handle removed player
-        if state_change == ServiceStateChange.Removed:
-            # check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get(player_id):
-                # the player has become unavailable
-                self.logger.debug("Player offline: %s", mass_player.display_name)
-                await self.mass.players.unregister(player_id)
-            return
-        # handle update for existing device
-        # (state change is either updated or added)
-        # check if we have an existing player in the player manager
-        # note that you can use this point to update the player connection info
-        # if that changed (e.g. ip address)
-        if mass_player := self.mass.players.get(player_id):
-            # existing player found in the player manager,
-            # this is an existing player that has been updated/reconnected
-            # or simply a re-announcement on mdns.
-            cur_address = get_primary_ip_address_from_zeroconf(info)
-            if cur_address and cur_address != mass_player.device_info.ip_address:
-                self.logger.debug(
-                    "Address updated to %s for player %s", cur_address, mass_player.display_name
-                )
-            # inform the player manager of any changes to the player object
-            # note that you would normally call this from some other callback from
-            # the player's native api/library which informs you of changes in the player state.
-            # as a last resort you can also choose to let the player manager
-            # poll the player for state changes
-            mass_player.update_state()
-            return
-        # handle new player
-        self.logger.debug("Discovered device %s on %s", name, cur_address)
-        # your own connection logic will probably be implemented here where
-        # you connect to the player etc. using your device/provider specific library.
+            self.logger.debug("Discovered resonate player, connecting to %s", url)
+            _ = await self.server.connect_to_player(url)
+        # player_id = info.decoded_properties["player_id"]
+        # TODO add player discovery handling here
