@@ -314,9 +314,9 @@ class MetaDataController(CoreController):
         if isinstance(media_item, ItemMapping):
             # Check if the ItemMapping already has an image - avoid expensive API call
             if media_item.image and media_item.image.type == img_type:
-                if media_item.image.remotely_accessible and resolve:
+                if not media_item.image.remotely_accessible and resolve:
                     return self.get_image_url(media_item.image)
-                elif not media_item.image.remotely_accessible:
+                else:
                     return media_item.image.path
 
             # Only retrieve full item if we don't have the image we need
