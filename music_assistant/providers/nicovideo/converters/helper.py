@@ -9,7 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping, ProviderMapping
+from music_assistant_models.media_items import Artist, ItemMapping, ProviderMapping
+from music_assistant_models.unique_list import UniqueList
 from niconico.objects.user import NicoUser
 
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
@@ -51,21 +52,30 @@ class NicovideoConverterHelper(NicovideoConverterBase):
             name=album_name,
         )
 
-    def create_artist_mapping(self, owner_or_user: Owner | NicoUser) -> ItemMapping:
+    def create_artist_mapping(
+        self, owner_or_user: Owner | NicoUser
+    ) -> UniqueList[Artist | ItemMapping]:
         """Create an ItemMapping for artist references without full metadata."""
         # Handle different object types for ID and name
         if isinstance(owner_or_user, NicoUser):
             item_id = str(owner_or_user.id_)
             name = owner_or_user.nickname
         else:  # Owner
-            item_id = str(owner_or_user.id_) if owner_or_user.id_ else ""
+            # Skip Owner objects without valid ID to avoid AssertionError
+            if not owner_or_user.id_:
+                return UniqueList()
+            item_id = str(owner_or_user.id_)
             name = owner_or_user.name if owner_or_user.name else ""
 
-        return ItemMapping(
-            media_type=MediaType.ARTIST,
-            item_id=item_id,
-            provider=self.provider.lookup_key,
-            name=name,
+        return UniqueList[Artist | ItemMapping](
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=item_id,
+                    provider=self.provider.lookup_key,
+                    name=name,
+                )
+            ]
         )
 
     # ProviderMapping creation methods

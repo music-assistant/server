@@ -50,7 +50,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             provider=self.provider.lookup_key,
             name=video.title,
             duration=video.duration,
-            artists=UniqueList([self.helper.create_artist_mapping(video.owner)]),
+            artists=self.helper.create_artist_mapping(video.owner),
             # Videos that cannot be played will have a duration of 0.
             is_playable=video.duration > 0 and not video.is_payment_required,
             metadata=self._create_track_metadata(
@@ -114,7 +114,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             provider=self.provider.lookup_key,
             name=video.title,
             duration=video.duration,
-            artists=UniqueList([self.helper.create_artist_mapping(owner)]),
+            artists=self.helper.create_artist_mapping(owner),
             # Videos that cannot be played will have a duration of 0.
             is_playable=video.duration > 0 and not video.is_authentication_required,
             metadata=self._create_track_metadata_from_watch_video(
