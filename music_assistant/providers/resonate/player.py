@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, override
 
+from aioresonate.group import AudioFormat as ResonateAudioFormat
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import PlaybackState, PlayerType
+from music_assistant_models.enums import ContentType, PlaybackState, PlayerType
+from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.models.player import Player, PlayerMedia
@@ -59,6 +61,27 @@ class ResonatePlayer(Player):
         )
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_active_source = media.queue_id
+
+        pcm_format = AudioFormat(
+            content_type=ContentType.PCM_S16LE,
+            sample_rate=48000,
+            bit_depth=16,
+            channels=2,
+        )
+
+        queue = self.mass.player_queues.get(self.player_id)
+        assert queue
+        assert media.queue_id
+        queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+        assert queue_item
+
+        await self.player.group.play_media(
+            self.mass.streams.get_queue_flow_stream(
+                queue=queue, start_queue_item=queue_item, pcm_format=pcm_format
+            ),
+            ResonateAudioFormat(pcm_format.sample_rate, pcm_format.bit_depth, pcm_format.channels),
+        )
         self.update_state()
 
     @override
