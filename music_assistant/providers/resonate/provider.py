@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, override
 
 from aioresonate.server import PlayerAddedEvent, PlayerRemovedEvent, ResonateEvent, ResonateServer
+from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import (
@@ -18,7 +19,6 @@ from music_assistant.providers.resonate.player import ResonatePlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -55,7 +55,7 @@ class ResonateProvider(PlayerProvider):
     @override
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        return set()
+        return {ProviderFeature.SYNC_PLAYERS}
 
     @override
     async def unload(self, is_removed: bool = False) -> None:

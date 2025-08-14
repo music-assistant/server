@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 from aioresonate.group import AudioFormat as ResonateAudioFormat
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import ContentType, PlaybackState, PlayerType
+from music_assistant_models.enums import ContentType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo
 
@@ -34,7 +34,8 @@ class ResonatePlayer(Player):
         # init some static variables
         self._attr_name = player.name
         self._attr_type = PlayerType.PLAYER
-        self._attr_supported_features = set()
+        self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        self._attr_can_group_with = {provider.lookup_key}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._attr_device_info = DeviceInfo()
         self._set_attributes()
@@ -77,6 +78,24 @@ class ResonatePlayer(Player):
             ResonateAudioFormat(pcm_format.sample_rate, pcm_format.bit_depth, pcm_format.channels),
         )
         self.update_state()
+
+    @override
+    async def set_members(
+        self,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
+        """Handle SET_MEMBERS command on the player."""
+        if player_ids_to_remove is not None:
+            for player_id in player_ids_to_remove:
+                player = self.mass.players.get(player_id, True)
+                player = cast("ResonatePlayer", player)  # For type checking
+                self.player.group.remove_player(player.player)
+        if player_ids_to_add is not None:
+            for player_id in player_ids_to_add:
+                player = self.mass.players.get(player_id, True)
+                player = cast("ResonatePlayer", player)  # For type checking
+                self.player.group.add_player(player.player)
 
     @override
     async def on_unload(self) -> None:
