@@ -87,6 +87,7 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
+CONF_AUTO_FAVORITE_STREAMING_LIBRARY = "auto_favorite_streaming_library"
 DB_SCHEMA_VERSION: Final[int] = 18
 
 
@@ -140,6 +141,17 @@ class MusicController(CoreController):
                 label="Add item to the library as soon as its played",
                 description="Automatically add a track or radio station to "
                 "the library when played (if its not already in the library).",
+            ),
+            ConfigEntry(
+                key=CONF_AUTO_FAVORITE_STREAMING_LIBRARY,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                label="Mark all streaming provider library items as favorites",
+                description="If enabled, all items when initially imported from your streaming provider "
+                "libraries (Spotify Liked Songs, YouTube Music library, Tidal My Collection, etc.) "
+                "will be automatically marked as favorites in Music Assistant. If disabled, "
+                "items will be imported into your Music Assistant library but not marked "
+                "as a favorite.",
             ),
             ConfigEntry(
                 key=CONF_RESET_DB,
