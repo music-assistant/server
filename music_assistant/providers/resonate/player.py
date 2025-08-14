@@ -40,13 +40,6 @@ class ResonatePlayer(Player):
         self._set_attributes()
 
     @override
-    async def play(self) -> None:
-        """Play command."""
-        self.logger.info("Received PLAY command on player %s", self.display_name)
-        self._attr_playback_state = PlaybackState.PLAYING
-        self.update_state()
-
-    @override
     async def stop(self) -> None:
         """Stop command."""
         self.logger.info("Received STOP command on player %s", self.display_name)
