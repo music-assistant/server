@@ -1,5 +1,5 @@
 {
-  "searchId": "ecbdbe1c-6d1e-48a8-8f38-f04d1c92c599",
+  "searchId": "dummy-search-id-for-testing",
   "keyword": null,
   "tag": "APIテストタグ68461151-45285955",
   "genres": [],
@@ -10,7 +10,7 @@
       "type": "essential",
       "id": "sm45285955",
       "title": "APIテスト用",
-      "registeredAt": "2025-08-13T17:37:03+09:00",
+      "registeredAt": "2025-01-01T00:00:00+09:00",
       "count": {
         "view": 1,
         "comment": 1,

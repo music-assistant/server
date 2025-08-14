@@ -1,5 +1,5 @@
 {
-  "searchId": "d547dfd3-e6b0-4408-af85-e9f15844d3d7",
+  "searchId": "dummy-search-id-for-testing",
   "totalCount": 1,
   "hasNext": false,
   "items": [
@@ -8,7 +8,7 @@
       "type": "mylist",
       "title": "テストマイリスト68461151-78597499",
       "description": "This is a dummy description for testing purposes.",
-      "thumbnailUrl": "https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.M",
+      "thumbnailUrl": "https://resource.video.nimg.jp/web/img/series/no_thumbnail.png",
       "videoCount": 1,
       "owner": {
         "ownerType": "user",

@@ -26,3 +26,4 @@ DUMMY_TRACK_ID = "dummy_track_id_for_testing"
 DUMMY_JWT_TOKEN = "dummy.jwt.token.for.testing"
 DUMMY_THUMBNAIL_URL = "https://resource.video.nimg.jp/web/img/series/no_thumbnail.png"
 DUMMY_IS_PEAK_TIME = False
+DUMMY_PLAYBACK_POSITION = 0.0

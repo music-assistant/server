@@ -15,6 +15,7 @@ from tests.providers.nicovideo.constants import (
     DUMMY_IS_PEAK_TIME,
     DUMMY_JWT_TOKEN,
     DUMMY_NICOSID,
+    DUMMY_PLAYBACK_POSITION,
     DUMMY_SEARCH_ID,
     DUMMY_THUMBNAIL_URL,
     DUMMY_TRACK_ID,
@@ -120,6 +121,7 @@ def _stabilize_model_counts[T: BaseModel](data: T) -> T:
     # For Pydantic models, create a copy and update fields
     data_dict = data.model_dump(by_alias=True)
     stabilized_dict = _stabilize_count_values(data_dict)
+    stabilized_dict = _stabilize_dynamic_field_values(stabilized_dict)
     return data.__class__.model_validate(stabilized_dict)
 
 
@@ -143,6 +145,8 @@ def _stabilize_dynamic_field_values(data: JsonValue) -> JsonValue:
                 stabilized[key] = DUMMY_IS_PEAK_TIME
             elif key == "thumbnailUrl":
                 stabilized[key] = DUMMY_THUMBNAIL_URL
+            elif key == "playbackPosition":
+                stabilized[key] = DUMMY_PLAYBACK_POSITION
             elif key in ("threadKey", "accessRightKey", "editKey"):
                 stabilized[key] = DUMMY_JWT_TOKEN
             elif key == "views" and isinstance(value, int):

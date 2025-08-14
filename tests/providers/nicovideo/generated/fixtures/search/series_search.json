@@ -1,5 +1,5 @@
 {
-  "searchId": "f19193ff-5ad7-492d-88b8-1209162b67ea",
+  "searchId": "dummy-search-id-for-testing",
   "totalCount": 1,
   "hasNext": false,
   "items": [
@@ -8,7 +8,7 @@
       "type": "series",
       "title": "テストシリーズ68461151-527007",
       "description": "This is a dummy description for testing purposes.",
-      "thumbnailUrl": "https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.M",
+      "thumbnailUrl": "https://resource.video.nimg.jp/web/img/series/no_thumbnail.png",
       "videoCount": 1,
       "owner": {
         "ownerType": "user",

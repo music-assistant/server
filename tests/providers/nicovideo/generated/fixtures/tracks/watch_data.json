@@ -3,9 +3,9 @@
   "category": null,
   "channel": null,
   "client": {
-    "nicosid": "1755080489.1536008431",
+    "nicosid": "dummy_nicosid_for_testing",
     "watchId": "sm45285955",
-    "watchTrackId": "oIXJ5LNgYX_1755080492925"
+    "watchTrackId": "dummy_track_id_for_testing"
   },
   "comment": {
     "layers": [
@@ -107,7 +107,7 @@
     },
     "isAttentionRequired": false,
     "nvComment": {
-      "threadKey": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJqdGkiOiI2ODljNjcyZDAwNGU2IiwiZXhwIjoxNzU1MDgwNTUzLjAwMTIyMzA4NzMxMDc5MTAxNTYyNSwidHlwIjoiVGhyZWFkLUtleSIsImQiOjIsInRpZHMiOlsiMTc1NTA3NDIyNCJdLCJmMTg0cyI6W10sInVpZCI6IjY4NDYxMTUxIn0.e7iwXRJuCTBBX9X4mnL9Gi8cbANI7hQaK-S702Ll27t1HIZIFgODH1uQU0tzdUZtkHGJhEGOxwYPSXX-dHUrhA",
+      "threadKey": "dummy.jwt.token.for.testing",
       "server": "https://public.nvcomment.nicovideo.jp",
       "params": {
         "targets": [
@@ -334,7 +334,7 @@
         }
       ],
       "isStoryboardAvailable": true,
-      "accessRightKey": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJqdGkiOiI2ODljNjcyZDAwZTZjIiwiZXhwIjoxNzU1MDgxMDkyLjk0OTE0Njk4NjAwNzY5MDQyOTY4NzUsInR5cCI6IkFjY2Vzcy1SaWdodC1LZXkiLCJ2aWQiOiJzbTQ1Mjg1OTU1IiwicmlkIjoibmljb3ZpZGVvLXNtNDUyODU5NTUiLCJmaWQiOjYsInVpZCI6IjY4NDYxMTUxIiwiZCI6MiwidiI6WyJ2aWRlby1oMjY0LTEwODBwIiwidmlkZW8taDI2NC03MjBwIiwidmlkZW8taDI2NC00ODBwIiwidmlkZW8taDI2NC0zNjBwIiwidmlkZW8taDI2NC0xNDRwIl0sImEiOlsiYXVkaW8tYWFjLTE5MmticHMiLCJhdWRpby1hYWMtNjRrYnBzIl0sInMiOnRydWUsInNoIjpmYWxzZX0.RBej5RxvrzD_rfN-a8PFbm7fAu3dzums0GIDcrNUc7X8En7p7vX2JZJLN_gpZgSmHk22JgXVxFF3cnzMY4Okbw"
+      "accessRightKey": "dummy.jwt.token.for.testing"
     },
     "delivery": null,
     "deliveryLegacy": null
@@ -413,7 +413,7 @@
         "type": "essential",
         "id": "sm45285955",
         "title": "APIテスト用",
-        "registeredAt": "2025-08-13T17:37:03+09:00",
+        "registeredAt": "2025-01-01T00:00:00+09:00",
         "count": {
           "view": 1,
           "comment": 1,
@@ -449,8 +449,8 @@
   },
   "smartphone": null,
   "system": {
-    "serverTime": "2025-08-13T19:21:32+09:00",
-    "isPeakTime": true,
+    "serverTime": "2025-01-01T00:00:00+09:00",
+    "isPeakTime": false,
     "isStellaAlive": true
   },
   "tag": {
@@ -482,12 +482,12 @@
     "edit": {
       "isEditable": true,
       "uneditableReason": null,
-      "editKey": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJqdGkiOiI2ODljNjcyY2VkZmQwIiwiZXhwIjoxNzU1MDgyMjkyLjk3NDc1MTk0OTMxMDMwMjczNDM3NSwidHlwIjoiVGFnLUVkaXQtS2V5IiwidmlkIjoic200NTI4NTk1NSIsInRpZCI6IjE3NTUwNzQyMjQiLCJ1aWQiOjY4NDYxMTUxfQ.XOmttRoYqCLASX64mAQjjt43IdBnenk-29hKza-J5IVWgA24m_WmWuFzi-45I038NieaUrnziVORR0oQZ3titg"
+      "editKey": "dummy.jwt.token.for.testing"
     },
     "viewer": {
       "isEditable": true,
       "uneditableReason": null,
-      "editKey": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJqdGkiOiI2ODljNjcyY2VlMDU1IiwiZXhwIjoxNzU1MDgyMjkyLjk3NDkyNzkwMjIyMTY3OTY4NzUsInR5cCI6IlRhZy1FZGl0LUtleSIsInZpZCI6InNtNDUyODU5NTUiLCJ0aWQiOiIxNzU1MDc0MjI0IiwidWlkIjo2ODQ2MTE1MX0.jnpBKS89foTAOmJRYK0ZYHVfFNeRD0z2he8gCrnfQZKnhhnruOhyHoZWe4Vh53duZ9fkudH6yjgfabd0YPtWvQ"
+      "editKey": "dummy.jwt.token.for.testing"
     }
   },
   "video": {
@@ -511,7 +511,7 @@
     "rating": {
       "isAdult": false
     },
-    "registeredAt": "2025-08-13T17:37:03+09:00",
+    "registeredAt": "2025-01-01T00:00:00+09:00",
     "isPrivate": false,
     "isDeleted": false,
     "isNoBanner": false,
@@ -535,9 +535,9 @@
       "isAdultRatingNG": false,
       "isAuthenticationRequired": false,
       "isR18": false,
-      "nicosid": "1755080489.1536008431",
+      "nicosid": "dummy_nicosid_for_testing",
       "lang": "ja-jp",
-      "watchTrackId": "oIXJ5LNgYX_1755080492925",
+      "watchTrackId": "dummy_track_id_for_testing",
       "genre": "other",
       "gender": "4",
       "age": 65
