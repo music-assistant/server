@@ -44,6 +44,7 @@ class ResonatePlayer(Player):
         """Stop command."""
         self.logger.info("Received STOP command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
+        self.player.group.stop()
         self.update_state()
 
     @override
