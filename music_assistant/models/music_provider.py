@@ -728,9 +728,11 @@ class MusicProvider(Provider):
                     # note that we skip the metadata lookup purely to speed up the sync
                     # the additional metadata is then lazy retrieved afterwards
                     if self.is_streaming_provider:
-                        auto_favorite_streaming = bool(self.mass.config.get_raw_core_config_value(
-                            "music", "auto_favorite_streaming_library", False
-                        ))
+                        auto_favorite_streaming = bool(
+                            self.mass.config.get_raw_core_config_value(
+                                "music", "auto_favorite_streaming_library", False
+                            )
+                        )
                         prov_item.favorite = auto_favorite_streaming
 
                     # all isinstance(...) for type checking. The statement
@@ -879,6 +881,8 @@ class MusicProvider(Provider):
             return ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
         if media_type == MediaType.AUDIOBOOK:
             return ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT in self.supported_features
+        if media_type == MediaType.PODCAST:
+            return ProviderFeature.LIBRARY_PODCASTS_EDIT in self.supported_features
         return False
 
     def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType, None]:
