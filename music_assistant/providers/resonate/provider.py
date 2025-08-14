@@ -63,6 +63,7 @@ class ResonateProvider(PlayerProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
+        self.unsub_event_cb()
         for player in self.players:
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
