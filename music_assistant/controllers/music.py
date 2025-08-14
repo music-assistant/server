@@ -146,7 +146,7 @@ class MusicController(CoreController):
                 key=CONF_AUTO_FAVORITE_STREAMING_LIBRARY,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                label="Mark all streaming provider library items as favorites",
+                label="Mark all streaming library items as favorites",
                 description="If enabled, all items when initially imported from your "
                 "streaming provider libraries (Spotify Liked Songs, YouTube Music library, "
                 "Tidal My Collection, etc.)  will be automatically marked as favorites "
