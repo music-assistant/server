@@ -68,7 +68,7 @@
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'テストシリーズの説明文',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
       'images': None,
@@ -189,7 +189,7 @@
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'テストシリーズの説明文',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
       'images': None,
@@ -310,7 +310,7 @@
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'テストシリーズの説明文',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
       'images': None,
@@ -442,7 +442,7 @@
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': '',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
       'images': list([
@@ -527,11 +527,12 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'sm45285955',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'APIテスト68461151-45285955テストテストテストテストテストテストテストテストテスト',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
       'images': list([
@@ -623,11 +624,12 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'sm45285955',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'APIテスト68461151-45285955テストテストテストテストテストテストテストテストテスト',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
       'images': list([
@@ -705,7 +707,7 @@
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'マイリスト説明テスト',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
       'images': list([
@@ -777,7 +779,7 @@
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'マイリスト説明テスト',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
       'images': list([
@@ -850,7 +852,7 @@
       'metadata': dict({
         'chapters': None,
         'copyright': None,
-        'description': 'マイリスト説明テスト',
+        'description': 'This is a dummy description for testing purposes.',
         'explicit': None,
         'genres': None,
         'images': list([
@@ -935,11 +937,12 @@
         'favorite': False,
         'is_playable': True,
         'item_id': 'sm45285955',
+        'last_played': 0,
         'media_type': 'track',
         'metadata': dict({
           'chapters': None,
           'copyright': None,
-          'description': 'APIテスト68461151-45285955テストテストテストテストテストテストテストテストテスト',
+          'description': 'This is a dummy description for testing purposes.',
           'explicit': False,
           'genres': None,
           'images': list([
@@ -1019,7 +1022,7 @@
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'マイリスト説明テスト',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
       'images': list([
@@ -1147,7 +1150,7 @@
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'テストシリーズの説明文',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
       'images': list([
@@ -1233,11 +1236,12 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'sm45285955',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'APIテスト68461151-45285955テストテストテストテストテストテストテストテストテスト',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
       'images': list([
@@ -1329,11 +1333,12 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'sm45285955',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'APIテスト68461151-45285955テストテストテストテストテストテストテストテストテスト',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
       'images': list([
@@ -1425,11 +1430,12 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'sm45285955',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'APIテスト68461151-45285955テストテストテストテストテストテストテストテストテスト',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
       'images': list([
@@ -1521,11 +1527,12 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'sm45285955',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'APIテスト68461151-45285955テストテストテストテストテストテストテストテストテスト',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
       'images': list([
@@ -1631,11 +1638,12 @@
     'favorite': False,
     'is_playable': True,
     'item_id': 'sm45285955',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
       'copyright': None,
-      'description': 'APIテスト68461151-45285955<br><span style="font-size: 10px;">テスト</span>テスト<span style="font-size: 16px;">テスト</span><span style="font-size: 18px;">テスト</span><span style="font-size: 24px;">テスト</span><br><strong>テスト</strong><i>テスト</i><u>テスト</u><s>テスト</s><span style="color: #980000;">テスト</span><span style="color: #ff9900;">テスト</span><span style="color: #00ff00;">テスト</span><span style="color: #00ffff;">テスト</span><br>',
+      'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': list([
         'APIテストタグ68461151-45285955',
