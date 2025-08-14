@@ -728,9 +728,9 @@ class MusicProvider(Provider):
                     # note that we skip the metadata lookup purely to speed up the sync
                     # the additional metadata is then lazy retrieved afterwards
                     if self.is_streaming_provider:
-                        auto_favorite_streaming = self.mass.config.get_raw_core_config_value(
+                        auto_favorite_streaming = bool(self.mass.config.get_raw_core_config_value(
                             "music", "auto_favorite_streaming_library", False
-                        )
+                        ))
                         prov_item.favorite = auto_favorite_streaming
 
                     # all isinstance(...) for type checking. The statement
