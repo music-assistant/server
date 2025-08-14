@@ -145,7 +145,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
             name, description="Created by Music Assistant", is_public=False
         )
 
-        if not create_result or not hasattr(create_result, "mylist"):
+        if not create_result:
             raise MediaNotFoundError(f"Failed to create playlist '{name}' on nicovideo.")
 
         # Get the created mylist details

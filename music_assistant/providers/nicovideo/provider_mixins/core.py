@@ -77,11 +77,10 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
     async def unload_for_mixin(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         try:
-            if hasattr(self, "_nicovideo_adapter") and self._service_manager:
-                # Stop the periodic relogin task
-                self.service_manager.auth.stop_periodic_relogin_task()
-                # Logout from niconico
-                await self.service_manager.auth.try_logout()
-                self.logger.debug("nicovideo provider unloaded successfully")
+            # Stop the periodic relogin task
+            self.service_manager.auth.stop_periodic_relogin_task()
+            # Logout from niconico
+            await self.service_manager.auth.try_logout()
+            self.logger.debug("nicovideo provider unloaded successfully")
         except Exception as err:
             self.logger.warning("Error during nicovideo provider unload: %s", err)
