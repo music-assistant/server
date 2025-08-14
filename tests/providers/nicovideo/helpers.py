@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import warnings
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
 from unittest.mock import Mock
 
@@ -29,6 +30,14 @@ if TYPE_CHECKING:
 from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
 
 T = TypeVar("T")
+
+
+@dataclass
+class StabilizationContext:
+    """Context for field stabilization processing."""
+
+    in_count_property: bool = False
+    field_path: list[str] = field(default_factory=list)
 
 
 def create_converter_manager() -> NicovideoConverterManager:
@@ -120,17 +129,26 @@ def _stabilize_model_counts[T: BaseModel](data: T) -> T:
     """Stabilize count values in a single Pydantic model."""
     # For Pydantic models, create a copy and update fields
     data_dict = data.model_dump(by_alias=True)
-    stabilized_dict = _stabilize_count_values(data_dict)
-    stabilized_dict = _stabilize_dynamic_field_values(stabilized_dict)
+    stabilized_dict = _stabilize_all_fields(data_dict, StabilizationContext())
     return data.__class__.model_validate(stabilized_dict)
 
 
-def _stabilize_dynamic_field_values(data: JsonValue) -> JsonValue:
-    """Recursively stabilize dynamic field values in dictionary data."""
+def _stabilize_all_fields(data: JsonValue, context: StabilizationContext) -> JsonValue:
+    """Stabilize both dynamic fields and count values in a single recursive pass."""
     if isinstance(data, dict):
         stabilized: JsonDict = {}
         for key, value in data.items():
-            # Stabilize specific dynamic fields
+            # Create new context for this field
+            new_field_path = [*context.field_path, key]
+            is_count_key = "count" in key.lower()
+            new_in_count_property = context.in_count_property or is_count_key
+
+            new_context = StabilizationContext(
+                in_count_property=new_in_count_property,
+                field_path=new_field_path,
+            )
+
+            # Stabilize specific dynamic fields by name
             if key == "searchId":
                 stabilized[key] = DUMMY_SEARCH_ID
             elif key in ("lastViewedAt", "serverTime", "registeredAt"):
@@ -150,35 +168,16 @@ def _stabilize_dynamic_field_values(data: JsonValue) -> JsonValue:
             elif key in ("threadKey", "accessRightKey", "editKey"):
                 stabilized[key] = DUMMY_JWT_TOKEN
             elif key == "views" and isinstance(value, int):
-                # Stabilize view counts in history
                 stabilized[key] = DUMMY_COUNT
             else:
-                # Recursively process nested data
-                stabilized[key] = _stabilize_dynamic_field_values(value)
+                # Recursively process nested data with updated context
+                stabilized[key] = _stabilize_all_fields(value, new_context)
         return stabilized
 
     elif isinstance(data, list):
-        return [_stabilize_dynamic_field_values(item) for item in data]
+        return [_stabilize_all_fields(item, context) for item in data]
 
-    # Return other values as-is
-    return data
-
-
-def _stabilize_count_values(data: JsonValue, in_count_property: bool = False) -> JsonValue:
-    """Recursively stabilize count-related values in dictionary data."""
-    if isinstance(data, dict):
-        stabilized: JsonDict = {}
-        for key, value in data.items():
-            is_count_key = "count" in key.lower()
-            # If it's a count key, mark that we're inside a count property
-            new_in_count_property = in_count_property or is_count_key
-            stabilized[key] = _stabilize_count_values(value, new_in_count_property)
-        return stabilized
-
-    elif isinstance(data, list):
-        return [_stabilize_count_values(item, in_count_property) for item in data]
-
-    elif in_count_property and isinstance(data, (int, float)):
+    elif context.in_count_property and isinstance(data, (int, float)):
         # If we're inside a count property, convert all numbers to DUMMY_COUNT
         return DUMMY_COUNT
 
