@@ -1,7 +1,7 @@
 name: Provider Fixtures Update and Test
 
 on:
-  # Weekly execution
+  # Daily execution
   schedule:
     - cron:  '00 0 * * *'
 
@@ -30,7 +30,7 @@ jobs:
   setup-and-update-fixtures:
     name: Update NicoVideo Fixtures and Run Tests
     runs-on: ubuntu-latest
-    if: github.event.inputs.provider == 'nicovideo' || github.event.inputs.provider == 'all' || github.event_name == 'schedule' || github.event_name == 'push'
+    if: (vars.ENABLE_SCHEDULABLE_FIXTURE_UPDATES == 'true' && github.event_name == 'schedule') || (github.event.inputs.provider == 'nicovideo' || github.event.inputs.provider == 'all' || github.event_name == 'push')
 
     steps:
       - name: Checkout repository
