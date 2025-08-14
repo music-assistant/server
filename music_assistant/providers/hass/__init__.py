@@ -304,9 +304,11 @@ class HomeAssistantProvider(PluginProvider):
         url = get_websocket_url(self.config.get_value(CONF_URL))
         token = self.config.get_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
-        self.hass = HomeAssistantClient(url, token, self.mass.http_session)
+        ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
+        self.hass = HomeAssistantClient(url, token, http_session)
         try:
-            await self.hass.connect(ssl=bool(self.config.get_value(CONF_VERIFY_SSL)))
+            await self.hass.connect()
         except BaseHassClientError as err:
             err_msg = str(err) or err.__class__.__name__
             raise SetupFailedError(err_msg) from err

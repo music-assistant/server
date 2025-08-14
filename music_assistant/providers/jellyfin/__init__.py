@@ -139,9 +139,11 @@ class JellyfinProvider(MusicProvider):
         # to be an opaque identifier
 
         device_id = hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
+        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
 
         session_config = SessionConfiguration(
-            session=self.mass.http_session,
+            session=http_session,
             url=str(self.config.get_value(CONF_URL)),
             verify_ssl=bool(self.config.get_value(CONF_VERIFY_SSL)),
             app_name=USER_APP_NAME,

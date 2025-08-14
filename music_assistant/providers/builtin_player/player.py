@@ -37,7 +37,7 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.player_provider import PlayerProvider
 
 # If the player does not send an update within this time, it will be considered offline
-DURATION_UNTIL_TIMEOUT = 90  # 30 second extra headroom
+DURATION_UNTIL_TIMEOUT = 120  # 60 second extra headroom
 POLL_INTERVAL = 30
 
 
@@ -247,14 +247,8 @@ class BuiltinPlayer(Player):
         # Check for a client probe request (from an iPhone/iPad)
         if (range_header := request.headers.get("Range")) and range_header == "bytes=0-1":
             self.logger.debug("Client is probing the stream.")
-
-            # Avoids us to staring multiple ffmpeg instances for probe requests
-            return web.Response(
-                status=206,  # Partial Content
-                headers=headers,
-                # Just send something
-                body=b"\x00\x00",
-            )
+            # We don't early exit here since playback would otherwise never start
+            # on iOS devices with Home Assistant OS installations.
 
         media = player.current_media
         if queue is None or media is None:

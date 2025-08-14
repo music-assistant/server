@@ -101,7 +101,7 @@ class AirPlayPlayer(Player):
             PlayerFeature.VOLUME_SET,
         }
         self._attr_volume_level = initial_volume
-        self._attr_can_group_with = {provider.instance_id}
+        self._attr_can_group_with = {provider.lookup_key}
         self._attr_enabled_by_default = not is_broken_raop_model(manufacturer, model)
 
     async def get_config_entries(self) -> list[ConfigEntry]:

@@ -13,7 +13,6 @@ import os
 import urllib.parse
 from concurrent import futures
 from contextlib import suppress
-from contextvars import ContextVar
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
@@ -44,11 +43,10 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
 
 DEFAULT_SERVER_PORT = 8095
+INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
-CONF_EXPOSE_SERVER = "expose_server"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
-_BASE_URL: ContextVar[str] = ContextVar("_BASE_URL", default="")
 
 
 class WebserverController(CoreController):
@@ -72,7 +70,7 @@ class WebserverController(CoreController):
     @property
     def base_url(self) -> str:
         """Return the base_url for the streamserver."""
-        return _BASE_URL.get(self._server.base_url)
+        return self._server.base_url
 
     async def get_config_entries(
         self,
@@ -82,30 +80,16 @@ class WebserverController(CoreController):
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses()
         default_publish_ip = ip_addresses[0]
-        if self.mass.running_as_hass_addon:
-            return (
-                ConfigEntry(
-                    key=CONF_EXPOSE_SERVER,
-                    type=ConfigEntryType.BOOLEAN,
-                    # hardcoded/static value
-                    default_value=False,
-                    label="Expose the webserver (port 8095)",
-                    description="By default the Music Assistant webserver "
-                    "(serving the API and frontend), runs on a protected internal network only "
-                    "and you can securely access the webinterface using "
-                    "Home Assistant's ingress service from the sidebar menu.\n\n"
-                    "By enabling this option you also allow direct access to the webserver "
-                    "from your local network, meaning you can navigate to "
-                    f"http://{default_publish_ip}:8095 to access the webinterface. \n\n"
-                    "Use this option on your own risk and never expose this port "
-                    "directly to the internet.",
-                ),
-            )
-
-        # HA supervisor not present: user is responsible for securing the webserver
-        # we give the tools to do so by presenting config options
         default_base_url = f"http://{default_publish_ip}:{DEFAULT_SERVER_PORT}"
         return (
+            ConfigEntry(
+                key="webserver_warn",
+                type=ConfigEntryType.ALERT,
+                label="Please note that the webserver is unprotected. "
+                "Never ever expose the webserver directly to the internet! \n\n"
+                "Use a reverse proxy or VPN to secure access.",
+                required=False,
+            ),
             ConfigEntry(
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
@@ -128,10 +112,11 @@ class WebserverController(CoreController):
                 default_value="0.0.0.0",
                 options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
                 label="Bind to IP/interface",
-                description="Start the (web)server on this specific interface. \n"
+                description="Bind the (web)server to this specific interface. \n"
                 "Use 0.0.0.0 to bind to all interfaces. \n"
                 "Set this address for example to a docker-internal network, "
-                "to enhance security and protect outside access to the webinterface and API. \n\n"
+                "when you are running a reverse proxy to enhance security and "
+                "protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
                 category="advanced",
@@ -170,46 +155,38 @@ class WebserverController(CoreController):
         all_ip_addresses = await get_ip_addresses()
         default_publish_ip = all_ip_addresses[0]
         if self.mass.running_as_hass_addon:
-            # if we're running on the HA supervisor the webserver is secured by HA ingress
-            # we only start the webserver on the internal docker network and ingress connects
-            # to that internally and exposes the webUI securely
-            # if a user also wants to expose a the webserver non securely on his internal
-            # network he/she should explicitly do so (and know the risks)
-            self.publish_port = DEFAULT_SERVER_PORT
-            if config.get_value(CONF_EXPOSE_SERVER):
-                bind_ip = "0.0.0.0"
-                self.publish_ip = default_publish_ip
-            else:
-                # use internal ("172.30.32.) IP
-                self.publish_ip = bind_ip = next(
-                    (x for x in all_ip_addresses if x.startswith("172.30.32.")), default_publish_ip
-                )
-            base_url = f"http://{self.publish_ip}:{self.publish_port}"
+            # if we're running on the HA supervisor we start an additional TCP site
+            # on the internal ("172.30.32.) IP for the HA ingress proxy
+            ingress_host = next(
+                (x for x in all_ip_addresses if x.startswith("172.30.32.")), default_publish_ip
+            )
+            ingress_tcp_site_params = (ingress_host, INGRESS_SERVER_PORT)
         else:
-            base_url = config.get_value(CONF_BASE_URL)
-            self.publish_port = config.get_value(CONF_BIND_PORT)
-            self.publish_ip = default_publish_ip
-            bind_ip = config.get_value(CONF_BIND_IP)
-            # print a big fat message in the log where the webserver is running
-            # because this is a common source of issues for people with more complex setups
-            if not self.mass.config.onboard_done:
-                self.logger.warning(
-                    "\n\n################################################################################\n"
-                    "Starting webserver on  %s:%s - base url: %s\n"
-                    "If this is incorrect, see the documentation how to configure the Webserver\n"
-                    "in Settings --> Core modules --> Webserver\n"
-                    "################################################################################\n",
-                    bind_ip,
-                    self.publish_port,
-                    base_url,
-                )
-            else:
-                self.logger.info(
-                    "Starting webserver on  %s:%s - base url: %s\n#\n",
-                    bind_ip,
-                    self.publish_port,
-                    base_url,
-                )
+            ingress_tcp_site_params = None
+        base_url = str(config.get_value(CONF_BASE_URL))
+        self.publish_port = int(config.get_value(CONF_BIND_PORT))
+        self.publish_ip = default_publish_ip
+        bind_ip = config.get_value(CONF_BIND_IP)
+        # print a big fat message in the log where the webserver is running
+        # because this is a common source of issues for people with more complex setups
+        if not self.mass.config.onboard_done:
+            self.logger.warning(
+                "\n\n################################################################################\n"
+                "Starting webserver on  %s:%s - base url: %s\n"
+                "If this is incorrect, see the documentation how to configure the Webserver\n"
+                "in Settings --> Core modules --> Webserver\n"
+                "################################################################################\n",
+                bind_ip,
+                self.publish_port,
+                base_url,
+            )
+        else:
+            self.logger.info(
+                "Starting webserver on  %s:%s - base url: %s\n#\n",
+                bind_ip,
+                self.publish_port,
+                base_url,
+            )
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=self.publish_port,
@@ -217,6 +194,7 @@ class WebserverController(CoreController):
             static_routes=routes,
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
+            ingress_tcp_site_params=ingress_tcp_site_params,
         )
 
     async def close(self) -> None:
@@ -385,8 +363,6 @@ class WebsocketClientHandler:
     def _handle_command(self, msg: CommandMessage) -> None:
         """Handle an incoming command from the client."""
         self._logger.debug("Handling command %s", msg.command)
-        if self.base_url:
-            _BASE_URL.set(self.base_url)
 
         # work out handler for the given path/command
         handler = self.mass.command_handlers.get(msg.command)
