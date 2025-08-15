@@ -89,6 +89,6 @@ class ResonateProvider(PlayerProvider):
             url = "ws://" + ip + ":" + str(get_port_from_zeroconf(info)) + path.decode()
 
             self.logger.debug("Discovered resonate player, connecting to %s", url)
-            _ = await self.server.connect_to_player(url)
+            _ = self.mass.create_task(self.server.connect_to_player(url))
         # player_id = info.decoded_properties["player_id"]
         # TODO add player discovery handling here
