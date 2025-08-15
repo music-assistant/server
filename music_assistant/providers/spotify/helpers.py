@@ -1,4 +1,4 @@
-"""NEW helpers.py Helpers/utils for the Spotify musicprovider."""
+"""Helpers/utils for the Spotify musicprovider."""
 
 from __future__ import annotations
 
