@@ -46,7 +46,8 @@ class ResonatePlayer(Player):
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._attr_device_info = DeviceInfo()
-        self._set_attributes()
+        self._attr_volume_level = player.volume
+        self._attr_volume_muted = player.muted
 
     async def event_cb(self, event: PlayerInstanceEvent) -> None:
         """Event callback registered to the resonate server."""
@@ -143,9 +144,3 @@ class ResonatePlayer(Player):
         # This is called when the player is removed from the Player controller.
         self.logger.info("Player %s unloaded", self.name)
         self.unsub_event_cb()
-
-    def _set_attributes(self) -> None:
-        """Update/set (dynamic) properties."""
-        self._attr_powered = True
-        self._attr_volume_muted = False
-        self._attr_volume_level = 50
