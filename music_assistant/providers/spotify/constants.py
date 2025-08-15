@@ -1,4 +1,4 @@
-"""NEW constants.py Constants and configuration definitions for the Spotify provider."""
+"""Constants for the Spotify provider."""
 
 from __future__ import annotations
 
