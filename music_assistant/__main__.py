@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -44,15 +45,11 @@ def get_arguments() -> argparse.Namespace:
             os.getenv("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")),
             "music-assistant",
         )
-    # determine default cache directory
-    if os.path.isdir(old_cache_dir := os.path.join(default_data_dir, ".cache")):
-        # prefer (existing) legacy directory
-        default_cache_dir = old_cache_dir
-    else:
-        default_cache_dir = os.path.join(
-            os.getenv("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")),
-            "music-assistant",
-        )
+
+    default_cache_dir = os.path.join(
+        os.getenv("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")),
+        "music-assistant",
+    )
 
     parser.add_argument(
         "--data-dir",
@@ -200,7 +197,14 @@ def main() -> None:
     data_dir = args.data_dir
     cache_dir = args.cache_dir
 
+    # move legacy cache directory
+    old_cache_dir = os.path.join(data_dir, ".cache")
+    if os.path.isdir(old_cache_dir) and old_cache_dir != cache_dir:
+        with suppress(OSError):
+            shutil.move(old_cache_dir, cache_dir)
+
     os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
 
     # TEMP: override options though hass config file
     hass_options_file = os.path.join(data_dir, "options.json")
