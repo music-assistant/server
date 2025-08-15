@@ -319,8 +319,7 @@ class MetaDataController(CoreController):
                 return media_item.image.path
 
             # Only retrieve full item if we don't have the image we need
-            if not media_item.uri:
-                return None
+            assert media_item.uri is not None  # guard for type checker
             retrieved_item = await self.mass.music.get_item_by_uri(media_item.uri)
             if isinstance(retrieved_item, BrowseFolder):
                 return None
