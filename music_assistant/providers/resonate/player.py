@@ -34,11 +34,32 @@ class ResonatePlayer(Player):
         # init some static variables
         self._attr_name = player.name
         self._attr_type = PlayerType.PLAYER
-        self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        self._attr_supported_features = {
+            PlayerFeature.SET_MEMBERS,
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+        }
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._attr_device_info = DeviceInfo()
         self._set_attributes()
+
+    @override
+    async def volume_set(self, volume_level: int) -> None:
+        """Handle VOLUME_SET command on the player."""
+        # TODO: what if volume_level is 0?
+        self._attr_volume_level = volume_level
+        self.player.set_volume(volume_level)
+        self.update_state()
+
+    async def volume_mute(self, muted: bool) -> None:
+        """Handle VOLUME MUTE command on the player."""
+        self._attr_volume_muted = muted
+        if muted:
+            self.player.mute()
+        else:
+            self.player.unmute()
+        self.update_state()
 
     @override
     async def stop(self) -> None:
