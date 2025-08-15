@@ -1126,7 +1126,8 @@ class PlayerQueuesController(CoreController):
                 )
             ):
                 queue_item.media_item.album = library_album
-            else:
+            elif album:
+                # Restore original album if we have no better alternative from the library
                 queue_item.media_item.album = album
             # prefer album image over track image
             if queue_item.media_item.album and queue_item.media_item.album.image:
