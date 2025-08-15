@@ -86,16 +86,22 @@ class ResonatePlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        if player_ids_to_remove is not None:
+        self.logger.debug(
+            "set_members called: adding %s, removing %s", player_ids_to_add, player_ids_to_remove
+        )
+        if player_ids_to_remove:
             for player_id in player_ids_to_remove:
                 player = self.mass.players.get(player_id, True)
                 player = cast("ResonatePlayer", player)  # For type checking
                 self.player.group.remove_player(player.player)
-        if player_ids_to_add is not None:
+                self._attr_group_members.remove(player_id)
+        if player_ids_to_add:
             for player_id in player_ids_to_add:
                 player = self.mass.players.get(player_id, True)
                 player = cast("ResonatePlayer", player)  # For type checking
                 self.player.group.add_player(player.player)
+                self._attr_group_members.append(player_id)
+        self.update_state()
 
     @override
     async def on_unload(self) -> None:
