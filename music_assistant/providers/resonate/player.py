@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast, override
 
-from aioresonate.group import AudioFormat as ResonateAudioFormat
-from aioresonate.instance import PlayerInstanceEvent, VolumeChangedEvent
+from aioresonate.server import AudioFormat as ResonateAudioFormat
+from aioresonate.server import PlayerInstanceEvent, VolumeChangedEvent
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ContentType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.media_items import AudioFormat
@@ -15,7 +15,7 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
-    from aioresonate.instance import PlayerInstance
+    from aioresonate.server import PlayerInstance
 
     from .provider import ResonateProvider
 
