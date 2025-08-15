@@ -43,7 +43,12 @@ class AirPlayProvider(PlayerProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        return {ProviderFeature.SYNC_PLAYERS}
+        return {
+            ProviderFeature.SYNC_PLAYERS,
+            # support sync groups by reporting create/remove player group support
+            ProviderFeature.CREATE_GROUP_PLAYER,
+            ProviderFeature.REMOVE_GROUP_PLAYER,
+        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
