@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast, override
 
 from aioresonate.group import AudioFormat as ResonateAudioFormat
+from aioresonate.instance import PlayerInstanceEvent, VolumeChangedEvent
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ContentType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.media_items import AudioFormat
@@ -22,6 +24,7 @@ class ResonatePlayer(Player):
     """A resonate audio player in Music Assistant."""
 
     player: PlayerInstance
+    unsub_event_cb: Callable[[], None]
 
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -29,6 +32,7 @@ class ResonatePlayer(Player):
         player = provider.server.get_player(player_id)
         assert player is not None
         self.player = player
+        self.unsub_event_cb = player.add_event_listener(self.event_cb)
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
@@ -44,17 +48,25 @@ class ResonatePlayer(Player):
         self._attr_device_info = DeviceInfo()
         self._set_attributes()
 
+    async def event_cb(self, event: PlayerInstanceEvent) -> None:
+        """Event callback registered to the resonate server."""
+        self.logger.debug("Received PlayerInstanceEvent: %s", event)
+        match event:
+            case VolumeChangedEvent(volume, muted):
+                self._attr_volume_level = volume
+                self._attr_volume_muted = muted
+                self.update_state()
+            case _:
+                self.logger.error("Unknown resonate player event: %s", event)
+
     @override
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         # TODO: what if volume_level is 0?
-        self._attr_volume_level = volume_level
         self.player.set_volume(volume_level)
-        self.update_state()
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        self._attr_volume_muted = muted
         if muted:
             self.player.mute()
         else:
@@ -130,6 +142,7 @@ class ResonatePlayer(Player):
         # any logic when the player is unloaded from the Player controller.
         # This is called when the player is removed from the Player controller.
         self.logger.info("Player %s unloaded", self.name)
+        self.unsub_event_cb()
 
     def _set_attributes(self) -> None:
         """Update/set (dynamic) properties."""
