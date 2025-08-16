@@ -19,7 +19,6 @@ from .multi_client_stream import MultiClientStream
 from .player import SqueezelitePlayer
 
 if TYPE_CHECKING:
-    from aioslimproto.client import SlimClient
     from aioslimproto.models import EventType as SlimEventType
 
 
@@ -109,31 +108,37 @@ class SqueezelitePlayerProvider(PlayerProvider):
         self.mass.streams.unregister_dynamic_route("/slimproto/multi")
         self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
 
-    async def _player_join(self, slimplayer: SlimClient) -> None:
-        """Handle player joining the slimproto server."""
-        player_id = slimplayer.player_id
-        if player_id in self._players:
+    def _client_callback(
+        self,
+        event: SlimEvent,
+    ) -> None:
+        if self.mass.closing:
             return
 
-        self.logger.debug("Player %s joined the server", player_id)
-
-        # Create SqueezelitePlayer instance
-        player = SqueezelitePlayer(self, player_id, slimplayer)
-        self._players[player_id] = player
-
-        # Register with Music Assistant
-        await player.setup()
-
-    async def _player_leave(self, player_id: str) -> None:
-        """Handle player leaving the slimproto server."""
-        self.logger.debug("Player %s left the server", player_id)
-
-        if self._players.pop(player_id, None):
-            if mass_player := self.mass.players.get(player_id):
+        if event.type == SlimEventType.PLAYER_DISCONNECTED:
+            if mass_player := self.mass.players.get(event.player_id):
                 mass_player.available = False
-                self.mass.players.update(player_id)
+                self.mass.players.update(mass_player.player_id)
+            return
 
-    async def _player_update(self, player_id: str, event: SlimEventType) -> None:
-        """Handle player update from slimproto server."""
-        if player := self._players.get(player_id):
-            await player.handle_slim_event(event)
+        if not (slimplayer := self.slimproto.get_player(event.player_id)):
+            return
+
+        if event.type == SlimEventType.PLAYER_CONNECTED:
+            self.mass.create_task(self._handle_connected(slimplayer))
+            return
+
+        if event.type == SlimEventType.PLAYER_BUFFER_READY:
+            self.mass.create_task(self._handle_buffer_ready(slimplayer))
+            return
+
+        if event.type == SlimEventType.PLAYER_HEARTBEAT:
+            self._handle_player_heartbeat(slimplayer)
+            return
+
+        if event.type in (SlimEventType.PLAYER_BTN_EVENT, SlimEventType.PLAYER_CLI_EVENT):
+            self.mass.create_task(self._handle_player_cli_event(slimplayer, event))
+            return
+
+        # forward player update to MA player controller
+        self.mass.create_task(self._handle_player_update(slimplayer))

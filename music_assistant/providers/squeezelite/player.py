@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
-from aioslimproto.client import PlayerState as SlimPlayerState
 from aioslimproto.client import SlimClient
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, PlayerConfig
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    PlayerFeature,
+    PlayerType,
+    RepeatMode,
+)
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -21,60 +28,35 @@ from music_assistant.constants import (
     DEFAULT_PCM_FORMAT,
     create_sample_rates_config_entry,
 )
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
-    CONF_DISPLAY,
-    CONF_VISUALIZATION,
-    DEFAULT_VISUALIZATION,
-    SlimVisualisationType,
+    CACHE_KEY_PREV_STATE,
+    CONF_ENTRY_DISPLAY,
+    CONF_ENTRY_VISUALIZATION,
+    REPEATMODE_MAP,
+    STATE_MAP,
+    SyncPlayPoint,
 )
+from .multi_client_stream import MultiClientStream
 
 if TYPE_CHECKING:
     from aioslimproto.models import EventType as SlimEventType
 
+    from music_assistant.providers.universal_group import UniversalGroupPlayer
+
     from .provider import SqueezelitePlayerProvider
-
-
-STATE_MAP = {
-    SlimPlayerState.BUFFERING: PlaybackState.PLAYING,
-    SlimPlayerState.BUFFER_READY: PlaybackState.PLAYING,
-    SlimPlayerState.PAUSED: PlaybackState.PAUSED,
-    SlimPlayerState.PLAYING: PlaybackState.PLAYING,
-    SlimPlayerState.STOPPED: PlaybackState.IDLE,
-}
-
-CONF_ENTRY_DISPLAY = ConfigEntry(
-    key=CONF_DISPLAY,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=False,
-    required=False,
-    label="Enable display support",
-    description="Enable/disable native display support on squeezebox or squeezelite32 hardware.",
-    category="advanced",
-)
-CONF_ENTRY_VISUALIZATION = ConfigEntry(
-    key=CONF_VISUALIZATION,
-    type=ConfigEntryType.STRING,
-    default_value=DEFAULT_VISUALIZATION,
-    options=[
-        ConfigValueOption(title=x.name.replace("_", " ").title(), value=x.value)
-        for x in SlimVisualisationType
-    ],
-    required=False,
-    label="Visualization type",
-    description="The type of visualization to show on the display "
-    "during playback if the device supports this.",
-    category="advanced",
-    depends_on=CONF_DISPLAY,
-)
 
 
 class SqueezelitePlayer(Player):
     """Squeezelite Player implementation."""
 
     _attr_type = PlayerType.PLAYER
+    _multi_client_stream: MultiClientStream | None = None
+    _sync_playpoints: deque[SyncPlayPoint] | None = None
+    _do_not_resync_before: float = 0.0
 
     def __init__(
         self,
@@ -107,10 +89,6 @@ class SqueezelitePlayer(Player):
             manufacturer=client.device_type,
         )
         self._attr_can_group_with = {provider.lookup_key}
-
-    async def setup(self) -> None:
-        """Set up the player."""
-        await self.mass.players.register_or_update(self)
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -185,35 +163,40 @@ class SqueezelitePlayer(Player):
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
-        if powered:
-            await self.client.power_on()
-        else:
-            await self.client.power_off()
+        await self.client.power(powered)
+        # store last state in cache
+        await self.mass.cache.set(
+            self.player_id, (powered, self.client.volume_level), base_key=CACHE_KEY_PREV_STATE
+        )
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         await self.client.volume_set(volume_level)
+        # store last state in cache
+        await self.mass.cache.set(
+            self.player_id, (self.client.powered, volume_level), base_key=CACHE_KEY_PREV_STATE
+        )
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        await self.client.volume_mute(muted)
+        await self.client.mute(muted)
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         async with TaskManager(self.mass) as tg:
-            for client in self.provider._get_sync_clients(self.player_id):
+            for client in self._get_sync_clients():
                 tg.create_task(client.stop())
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
         async with TaskManager(self.mass) as tg:
-            for client in self.provider._get_sync_clients(self.player_id):
+            for client in self._get_sync_clients():
                 tg.create_task(client.play())
 
     async def pause(self) -> None:
         """Handle PAUSE command on the player."""
         async with TaskManager(self.mass) as tg:
-            for client in self.provider._get_sync_clients(self.player_id):
+            for client in self._get_sync_clients():
                 tg.create_task(client.pause())
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -225,7 +208,6 @@ class SqueezelitePlayer(Player):
         if not self.group_members:
             # Simple, single-player playback
             await self._handle_play_url(
-                self.client,
                 url=media.uri,
                 media=media,
                 send_flush=True,
@@ -233,35 +215,83 @@ class SqueezelitePlayer(Player):
             )
             return
 
-        # This is a syncgroup, we need to handle this with a multi client stream
+        # this is a syncgroup, we need to handle this with a multi client stream
         master_audio_format = AudioFormat(
             content_type=DEFAULT_PCM_FORMAT.content_type,
-            sample_rate=48000,  # Default for squeezelite
-            bit_depth=16,
-            channels=2,
+            sample_rate=DEFAULT_PCM_FORMAT.sample_rate,
+            bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
+        )
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            # special case: stream announcement
+            audio_source = self.mass.streams.get_announcement_stream(
+                media.custom_data["url"],
+                output_format=master_audio_format,
+                use_pre_announce=media.custom_data["use_pre_announce"],
+            )
+        elif media.media_type == MediaType.PLUGIN_SOURCE:
+            # special case: plugin source stream
+            audio_source = self.mass.streams.get_plugin_source_stream(
+                plugin_source_id=media.custom_data["source_id"],
+                output_format=master_audio_format,
+                # need to pass player_id from the PlayerMedia object
+                # because this could have been a group
+                player_id=media.custom_data["player_id"],
+            )
+        elif media.queue_id.startswith("ugp_"):
+            # special case: UGP stream
+            ugp_player: UniversalGroupPlayer = self.mass.players.get(media.queue_id)
+            ugp_stream = ugp_player.stream
+            # Filter is later applied in MultiClientStream
+            audio_source = ugp_stream.get_stream(master_audio_format, filter_params=None)
+        elif media.queue_id and media.queue_item_id:
+            # regular queue stream request
+            audio_source = self.mass.streams.get_queue_flow_stream(
+                queue=self.mass.player_queues.get(media.queue_id),
+                start_queue_item=self.mass.player_queues.get_item(
+                    media.queue_id, media.queue_item_id
+                ),
+                pcm_format=master_audio_format,
+            )
+        else:
+            # assume url or some other direct path
+            # NOTE: this will fail if its an uri not playable by ffmpeg
+            audio_source = get_ffmpeg_stream(
+                audio_input=media.uri,
+                input_format=AudioFormat(ContentType.try_parse(media.uri)),
+                output_format=master_audio_format,
+            )
+        # start the stream task
+        self._multi_client_stream = stream = MultiClientStream(
+            audio_source=audio_source, audio_format=master_audio_format
+        )
+        base_url = (
+            f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}&fmt=flac"
         )
 
-        # Start multi-client stream for sync group
-        await self._handle_multi_client_stream(media, master_audio_format)
+        # forward to downstream play_media commands
+        async with TaskManager(self.mass) as tg:
+            for slimplayer in self._get_sync_clients():
+                url = f"{base_url}&child_player_id={slimplayer.player_id}"
+                stream.expected_clients += 1
+                tg.create_task(
+                    self._handle_play_url(
+                        slimplayer,
+                        url=url,
+                        media=media,
+                        send_flush=True,
+                        auto_play=False,
+                    )
+                )
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
-        if self.synced_to:
-            msg = "A synced player cannot receive enqueue commands directly"
-            raise RuntimeError(msg)
-
-        # Handle enqueue for single player or sync group
-        if not self.group_members:
-            await self._handle_play_url(
-                self.client,
-                url=media.uri,
-                media=media,
-                send_flush=False,
-                auto_play=True,
-            )
-        else:
-            # Handle multi-client enqueue
-            await self._handle_multi_client_enqueue(media)
+        await self._handle_play_url(
+            url=media.uri,
+            media=media,
+            enqueue=True,
+            send_flush=False,
+            auto_play=True,
+        )
 
     async def set_members(
         self,
@@ -331,17 +361,13 @@ class SqueezelitePlayer(Player):
 
     async def _handle_play_url(
         self,
-        client: SlimClient,
         url: str,
         media: PlayerMedia,
+        enqueue: bool = False,
         send_flush: bool = True,
-        auto_play: bool = True,
+        auto_play: bool = False,
     ) -> None:
-        """Handle playing a URL on a client."""
-        if send_flush:
-            await client.flush()
-
-        # Send play command with metadata
+        """Handle playback of an url on slimproto player(s)."""
         metadata = {
             "item_id": media.uri,
             "title": media.title,
@@ -352,49 +378,39 @@ class SqueezelitePlayer(Player):
             "queue_id": media.queue_id,
             "queue_item_id": media.queue_item_id,
         }
-
-        await client.play_url(url, metadata=metadata, auto_play=auto_play)
+        if queue := self.mass.player_queues.get(media.queue_id):
+            self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
+            self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
+        await self.client.play_url(
+            url=url,
+            mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
+            metadata=metadata,
+            enqueue=enqueue,
+            send_flush=send_flush,
+            # if autoplay=False playback will not start automatically
+            # instead 'buffer ready' will be called when the buffer is full
+            # to coordinate a start of multiple synced players
+            autostart=auto_play,
+        )
+        # if queue is set to single track repeat,
+        # immediately set this track as the next
+        # this prevents race conditions with super short audio clips (on single repeat)
+        # https://github.com/music-assistant/hass-music-assistant/issues/2059
+        if queue and queue.repeat_mode == RepeatMode.ONE:
+            self.mass.call_later(
+                0.2,
+                self.client.play_url(
+                    url=url,
+                    mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
+                    metadata=metadata,
+                    enqueue=True,
+                    send_flush=False,
+                    autostart=True,
+                ),
+            )
 
     def _get_sync_clients(self) -> Iterator[SlimClient]:
         """Get all sync clients for a player."""
         yield self.client
         for member_id in self.group_members:
             yield self.provider.slimproto.get_player(member_id)
-
-    async def _handle_multi_client_stream(
-        self, media: PlayerMedia, master_audio_format: AudioFormat
-    ) -> None:
-        """Handle multi-client stream for sync groups."""
-        # This would need implementation of the multi-client streaming logic
-        # For now, simplified implementation
-        sync_clients = list(self.provider._get_sync_clients(self.player_id))
-
-        # Play on all sync clients
-        async with TaskManager(self.mass) as tg:
-            for slimclient in sync_clients:
-                tg.create_task(
-                    self._handle_play_url(
-                        slimclient,
-                        media.uri,
-                        media,
-                        send_flush=True,
-                        auto_play=False,
-                    )
-                )
-
-    async def _handle_multi_client_enqueue(self, media: PlayerMedia) -> None:
-        """Handle multi-client enqueue for sync groups."""
-        sync_clients = list(self.provider._get_sync_clients(self.player_id))
-
-        # Enqueue on all sync clients
-        async with TaskManager(self.mass) as tg:
-            for slimclient in sync_clients:
-                tg.create_task(
-                    self._handle_play_url(
-                        slimclient,
-                        media.uri,
-                        media,
-                        send_flush=False,
-                        auto_play=True,
-                    )
-                )
