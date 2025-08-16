@@ -246,7 +246,7 @@ class RadioParadiseProvider(MusicProvider):
             monitor_task = streamdetails.data["monitor_task"]
             if not monitor_task.done():
                 monitor_task.cancel()
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(asyncio.CancelledError):
                     await monitor_task
             del streamdetails.data["monitor_task"]
 
