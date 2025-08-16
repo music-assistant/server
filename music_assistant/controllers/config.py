@@ -6,6 +6,7 @@ import base64
 import logging
 import os
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ import aiofiles
 import shortuuid
 from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
+from mashumaro import DataClassDictMixin
 from music_assistant_models import config_entries
 from music_assistant_models.config_entries import (
     MULTI_VALUE_SPLITTER,
@@ -22,7 +24,7 @@ from music_assistant_models.config_entries import (
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant_models.dsp import DSPConfig, DSPConfigPreset, ToneControlFilter
+from music_assistant_models.dsp import DSPConfig, ToneControlFilter
 from music_assistant_models.enums import EventType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     ActionUnavailable,
@@ -67,6 +69,25 @@ BASE_KEYS = ("enabled", "name", "available", "default_name", "provider", "type")
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
 rename = wrap(os.rename)
+
+
+@dataclass
+class DSPConfigPreset(DataClassDictMixin):
+    """Model for a persisted DSP config preset."""
+
+    # User friendly name displayed in the UI
+    name: str
+    # The config
+    config: DSPConfig
+    # Unique ID used to represent the preset
+    preset_id: str | None = None
+
+    def validate(self) -> None:
+        """Validate the DSP preset and configuration."""
+        if not self.name or len(self.name) == 0:
+            raise ValueError("Preset name is required")
+
+        self.config.validate()
 
 
 class ConfigController:

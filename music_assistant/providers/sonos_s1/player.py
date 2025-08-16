@@ -631,7 +631,7 @@ class SonosPlayer:
         self.mass_player.state = _convert_state(self.playback_status)
 
         # media info (track info)
-        self.mass_player.current_item_id = self.uri
+        self.mass_player.current_item_id = self.uri  # type: ignore[assignment]
         if self.uri and self.mass.streams.base_url in self.uri and self.player_id in self.uri:
             self.mass_player.active_source = self.player_id
         else:
