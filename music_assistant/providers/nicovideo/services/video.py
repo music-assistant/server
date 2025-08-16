@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import logging
-from io import StringIO
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
-import yt_dlp
 from music_assistant_models.errors import UnplayableMediaError
 
-from music_assistant.providers.nicovideo.constants import (
-    NICOVIDEO_COOKIE_DOMAIN,
-)
-from music_assistant.providers.nicovideo.helpers import (
-    convert_to_netscape,
-)
+from music_assistant.providers.nicovideo.converters.stream import StreamConversionData
 from music_assistant.providers.nicovideo.services.base import NicovideoBaseService
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
+    from music_assistant_models.streamdetails import StreamDetails
+    from niconico.objects.video.watch import WatchData, WatchMediaDomandAudio
 
     from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
@@ -63,39 +57,67 @@ class NicovideoVideoService(NicovideoBaseService):
 
         return None
 
-    async def get_stream_format(self, item_id: str) -> dict[str, Any]:
-        """Use yt-dlp to extract the best stream URL from nicovideo."""
-        netscape_cookie_str = convert_to_netscape(
-            self.niconico_py_client.session.cookies, NICOVIDEO_COOKIE_DOMAIN
+    def _select_best_audio(self, watch_data: WatchData) -> WatchMediaDomandAudio:
+        """Select the best available audio from WatchData."""
+        best_audio = None
+        best_quality = -1
+        for audio in watch_data.media.domand.audios:
+            if audio.is_available and audio.quality_level > best_quality:
+                best_audio = audio
+                best_quality = audio.quality_level
+
+        if not best_audio:
+            raise UnplayableMediaError("No available audio found")
+
+        return best_audio
+
+    async def _get_hls_url(
+        self, watch_data: WatchData, selected_audio: WatchMediaDomandAudio
+    ) -> str:
+        """Get HLS URL for selected audio."""
+        # Create outputs list with selected audio ID only (audio-only)
+        outputs = [selected_audio.id_]
+
+        hls_url = await self.service_manager._call_with_throttler(
+            self.niconico_py_client.video.watch.get_hls_content_url,
+            watch_data,
+            [outputs],  # list[list[str]] format
+        )
+        if not hls_url:
+            raise UnplayableMediaError("Failed to get HLS content URL")
+
+        return hls_url
+
+    async def get_stream_details(self, video_id: str) -> StreamDetails:
+        """Get StreamDetails for a video using WatchData and converter."""
+        # 1. Fetch watch data
+        watch_data = await self.service_manager._call_with_throttler(
+            self.niconico_py_client.video.watch.get_watch_data, video_id
+        )
+        if not watch_data:
+            raise UnplayableMediaError("Failed to fetch watch data")
+
+        # 2. Select best available audio
+        selected_audio = self._select_best_audio(watch_data)
+
+        # 3. Get HLS URL for selected audio
+        hls_url = await self._get_hls_url(watch_data, selected_audio)
+
+        # 4. Get domand_bid for ffmpeg headers
+        domand_bid = self.niconico_py_client.session.cookies.get("domand_bid")
+        if not domand_bid:
+            raise UnplayableMediaError("Failed to fetch domand_bid")
+
+        # 5. Create conversion data for converter
+        stream_data = StreamConversionData(
+            watch_data=watch_data,
+            selected_audio=selected_audio,
+            hls_url=hls_url,
+            domand_bid=domand_bid,
         )
 
-        def _extract() -> dict[str, Any]:
-            url = f"https://www.nicovideo.jp/watch/{item_id}"
-            ydl_opts = {
-                "quiet": self.logger.level > logging.DEBUG,
-                "cookiefile": StringIO(netscape_cookie_str),
-                "format": "bestaudio/best",
-                "nocheckcertificate": True,
-                "noplaylist": True,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                try:
-                    info = ydl.extract_info(url, download=False)
-                    # Use yt-dlp's format selector like YouTube Music does
-                    format_selector = ydl.build_format_selector("bestaudio")
-                    if not (
-                        stream_format := next(format_selector({"formats": info["formats"]}), None)
-                    ):
-                        raise UnplayableMediaError("No stream formats found")
-                    # Return the format as-is like YouTube Music does
-                    return cast("dict[str, Any]", stream_format)
-                except yt_dlp.utils.DownloadError as err:
-                    raise UnplayableMediaError(f"nicovideo extract error: {err}") from err
-
-        result = await self.service_manager._call_with_throttler(_extract)
-        if result is None:
-            raise UnplayableMediaError("Failed to extract stream format")
-        return result
+        # 6. Convert to StreamDetails using converter
+        return self.converter_manager.stream.convert_by_stream_data(stream_data)
 
     async def like_video(self, video_id: str) -> bool:
         """Like a video."""

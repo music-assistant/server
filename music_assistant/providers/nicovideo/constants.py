@@ -14,6 +14,7 @@ class ApiPriority(Enum):
     LOW = "low"
 
 
+# Configuration keys for nicovideo provider settings
 CONF_MAIL = "mail"
 CONF_MFA = "mfa"
 CONF_USER_SESSION = "user_session"
@@ -32,7 +33,8 @@ CONF_TAG_RECOMMENDATION_NEW_TRACKS_TAGS = "tag_recommendation_new_tracks_tags"
 CONF_HISTORY_COUNT = "history_count"
 CONF_FOLLOWING_ACTIVITIES_COUNT = "following_activities_count"
 
-NICOVIDEO_COOKIE_DOMAIN = ".nicovideo.jp"
+# Network constants
+NICOVIDEO_USER_AGENT = "Music Assistant/1.0"
 
 # Audio format constants based on niconico official specifications
 # Sources:

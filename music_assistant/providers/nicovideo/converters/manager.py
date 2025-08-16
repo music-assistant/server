@@ -19,6 +19,7 @@ from music_assistant.providers.nicovideo.converters.helper import NicovideoConve
 from music_assistant.providers.nicovideo.converters.playlist import (
     NicovideoPlaylistConverter,
 )
+from music_assistant.providers.nicovideo.converters.stream import NicovideoStreamConverter
 from music_assistant.providers.nicovideo.converters.track import NicovideoTrackConverter
 
 if TYPE_CHECKING:
@@ -39,3 +40,4 @@ class NicovideoConverterManager:
         self.album = NicovideoAlbumConverter(self)
         self.playlist = NicovideoPlaylistConverter(self)
         self.artist = NicovideoArtistConverter(self)
+        self.stream = NicovideoStreamConverter(self)

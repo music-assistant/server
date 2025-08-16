@@ -5,18 +5,16 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, override
 
-from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Track
-from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.providers.nicovideo.helpers import create_audio_format
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import MediaItemType
+    from music_assistant_models.media_items import MediaItemType, Track
+    from music_assistant_models.streamdetails import StreamDetails
 
 
 class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
@@ -86,58 +84,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         if media_type != MediaType.TRACK:
             return None
 
-        stream_format = await self.service_manager.video.get_stream_format(item_id=item_id)
-
-        http_headers = stream_format.get("http_headers")
-        user_agent = "Mozilla/5.0"
-        if isinstance(http_headers, dict):
-            user_agent = http_headers.get("User-Agent", "Mozilla/5.0")
-
-        extra_args = [
-            "-user_agent",
-            user_agent,
-            "-referer",
-            "https://www.nicovideo.jp/",
-            "-headers",
-            f"Cookie: {stream_format['cookies']}\r\n",
-        ]
-
-        url = stream_format.get("url")
-        duration = int(stream_format.get("duration", 0))
-        bit_rate = int(stream_format.get("abr", 0)) if stream_format.get("abr") else None
-        sample_rate = int(stream_format.get("asr", 44100))
-
-        # Get track information for stream title
-        track = await self.get_track(item_id)
-        stream_title = track.name if track else ""
-
-        # Do not use album image intentionally
-        image = super(Track, track).image if track else None
-        album = track.album if track else None
-
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=item_id,
-            audio_format=create_audio_format(
-                sample_rate=sample_rate,
-                bit_rate=bit_rate,
-            ),
-            media_type=MediaType.TRACK,
-            stream_type=StreamType.HTTP,
-            duration=duration,
-            stream_metadata=StreamMetadata(
-                title=stream_title,
-                artist=track.artist_str if track else None,
-                album=album.name if album else None,
-                image_url=image.path if image else None,
-            ),
-            path=url,
-            extra_input_args=extra_args,
-            allow_seek=True,
-            can_seek=True,
-            # If an expiring URL is used, it may not play when pausing and resuming.
-            enable_cache=True,
-        )
+        return await self.service_manager.video.get_stream_details(item_id)
 
     @override
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
