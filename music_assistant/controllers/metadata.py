@@ -11,7 +11,7 @@ import urllib.parse
 from base64 import b64encode
 from contextlib import suppress
 from time import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import aiofiles
@@ -30,6 +30,7 @@ from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
@@ -113,7 +114,7 @@ class MetaDataController(CoreController):
     domain: str = "metadata"
     config: CoreConfig
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self.cache = self.mass.cache
@@ -302,24 +303,27 @@ class MetaDataController(CoreController):
 
     async def get_image_url_for_item(
         self,
-        media_item: MediaItemType,
+        media_item: MediaItemType | ItemMapping,
         img_type: ImageType = ImageType.THUMB,
         resolve: bool = True,
     ) -> str | None:
         """Get url to image for given media media_item."""
         if not media_item:
             return None
+
         if isinstance(media_item, ItemMapping):
-            media_item = await self.mass.music.get_item_by_uri(media_item.uri)
-        if media_item and media_item.metadata.images:
-            for img in media_item.metadata.images:
-                if img.type != img_type:
-                    continue
-                if img.remotely_accessible and not resolve:
-                    continue
-                if img.remotely_accessible and resolve:
-                    return self.get_image_url(img)
-                return img.path
+            # Check if the ItemMapping already has an image - avoid expensive API call
+            if media_item.image and media_item.image.type == img_type:
+                if not media_item.image.remotely_accessible and resolve:
+                    return self.get_image_url(media_item.image)
+                return media_item.image.path
+
+            # Only retrieve full item if we don't have the image we need
+            assert media_item.uri is not None  # guard for type checker
+            retrieved_item = await self.mass.music.get_item_by_uri(media_item.uri)
+            if isinstance(retrieved_item, BrowseFolder):
+                return None  # can not happen, but guard for type checker
+            media_item = cast("MediaItemType", retrieved_item)
 
         # retry with track's album
         if media_item.media_type == MediaType.TRACK and media_item.album:
@@ -801,7 +805,7 @@ class MetaDataController(CoreController):
 class MetadataLookupQueue(asyncio.Queue):
     """Representation of a queue for metadata lookups."""
 
-    def _init(self, maxlen: int):
+    def _init(self, maxlen: int) -> None:
         self._queue: collections.deque[str] = collections.deque(maxlen=maxlen)
 
     def _put(self, item: str) -> None:

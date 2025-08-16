@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
 from aiohttp import BasicAuth, web
@@ -14,13 +14,12 @@ from alexapy import AlexaAPI, AlexaLogin, AlexaProxy
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
+    PlaybackState,
     PlayerFeature,
-    PlayerState,
-    PlayerType,
     ProviderFeature,
 )
 from music_assistant_models.errors import LoginFailed
-from music_assistant_models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE,
@@ -31,15 +30,13 @@ from music_assistant.constants import (
     CONF_USERNAME,
 )
 from music_assistant.helpers.auth import AuthenticationHelper
+from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import (
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -237,20 +234,124 @@ async def delete_cookie(cookiefile: str) -> None:
         _LOGGER.debug("Cookie file %s does not exist, nothing to delete.", cookiefile)
 
 
+class AlexaDevice:
+    """Representation of an Alexa Device."""
+
+    _device_type: str
+    device_serial_number: str
+    _device_family: str
+    _cluster_members: str
+    _locale: str
+
+
+class AlexaPlayer(Player):
+    """Implementation of an Alexa Player."""
+
+    def __init__(
+        self,
+        provider: AlexaProvider,
+        player_id: str,
+        device: AlexaDevice,
+    ) -> None:
+        """Initialize AlexaPlayer."""
+        super().__init__(provider, player_id)
+        self.device = device
+        self._attr_supported_features = {
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.PAUSE,
+        }
+        self._attr_name = player_id
+        self._attr_device_info = DeviceInfo()
+        self._attr_powered = False
+        self._attr_available = True
+
+    @property
+    def api(self) -> AlexaAPI:
+        """Get the AlexaAPI instance for this player."""
+        provider = cast("AlexaProvider", self.provider)
+        return AlexaAPI(self.device, provider.login)
+
+    async def stop(self) -> None:
+        """Handle STOP command on the player."""
+        await self.api.stop()
+        self._attr_playback_state = PlaybackState.IDLE
+        self.update_state()
+
+    async def play(self) -> None:
+        """Handle PLAY command on the player."""
+        await self.api.play()
+        self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
+
+    async def pause(self) -> None:
+        """Handle PAUSE command on the player."""
+        await self.api.pause()
+        self._attr_playback_state = PlaybackState.PAUSED
+        self.update_state()
+
+    async def volume_set(self, volume_level: int) -> None:
+        """Handle VOLUME_SET command on the player."""
+        await self.api.set_volume(volume_level / 100)
+        self._attr_volume_level = volume_level
+        self.update_state()
+
+    async def play_media(self, media: PlayerMedia) -> None:
+        """Handle PLAY MEDIA on the player."""
+        username = self.provider.config.get_value(CONF_API_BASIC_AUTH_USERNAME)
+        password = self.provider.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
+
+        auth = None
+        if username is not None and password is not None:
+            auth = BasicAuth(str(username), str(password))
+
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.post(
+                    f"{self.provider.config.get_value(CONF_API_URL)}/ma/push-url",
+                    json={"streamUrl": media.uri},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    auth=auth,
+                ) as resp:
+                    await resp.text()
+            except Exception as exc:
+                _LOGGER.error("Failed to push URL to Alexa: %s", exc)
+                return
+
+        await self.api.run_custom("Ask music assistant to play audio")
+
+        state = await self.api.get_state()
+        if state:
+            state = state.get("playerInfo", None)
+
+        if state:
+            device_media = state.get("infoText")
+            if device_media:
+                media.title = device_media.get("title")
+                media.artist = device_media.get("subText1")
+                self._attr_current_media = media
+            self._attr_elapsed_time = 0
+            self._attr_elapsed_time_last_updated = time.time()
+            if state.get("playbackState") == "PLAYING":
+                self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        base_entries = await super().get_config_entries()
+        return [
+            *base_entries,
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
+            CONF_ENTRY_CROSSFADE,
+            CONF_ENTRY_CROSSFADE_DURATION,
+            CONF_ENTRY_HTTP_PROFILE,
+        ]
+
+
 class AlexaProvider(PlayerProvider):
     """Implementation of an Alexa Device Provider."""
 
-    class AlexaDevice:
-        """Representation of an Alexa Device."""
-
-        _device_type: str
-        device_serial_number: str
-        _device_family: str
-        _cluster_members: str
-        _locale: str
-
     login: AlexaLogin
-    devices: dict[str, AlexaProvider.AlexaDevice]
+    devices: dict[str, AlexaDevice]
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -291,23 +392,8 @@ class AlexaProvider(PlayerProvider):
             if device.get("capabilities") and "MUSIC_SKILL" in device.get("capabilities"):
                 dev_name = device["accountName"]
                 player_id = dev_name
-                player = Player(
-                    player_id=player_id,
-                    provider=self.instance_id,
-                    type=PlayerType.PLAYER,
-                    name=player_id,
-                    available=True,
-                    powered=False,
-                    device_info=DeviceInfo(),
-                    supported_features={
-                        PlayerFeature.VOLUME_SET,
-                        PlayerFeature.PAUSE,
-                        PlayerFeature.VOLUME_MUTE,
-                    },
-                )
-                await self.mass.players.register_or_update(player)
-                # Initialize AlexaDevice and store in self.devices
-                device_object = self.AlexaDevice()
+                # Initialize AlexaDevice
+                device_object = AlexaDevice()
                 device_object._device_type = device["deviceType"]
                 device_object.device_serial_number = device["serialNumber"]
                 device_object._device_family = device["deviceOwnerCustomerId"]
@@ -315,123 +401,6 @@ class AlexaProvider(PlayerProvider):
                 device_object._locale = "en-US"
                 self.devices[player_id] = device_object
 
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_player_config_entries(player_id)
-        return (
-            *base_entries,
-            CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
-            CONF_ENTRY_HTTP_PROFILE,
-        )
-
-    async def cmd_stop(self, player_id: str) -> None:
-        """Send STOP command to given player."""
-        if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
-            return
-        device_object = self.devices[player_id]
-        api = AlexaAPI(device_object, self.login)
-        await api.stop()
-
-        player.state = PlayerState.IDLE
-        self.mass.players.update(player_id)
-
-    async def cmd_play(self, player_id: str) -> None:
-        """Send PLAY command to given player."""
-        if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
-            return
-        device_object = self.devices[player_id]
-        api = AlexaAPI(device_object, self.login)
-        await api.play()
-
-        player.state = PlayerState.PLAYING
-        self.mass.players.update(player_id)
-
-    async def cmd_pause(self, player_id: str) -> None:
-        """Send PAUSE command to given player."""
-        if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
-            return
-        device_object = self.devices[player_id]
-        api = AlexaAPI(device_object, self.login)
-        await api.pause()
-
-        player.state = PlayerState.PLAYING
-        self.mass.players.update(player_id)
-
-    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
-            return
-        device_object = self.devices[player_id]
-        api = AlexaAPI(device_object, self.login)
-        await api.set_volume(volume_level / 100)
-
-        player.volume_level = volume_level
-        self.mass.players.update(player_id)
-
-    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
-        """Send VOLUME MUTE command to given player."""
-        if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
-            return
-        device_object = self.devices[player_id]
-        api = AlexaAPI(device_object, self.login)
-        await api.set_volume(0)
-
-        player.volume_level = 0
-        self.mass.players.update(player_id)
-
-    async def play_media(
-        self,
-        player_id: str,
-        media: PlayerMedia,
-    ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Players controller to start playing a mediaitem on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - media: Details of the item that needs to be played on the player.
-        """
-        if not (player := self.mass.players.get(player_id)):
-            return
-
-        username = self.config.get_value(CONF_API_BASIC_AUTH_USERNAME)
-        password = self.config.get_value(CONF_API_BASIC_AUTH_PASSWORD)
-
-        auth = None
-        if username is not None and password is not None:
-            auth = BasicAuth(str(username), str(password))
-
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.post(
-                    f"{self.config.get_value(CONF_API_URL)}/ma/push-url",
-                    json={"streamUrl": media.uri},
-                    timeout=aiohttp.ClientTimeout(total=10),
-                    auth=auth,
-                ) as resp:
-                    await resp.text()
-            except Exception as exc:
-                _LOGGER.error("Failed to push URL to Alexa: %s", exc)
-                return
-        device_object = self.devices[player_id]
-        api = AlexaAPI(device_object, self.login)
-        await api.run_custom("Ask music assistant to play audio")
-
-        state = await api.get_state()
-        if state:
-            state = state.get("playerInfo", None)
-
-        if state:
-            device_media = state.get("infoText")
-            if device_media:
-                media.title = device_media.get("title")
-                media.artist = device_media.get("subText1")
-                player.current_media = media
-            player.elapsed_time = 0
-            player.elapsed_time_last_updated = time.time()
-            if state.get("playbackState") == "PLAYING":
-                player.state = PlayerState.PLAYING
-        self.mass.players.update(player_id)
+                # Create AlexaPlayer instance
+                player = AlexaPlayer(self, player_id, device_object)
+                await self.mass.players.register_or_update(player)

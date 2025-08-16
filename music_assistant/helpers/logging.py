@@ -17,9 +17,7 @@ import queue
 import traceback
 from collections.abc import Callable, Coroutine
 from functools import partial, wraps
-from typing import Any, TypeVar, cast, overload
-
-_T = TypeVar("_T")
+from typing import Any, cast, overload
 
 
 class LoggingQueueHandler(logging.handlers.QueueHandler):
@@ -157,37 +155,3 @@ def catch_log_exception(
 
         wrapper_func = wrapper
     return wrapper_func
-
-
-def catch_log_coro_exception(
-    target: Coroutine[Any, Any, _T], format_err: Callable[..., Any], *args: Any
-) -> Coroutine[Any, Any, _T | None]:
-    """Decorate a coroutine to catch and log exceptions."""
-
-    async def coro_wrapper(*args: Any) -> _T | None:
-        """Catch and log exception."""
-        try:
-            return await target
-        except Exception:
-            log_exception(format_err, *args)
-            return None
-
-    return coro_wrapper(*args)
-
-
-def async_create_catching_coro(target: Coroutine[Any, Any, _T]) -> Coroutine[Any, Any, _T | None]:
-    """Wrap a coroutine to catch and log exceptions.
-
-    The exception will be logged together with a stacktrace of where the
-    coroutine was wrapped.
-
-    target: target coroutine.
-    """
-    trace = traceback.extract_stack()
-    return catch_log_coro_exception(
-        target,
-        lambda: "Exception in {} called from\n {}".format(
-            target.__name__,
-            "".join(traceback.format_list(trace[:-1])),
-        ),
-    )

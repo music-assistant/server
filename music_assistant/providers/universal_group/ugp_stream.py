@@ -16,10 +16,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.helpers.audio import get_ffmpeg_stream
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
-
-# ruff: noqa: ARG002
 
 
 class UGPStream:
@@ -41,14 +39,14 @@ class UGPStream:
         self.audio_source = audio_source
         self.input_format = audio_format
         self.base_pcm_format = base_pcm_format
-        self.subscribers: list[Callable[[bytes], Awaitable]] = []
-        self._task: asyncio.Task | None = None
+        self.subscribers: list[Callable[[bytes], Awaitable[None]]] = []
+        self._task: asyncio.Task[None] | None = None
         self._done: asyncio.Event = asyncio.Event()
 
     @property
     def done(self) -> bool:
         """Return if this stream is already done."""
-        return self._done.is_set() and self._task and self._task.done()
+        return self._done.is_set() and self._task is not None and self._task.done()
 
     async def stop(self) -> None:
         """Stop/cancel the stream."""
@@ -69,7 +67,7 @@ class UGPStream:
         # start the runner as soon as the (first) client connects
         if not self._task:
             self._task = asyncio.create_task(self._runner())
-        queue = asyncio.Queue(10)
+        queue: asyncio.Queue[bytes] = asyncio.Queue(10)
         try:
             self.subscribers.append(queue.put)
             while True:

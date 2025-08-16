@@ -11,7 +11,6 @@ from .provider import Provider
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, MediaItemMetadata, Track
 
-# ruff: noqa: ARG001, ARG002
 
 DEFAULT_SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_METADATA,

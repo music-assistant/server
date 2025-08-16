@@ -6,8 +6,8 @@ on:
 
 env:
   PYTHON_VERSION: "3.12"
-  BASE_IMAGE_VERSION_STABLE: "1.2.3"
-  BASE_IMAGE_VERSION_BETA: "1.3.0"
+  BASE_IMAGE_VERSION_STABLE: "1.3.1"
+  BASE_IMAGE_VERSION_BETA: "1.3.1"
 
 jobs:
   build-artifact:
@@ -16,7 +16,7 @@ jobs:
     outputs:
       version: ${{ steps.vars.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4.1.4
+      - uses: actions/checkout@v5
       - name: Get tag
         id: vars
         run: >-
@@ -70,7 +70,7 @@ jobs:
     steps:
       - name: Retrieve release distributions
         if: ${{ github.event.release.prerelease == false }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: release-dists
           path: dist/
@@ -90,14 +90,14 @@ jobs:
       - build-artifact
       - pypi-publish
     steps:
-      - uses: actions/checkout@v4.1.4
+      - uses: actions/checkout@v5
       - name: Retrieve release distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: release-dists
           path: dist/
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v3.4.0
+        uses: docker/login-action@v3.5.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}

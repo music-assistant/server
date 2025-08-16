@@ -27,10 +27,10 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.process import AsyncProcess, check_output
+from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider, PluginSource
 from music_assistant.providers.spotify.helpers import get_librespot_binary
 

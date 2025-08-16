@@ -45,8 +45,6 @@ if TYPE_CHECKING:
     from music_assistant.controllers.media.radio import RadioController
     from music_assistant.controllers.media.tracks import TracksController
 
-# ruff: noqa: ARG001, ARG002
-
 
 class MusicProvider(Provider):
     """Base representation of a Music Provider (controller).
@@ -878,6 +876,8 @@ class MusicProvider(Provider):
             return ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
         if media_type == MediaType.AUDIOBOOK:
             return ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT in self.supported_features
+        if media_type == MediaType.PODCAST:
+            return ProviderFeature.LIBRARY_PODCASTS_EDIT in self.supported_features
         return False
 
     def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType, None]:

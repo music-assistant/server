@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import urllib.error
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from pychromecast import dial
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from pychromecast.socket_client import ConnectionStatus
     from zeroconf import ServiceInfo, Zeroconf
 
-    from . import CastPlayer, ChromecastProvider
+    from .player import ChromecastPlayer
 
 DEFAULT_PORT = 8009
 
@@ -50,7 +50,7 @@ class ChromecastInfo:
         return self.cast_type == CAST_TYPE_GROUP
 
     @classmethod
-    def from_cast_info(cls: Self, cast_info: CastInfo) -> Self:
+    def from_cast_info(cls, cast_info: CastInfo) -> ChromecastInfo:
         """Instantiate ChromecastInfo from CastInfo."""
         return cls(**asdict(cast_info))
 
@@ -128,23 +128,19 @@ class CastStatusListener:
 
     def __init__(
         self,
-        prov: ChromecastProvider,
-        castplayer: CastPlayer,
+        castplayer: ChromecastPlayer,
         mz_mgr: MultizoneManager,
         mz_only=False,
     ) -> None:
         """Initialize the status listener."""
-        self.prov = prov
         self.castplayer = castplayer
         self._uuid = castplayer.cc.uuid
         self._valid = True
         self._mz_mgr = mz_mgr
-
         if self.castplayer.cast_info.is_audio_group:
             self._mz_mgr.add_multizone(castplayer.cc)
         if mz_only:
             return
-
         castplayer.cc.register_status_listener(self)
         castplayer.cc.socket_client.media_controller.register_status_listener(self)
         castplayer.cc.register_connection_listener(self)
@@ -155,24 +151,24 @@ class CastStatusListener:
         """Handle updated CastStatus."""
         if not self._valid:
             return
-        self.prov.on_new_cast_status(self.castplayer, status)
+        self.castplayer.on_new_cast_status(status)
 
     def new_media_status(self, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
         if not self._valid:
             return
-        self.prov.on_new_media_status(self.castplayer, status)
+        self.castplayer.on_new_media_status(status)
 
     def new_connection_status(self, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
         if not self._valid:
             return
-        self.prov.on_new_connection_status(self.castplayer, status)
+        self.castplayer.on_new_connection_status(status)
 
     def added_to_multizone(self, group_uuid) -> None:
         """Handle the cast added to a group."""
-        self.prov.logger.debug(
-            "%s is added to multizone: %s", self.castplayer.player.display_name, group_uuid
+        self.castplayer.logger.debug(
+            "%s is added to multizone: %s", self.castplayer.display_name, group_uuid
         )
         self.new_cast_status(self.castplayer.cc.status)
 
@@ -180,25 +176,29 @@ class CastStatusListener:
         """Handle the cast removed from a group."""
         if not self._valid:
             return
-        if group_uuid == self.castplayer.player.active_source:
-            self.castplayer.player.active_source = None
-        self.prov.logger.debug(
-            "%s is removed from multizone: %s", self.castplayer.player.display_name, group_uuid
+        if group_uuid == self.castplayer.active_source:
+            mass = self.castplayer.mass
+            mass.loop.call_soon_threadsafe(self.castplayer.update_state)
+        self.castplayer.logger.debug(
+            "%s is removed from multizone: %s", self.castplayer.display_name, group_uuid
         )
         self.new_cast_status(self.castplayer.cc.status)
 
     def multizone_new_cast_status(self, group_uuid, cast_status) -> None:
         """Handle reception of a new CastStatus for a group."""
-        if group_player := self.prov.castplayers.get(group_uuid):
+        mass = self.castplayer.mass
+        if group_player := mass.players.get(group_uuid):
+            if TYPE_CHECKING:
+                assert isinstance(group_player, ChromecastPlayer)
             if group_player.cc.media_controller.is_active:
                 self.castplayer.active_group = group_uuid
             elif group_uuid == self.castplayer.active_group:
                 self.castplayer.active_group = None
 
-        self.prov.logger.log(
+        self.castplayer.logger.log(
             VERBOSE_LOG_LEVEL,
             "%s got new cast status for group: %s",
-            self.castplayer.player.display_name,
+            self.castplayer.display_name,
             group_uuid,
         )
         self.new_cast_status(self.castplayer.cc.status)
@@ -207,17 +207,17 @@ class CastStatusListener:
         """Handle reception of a new MediaStatus for a group."""
         if not self._valid:
             return
-        self.prov.logger.log(
+        self.castplayer.logger.log(
             VERBOSE_LOG_LEVEL,
             "%s got new media_status for group: %s",
-            self.castplayer.player.display_name,
+            self.castplayer.display_name,
             group_uuid,
         )
-        self.prov.on_new_media_status(self.castplayer, media_status)
+        self.castplayer.on_new_media_status(media_status)
 
     def load_media_failed(self, queue_item_id, error_code) -> None:
         """Call when media failed to load."""
-        self.prov.logger.warning(
+        self.castplayer.logger.warning(
             "Load media failed: %s - error code: %s", queue_item_id, error_code
         )
 

@@ -10,6 +10,7 @@ COPY requirements_all.txt .
 
 # ensure UV is installed
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 # create venv which will be copied to the final image
 ENV VIRTUAL_ENV=/app/venv
 RUN uv venv $VIRTUAL_ENV
@@ -67,9 +68,9 @@ LABEL \
     io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"
 
-VOLUME [ "/data" ]
+VOLUME [ "/data", "/cache" ]
 EXPOSE 8095
 
 WORKDIR $VIRTUAL_ENV
 
-ENTRYPOINT ["mass", "--config", "/data"]
+ENTRYPOINT ["mass", "--data-dir", "/data", "--cache-dir", "/cache"]

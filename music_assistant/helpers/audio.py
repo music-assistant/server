@@ -47,6 +47,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
+from music_assistant.models.player import SyncGroupPlayer
 
 from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
@@ -57,13 +58,12 @@ from .util import detect_charset, has_enough_space
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig, PlayerConfig
-    from music_assistant_models.player import Player
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
-    from music_assistant.providers.player_group import PlayerGroupProvider
+    from music_assistant.models.player import Player
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
 
@@ -482,7 +482,7 @@ def get_player_dsp_details(
         filters=dsp_config.filters,
         output_gain=dsp_config.output_gain,
         output_limiter=output_limiter,
-        output_format=player.output_format,
+        output_format=player.extra_data.get("output_format", None),
     )
 
 
@@ -498,19 +498,10 @@ def get_stream_dsp_details(
     output_format = None
     is_external_group = False
 
-    if player.provider.startswith("player_group"):
+    if player.type == PlayerType.GROUP and isinstance(player, SyncGroupPlayer):
         if group_preventing_dsp:
-            try:
-                # We need a bit of a hack here since only the leader knows the correct output format
-                provider = mass.get_provider(player.provider)
-                if TYPE_CHECKING:  # avoid circular import
-                    assert isinstance(provider, PlayerGroupProvider)
-                if provider:
-                    output_format = provider._get_sync_leader(player).output_format
-            except RuntimeError:
-                # _get_sync_leader will raise a RuntimeError if this group has no players
-                # just ignore this and continue without output_format
-                LOGGER.warning("Unable to get the sync group leader for %s", queue_id)
+            if sync_leader := player.sync_leader:
+                output_format = sync_leader.extra_data.get("output_format", None)
     else:
         # We only add real players (so skip the PlayerGroups as they only sync containing players)
         details = get_player_dsp_details(mass, player)
@@ -518,14 +509,14 @@ def get_stream_dsp_details(
         if group_preventing_dsp:
             # The leader is responsible for sending the (combined) audio stream, so get
             # the output format from the leader.
-            output_format = player.output_format
+            output_format = player.extra_data.get("output_format", None)
         is_external_group = player.type in (PlayerType.GROUP, PlayerType.STEREO_PAIR)
 
     # We don't enumerate all group members in case this group is externally created
     # (e.g. a Chromecast group from the Google Home app)
-    if player and player.group_childs and not is_external_group:
+    if player and player.group_members and not is_external_group:
         # grouped playback, get DSP details for each player in the group
-        for child_id in player.group_childs:
+        for child_id in player.group_members:
             # skip if we already have the details (so if it's the group leader)
             if child_id in dsp:
                 continue
@@ -1046,7 +1037,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
     resolved_url = url
     timeout = ClientTimeout(total=0, connect=10, sock_read=5)
     try:
-        async with mass.http_session.get(
+        async with mass.http_session_no_ssl.get(
             url, headers=HTTP_HEADERS_ICY, allow_redirects=True, timeout=timeout
         ) as resp:
             headers = resp.headers
@@ -1092,7 +1083,7 @@ async def get_icy_radio_stream(
     """Get (radio) audio stream from HTTP, including ICY metadata retrieval."""
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
-    async with mass.http_session.get(
+    async with mass.http_session_no_ssl.get(
         url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
     ) as resp:
         headers = resp.headers
@@ -1142,7 +1133,7 @@ async def get_hls_substream(
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     # fetch master playlist and select (best) child playlist
     # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
-    async with mass.http_session.get(
+    async with mass.http_session_no_ssl.get(
         url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
     ) as resp:
         resp.raise_for_status()
@@ -1182,15 +1173,17 @@ async def get_http_stream(
     url: str,
     streamdetails: StreamDetails,
     seek_position: int = 0,
+    verify_ssl: bool = True,
 ) -> AsyncGenerator[bytes, None]:
     """Get audio stream from HTTP."""
     LOGGER.debug("Start HTTP stream for %s (seek_position %s)", streamdetails.uri, seek_position)
     if seek_position:
         assert streamdetails.duration, "Duration required for seek requests"
+    http_session = mass.http_session if verify_ssl else mass.http_session_no_ssl
     # try to get filesize with a head request
     seek_supported = streamdetails.can_seek
     if seek_position or not streamdetails.size:
-        async with mass.http_session.head(url, allow_redirects=True, headers=HTTP_HEADERS) as resp:
+        async with http_session.head(url, allow_redirects=True, headers=HTTP_HEADERS) as resp:
             resp.raise_for_status()
             if size := resp.headers.get("Content-Length"):
                 streamdetails.size = int(size)
@@ -1224,7 +1217,7 @@ async def get_http_stream(
 
     # start the streaming from http
     bytes_received = 0
-    async with mass.http_session.get(
+    async with http_session.get(
         url, allow_redirects=True, headers=headers, timeout=timeout
     ) as resp:
         is_partial = resp.status == 206
@@ -1422,10 +1415,10 @@ def is_grouping_preventing_dsp(player: Player) -> bool:
     # We require the caller to handle non-leader cases themselves since player.synced_to
     # can be unreliable in some edge cases
     multi_device_dsp_supported = PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
-    child_count = len(player.group_childs) if player.group_childs else 0
+    child_count = len(player.group_members) if player.group_members else 0
 
     is_multiple_devices: bool
-    if player.provider.startswith("player_group"):
+    if player.provider.domain == "player_group":
         # PlayerGroups have no leader, so having a child count of 1 means
         # the group actually contains only a single player.
         is_multiple_devices = child_count > 1
@@ -1476,15 +1469,15 @@ def get_player_filter_params(
             # We can not correctly apply DSP to a grouped player without multi-device DSP support,
             # so we disable it.
             dsp.enabled = False
-        elif player.provider.startswith("player_group") and (
+        elif player.provider.domain == "player_group" and (
             PlayerFeature.MULTI_DEVICE_DSP not in player.supported_features
         ):
             # This is a special case! We have a player group where:
             # - The group leader does not support MULTI_DEVICE_DSP
             # - But only contains a single player (since nothing is preventing DSP)
             # We can still apply the DSP of that single player.
-            if player.group_childs:
-                child_player = mass.players.get(player.group_childs[0])
+            if player.group_members:
+                child_player = mass.players.get(player.group_members[0])
                 assert child_player is not None  # for type checking
                 dsp = mass.config.get_player_dsp_config(child_player.player_id)
             else:
@@ -1494,7 +1487,7 @@ def get_player_filter_params(
         # We here implicitly know what output format is used for the player
         # in the audio processing steps. We save this information to
         # later be able to show this to the user in the UI.
-        player.output_format = output_format
+        player.extra_data["output_format"] = output_format
 
         limiter_enabled = is_output_limiter_enabled(mass, player)
 
