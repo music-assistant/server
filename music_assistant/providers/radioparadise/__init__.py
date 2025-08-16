@@ -23,7 +23,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -49,84 +49,46 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
     "0": {
         "name": "Radio Paradise - Main Mix",
         "description": "Eclectic mix of music - hand-picked by real humans",
-        "stream_urls": {
-            "flac": "https://stream.radioparadise.com/flac",
-            "aac-320": "https://stream.radioparadise.com/aac-320",
-            "mp3-192": "https://stream.radioparadise.com/mp3-192",
-            "aac-128": "https://stream.radioparadise.com/aac-128",
-            "aac-64": "https://stream.radioparadise.com/aac-64",
-        },
+        "stream_url": "https://stream.radioparadise.com/flac",
+        "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing",
     },
     "1": {
         "name": "Radio Paradise - Mellow Mix",
         "description": "A mellower selection from the RP music library",
-        "stream_urls": {
-            "flac": "https://stream.radioparadise.com/mellow-flac",
-            "aac-320": "https://stream.radioparadise.com/mellow-320",
-            "mp3-192": "https://stream.radioparadise.com/mellow-192",
-            "aac-128": "https://stream.radioparadise.com/mellow-128",
-            "aac-64": "https://stream.radioparadise.com/mellow-64",
-        },
+        "stream_url": "https://stream.radioparadise.com/mellow-flac",
+        "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=1",
     },
     "2": {
         "name": "Radio Paradise - Rock Mix",
         "description": "Heavier selections from the RP music library",
-        "stream_urls": {
-            "flac": "https://stream.radioparadise.com/rock-flac",
-            "aac-320": "https://stream.radioparadise.com/rock-320",
-            "mp3-192": "https://stream.radioparadise.com/rock-192",
-            "aac-128": "https://stream.radioparadise.com/rock-128",
-            "aac-64": "https://stream.radioparadise.com/rock-64",
-        },
+        "stream_url": "https://stream.radioparadise.com/rock-flac",
+        "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=2",
     },
     "3": {
         "name": "Radio Paradise - Global",
         "description": "Global music and experimental selections",
-        "stream_urls": {
-            "flac": "https://stream.radioparadise.com/global-flac",
-            "aac-320": "https://stream.radioparadise.com/global-320",
-            "mp3-192": "https://stream.radioparadise.com/global-192",
-            "aac-128": "https://stream.radioparadise.com/global-128",
-            "aac-64": "https://stream.radioparadise.com/global-64",
-        },
+        "stream_url": "https://stream.radioparadise.com/global-flac",
+        "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=3",
     },
     "4": {
         "name": "Radio Paradise - Beyond",
         "description": "Exploring the frontiers of improvisational music",
-        "stream_urls": {
-            "flac": "https://stream.radioparadise.com/beyond-flac",
-            "aac-320": "https://stream.radioparadise.com/beyond-320",
-            "mp3-192": "https://stream.radioparadise.com/beyond-192",
-            "aac-128": "https://stream.radioparadise.com/beyond-128",
-            "aac-64": "https://stream.radioparadise.com/beyond-64",
-        },
+        "stream_url": "https://stream.radioparadise.com/beyond-flac",
+        "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=4",
     },
     "5": {
         "name": "Radio Paradise - Serenity",
         "description": "Don't panic, and don't forget your towel",
-        "stream_urls": {
-            "aac-128": "https://stream.radioparadise.com/serenity",
-        },
+        "stream_url": "https://stream.radioparadise.com/serenity",
+        "content_type": ContentType.AAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=5",
     },
 }
-
-# Stream format configurations
-BITRATE_FORMATS: dict[str, dict[str, ContentType]] = {
-    "flac": {"content_type": ContentType.FLAC},
-    "aac-320": {"content_type": ContentType.AAC},
-    "mp3-192": {"content_type": ContentType.MP3},
-    "aac-128": {"content_type": ContentType.AAC},
-    "aac-64": {"content_type": ContentType.AAC},
-}
-
-# Ordered list of formats for fallback logic
-FALLBACK_ORDER = ["flac", "aac-320", "mp3-192", "aac-128", "aac-64"]
 
 
 async def setup(
@@ -143,23 +105,7 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    return (
-        ConfigEntry(
-            key="stream_format",
-            type=ConfigEntryType.STRING,
-            label="Stream Quality",
-            description="Choose the audio quality/format for streams",
-            required=True,
-            default_value="flac",
-            options=[
-                ConfigValueOption(title="FLAC (Lossless)", value="flac"),
-                ConfigValueOption(title="AAC 320kbps", value="aac-320"),
-                ConfigValueOption(title="MP3 192kbps", value="mp3-192"),
-                ConfigValueOption(title="AAC 128kbps", value="aac-128"),
-                ConfigValueOption(title="AAC 64kbps", value="aac-64"),
-            ],
-        ),
-    )
+    return ()
 
 
 class RadioParadiseProvider(MusicProvider):
@@ -168,8 +114,6 @@ class RadioParadiseProvider(MusicProvider):
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig):
         """Initialize the provider."""
         super().__init__(mass, manifest, config)
-        self._channels_cache: dict[str, dict[str, Any]] = RADIO_PARADISE_CHANNELS.copy()
-        self._stream_format: str = cast("str", self.config.get_value("stream_format", "flac"))
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -186,38 +130,56 @@ class RadioParadiseProvider(MusicProvider):
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
-        for channel_id in self._channels_cache:
-            yield await self._parse_radio(channel_id)
+        for channel_id in RADIO_PARADISE_CHANNELS:
+            yield self._parse_radio(channel_id)
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
-        if prov_radio_id not in self._channels_cache:
+        if prov_radio_id not in RADIO_PARADISE_CHANNELS:
             raise MediaNotFoundError("Station not found")
-        return await self._parse_radio(prov_radio_id)
+        
+        # Start with basic radio object
+        radio = self._parse_radio(prov_radio_id)
+        
+        # Enhance with current metadata (API call only when specifically requested)
+        metadata = await self._get_channel_metadata(prov_radio_id)
+        if metadata and metadata.get("current"):
+            current_song = metadata["current"]
+            cover_path = current_song.get("cover")
+            if cover_path:
+                cover_url = f"https://img.radioparadise.com/{cover_path}"
+                images = [
+                    MediaItemImage(
+                        provider=self.lookup_key,
+                        type=ImageType.THUMB,
+                        path=cover_url,
+                        remotely_accessible=True,
+                    )
+                ]
+                radio.metadata.images = UniqueList(images)
+        
+        return radio
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if media_type != MediaType.RADIO:
             raise UnplayableMediaError(f"Unsupported media type: {media_type}")
-        if item_id not in self._channels_cache:
+        if item_id not in RADIO_PARADISE_CHANNELS:
             raise MediaNotFoundError(f"Unknown radio channel: {item_id}")
 
         stream_url = self._build_stream_url(item_id)
         if not stream_url:
-            raise ValueError(f"No stream URL found for channel {item_id}")
+            raise UnplayableMediaError(f"No stream URL found for channel {item_id}")
 
-        channel_info = self._channels_cache[item_id]
-        stream_format = next(
-            (k for k, v in channel_info["stream_urls"].items() if v == stream_url),
-            self._stream_format,
-        )
-        format_info = BITRATE_FORMATS.get(stream_format, BITRATE_FORMATS["flac"])
+        # Get content type from channel configuration
+        channel_info = RADIO_PARADISE_CHANNELS[item_id]
+        content_type = channel_info["content_type"]
 
         stream_details = StreamDetails(
             item_id=item_id,
             provider=self.lookup_key,
             audio_format=AudioFormat(
-                content_type=format_info["content_type"],
+                content_type=content_type,
                 channels=2,
             ),
             media_type=MediaType.RADIO,
@@ -228,7 +190,7 @@ class RadioParadiseProvider(MusicProvider):
             duration=0,
         )
 
-        # Store the monitoring task in streamdetails.data
+        # Store the monitoring task in streamdetails.data for cleanup in on_streamed
         monitor_task = self.mass.create_task(self._monitor_stream_metadata(stream_details))
         stream_details.data = {"monitor_task": monitor_task}
 
@@ -252,12 +214,13 @@ class RadioParadiseProvider(MusicProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items."""
-        return [await self._parse_radio(channel_id) for channel_id in self._channels_cache]
+        return [self._parse_radio(channel_id) for channel_id in RADIO_PARADISE_CHANNELS]
 
-    async def _parse_radio(self, channel_id: str) -> Radio:
-        """Create a Radio object with enhanced metadata from block API."""
-        channel_info = cast("dict[str, str]", self._channels_cache.get(channel_id, {}))
-        radio = Radio(
+    def _parse_radio(self, channel_id: str) -> Radio:
+        """Create a Radio object from cached channel information."""
+        channel_info = RADIO_PARADISE_CHANNELS.get(channel_id, {})
+        
+        return Radio(
             provider=self.lookup_key,
             item_id=channel_id,
             name=channel_info.get("name", "Unknown Radio"),
@@ -271,30 +234,16 @@ class RadioParadiseProvider(MusicProvider):
             },
         )
 
-        # Get enhanced metadata from block API
-        metadata = await self._get_channel_metadata(channel_id)
-        if metadata and metadata.get("current"):
-            current_song = metadata["current"]
-
-            # Use current track's cover art
-            cover_path = current_song.get("cover")
-            if cover_path:
-                cover_url = f"https://img.radioparadise.com/{cover_path}"
-                images = [
-                    MediaItemImage(
-                        provider=self.lookup_key,
-                        type=ImageType.THUMB,
-                        path=cover_url,
-                        remotely_accessible=True,
-                    )
-                ]
-                radio.metadata.images = UniqueList(images)
-
-        return radio
-
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
-        """Get current playing metadata and upcoming tracks from block API."""
-        if channel_id not in self._channels_cache:
+        """Get current track and upcoming tracks from Radio Paradise's block API.
+        
+        Args:
+            channel_id: Radio Paradise channel ID (0-5)
+            
+        Returns:
+            Dict with current song, next song, and block data, or None if API fails
+        """
+        if channel_id not in RADIO_PARADISE_CHANNELS:
             return None
 
         try:
@@ -334,63 +283,87 @@ class RadioParadiseProvider(MusicProvider):
             return None
 
     def _get_current_block_position(self, block_data: dict[str, Any]) -> int:
-        """Calculate current position in block based on scheduled time."""
+        """Calculate current playback position within a Radio Paradise block.
+        
+        Args:
+            block_data: Block data containing sched_time_millis
+            
+        Returns:
+            Current position in milliseconds from block start
+        """
         current_time_ms = int(time.time() * 1000)
         sched_time = int(block_data.get("sched_time_millis", current_time_ms))
         return current_time_ms - sched_time
 
-    def _find_current_song(
-        self, songs: dict[str, Any], current_time_ms: int
-    ) -> dict[str, Any] | None:
-        """Find which song should be playing based on elapsed time."""
-        for song_key in sorted(songs.keys(), key=int):
-            song = cast("dict[str, Any]", songs[song_key])
+    def _find_current_song(self, songs: dict[str, Any], current_time_ms: int) -> dict[str, Any] | None:
+        """Find which song should currently be playing based on elapsed time.
+        
+        Args:
+            songs: Dictionary of songs from Radio Paradise block data
+            current_time_ms: Current position in milliseconds within the block
+            
+        Returns:
+            The song dict that should be playing now, or None if not found
+        """
+        sorted_keys = sorted(songs.keys(), key=int)
+        
+        for song_key in sorted_keys:
+            song = songs[song_key]
             song_start = int(song.get("elapsed", 0))
             song_duration = int(song.get("duration", 0))
             song_end = song_start + song_duration
-
+            
             if song_start <= current_time_ms < song_end:
                 return song
-
+        
         # If no exact match, return first song
         first_song = songs.get("0")
-        return cast("dict[str, Any]", first_song) if first_song is not None else None
+        return first_song if first_song is not None else None
 
-    def _get_next_song(
-        self, songs: dict[str, Any], current_song: dict[str, Any]
-    ) -> dict[str, Any] | None:
-        """Get the next song after current song."""
+    def _get_next_song(self, songs: dict[str, Any], current_song: dict[str, Any]) -> dict[str, Any] | None:
+        """Get the next song that will play after the current song.
+        
+        Args:
+            songs: Dictionary of songs from Radio Paradise block data
+            current_song: The currently playing song dictionary
+            
+        Returns:
+            The next song dict, or None if no next song found
+        """
         current_event = current_song.get("event")
-        for song_key in sorted(songs.keys(), key=int):
-            song = cast("dict[str, Any]", songs[song_key])
-            if song.get("event") != current_event and int(song.get("elapsed", 0)) > int(
-                current_song.get("elapsed", 0)
-            ):
+        current_elapsed = int(current_song.get("elapsed", 0))
+        sorted_keys = sorted(songs.keys(), key=int)
+        
+        for song_key in sorted_keys:
+            song = songs[song_key]
+            if song.get("event") != current_event and int(song.get("elapsed", 0)) > current_elapsed:
                 return song
         return None
 
     def _build_stream_url(self, channel_id: str) -> str:
-        """Build stream URL for a channel with fallback to other formats."""
-        if channel_id not in self._channels_cache:
+        """Build the streaming URL for a Radio Paradise channel.
+        
+        Args:
+            channel_id: Radio Paradise channel ID (0-5)
+            
+        Returns:
+            Streaming URL for the channel, or empty string if not found
+        """
+        if channel_id not in RADIO_PARADISE_CHANNELS:
             return ""
 
-        channel_info = self._channels_cache[channel_id]
-        stream_urls = channel_info.get("stream_urls", {})
-
-        try:
-            current_format_index = FALLBACK_ORDER.index(self._stream_format)
-        except ValueError:
-            # If preferred format not in fallback order, start from beginning
-            current_format_index = 0
-
-        for format_key in FALLBACK_ORDER[current_format_index:]:
-            if format_key in stream_urls:
-                return cast("str", stream_urls[format_key])
-
-        return ""
+        channel_info = RADIO_PARADISE_CHANNELS[channel_id]
+        return channel_info.get("stream_url", "")
 
     async def _monitor_stream_metadata(self, stream_details: StreamDetails) -> None:
-        """Monitor and update the StreamDetails with rich metadata every 10 seconds."""
+        """Monitor and update stream metadata in real-time during playback.
+        
+        Fetches current track info from Radio Paradise's API every 10 seconds
+        and updates StreamDetails with track metadata and upcoming songs.
+        
+        Args:
+            stream_details: StreamDetails object to update with metadata
+        """
         last_track_event = ""
         item_id = stream_details.item_id
 
@@ -414,13 +387,25 @@ class RadioParadiseProvider(MusicProvider):
                         last_track_event = current_event
 
                 await asyncio.sleep(10)
-        except Exception:
+        except asyncio.CancelledError:
             self.logger.debug(f"Monitor task cancelled for {item_id}")
+        except aiohttp.ClientError as exc:
+            self.logger.debug(f"Network error while monitoring {item_id}: {exc}")
+        except Exception as exc:
+            self.logger.warning(f"Unexpected error monitoring {item_id}: {exc}")
 
     def _build_stream_metadata(
         self, current_song: dict[str, Any], metadata: dict[str, Any]
     ) -> StreamMetadata:
-        """Build StreamMetadata object with current track information."""
+        """Build StreamMetadata with current track info and upcoming tracks.
+        
+        Args:
+            current_song: Current track data from Radio Paradise API
+            metadata: Full metadata response with next song and block data
+            
+        Returns:
+            StreamMetadata with track info and upcoming track previews
+        """
         # Extract track info
         artist = current_song.get("artist", "Unknown Artist")
         title = current_song.get("title", "Unknown Title")
@@ -432,13 +417,16 @@ class RadioParadiseProvider(MusicProvider):
         if album and year:
             album_display = f"{album} ({year})"
         elif year:
-            album_display = year
+            album_display = str(year)
 
         # Get cover image URL
         cover_path = current_song.get("cover")
         image_url = None
         if cover_path:
             image_url = f"https://img.radioparadise.com/{cover_path}"
+
+        # Debug log the image URL
+        self.logger.debug(f"Cover art URL for {artist} - {title}: {image_url}")
 
         # Get track duration
         duration = current_song.get("duration")
@@ -461,13 +449,19 @@ class RadioParadiseProvider(MusicProvider):
         )
 
     def _enhance_title_with_upcoming(
-        self,
-        title: str,
-        current_song: dict[str, Any],
-        next_song: dict[str, Any] | None,
-        block_data: dict[str, Any] | None,
+        self, title: str, current_song: dict[str, Any], next_song: dict[str, Any] | None, block_data: dict[str, Any] | None
     ) -> str:
-        """Enhance the title with upcoming track info."""
+        """Enhance track title with upcoming track info for scrolling display.
+        
+        Args:
+            title: Original track title
+            current_song: Current track data
+            next_song: Next track data, or None if not available  
+            block_data: Full block data with all upcoming tracks
+            
+        Returns:
+            Enhanced title with "Up Next" and "Later" information appended
+        """
         enhanced_title = title
 
         # Add next track info
@@ -477,37 +471,38 @@ class RadioParadiseProvider(MusicProvider):
             if next_artist and next_title:
                 enhanced_title += f" | Up Next: {next_artist} - {next_title}"
 
-        # Add later artists
+        # Add later artists in a single pass with deduplication
         if block_data and "song" in block_data:
-            later_artists = self._get_later_artists(current_song, next_song, block_data)
+            current_event = current_song.get("event")
+            current_elapsed = int(current_song.get("elapsed", 0))
+            next_event = next_song.get("event") if next_song else None
+            
+            # Use set to deduplicate artist names (including next_song artist)
+            seen_artists = set()
+            if next_song:
+                next_artist = next_song.get("artist", "")
+                if next_artist:
+                    seen_artists.add(next_artist)
+            
+            later_artists = []
+            sorted_keys = sorted(block_data["song"].keys(), key=int)
+            for song_key in sorted_keys:
+                song = block_data["song"][song_key]
+                song_event = song.get("event")
+                
+                # Skip current and next song, only include songs that come after current
+                if (song_event != current_event and 
+                    song_event != next_event and 
+                    int(song.get("elapsed", 0)) > current_elapsed):
+                    artist_name = song.get("artist", "")
+                    if artist_name and artist_name not in seen_artists:
+                        seen_artists.add(artist_name)
+                        later_artists.append(artist_name)
+                        if len(later_artists) >= 4:  # Limit to 4 artists
+                            break
+            
             if later_artists:
-                artists_list = ", ".join(later_artists[:4])
+                artists_list = ", ".join(later_artists)
                 enhanced_title += f" | Later: {artists_list}"
 
         return enhanced_title
-
-    def _get_later_artists(
-        self,
-        current_song: dict[str, Any],
-        next_song: dict[str, Any] | None,
-        block_data: dict[str, Any],
-    ) -> list[str]:
-        """Get list of upcoming artists after next song."""
-        current_event = current_song.get("event")
-        later_artists = []
-
-        for song_key in sorted(block_data["song"].keys(), key=int):
-            song = block_data["song"][song_key]
-            song_event = song.get("event")
-
-            # Skip current and next song
-            if song_event == current_event or (next_song and song_event == next_song.get("event")):
-                continue
-
-            # Only include songs that come after current song
-            if song.get("elapsed", 0) > current_song.get("elapsed", 0):
-                artist_name = song.get("artist", "")
-                if artist_name and artist_name not in later_artists:
-                    later_artists.append(artist_name)
-
-        return later_artists
