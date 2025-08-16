@@ -842,7 +842,7 @@ class ConfigController:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _migrate(self) -> None:
+    async def _migrate(self) -> None:  # noqa: PLR0915
         changed = False
 
         # some type hints to help with the code below
