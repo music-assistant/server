@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING
 
 from mashumaro import DataClassDictMixin
-from mashumaro.types import SerializationStrategy
 
 # Playlist, Album, and Track cannot be placed under TYPE_CHECKING
 # because they are used at runtime by DataClassDictMixin
@@ -16,7 +15,6 @@ from music_assistant_models.media_items import (
     Playlist,
     Track,
 )
-from pydantic import BaseModel
 
 from music_assistant.constants import (
     CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
@@ -32,7 +30,6 @@ from music_assistant.providers.nicovideo.constants import (
 if TYPE_CHECKING:
     import logging
 
-    from mashumaro.config import SerializationStrategyValueType
     from requests.cookies import RequestsCookieJar
 
     from music_assistant.models.music_provider import MusicProvider
@@ -113,28 +110,3 @@ def create_audio_format(
         audio_format.sample_rate = sample_rate
 
     return audio_format
-
-
-class BaseModelSerializationStrategy[T: BaseModel](SerializationStrategy):
-    """Wrapper for BaseModel to provide mashumaro serialization/deserialization."""
-
-    def __init__(self, model_type: type[T]) -> None:
-        """Initialize the strategy with the model type."""
-        self.model_type = model_type
-
-    @override
-    def serialize(self, value: T) -> dict[str, Any]:
-        """Serialize the wrapped object into a dictionary."""
-        return value.model_dump(by_alias=True)
-
-    @override
-    def deserialize(self, value: dict[str, Any]) -> T:
-        """Deserialize a dictionary into a BaseModelWrapper."""
-        return self.model_type.model_validate(value)
-
-
-def create_base_model_serialization_strategy(
-    model_types: list[type[BaseModel]],
-) -> dict[Any, SerializationStrategyValueType]:
-    """Create a serialization strategy for a BaseModel type."""
-    return {model_type: BaseModelSerializationStrategy(model_type) for model_type in model_types}
