@@ -1689,11 +1689,11 @@
       dict({
         'audio_format': dict({
           'bit_depth': 16,
-          'bit_rate': 236,
+          'bit_rate': 236125,
           'channels': 2,
           'codec_type': 'aac',
           'content_type': 'mp4',
-          'output_format_str': 'AAC 48kHz/16bit/2ch 236125kbps',
+          'output_format_str': 'mp4',
           'sample_rate': 48000,
         }),
         'available': True,
