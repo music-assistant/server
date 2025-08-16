@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, override
 
-from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import AudioFormat, Track
+from music_assistant_models.media_items import Track
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.providers.nicovideo.helpers import create_audio_format
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
@@ -102,10 +103,6 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             f"Cookie: {stream_format['cookies']}\r\n",
         ]
 
-        # Set both content_type and codec_type for accurate format detection
-        content_type = ContentType.try_parse(stream_format.get("audio_ext", "unknown"))
-        codec_type = ContentType.try_parse(stream_format.get("acodec", "unknown"))
-
         # Calculate estimated file size if available
         duration = int(stream_format.get("duration", 0))
         bit_rate = int(stream_format.get("abr", 0)) if stream_format.get("abr") else None
@@ -114,23 +111,14 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         track = await self.get_track(item_id)
         stream_title = track.name if track else ""
 
-        self.logger.debug(
-            "Found stream format for %s (audio_ext: %s, acodec: %s)",
-            item_id,
-            str(content_type),
-            str(codec_type),
-        )
         # Do not use album image intentionally
         image = super(Track, track).image if track else None
         album = track.album if track else None
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            audio_format=AudioFormat(
-                content_type=content_type,
-                codec_type=codec_type,
+            audio_format=create_audio_format(
                 sample_rate=int(stream_format.get("asr", 44100)),
-                channels=int(stream_format.get("channels", 2)),
                 bit_rate=bit_rate,
             ),
             media_type=MediaType.TRACK,

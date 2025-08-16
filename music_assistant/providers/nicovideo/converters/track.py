@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ContentType, ImageType, LinkType
+from music_assistant_models.enums import ImageType, LinkType
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
@@ -17,6 +17,7 @@ from music_assistant_models.unique_list import UniqueList
 from niconico.objects.video import EssentialVideo, Owner, VideoThumbnail
 
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
+from music_assistant.providers.nicovideo.helpers import create_audio_format
 
 if TYPE_CHECKING:
     from niconico.objects.video.watch import WatchData, WatchVideo, WatchVideoThumbnail
@@ -37,12 +38,8 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             like_count=video.count.like,
         )
 
-        # Create basic audio format with default/estimated values for EssentialVideo
         # Since EssentialVideo doesn't have detailed audio format info, we use defaults
-        audio_format = AudioFormat(
-            content_type=ContentType.MP4,  # niconico primarily uses MP4
-            codec_type=ContentType.AAC,
-        )
+        audio_format = create_audio_format()
 
         # Create base track with enhanced metadata
         return Track(
@@ -161,26 +158,9 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         if not audio.is_available:
             return None
 
-        # Determine channels - niconico videos are typically stereo (2 channels)
-        # Since niconico doesn't explicitly provide channel info, we assume stereo
-        channels = 2
-
-        # Determine bit depth - niconico typically uses 16-bit audio
-        # Since this info isn't available, we use a reasonable default
-        bit_depth = 16
-
-        return AudioFormat(
-            content_type=ContentType.MP4,  # niconico primarily uses MP4
-            codec_type=ContentType.AAC,
+        return create_audio_format(
             sample_rate=audio.sampling_rate,
-            bit_depth=bit_depth,
-            channels=channels,
             bit_rate=audio.bit_rate,
-            output_format_str=(
-                f"AAC {audio.sampling_rate // 1000}kHz/"
-                f"{bit_depth}bit/{channels}ch "
-                f"{audio.bit_rate}kbps"
-            ),
         )
 
     def _create_track_metadata_from_watch_video(

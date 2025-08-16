@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from enum import Enum
 
+from music_assistant_models.enums import ContentType
+
 
 class ApiPriority(Enum):
     """Priority levels for nicovideo API calls."""
@@ -31,3 +33,12 @@ CONF_HISTORY_COUNT = "history_count"
 CONF_FOLLOWING_ACTIVITIES_COUNT = "following_activities_count"
 
 NICOVIDEO_COOKIE_DOMAIN = ".nicovideo.jp"
+
+# Audio format constants based on niconico official specifications
+# Sources:
+# - https://qa.nicovideo.jp/faq/show/21908
+# - https://qa.nicovideo.jp/faq/show/5685
+NICOVIDEO_CONTENT_TYPE = ContentType.MP4
+NICOVIDEO_CODEC_TYPE = ContentType.AAC
+NICOVIDEO_AUDIO_CHANNELS = 2  # Stereo (2ch)
+NICOVIDEO_AUDIO_BIT_DEPTH = 16  # 16-bit (confirmed from downloaded video analysis)

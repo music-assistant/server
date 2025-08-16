@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mashumaro import DataClassDictMixin
-from music_assistant_models.media_items import (  # noqa: TC002 - Used by DataClassDictMixin
+from music_assistant_models.media_items import (
     Album,
+    AudioFormat,
     Playlist,
     Track,
 )
@@ -15,6 +16,12 @@ from music_assistant_models.media_items import (  # noqa: TC002 - Used by DataCl
 from music_assistant.constants import (
     CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
     VERBOSE_LOG_LEVEL,
+)
+from music_assistant.providers.nicovideo.constants import (
+    NICOVIDEO_AUDIO_BIT_DEPTH,
+    NICOVIDEO_AUDIO_CHANNELS,
+    NICOVIDEO_CODEC_TYPE,
+    NICOVIDEO_CONTENT_TYPE,
 )
 
 if TYPE_CHECKING:
@@ -81,3 +88,22 @@ def log_verbose(logger: logging.Logger, message: str, *args: object) -> None:
     """
     if logger.isEnabledFor(VERBOSE_LOG_LEVEL):
         logger.log(VERBOSE_LOG_LEVEL, message, *args)
+
+
+def create_audio_format(
+    *, bit_rate: int | None = None, sample_rate: int | None = None
+) -> AudioFormat:
+    """Create AudioFormat from stream format data."""
+    audio_format = AudioFormat(
+        content_type=NICOVIDEO_CONTENT_TYPE,
+        codec_type=NICOVIDEO_CODEC_TYPE,
+        channels=NICOVIDEO_AUDIO_CHANNELS,
+        bit_depth=NICOVIDEO_AUDIO_BIT_DEPTH,
+    )
+
+    if bit_rate is not None:
+        audio_format.bit_rate = bit_rate
+    if sample_rate is not None:
+        audio_format.sample_rate = sample_rate
+
+    return audio_format
