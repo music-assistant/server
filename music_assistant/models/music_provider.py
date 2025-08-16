@@ -876,6 +876,8 @@ class MusicProvider(Provider):
             return ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
         if media_type == MediaType.AUDIOBOOK:
             return ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT in self.supported_features
+        if media_type == MediaType.PODCAST:
+            return ProviderFeature.LIBRARY_PODCASTS_EDIT in self.supported_features
         return False
 
     def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType, None]:

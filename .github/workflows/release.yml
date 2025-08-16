@@ -16,7 +16,7 @@ jobs:
     outputs:
       version: ${{ steps.vars.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4.1.4
+      - uses: actions/checkout@v5
       - name: Get tag
         id: vars
         run: >-
@@ -90,7 +90,7 @@ jobs:
       - build-artifact
       - pypi-publish
     steps:
-      - uses: actions/checkout@v4.1.4
+      - uses: actions/checkout@v5
       - name: Retrieve release distributions
         uses: actions/download-artifact@v5
         with:
