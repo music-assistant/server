@@ -28,9 +28,9 @@ from music_assistant_models.media_items import (
     Radio,
     UniqueList,
 )
-from music_assistant.models.music_provider import MusicProvider
-
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -135,10 +135,10 @@ class RadioParadiseProvider(MusicProvider):
         """Get full radio details by id."""
         if prov_radio_id not in RADIO_PARADISE_CHANNELS:
             raise MediaNotFoundError("Station not found")
-        
+
         # Start with basic radio object
         radio = self._parse_radio(prov_radio_id)
-        
+
         # Enhance with current metadata (API call only when specifically requested)
         metadata = await self._get_channel_metadata(prov_radio_id)
         if metadata and metadata.get("current"):
@@ -155,7 +155,7 @@ class RadioParadiseProvider(MusicProvider):
                     )
                 ]
                 radio.metadata.images = UniqueList(images)
-        
+
         return radio
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -217,7 +217,7 @@ class RadioParadiseProvider(MusicProvider):
     def _parse_radio(self, channel_id: str) -> Radio:
         """Create a Radio object from cached channel information."""
         channel_info = RADIO_PARADISE_CHANNELS.get(channel_id, {})
-        
+
         return Radio(
             provider=self.lookup_key,
             item_id=channel_id,
@@ -233,56 +233,53 @@ class RadioParadiseProvider(MusicProvider):
         )
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
-        """Get current track and upcoming tracks from Radio Paradise's block API.
+            """Get current track and upcoming tracks from Radio Paradise's block API.
 
-        Args:
-            channel_id: Radio Paradise channel ID (0-5)
+            Args:
+                channel_id: Radio Paradise channel ID (0-5)
 
-        Returns:
-            Dict with current song, next song, and block data, or None if API fails
-        """
-        if channel_id not in RADIO_PARADISE_CHANNELS:
-            return None
+            Returns:
+                Dict with current song, next song, and block data, or None if API fails
+            """
+            if channel_id not in RADIO_PARADISE_CHANNELS:
+                return None
 
-        try:
-            # Use block API for much richer data
-            api_url = (
-                f"https://api.radioparadise.com/api/get_block?bitrate=4&info=true&chan={channel_id}"
-            )
-            timeout = aiohttp.ClientTimeout(total=10)
+            try:
+                # Use block API for much richer data
+                api_url = (
+                    f"https://api.radioparadise.com/api/get_block?bitrate=4&info=true&chan={channel_id}"
+                )
+                timeout = aiohttp.ClientTimeout(total=10)
 
-            async with self.mass.http_session.get(api_url, timeout=timeout) as response:
-                if response.status != 200:
-                    self.logger.debug(f"Block API call failed with status {response.status}")
-                    return None
+                async with self.mass.http_session.get(api_url, timeout=timeout) as response:
+                    if response.status != 200:
+                        self.logger.debug(f"Block API call failed with status {response.status}")
+                        return None
 
-                data = await response.json()
+                    data = await response.json()
 
-                # Find currently playing song based on elapsed time
-                current_time_ms = self._get_current_block_position(data)
-                current_song = self._find_current_song(data.get("song", {}), current_time_ms)
+                    # Find currently playing song based on elapsed time
+                    current_time_ms = self._get_current_block_position(data)
+                    current_song = self._find_current_song(data.get("song", {}), current_time_ms)
 
-                if not current_song:
-                    self.logger.debug(f"No current song found for channel {channel_id}")
-                    return None
+                    if not current_song:
+                        self.logger.debug(f"No current song found for channel {channel_id}")
+                        return None
 
-                # Get next song
-                next_song = self._get_next_song(data.get("song", {}), current_song)
+                    # Get next song
+                    next_song = self._get_next_song(data.get("song", {}), current_song)
 
-                return {
-                    "current": current_song,
-                    "next": next_song,
-                    "block_data": data
-                }
+                    return {"current": current_song, "next": next_song, "block_data": data}
 
-        except aiohttp.ClientError as exc:
-            self.logger.debug(f"Failed to get block metadata for channel {channel_id}: {exc}")
-            return None
-        except Exception as exc:
-            self.logger.debug(
-                f"Unexpected error getting block metadata for channel {channel_id}: {exc}"
-            )
-            return None
+            except aiohttp.ClientError as exc:
+                self.logger.debug(f"Failed to get block metadata for channel {channel_id}: {exc}")
+                return None
+            except Exception as exc:
+                self.logger.debug(
+                    f"Unexpected error getting block metadata for channel {channel_id}: {exc}"
+                )
+                return None
+
 
     def _get_current_block_position(self, block_data: dict[str, Any]) -> int:
         """Calculate current playback position within a Radio Paradise block.
@@ -310,19 +307,18 @@ class RadioParadiseProvider(MusicProvider):
             The song dict that should be playing now, or None if not found
         """
         sorted_keys = sorted(songs.keys(), key=int)
-        
+
         for song_key in sorted_keys:
             song = songs[song_key]
             song_start = int(song.get("elapsed", 0))
             song_duration = int(song.get("duration", 0))
             song_end = song_start + song_duration
-            
+
             if song_start <= current_time_ms < song_end:
                 return song
         
         # If no exact match, return first song
-        first_song = songs.get("0")
-        return first_song
+        return songs.get("0")
 
     def _get_next_song(
         self, songs: dict[str, Any], current_song: dict[str, Any]
@@ -339,7 +335,7 @@ class RadioParadiseProvider(MusicProvider):
         current_event = current_song.get("event")
         current_elapsed = int(current_song.get("elapsed", 0))
         sorted_keys = sorted(songs.keys(), key=int)
-        
+
         for song_key in sorted_keys:
             song = songs[song_key]
             if song.get("event") != current_event and int(song.get("elapsed", 0)) > current_elapsed:
@@ -486,22 +482,22 @@ class RadioParadiseProvider(MusicProvider):
             current_event = current_song.get("event")
             current_elapsed = int(current_song.get("elapsed", 0))
             next_event = next_song.get("event") if next_song else None
-            
+
             # Use set to deduplicate artist names (including next_song artist)
             seen_artists = set()
             if next_song:
                 next_artist = next_song.get("artist", "")
                 if next_artist:
                     seen_artists.add(next_artist)
-            
+
             later_artists = []
             sorted_keys = sorted(block_data["song"].keys(), key=int)
             for song_key in sorted_keys:
                 song = block_data["song"][song_key]
                 song_event = song.get("event")
-                
+
                 # Skip current and next song, only include songs that come after current
-                if (song_event not in (current_event, next_event) and 
+                if (song_event not in (current_event, next_event) and
                     int(song.get("elapsed", 0)) > current_elapsed):
                     artist_name = song.get("artist", "")
                     if artist_name and artist_name not in seen_artists:
@@ -509,7 +505,7 @@ class RadioParadiseProvider(MusicProvider):
                         later_artists.append(artist_name)
                         if len(later_artists) >= 4:  # Limit to 4 artists
                             break
-            
+
             if later_artists:
                 artists_list = ", ".join(later_artists)
                 enhanced_title += f" | Later: {artists_list}"
