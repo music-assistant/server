@@ -68,6 +68,75 @@ class NicovideoServiceManager:
         """Reset the niconico.py client instance."""
         self.niconico_py_client = NicoNico()
 
+    def _safe_summarize(self, value: object) -> str:
+        """Summarize a value safely for logs (mask secrets, truncate long)."""
+        try:
+            s = str(value)
+        except Exception:
+            return "<unprintable>"
+        low = s.lower()
+        if any(k in low for k in ("cookie", "token", "session", "password")):
+            return "<masked>"
+        return (s[:200] + "…") if len(s) > 200 else s
+
+    def _summarize_call_args(
+        self, args: tuple[object, ...], kwargs: dict[str, object]
+    ) -> tuple[str, str]:
+        """Create safe summaries for positional and keyword args."""
+        try:
+            arg_summary = ", ".join(self._safe_summarize(a) for a in args)
+        except Exception:
+            arg_summary = "<args>"
+        try:
+            kw_summary = ", ".join(f"{k}={self._safe_summarize(v)}" for k, v in kwargs.items())
+        except Exception:
+            kw_summary = "<kwargs>"
+        return arg_summary, kw_summary
+
+    def _extract_caller_info(self) -> str:
+        """Extract best-effort caller info file:function:line for diagnostics."""
+        frame = inspect.currentframe()
+        caller_info = "unknown"
+        try:
+            caller_frame = None
+            if frame and frame.f_back and frame.f_back.f_back:
+                caller_frame = frame.f_back.f_back  # Skip this method and acquire context
+            if caller_frame:
+                caller_filename = caller_frame.f_code.co_filename
+                caller_function = caller_frame.f_code.co_name
+                caller_line = caller_frame.f_lineno
+                filename = caller_filename.rsplit("/", 1)[-1]
+                caller_info = f"{filename}:{caller_function}:{caller_line}"
+        except Exception:
+            caller_info = "stack_inspection_failed"
+        finally:
+            del frame  # Prevent reference cycles
+        return caller_info
+
+    def _log_call_exception(self, operation: str, err: Exception) -> None:
+        """Log exceptions with classification and caller info."""
+        caller_info = self._extract_caller_info()
+        if isinstance(err, LoginFailureError):
+            self.logger.warning(
+                "Authentication required for %s called from %s: %s", operation, caller_info, err
+            )
+        elif isinstance(err, (ConnectionError, TimeoutError)):
+            self.logger.warning("Network error %s called from %s: %s", operation, caller_info, err)
+        elif isinstance(err, ValidationError):
+            try:
+                detailed_errors = err.errors()
+                self.logger.warning(
+                    "Validation error %s called from %s: %s\nDetailed errors: %s",
+                    operation,
+                    caller_info,
+                    err,
+                    detailed_errors,
+                )
+            except Exception:
+                self.logger.warning("Error %s called from %s: %s", operation, caller_info, err)
+        else:
+            self.logger.warning("Error %s called from %s: %s", operation, caller_info, err)
+
     async def _call_with_throttler[T, **P](
         self,
         func: Callable[P, T],
@@ -95,67 +164,22 @@ class NicovideoServiceManager:
             throttler_name = "low_priority"
 
         operation = func.__name__ if hasattr(func, "__name__") else "unknown_function"
+        arg_summary, kw_summary = self._summarize_call_args(args, kwargs)
         log_verbose(
             self.logger,
-            "Acquiring %s throttler for %s",
+            "Acquire %s throttler for %s(%s%s%s)",
             throttler_name,
             operation,
+            arg_summary,
+            ", " if arg_summary and kw_summary else "",
+            kw_summary,
         )
 
         try:
             async with throttler.acquire():
-                return await asyncio.to_thread(func, *args, **kwargs)
+                result = await asyncio.to_thread(func, *args, **kwargs)
+                log_verbose(self.logger, "%s succeeded (priority=%s)", operation, throttler_name)
+                return result
         except Exception as err:
-            # Get caller information from stack
-            frame = inspect.currentframe()
-            caller_info = "unknown"
-            operation = func.__name__ if hasattr(func, "__name__") else "unknown_function"
-
-            try:
-                # Walk up the stack to find the actual caller (skip this method and throttler)
-                caller_frame = None
-                if frame and frame.f_back and frame.f_back.f_back:
-                    caller_frame = frame.f_back.f_back  # Skip current frame and acquire context
-
-                if caller_frame:
-                    caller_filename = caller_frame.f_code.co_filename
-                    caller_function = caller_frame.f_code.co_name
-                    caller_line = caller_frame.f_lineno
-                    # Extract just the filename without full path for cleaner logs
-                    filename = (
-                        caller_filename.split("/")[-1]
-                        if "/" in caller_filename
-                        else caller_filename
-                    )
-                    caller_info = f"{filename}:{caller_function}:{caller_line}"
-            except Exception:
-                # Fallback if stack inspection fails
-                caller_info = "stack_inspection_failed"
-            finally:
-                del frame  # Prevent reference cycles
-
-            if isinstance(err, LoginFailureError):
-                self.logger.warning(
-                    "Authentication required for %s called from %s: %s", operation, caller_info, err
-                )
-            elif isinstance(err, (ConnectionError, TimeoutError)):
-                self.logger.warning(
-                    "Network error %s called from %s: %s", operation, caller_info, err
-                )
-            elif isinstance(err, ValidationError):
-                # This is a Pydantic ValidationError
-                try:
-                    detailed_errors = err.errors()
-                    self.logger.warning(
-                        "Validation error %s called from %s: %s\nDetailed errors: %s",
-                        operation,
-                        caller_info,
-                        err,
-                        detailed_errors,
-                    )
-                except Exception:
-                    # Fallback if error() method fails
-                    self.logger.warning("Error %s called from %s: %s", operation, caller_info, err)
-            else:
-                self.logger.warning("Error %s called from %s: %s", operation, caller_info, err)
+            self._log_call_exception(operation, err)
             return None
