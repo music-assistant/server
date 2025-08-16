@@ -3,7 +3,7 @@ name: Provider Fixtures Update and Test
 on:
   # Daily execution
   schedule:
-    - cron:  '00 0 * * 0'
+    - cron:  '00 0 * * *'
 
   # Manual execution
   workflow_dispatch:
