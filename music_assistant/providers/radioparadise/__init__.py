@@ -6,17 +6,12 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueOption,
-    ConfigValueType,
-    ProviderConfig,
-)
+
+from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -39,6 +34,7 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -99,10 +95,10 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return ()
@@ -236,10 +232,10 @@ class RadioParadiseProvider(MusicProvider):
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
         """Get current track and upcoming tracks from Radio Paradise's block API.
-        
+
         Args:
             channel_id: Radio Paradise channel ID (0-5)
-            
+
         Returns:
             Dict with current song, next song, and block data, or None if API fails
         """
@@ -284,10 +280,10 @@ class RadioParadiseProvider(MusicProvider):
 
     def _get_current_block_position(self, block_data: dict[str, Any]) -> int:
         """Calculate current playback position within a Radio Paradise block.
-        
+
         Args:
             block_data: Block data containing sched_time_millis
-            
+
         Returns:
             Current position in milliseconds from block start
         """
@@ -295,13 +291,15 @@ class RadioParadiseProvider(MusicProvider):
         sched_time = int(block_data.get("sched_time_millis", current_time_ms))
         return current_time_ms - sched_time
 
-    def _find_current_song(self, songs: dict[str, Any], current_time_ms: int) -> dict[str, Any] | None:
+    def _find_current_song(
+        self, songs: dict[str, Any], current_time_ms: int
+    ) -> dict[str, Any] | None:
         """Find which song should currently be playing based on elapsed time.
-        
+
         Args:
             songs: Dictionary of songs from Radio Paradise block data
             current_time_ms: Current position in milliseconds within the block
-            
+
         Returns:
             The song dict that should be playing now, or None if not found
         """
@@ -320,13 +318,15 @@ class RadioParadiseProvider(MusicProvider):
         first_song = songs.get("0")
         return first_song if first_song is not None else None
 
-    def _get_next_song(self, songs: dict[str, Any], current_song: dict[str, Any]) -> dict[str, Any] | None:
+    def _get_next_song(
+        self, songs: dict[str, Any], current_song: dict[str, Any]
+    ) -> dict[str, Any] | None:
         """Get the next song that will play after the current song.
-        
+
         Args:
             songs: Dictionary of songs from Radio Paradise block data
             current_song: The currently playing song dictionary
-            
+
         Returns:
             The next song dict, or None if no next song found
         """
@@ -342,10 +342,10 @@ class RadioParadiseProvider(MusicProvider):
 
     def _build_stream_url(self, channel_id: str) -> str:
         """Build the streaming URL for a Radio Paradise channel.
-        
+
         Args:
             channel_id: Radio Paradise channel ID (0-5)
-            
+
         Returns:
             Streaming URL for the channel, or empty string if not found
         """
@@ -357,10 +357,10 @@ class RadioParadiseProvider(MusicProvider):
 
     async def _monitor_stream_metadata(self, stream_details: StreamDetails) -> None:
         """Monitor and update stream metadata in real-time during playback.
-        
+
         Fetches current track info from Radio Paradise's API every 10 seconds
         and updates StreamDetails with track metadata and upcoming songs.
-        
+
         Args:
             stream_details: StreamDetails object to update with metadata
         """
@@ -398,11 +398,11 @@ class RadioParadiseProvider(MusicProvider):
         self, current_song: dict[str, Any], metadata: dict[str, Any]
     ) -> StreamMetadata:
         """Build StreamMetadata with current track info and upcoming tracks.
-        
+
         Args:
             current_song: Current track data from Radio Paradise API
             metadata: Full metadata response with next song and block data
-            
+
         Returns:
             StreamMetadata with track info and upcoming track previews
         """
@@ -449,16 +449,20 @@ class RadioParadiseProvider(MusicProvider):
         )
 
     def _enhance_title_with_upcoming(
-        self, title: str, current_song: dict[str, Any], next_song: dict[str, Any] | None, block_data: dict[str, Any] | None
+        self,
+        title: str,
+        current_song: dict[str, Any],
+        next_song: dict[str, Any] | None,
+        block_data: dict[str, Any] | None,
     ) -> str:
         """Enhance track title with upcoming track info for scrolling display.
-        
+
         Args:
             title: Original track title
             current_song: Current track data
-            next_song: Next track data, or None if not available  
+            next_song: Next track data, or None if not available
             block_data: Full block data with all upcoming tracks
-            
+
         Returns:
             Enhanced title with "Up Next" and "Later" information appended
         """
@@ -491,8 +495,7 @@ class RadioParadiseProvider(MusicProvider):
                 song_event = song.get("event")
                 
                 # Skip current and next song, only include songs that come after current
-                if (song_event != current_event and 
-                    song_event != next_event and 
+                if (song_event not in (current_event, next_event) and 
                     int(song.get("elapsed", 0)) > current_elapsed):
                     artist_name = song.get("artist", "")
                     if artist_name and artist_name not in seen_artists:
