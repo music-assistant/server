@@ -107,6 +107,10 @@ CONF_ACTION_CLEAR_AUTH = "clear_auth"
 # General config
 CONF_MAX_BITRATE = "max_num_episodes"
 
+IDENTITY_TOOLKIT_BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts"
+ARD_ACCOUNTS_URL = "https://accounts.ard.de"
+ARD_AUDIOTHEK_GRAPHQL = "https://api.ardaudiothek.de/graphql"
+
 CACHE_CATEGORY_OTHER = 0
 
 
@@ -122,8 +126,8 @@ async def setup(
 
 async def _login(session: ClientSession, email: str, password: str) -> tuple[str, str, str]:
     response = await session.post(
-        "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90",
-        headers={"User-Agent": "Music Assistant", "Origin": "https://accounts.ard.de"},
+        f"{IDENTITY_TOOLKIT_BASE_URL}:signInWithPassword?key=AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90",
+        headers={"User-Agent": "Music Assistant", "Origin": ARD_ACCOUNTS_URL},
         json={
             "returnSecureToken": True,
             "email": email,
@@ -141,8 +145,8 @@ async def _login(session: ClientSession, email: str, password: str) -> tuple[str
     uid = data["localId"]
 
     response = await session.post(
-        "https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90",
-        headers={"User-Agent": "Music Assistant", "Origin": "https://accounts.ard.de"},
+        f"{IDENTITY_TOOLKIT_BASE_URL}:lookup?key=AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90",
+        headers={"User-Agent": "Music Assistant", "Origin": ARD_ACCOUNTS_URL},
         json={
             "idToken": token,
         },
@@ -158,9 +162,7 @@ async def _login(session: ClientSession, email: str, password: str) -> tuple[str
 
 
 def _create_aiohttptransport(headers: dict[str, str] | None = None) -> RequestsHTTPTransport:
-    return RequestsHTTPTransport(
-        url="https://api.ardaudiothek.de/graphql", verify=True, retries=3, headers=headers
-    )
+    return RequestsHTTPTransport(url=ARD_AUDIOTHEK_GRAPHQL, verify=True, retries=3, headers=headers)
 
 
 async def get_config_entries(
@@ -311,8 +313,11 @@ class ARDAudiothek(MusicProvider):
             # see the ProviderFeature enum for all available features
         }
 
-    async def handle_async_init(self) -> None:
-        """Pass config values to client and initialize."""
+    async def get_client(self) -> Client:
+        """Wrap the client creation procedure to recreate client.
+
+        This happens when the token is expired or user credentials are updated.
+        """
         _email = self.config.get_value(CONF_EMAIL)
         _password = self.config.get_value(CONF_PASSWORD)
         self.token = self.config.get_value(CONF_TOKEN_BEARER)
@@ -337,48 +342,57 @@ class ARDAudiothek(MusicProvider):
             self.update_config_value(
                 CONF_EXPIRY_TIME, str((datetime.now() + timedelta(hours=1)).timestamp())
             )
+            self._client_initialized = False
 
-        headers = None
-        if self.token:
-            headers = {"Authorization": f"Bearer {self.token}"}
+        if not self._client_initialized:
+            headers = None
+            if self.token:
+                headers = {"Authorization": f"Bearer {self.token}"}
 
-        self._client = Client(
-            transport=_create_aiohttptransport(headers),
-            fetch_schema_from_transport=True,
-        )
+            self._client = Client(
+                transport=_create_aiohttptransport(headers),
+                fetch_schema_from_transport=True,
+            )
+            self._client_initialized = True
 
-        # timestamps = await self.mass.cache.get(
-        #     key=CACHE_KEY_TIMESTAMP,
-        #     base_key=self.lookup_key,
-        #     category=CACHE_CATEGORY_OTHER,
-        #     default=None,
-        # )
-        # if timestamps is None:
-        #     self.timestamp_subscriptions: int = 0
-        #     self.timestamp_actions: int = 0
-        # else:
-        #     self.timestamp_subscriptions, self.timestamp_actions = timestamps
+        return self._client
 
-        # self.logger.debug(
-        #     "Our timestamps are (subscriptions, actions)  (%s, %s)",
-        #     self.timestamp_subscriptions,
-        #     self.timestamp_actions,
-        # )
+    async def handle_async_init(self) -> None:
+        """Pass config values to client and initialize."""
+        self._client_initialized = False
 
-        # feeds = await self.mass.cache.get(
-        #     key=CACHE_KEY_FEEDS,
-        #     base_key=self.lookup_key,
-        #     category=CACHE_CATEGORY_OTHER,
-        #     default=None,
-        # )
-        # if feeds is None:
-        #     self.feeds: set[str] = set()
-        # else:
-        #     self.feeds = set(feeds)  # feeds is a list here
+    # timestamps = await self.mass.cache.get(
+    #     key=CACHE_KEY_TIMESTAMP,
+    #     base_key=self.lookup_key,
+    #     category=CACHE_CATEGORY_OTHER,
+    #     default=None,
+    # )
+    # if timestamps is None:
+    #     self.timestamp_subscriptions: int = 0
+    #     self.timestamp_actions: int = 0
+    # else:
+    #     self.timestamp_subscriptions, self.timestamp_actions = timestamps
 
-        # # we are syncing the playlog, but not event based. A simple check in on_played,
-        # # should be sufficient
-        # self.progress_guard_timestamp = 0.0
+    # self.logger.debug(
+    #     "Our timestamps are (subscriptions, actions)  (%s, %s)",
+    #     self.timestamp_subscriptions,
+    #     self.timestamp_actions,
+    # )
+
+    # feeds = await self.mass.cache.get(
+    #     key=CACHE_KEY_FEEDS,
+    #     base_key=self.lookup_key,
+    #     category=CACHE_CATEGORY_OTHER,
+    #     default=None,
+    # )
+    # if feeds is None:
+    #     self.feeds: set[str] = set()
+    # else:
+    #     self.feeds = set(feeds)  # feeds is a list here
+
+    # # we are syncing the playlog, but not event based. A simple check in on_played,
+    # # should be sufficient
+    # self.progress_guard_timestamp = 0.0
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -433,7 +447,8 @@ class ARDAudiothek(MusicProvider):
         # It allows searching your provider for media items.
         # See the model for SearchResults for more information on what to return, but
         # in general you should return a list of MediaItems for each media type.
-        search_shows = self._client.execute(
+        client = await self.get_client()
+        search_shows = client.execute(
             search_shows_query, variable_values={"query": search_query, "limit": limit}
         )["search"]["shows"]["nodes"]
 
@@ -449,7 +464,7 @@ class ARDAudiothek(MusicProvider):
                 )
             ]
 
-        search_radios = self._client.execute(
+        search_radios = client.execute(
             search_radios_query,
             variable_values={"filter": {"title": {"includes": search_query}}, "first": limit},
         )["permanentLivestreams"]["nodes"]
@@ -481,9 +496,9 @@ class ARDAudiothek(MusicProvider):
         """Get full radio details by id."""
         # Get full details of a single Radio station.
         # Mandatory only if you reported LIBRARY_RADIOS in the supported_features.
-        rad = self._client.execute(livestream_query, variable_values={"coreId": prov_radio_id})[
-            "permanentLivestreamByCoreId"
-        ]
+        rad = (await self.get_client()).execute(
+            livestream_query, variable_values={"coreId": prov_radio_id}
+        )["permanentLivestreamByCoreId"]
 
         return _parse_radio(
             self.domain,
@@ -559,9 +574,9 @@ class ARDAudiothek(MusicProvider):
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast."""
-        result = self._client.execute(show_query, variable_values={"showId": prov_podcast_id})[
-            "show"
-        ]
+        result = (await self.get_client()).execute(
+            show_query, variable_values={"showId": prov_podcast_id}
+        )["show"]
 
         return _parse_podcast(
             self.domain,
@@ -575,12 +590,13 @@ class ARDAudiothek(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get podcast episodes."""
-        length = self._client.execute(
-            show_length_query, variable_values={"showId": prov_podcast_id}
-        )["show"]["items"]["totalCount"]
+        client = await self.get_client()
+        length = client.execute(show_length_query, variable_values={"showId": prov_podcast_id})[
+            "show"
+        ]["items"]["totalCount"]
         step_size = 32
         for offset in range(0, length, step_size):
-            result = self._client.execute(
+            result = client.execute(
                 show_query,
                 variable_values={"showId": prov_podcast_id, "first": step_size, "offset": offset},
             )["show"]
@@ -595,7 +611,7 @@ class ARDAudiothek(MusicProvider):
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
-        result = self._client.execute(
+        result = (await self.get_client()).execute(
             show_episode_query, variable_values={"coreId": prov_episode_id}
         )["itemByCoreId"]
         if result is None:
@@ -611,13 +627,14 @@ class ARDAudiothek(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
+        client = await self.get_client()
         if media_type == MediaType.RADIO:
-            result = self._client.execute(livestream_query, variable_values={"coreId": item_id})[
+            result = client.execute(livestream_query, variable_values={"coreId": item_id})[
                 "permanentLivestreamByCoreId"
             ]
             seek = False
         elif media_type == MediaType.PODCAST_EPISODE:
-            result = self._client.execute(show_episode_query, variable_values={"coreId": item_id})[
+            result = client.execute(show_episode_query, variable_values={"coreId": item_id})[
                 "itemByCoreId"
             ]
             seek = True
@@ -677,7 +694,7 @@ class ARDAudiothek(MusicProvider):
     @use_cache(3600)
     async def get_organizations(self, path: str) -> list[BrowseFolder]:
         """Create a list of all available organizations."""
-        result = self._client.execute(organizations_query)["organizations"]["nodes"]
+        result = (await self.get_client()).execute(organizations_query)["organizations"]["nodes"]
         organizations = []
 
         for org in result:
@@ -709,7 +726,7 @@ class ARDAudiothek(MusicProvider):
     @use_cache(3600)
     async def get_publication_services(self, path: str, core_id: str) -> list[BrowseFolder]:
         """Create a list of publications for a given organization."""
-        result = self._client.execute(
+        result = (await self.get_client()).execute(
             publication_services_query, variable_values={"coreId": core_id}
         )["organizationByCoreId"]["publicationServicesByOrganizationName"]["nodes"]
         publications = []
@@ -731,9 +748,9 @@ class ARDAudiothek(MusicProvider):
 
     async def get_publications_list(self, core_id: str) -> list[Radio | Podcast]:
         """Create list of available radio stations and shows for a publication service."""
-        result = self._client.execute(publications_list_query, variable_values={"coreId": core_id})[
-            "publicationServiceByCoreId"
-        ]
+        result = (await self.get_client()).execute(
+            publications_list_query, variable_values={"coreId": core_id}
+        )["publicationServiceByCoreId"]
 
         publications = []  # type: list[Radio | Podcast]
 
