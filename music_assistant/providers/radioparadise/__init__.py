@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -33,14 +34,11 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.provider import ProviderManifest
+
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-    from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-    ProviderConfig,
-    )
-    from music_assistant_models.provider import ProviderManifest
 
 # Radio Paradise channel configurations with hardcoded channels
 RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
@@ -316,9 +314,9 @@ class RadioParadiseProvider(MusicProvider):
 
             if song_start <= current_time_ms < song_end:
                 return song
-        
+
         # If no exact match, return first song
-        return songs.get("0")
+        return cast("dict[str, Any]",songs.get("0"))
 
     def _get_next_song(
         self, songs: dict[str, Any], current_song: dict[str, Any]
@@ -337,7 +335,7 @@ class RadioParadiseProvider(MusicProvider):
         sorted_keys = sorted(songs.keys(), key=int)
 
         for song_key in sorted_keys:
-            song = songs[song_key]
+            song = cast("dict[str, Any]", songs[song_key])
             if song.get("event") != current_event and int(song.get("elapsed", 0)) > current_elapsed:
                 return song
         return None
