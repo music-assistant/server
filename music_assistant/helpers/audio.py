@@ -1325,7 +1325,8 @@ async def get_preview_stream(
     if TYPE_CHECKING:  # avoid circular import
         assert isinstance(music_prov, MusicProvider)
     streamdetails = await music_prov.get_stream_details(item_id, media_type)
-
+    # Cookies may be required for some providers.
+    extra_input_args = (streamdetails.extra_input_args or []) + ["-to", "30"]
     audio_input: AsyncGenerator[bytes, None] | str
     if streamdetails.stream_type == StreamType.CUSTOM:
         audio_input = music_prov.get_audio_stream(streamdetails, 30)
@@ -1336,7 +1337,7 @@ async def get_preview_stream(
         audio_input=audio_input,
         input_format=streamdetails.audio_format,
         output_format=AudioFormat(content_type=ContentType.AAC),
-        extra_input_args=["-to", "30"],
+        extra_input_args=extra_input_args,
     ):
         yield chunk
 
