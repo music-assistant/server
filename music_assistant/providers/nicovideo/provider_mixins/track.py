@@ -88,7 +88,6 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
 
         stream_format = await self.service_manager.video.get_stream_format(item_id=item_id)
 
-        # Get http_headers safely - it may be a dict or None
         http_headers = stream_format.get("http_headers")
         user_agent = "Mozilla/5.0"
         if isinstance(http_headers, dict):
@@ -103,9 +102,10 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             f"Cookie: {stream_format['cookies']}\r\n",
         ]
 
-        # Calculate estimated file size if available
+        url = stream_format.get("url")
         duration = int(stream_format.get("duration", 0))
         bit_rate = int(stream_format.get("abr", 0)) if stream_format.get("abr") else None
+        sample_rate = int(stream_format.get("asr", 44100))
 
         # Get track information for stream title
         track = await self.get_track(item_id)
@@ -114,11 +114,12 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         # Do not use album image intentionally
         image = super(Track, track).image if track else None
         album = track.album if track else None
+
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             audio_format=create_audio_format(
-                sample_rate=int(stream_format.get("asr", 44100)),
+                sample_rate=sample_rate,
                 bit_rate=bit_rate,
             ),
             media_type=MediaType.TRACK,
@@ -130,7 +131,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
                 album=album.name if album else None,
                 image_url=image.path if image else None,
             ),
-            path=stream_format["url"],
+            path=url,
             extra_input_args=extra_args,
             allow_seek=True,
             can_seek=True,
