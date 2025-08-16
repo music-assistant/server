@@ -128,7 +128,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         recommendation_tags = self.nicovideo_config.get_tag_recommendation_tags()
         if recommendation_tags:
             for tag in recommendation_tags:
-                tag_recommendation_tracks = await self.service_manager.search.search_videos_by_tags(
+                tag_recommendation_tracks = await self.service_manager.search.search_videos_by_tag(
                     tag, target_count, "personalized", "none"
                 )
                 if tag_recommendation_tracks:
@@ -146,7 +146,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         new_tracks_tags = self.nicovideo_config.get_tag_recommendation_new_tracks_tags()
         if new_tracks_tags:
             for tag in new_tracks_tags:
-                new_tracks_by_tags = await self.service_manager.search.search_videos_by_tags(
+                new_tracks_by_tags = await self.service_manager.search.search_videos_by_tag(
                     tag, target_count, "registeredAt", "desc"
                 )
                 if new_tracks_by_tags:

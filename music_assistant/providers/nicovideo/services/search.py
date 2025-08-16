@@ -124,7 +124,7 @@ class NicovideoSearchService(NicovideoBaseService):
                     tracks.append(track)
         return tracks
 
-    async def search_videos_by_tags(
+    async def search_videos_by_tag(
         self,
         tag: str,
         limit: int,
