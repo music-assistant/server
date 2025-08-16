@@ -27,7 +27,6 @@ from music_assistant.providers.nicovideo.constants import (
     CONF_RECOMMENDATION_FILTER_TAGS,
     CONF_TAG_RECOMMENDATION_NEW_TRACKS_TAGS,
     CONF_TAG_RECOMMENDATION_TAGS,
-    CONF_USE_FOLLOW_UNFOLLOW_ARTISTS,
     CONF_USER_SESSION,
 )
 
@@ -147,10 +146,6 @@ class NicovideoConfig:
         """Get auto-like on library add setting."""
         return self.get_bool(CONF_AUTO_LIKE_ON_LIBRARY_ADD)
 
-    def get_use_follow_unfollow_artists(self) -> bool:
-        """Get use follow/unfollow artists setting."""
-        return self.get_bool(CONF_USE_FOLLOW_UNFOLLOW_ARTISTS)
-
     def get_include_followed_mylists(self) -> bool:
         """Get include followed mylists setting."""
         return self.get_bool(CONF_INCLUDE_FOLLOWED_MYLISTS)
@@ -259,20 +254,6 @@ async def get_config_entries_impl(
                 "Automatically like videos on NicoNico when adding tracks to your "
                 "Music Assistant library.\n"
                 "Tracks removed from the library will not be unliked on NicoNico.\n"
-            ),
-            category="Content",
-        ),
-        ConfigEntry(
-            key=CONF_USE_FOLLOW_UNFOLLOW_ARTISTS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Use follow/unfollow artists on NicoNico",
-            required=False,
-            default_value=False,
-            description=(
-                "Enable follow/unfollow functionality when adding/removing artists from your "
-                "library.\n"
-                "When enabled, adding an artist requires successfully following them on NicoNico.\n"
-                "⚠️ NicoNico limits following to 800 users."
             ),
             category="Content",
         ),

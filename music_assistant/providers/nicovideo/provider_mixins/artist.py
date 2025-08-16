@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, override
 
-from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
-from music_assistant_models.media_items import Artist, MediaItemType
+from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import Artist
 
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
@@ -68,52 +68,3 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             page=1,
             page_size=50,
         )
-
-    @override
-    async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
-        """Add item to library."""
-        if item.media_type is not MediaType.ARTIST:
-            return None
-
-        # Check if follow/unfollow artists is enabled
-        auto_sync_enabled = self.nicovideo_config.get_use_follow_unfollow_artists()
-        if not auto_sync_enabled:
-            return True  # Successfully "added" but no action needed
-
-        success = await self.service_manager.user.follow_user(item.item_id)
-        if success:
-            self.logger.debug("Successfully followed artist %s", item.name)
-            return True
-        else:
-            self.logger.warning("Failed to follow artist %s", item.name)
-            # Raise error with user-friendly message
-            raise ProviderUnavailableError(
-                f"Failed to follow artist '{item.name}' on niconico video. "
-                "Possible reasons: API limits (e.g., follow cap around 800), "
-                "rate limiting, or network issues."
-            )
-
-    @override
-    async def library_remove_for_mixin(
-        self, prov_item_id: str, media_type: MediaType
-    ) -> bool | None:
-        """Remove artist from library."""
-        if media_type is not MediaType.ARTIST:
-            return None
-
-        # Check if follow/unfollow artists is enabled
-        auto_sync_enabled = self.nicovideo_config.get_use_follow_unfollow_artists()
-        if not auto_sync_enabled:
-            return True  # Successfully "removed" but no action needed
-
-        success = await self.service_manager.user.unfollow_user(prov_item_id)
-        if success:
-            self.logger.debug("Successfully unfollowed artist %s", prov_item_id)
-            return True
-        else:
-            self.logger.warning("Failed to unfollow artist %s", prov_item_id)
-            # Raise error with user-friendly message
-            raise ProviderUnavailableError(
-                f"Failed to unfollow artist (ID: {prov_item_id}) on niconico video. "
-                "Possible reasons: API limits, rate limiting, or network issues."
-            )
