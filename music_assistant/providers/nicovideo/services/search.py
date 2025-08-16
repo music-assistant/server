@@ -70,7 +70,7 @@ class NicovideoSearchService(NicovideoBaseService):
     async def _search_mylists_by_keyword(self, search_query: str, limit: int) -> list[Playlist]:
         """Search for mylists by keyword."""
         list_search_data = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.video.search.search_lists,
+            self.niconico_py_client.video.search.search_lists,
             search_query,
             page_size=limit,
             types=["mylist"],
@@ -89,7 +89,7 @@ class NicovideoSearchService(NicovideoBaseService):
     async def _search_series_by_keyword(self, search_query: str, limit: int) -> list[Album]:
         """Search for series by keyword."""
         list_search_data = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.video.search.search_lists,
+            self.niconico_py_client.video.search.search_lists,
             search_query,
             page_size=limit,
             types=["series"],
@@ -108,7 +108,7 @@ class NicovideoSearchService(NicovideoBaseService):
     async def search_videos_by_keyword(self, search_query: str, limit: int) -> list[Track]:
         """Search for videos by keyword."""
         video_search_data = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.video.search.search_videos_by_keyword,
+            self.niconico_py_client.video.search.search_videos_by_keyword,
             search_query,
             page_size=limit,
             search_by_user=True,
@@ -139,7 +139,7 @@ class NicovideoSearchService(NicovideoBaseService):
         # Search for each tag separately since search_videos_by_tag only accepts one tag
         for tag in tags:
             video_search_data = await self.service_manager._call_with_throttler(
-                self.service_manager.niconico_py_client.video.search.search_videos_by_tag,
+                self.niconico_py_client.video.search.search_videos_by_tag,
                 tag,
                 page_size=limit,
                 sort_key=sort,

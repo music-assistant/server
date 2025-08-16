@@ -45,7 +45,7 @@ class NicovideoServiceManager:
         self.provider = provider
         self.nicovideo_config = nicovideo_config
         self.mass = provider.mass
-        self.niconico_py_client = NicoNico()
+        self.reset_niconico_py_client()
 
         self.niconico_api_throttler = ThrottlerManager(rate_limit=1, period=0)
         # Low priority throttler for background tag updates (slower rate)
@@ -63,6 +63,10 @@ class NicovideoServiceManager:
 
         # Initialize converter
         self.converter_manager = NicovideoConverterManager(provider, self.logger)
+
+    def reset_niconico_py_client(self) -> None:
+        """Reset the niconico.py client instance."""
+        self.niconico_py_client = NicoNico()
 
     async def _call_with_throttler[T, **P](
         self,

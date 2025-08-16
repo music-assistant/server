@@ -37,7 +37,7 @@ class NicovideoVideoService(NicovideoBaseService):
         config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
         user_video_data = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.get_user_videos,
+            self.niconico_py_client.user.get_user_videos,
             user_id,
             page=page,
             page_size=page_size,
@@ -55,7 +55,7 @@ class NicovideoVideoService(NicovideoBaseService):
     async def get_video(self, video_id: str) -> Track | None:
         """Get video details using WatchData and convert as Track."""
         watch_data = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.video.watch.get_watch_data, video_id
+            self.niconico_py_client.video.watch.get_watch_data, video_id
         )
 
         if watch_data:
@@ -66,7 +66,7 @@ class NicovideoVideoService(NicovideoBaseService):
     async def get_stream_format(self, item_id: str) -> dict[str, Any]:
         """Use yt-dlp to extract the best stream URL from nicovideo."""
         netscape_cookie_str = convert_to_netscape(
-            self.service_manager.niconico_py_client.session.cookies, NICOVIDEO_COOKIE_DOMAIN
+            self.niconico_py_client.session.cookies, NICOVIDEO_COOKIE_DOMAIN
         )
 
         def _extract() -> dict[str, Any]:
@@ -100,6 +100,6 @@ class NicovideoVideoService(NicovideoBaseService):
     async def like_video(self, video_id: str) -> bool:
         """Like a video."""
         result = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.video.like_video, video_id
+            self.niconico_py_client.video.like_video, video_id
         )
         return bool(result)

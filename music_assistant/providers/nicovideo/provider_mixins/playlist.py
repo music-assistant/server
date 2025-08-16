@@ -34,13 +34,9 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        playlist_with_tracks = await self.service_manager.mylist.get_mylist(
+        playlist_with_tracks = await self.service_manager.mylist.get_mylist_or_own_mylist(
             prov_playlist_id, page_size=500
         )
-        if not playlist_with_tracks:
-            playlist_with_tracks = await self.service_manager.mylist.get_own_mylist(
-                prov_playlist_id, page_size=500
-            )
         if not playlist_with_tracks:
             raise MediaNotFoundError(f"Playlist with id {prov_playlist_id} not found on nicovideo.")
         return playlist_with_tracks.playlist
@@ -52,21 +48,11 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         page: int = 0,
     ) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
-        playlist_with_tracks = await self.service_manager.mylist.get_mylist(
+        playlist_with_tracks = await self.service_manager.mylist.get_mylist_or_own_mylist(
             prov_playlist_id, page_size=500, page=page + 1
         )
-        if not playlist_with_tracks:
-            playlist_with_tracks = await self.service_manager.mylist.get_own_mylist(
-                prov_playlist_id, page_size=500, page=page + 1
-            )
 
-        tracks = playlist_with_tracks.tracks if playlist_with_tracks else []
-
-        # Ensure tracks have position set (1-based)
-        for index, track in enumerate(tracks):
-            track.position = index + 1
-
-        return tracks
+        return playlist_with_tracks.tracks if playlist_with_tracks else []
 
     @override
     async def get_library_playlists(

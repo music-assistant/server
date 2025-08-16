@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from niconico import NicoNico
 from niconico.exceptions import LoginFailureError
 
 from music_assistant.providers.nicovideo.helpers import log_verbose
@@ -27,7 +26,7 @@ class NicovideoAuthService(NicovideoBaseService):
 
     def is_logged_in(self) -> bool:
         """Check if the user is logged in to niconico."""
-        return self.service_manager.niconico_py_client.logined
+        return self.niconico_py_client.logined
 
     async def try_login(self) -> bool:
         """Attempt to login to niconico with the configured credentials."""
@@ -53,7 +52,7 @@ class NicovideoAuthService(NicovideoBaseService):
                     if user_session:
                         self.logger.debug("Using user_session for login.")
                         await asyncio.to_thread(
-                            self.service_manager.niconico_py_client.login_with_session,
+                            self.niconico_py_client.login_with_session,
                             str(user_session),
                         )
                     else:
@@ -64,7 +63,7 @@ class NicovideoAuthService(NicovideoBaseService):
                             )
                             return False
                         await asyncio.to_thread(
-                            self.service_manager.niconico_py_client.login_with_mail,
+                            self.niconico_py_client.login_with_mail,
                             str(username),
                             str(password),
                             str(mfa) if mfa else None,
@@ -73,7 +72,7 @@ class NicovideoAuthService(NicovideoBaseService):
                     # Clear MFA code after successful use (one-time password should not be reused)
                     if mfa:
                         config.clear_mfa_code()
-                    session = self.service_manager.niconico_py_client.get_user_session()
+                    session = self.niconico_py_client.get_user_session()
                     if session:
                         config.save_user_session(session)
                         log_verbose(
@@ -110,10 +109,10 @@ class NicovideoAuthService(NicovideoBaseService):
 
     async def try_logout(self) -> None:
         """Log out from the niconico service."""
-        if self.service_manager.niconico_py_client:
+        if self.niconico_py_client:
             if self.is_logged_in():
-                await asyncio.to_thread(self.service_manager.niconico_py_client.logout)
-            self.service_manager.niconico_py_client = NicoNico()
+                await asyncio.to_thread(self.niconico_py_client.logout)
+            self.service_manager.reset_niconico_py_client()
 
     def start_periodic_relogin_task(self) -> None:
         """Start the periodic re-login task."""

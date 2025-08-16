@@ -107,7 +107,7 @@ class FixtureDataGenerators:
         await save_fixture(
             "albums",
             "own_series",
-            client.user.get_own_series_list,
+            client.user.get_own_series,
         )
 
         # User series list (converts to Album objects)

@@ -29,7 +29,7 @@ class NicovideoUserService(NicovideoBaseService):
     async def get_user(self, user_id: str) -> Artist | None:
         """Get user details as Artist."""
         user = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.get_user, user_id
+            self.niconico_py_client.user.get_user, user_id
         )
         return self.converter_manager.artist.convert_by_owner_or_user(user) if user else None
 
@@ -44,7 +44,7 @@ class NicovideoUserService(NicovideoBaseService):
         config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
         recommendations = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.get_recommendations,
+            self.niconico_py_client.user.get_recommendations,
             recipe_id,
             limit=limit,
             sensitive_contents=sensitive_contents,
@@ -70,7 +70,7 @@ class NicovideoUserService(NicovideoBaseService):
         config = self.nicovideo_config
         sensitive_contents = config.get_sensitive_contents_config()
         recommendation_api_item = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.get_recommendations,
+            self.niconico_py_client.user.get_recommendations,
             "video_watch_recommendation",
             video_id=track_id,
             limit=limit,
@@ -97,7 +97,7 @@ class NicovideoUserService(NicovideoBaseService):
         # Calculate page_size based on limit
         page_size = min(limit, 25)  # API max is 25 for like history
         like_history = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.video.get_like_history,
+            self.niconico_py_client.video.get_like_history,
             page_size=page_size,
             page=1,
         )
@@ -116,7 +116,7 @@ class NicovideoUserService(NicovideoBaseService):
         # Calculate page_size based on limit
         page_size = min(limit, 100)  # API max is 100
         history = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.video.get_history,
+            self.niconico_py_client.video.get_history,
             page_size=page_size,
             page=1,
         )
@@ -138,7 +138,7 @@ class NicovideoUserService(NicovideoBaseService):
         # Calculate page_size based on limit
         page_size = min(limit, 100)  # API max likely 100
         own_videos = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.get_own_videos,
+            self.niconico_py_client.user.get_own_videos,
             page_size=page_size,
             page=1,
             sensitive_contents=sensitive_contents,
@@ -156,7 +156,7 @@ class NicovideoUserService(NicovideoBaseService):
     async def get_following_activities(self, limit: int = 50) -> list[Track]:
         """Get latest activities from followed users."""
         feed_data = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.get_following_activities,
+            self.niconico_py_client.user.get_following_activities,
             endpoint="video",
             context="header_timeline",
             cursor=None,
@@ -203,14 +203,14 @@ class NicovideoUserService(NicovideoBaseService):
     async def get_following_mylists(self) -> FollowingMylistsData | None:
         """Get mylists from users you follow."""
         following_mylists = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.get_own_following_mylists,
+            self.niconico_py_client.user.get_own_following_mylists,
         )
         return following_mylists if following_mylists else None
 
     async def get_own_followings(self) -> list[Artist]:
         """Get users you are following as Artists."""
         followings_data = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.get_own_followings,
+            self.niconico_py_client.user.get_own_followings,
         )
 
         if not followings_data:
@@ -228,14 +228,14 @@ class NicovideoUserService(NicovideoBaseService):
     async def follow_user(self, user_id: str) -> bool:
         """Follow a user."""
         result = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.follow_user, user_id
+            self.niconico_py_client.user.follow_user, user_id
         )
         return bool(result)
 
     async def unfollow_user(self, user_id: str) -> bool:
         """Unfollow a user."""
         result = await self.service_manager._call_with_throttler(
-            self.service_manager.niconico_py_client.user.unfollow_user, user_id
+            self.niconico_py_client.user.unfollow_user, user_id
         )
         return bool(result)
 
