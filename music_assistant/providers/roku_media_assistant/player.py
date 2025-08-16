@@ -59,26 +59,15 @@ class MediaAssistantPlayer(Player):
     @property
     def needs_poll(self) -> bool:
         """Return if the player needs to be polled for state updates."""
-        # MANDATORY
-        # this should return True if the player needs to be polled for state updates,
-        # If you player does not need to be polled, you can return False.
         return True
 
     @property
     def poll_interval(self) -> int:
         """Return the interval in seconds to poll the player for state updates."""
-        # OPTIONAL
-        # used in conjunction with the needs_poll property.
-        # this should return the interval in seconds to poll the player for state updates.
         return 5 if self.powered else 30
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        # OPTIONAL
-        # this method is optional and should be implemented if you need player specific
-        # configuration entries. If you do not need player specific configuration entries,
-        # you can leave this method out completely to accept the default implementation.
-        # Please note that you need to call the super() method to get the default entries.
         default_entries = await super().get_config_entries()
         return [
             *default_entries,
@@ -87,9 +76,6 @@ class MediaAssistantPlayer(Player):
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
-        # OPTIONAL - required only if you specified PlayerFeature.POWER
-        # this method should send a power on/off command to the given player.
-
         try:
             device_info = await self.roku.update()
 
@@ -117,9 +103,6 @@ class MediaAssistantPlayer(Player):
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        # OPTIONAL - required only if you specified PlayerFeature.VOLUME_MUTE
-        # this method should send a volume mute command to the given player.
-
         await self.roku.remote("volume_mute")
 
         logger = self.provider.logger.getChild(self.player_id)
@@ -131,12 +114,6 @@ class MediaAssistantPlayer(Player):
 
     async def play(self) -> None:
         """Play command."""
-        # MANDATORY
-        # this method is mandatory and should be implemented.
-        # this method should send a play/resume command to the given player.
-        # normally this is the point where you would resume playback
-        # on your actual player device.
-
         await self.roku.remote("play")
 
         logger = self.provider.logger.getChild(self.player_id)
@@ -146,12 +123,6 @@ class MediaAssistantPlayer(Player):
 
     async def stop(self) -> None:
         """Stop command."""
-        # MANDATORY
-        # this method is mandatory and should be implemented.
-        # this method should send a stop command to the given player.
-        # normally this is the point where you would stop playback
-        # on your actual player device.
-
         try:
             device_info = await self.roku.update()
 
@@ -184,9 +155,6 @@ class MediaAssistantPlayer(Player):
 
     async def pause(self) -> None:
         """Pause command."""
-        # OPTIONAL - required only if you specified PlayerFeature.PAUSE
-        # this method should send a pause command to the given player.
-
         await self.roku.remote("play")
 
         logger = self.provider.logger.getChild(self.player_id)
@@ -196,34 +164,6 @@ class MediaAssistantPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        # MANDATORY
-        # This method is mandatory and should be implemented.
-        # This method should handle the play_media command for the given player.
-        # It will be called when media needs to be played on the player.
-        # The media object contains all the details needed to play the item.
-
-        # In 99% of the cases this will be called by the Queue controller to play
-        # a single item from the queue on the player and the uri within the media
-        # object will then contain the URL to play that single queue item.
-
-        # If your player provider does not support enqueuing of items,
-        # the queue controller will simply call this play_media method for
-        # each item in the queue to play them one by one.
-
-        # In order to support true gapless and/or enqueuing, we offer the option of
-        # 'flow_mode' playback. In that case the queue controller will stitch together
-        # all songs in the playbook queue into a single stream and send that to the player.
-        # In that case the URI (and metadata) received here is that of the 'flow mode' stream.
-
-        # Examples of player providers that use flow mode for playback by default are AirPlay,
-        # SnapCast and Fully Kiosk.
-
-        # Examples of player providers that optionally use 'flow mode' are Google Cast and
-        # Home Assistant. They provide a config entry to enable flow mode playback.
-
-        # Examples of player providers that natively support enqueuing of items are Sonos,
-        # Slimproto and Google Cast.
-
         if not (queue := self.mass.player_queues.get_active_queue(self.player_id)):
             return
 
@@ -315,14 +255,6 @@ class MediaAssistantPlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next (queue) item on the player."""
-        # OPTIONAL - required only if you specified PlayerFeature.ENQUEUE
-        # This method is optional and should be implemented if you want to support
-        # enqueuing of the next item on the player.
-        # This will be called when the player reports it started buffering a queue item
-        # and when the queue items updated.
-        # A PlayerProvider implementation is in itself responsible for handling this
-        # so that the queue items keep playing until its empty or the player stopped.
-
         try:
             device_info = await self.roku.update()
 
@@ -354,8 +286,6 @@ class MediaAssistantPlayer(Player):
 
     async def poll(self) -> None:
         """Poll player for state updates."""
-        # OPTIONAL - This is called by the Player Manager if the 'needs_poll' property is True.
-
         # Pull Device State
         try:
             device_info = await self.roku.update()
@@ -473,8 +403,4 @@ class MediaAssistantPlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
-        # OPTIONAL
-        # this method is optional and should be implemented if you need to handle
-        # any logic when the player is unloaded from the Player controller.
-        # This is called when the player is removed from the Player controller.
         self.logger.info("Player %s unloaded", self.name)

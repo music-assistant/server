@@ -24,9 +24,6 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    # setup is called when the user wants to setup a new provider instance.
-    # you are free to do any preflight checks here and but you must return
-    # an instance of your provider.
     return MediaAssistantprovider(mass, manifest, config)
 
 
@@ -44,12 +41,6 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    # Config Entries are used to configure the Player Provider if needed.
-    # See the models of ConfigEntry and ConfigValueType for more information what is supported.
-    # The ConfigEntry is a dataclass that represents a single configuration entry.
-    # The ConfigValueType is an Enum that represents the type of value that
-    # can be stored in a ConfigEntry.
-    # If your provider does not need any configuration, you can return an empty tuple.
     return (
         CONF_ENTRY_MANUAL_DISCOVERY_IPS,
         ConfigEntry(

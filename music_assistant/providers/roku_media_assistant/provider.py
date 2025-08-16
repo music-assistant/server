@@ -25,21 +25,7 @@ SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 
 class MediaAssistantprovider(PlayerProvider):
-    """
-    Media Assistant Player provider.
-
-    Note that this is always subclassed from PlayerProvider,
-    which in turn is a subclass of the generic Provider model.
-
-    The base implementation already takes care of some convenience methods,
-    such as the mass object and the logger. Take a look at the base class
-    for more information on what is available.
-
-    Just like with any other subclass, make sure that if you override
-    any of the default methods (such as __init__), you call the super() method.
-    In most cases its not needed to override any of the builtin methods and you only
-    implement the abc methods with your actual implementation.
-    """
+    """Media Assistant Player provider."""
 
     roku_players: dict[str, MediaAssistantPlayer] = {}
     _discovery_running: bool = False
@@ -48,20 +34,10 @@ class MediaAssistantprovider(PlayerProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        # MANDATORY
-        # you should return a set of provider-level (optional) features
-        # here that your player provider supports or an empty set if none.
-        # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
         return SUPPORTED_FEATURES
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called when the provider is initialized in Music Assistant.
-        # you can use this to do any async initialization of the provider,
-        # such as loading configuration, setting up connections, etc.
         self.lock = asyncio.Lock()
         # silence the async_upnp_client logger
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -76,13 +52,6 @@ class MediaAssistantprovider(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called after the provider has been fully loaded into Music Assistant.
-        # you can use this for instance to trigger custom (non-mdns) discovery of players
-        # or any other logic that needs to run after the provider is fully loaded.
-
         manual_ip_config = cast(
             "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
         )
@@ -94,18 +63,7 @@ class MediaAssistantprovider(PlayerProvider):
         await self.discover_players()
 
     async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        is_removed will be set to True when the provider is removed from the configuration.
-        """
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # it will be called when the provider is unloaded from Music Assistant.
-        # this means also when the provider is getting reloaded
-
+        """Handle unload/close of the provider."""
         if self.roku_players is None:
             return  # type: ignore[unreachable]
         async with TaskManager(self.mass) as tg:
@@ -114,9 +72,6 @@ class MediaAssistantprovider(PlayerProvider):
 
     async def discover_players(self) -> None:
         """Discover Roku players on the network."""
-        # This is an optional method that you can implement if
-        # you want to (manually) discover players on the
-        # network and you do not use mdns discovery.
         if self.config.get_value(CONF_AUTO_DISCOVER):
             if self._discovery_running:
                 return
@@ -164,11 +119,7 @@ class MediaAssistantprovider(PlayerProvider):
         self.mass.loop.call_later(300, reschedule)
 
     async def _device_disconnect(self, roku_player: MediaAssistantPlayer) -> None:
-        """
-        Destroy connections to the device now that it's not available.
-
-        Also call when removing this entity from MA to clean up connections.
-        """
+        """Destroy connections to the device."""
         async with roku_player.lock:
             if not roku_player.roku:
                 self.logger.debug("Disconnecting from device that's not connected")
