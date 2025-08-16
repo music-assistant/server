@@ -50,7 +50,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         async for playlist in self.mass.music.playlists.iter_library_items(
             provider=self.instance_id,
         ):
-            # Filter based on playlist type and config settingげ
+            # Filter based on playlist type and config setting
             # Own mylists are editable (is_editable=True)
             # Following mylists are not editable (is_editable=False)
             if playlist.is_editable and not include_own_tracks:

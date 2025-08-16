@@ -126,32 +126,28 @@ class NicovideoSearchService(NicovideoBaseService):
 
     async def search_videos_by_tags(
         self,
-        tags: list[str],
+        tag: str,
         limit: int,
         sort: VideoSearchSortKey,
         sort_order: VideoSearchSortOrder,
     ) -> list[Track]:
         """Search for videos by tags with specified sort order."""
-        if not tags:
-            return []
-
         tracks = []
         # Search for each tag separately since search_videos_by_tag only accepts one tag
-        for tag in tags:
-            video_search_data = await self.service_manager._call_with_throttler(
-                self.niconico_py_client.video.search.search_videos_by_tag,
-                tag,
-                page_size=limit,
-                sort_key=sort,
-                sort_order=sort_order,
-                search_by_user=True,
-            )
+        video_search_data = await self.service_manager._call_with_throttler(
+            self.niconico_py_client.video.search.search_videos_by_tag,
+            tag,
+            page_size=limit,
+            sort_key=sort,
+            sort_order=sort_order,
+            search_by_user=True,
+        )
 
-            if video_search_data:
-                for item in video_search_data.items:
-                    if item.id_:
-                        track = self.converter_manager.track.convert_by_essential_video(item)
-                        if track:
-                            tracks.append(track)
+        if video_search_data:
+            for item in video_search_data.items:
+                if item.id_:
+                    track = self.converter_manager.track.convert_by_essential_video(item)
+                    if track:
+                        tracks.append(track)
 
         return tracks[:limit]  # Limit total results
