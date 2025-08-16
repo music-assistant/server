@@ -6,11 +6,10 @@ import asyncio
 import contextlib
 import time
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
 
-from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -34,7 +33,11 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
