@@ -198,7 +198,7 @@ class RadioParadiseProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if media_type != MediaType.RADIO:
-            raise ValueError(f"Unsupported media type: {media_type}")
+            raise UnplayableMediaError(f"Unsupported media type: {media_type}")
         if item_id not in self._channels_cache:
             raise ValueError(f"Unknown radio channel: {item_id}")
 
