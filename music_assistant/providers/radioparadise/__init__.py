@@ -9,7 +9,6 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
-from music_assistant.models.music_provider import MusicProvider
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -29,6 +28,8 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
@@ -315,6 +316,8 @@ class RadioParadiseProvider(MusicProvider):
 
             if song_start <= current_time_ms < song_end:
                 return song
+
+        return None
 
         # If no exact match, return first song
         first_song = songs.get("0")
