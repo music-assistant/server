@@ -72,47 +72,47 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
         """Add item to library."""
-        if item.media_type == MediaType.ARTIST:
-            # Check if follow/unfollow artists is enabled
-            auto_sync_enabled = self.nicovideo_config.get_use_follow_unfollow_artists()
-            if not auto_sync_enabled:
-                return True  # Successfully "added" but no action needed
+        if item.media_type is not MediaType.ARTIST:
+            return None
 
-            success = await self.service_manager.user.follow_user(item.item_id)
-            if success:
-                self.logger.debug("Successfully followed artist %s", item.name)
-                return True
-            else:
-                self.logger.warning("Failed to follow artist %s", item.name)
-                # Raise error with user-friendly message
-                raise ProviderUnavailableError(
-                    f"Failed to follow artist '{item.name}' on niconico video. "
-                    f"This might be due to API limits or network issues."
-                )
+        # Check if follow/unfollow artists is enabled
+        auto_sync_enabled = self.nicovideo_config.get_use_follow_unfollow_artists()
+        if not auto_sync_enabled:
+            return True  # Successfully "added" but no action needed
 
-        return None  # Not handled by this mixin
+        success = await self.service_manager.user.follow_user(item.item_id)
+        if success:
+            self.logger.debug("Successfully followed artist %s", item.name)
+            return True
+        else:
+            self.logger.warning("Failed to follow artist %s", item.name)
+            # Raise error with user-friendly message
+            raise ProviderUnavailableError(
+                f"Failed to follow artist '{item.name}' on niconico video. "
+                f"This might be due to API limits or network issues."
+            )
 
     @override
     async def library_remove_for_mixin(
         self, prov_item_id: str, media_type: MediaType
     ) -> bool | None:
         """Remove artist from library."""
-        if media_type == MediaType.ARTIST:
-            # Check if follow/unfollow artists is enabled
-            auto_sync_enabled = self.nicovideo_config.get_use_follow_unfollow_artists()
-            if not auto_sync_enabled:
-                return True  # Successfully "removed" but no action needed
+        if media_type is not MediaType.ARTIST:
+            return None
 
-            success = await self.service_manager.user.unfollow_user(prov_item_id)
-            if success:
-                self.logger.debug("Successfully unfollowed artist %s", prov_item_id)
-                return True
-            else:
-                self.logger.warning("Failed to unfollow artist %s", prov_item_id)
-                # Raise error with user-friendly message
-                raise ProviderUnavailableError(
-                    f"Failed to unfollow artist (ID: {prov_item_id}) on niconico video. "
-                    f"This might be due to API limits or network issues."
-                )
+        # Check if follow/unfollow artists is enabled
+        auto_sync_enabled = self.nicovideo_config.get_use_follow_unfollow_artists()
+        if not auto_sync_enabled:
+            return True  # Successfully "removed" but no action needed
 
-        return None  # Not handled by this mixin
+        success = await self.service_manager.user.unfollow_user(prov_item_id)
+        if success:
+            self.logger.debug("Successfully unfollowed artist %s", prov_item_id)
+            return True
+        else:
+            self.logger.warning("Failed to unfollow artist %s", prov_item_id)
+            # Raise error with user-friendly message
+            raise ProviderUnavailableError(
+                f"Failed to unfollow artist (ID: {prov_item_id}) on niconico video. "
+                f"This might be due to API limits or network issues."
+            )
