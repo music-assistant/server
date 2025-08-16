@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
-from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -29,16 +28,19 @@ from music_assistant_models.media_items import (
     Radio,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
-
 from music_assistant.models.music_provider import MusicProvider
 
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-    from music_assistant_models.provider import ProviderManifest
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+    from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueType,
+    ProviderConfig,
+    )
+    from music_assistant_models.provider import ProviderManifest
 
 # Radio Paradise channel configurations with hardcoded channels
 RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
@@ -95,10 +97,10 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
+    _mass: MusicAssistant,
+    _instance_id: str | None = None,
+    _action: str | None = None,
+    _values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return ()
@@ -267,7 +269,11 @@ class RadioParadiseProvider(MusicProvider):
                 # Get next song
                 next_song = self._get_next_song(data.get("song", {}), current_song)
 
-                return {"current": current_song, "next": next_song, "block_data": data}
+                return {
+                    "current": current_song,
+                    "next": next_song,
+                    "block_data": data
+                }
 
         except aiohttp.ClientError as exc:
             self.logger.debug(f"Failed to get block metadata for channel {channel_id}: {exc}")
@@ -316,7 +322,7 @@ class RadioParadiseProvider(MusicProvider):
         
         # If no exact match, return first song
         first_song = songs.get("0")
-        return first_song if first_song is not None else None
+        return first_song
 
     def _get_next_song(
         self, songs: dict[str, Any], current_song: dict[str, Any]
@@ -353,7 +359,7 @@ class RadioParadiseProvider(MusicProvider):
             return ""
 
         channel_info = RADIO_PARADISE_CHANNELS[channel_id]
-        return channel_info.get("stream_url", "")
+        return str(channel_info.get("stream_url", ""))
 
     async def _monitor_stream_metadata(self, stream_details: StreamDetails) -> None:
         """Monitor and update stream metadata in real-time during playback.
