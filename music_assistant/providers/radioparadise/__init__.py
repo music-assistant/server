@@ -200,7 +200,7 @@ class RadioParadiseProvider(MusicProvider):
         if media_type != MediaType.RADIO:
             raise UnplayableMediaError(f"Unsupported media type: {media_type}")
         if item_id not in self._channels_cache:
-            raise ValueError(f"Unknown radio channel: {item_id}")
+            raise MediaNotFoundError(f"Unknown radio channel: {item_id}")
 
         stream_url = self._build_stream_url(item_id)
         if not stream_url:
