@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, TypeGuard, get_args
+from collections.abc import Coroutine
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, get_args
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pydantic import BaseModel, JsonValue
 
-FixtureCategory = Literal["tracks", "playlists", "albums", "artists", "search", "history"]
+FixtureCategory = Literal["tracks", "playlists", "albums", "artists", "search", "history", "stream"]
 
 
 def is_fixture_category(
@@ -28,3 +31,20 @@ type FixtureAPIResultOptional[R: BaseModel] = FixtureAPIResultBase[R, None]
 type JsonDict = dict[str, JsonValue]
 type JsonList = list[JsonValue]
 type JsonContainer = JsonDict | JsonList
+
+
+class FixtureProcessorProtocol(Protocol):
+    """Protocol for fixture saving operations."""
+
+    async def process_fixture[T: BaseModel, **P](
+        self,
+        category: FixtureCategory,
+        name: str,
+        api_call: Callable[
+            P, FixtureAPIResultOptional[T] | Coroutine[Any, Any, FixtureAPIResultOptional[T]]
+        ],
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> FixtureAPIResultOptional[T]:
+        """Save API response as fixture and return the data."""
+        ...

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -78,7 +79,12 @@ class PathToTypeMapper:
             if (
                 mapping.fixture_type
                 and isinstance(mapping.fixture_type, type)
-                and mapping.fixture_type.__module__.startswith("niconico.objects")
+                and (
+                    mapping.fixture_type.__module__.startswith("niconico.")
+                    or mapping.fixture_type.__module__.startswith(
+                        "music_assistant.providers.nicovideo"
+                    )
+                )
             ):
                 needed_imports.add((mapping.fixture_type.__module__, mapping.fixture_type.__name__))
 
@@ -86,35 +92,23 @@ class PathToTypeMapper:
 
     def write_imports_section(self, f: TextIO, needed_imports: set[tuple[str, str]]) -> None:
         """Write the imports section of the fixture_types.py file."""
-        # Group imports by module
-        imports_by_module: dict[str, list[str]] = {}
-        for module, name in needed_imports:
-            if module not in imports_by_module:
-                imports_by_module[module] = []
-            imports_by_module[module].append(name)
-
-        # Write imports
-        if imports_by_module:
+        # Write imports simply, let ruff format them
+        if needed_imports:
             f.write("# Import all necessary types for fixture mapping\n")
-            for module, names in sorted(imports_by_module.items()):
-                if module == "niconico.objects.nvapi":
-                    f.write("from niconico.objects.nvapi import (\n")
-                    for name in sorted(names):
-                        f.write(f"    {name},\n")
-                    f.write(")\n")
-                else:
-                    f.write(f"from {module} import {', '.join(sorted(names))}\n")
+            f.writelines(f"from {module} import {name}\n" for module, name in needed_imports)
 
     def generate_fixture_type_mapping(self, f: TextIO) -> None:
         """Generate simple path to type mapping variable."""
         f.write("# Fixture type mappings: path -> type\n")
         f.write("FIXTURE_TYPE_MAPPINGS: dict[str, type[BaseModel]] = {\n")
 
-        for key, mapping in sorted(self.fixture_mappings.items()):
+        entries = []
+        for key, mapping in self.fixture_mappings.items():
             if mapping.fixture_type is not None:
                 type_name = mapping.fixture_type.__name__
-                f.write(f'    "{key}": {type_name},\n')
+                entries.append(f'    "{key}": {type_name},\n')
 
+        f.writelines(entries)
         f.write("}\n")
 
     def _generate_init_file(self, generated_dir: Path) -> None:
@@ -157,3 +151,45 @@ class PathToTypeMapper:
 
         logger.info(f"Generated path->type mapping at {fixture_types_path}")
         logger.info(f"Generated __init__ at {GENERATED_DIR / '__init__.py'}")
+        logger.info("Note: Run 'ruff check --fix' to format the generated files")
+
+        self._format_with_ruff(fixture_types_path)
+
+    def _find_server_root(self) -> Path:
+        """Find server root directory by looking for tests directory."""
+        current = Path(__file__).parent
+
+        # Step 1: Look for tests directory
+        while current != current.parent:  # Until we reach filesystem root
+            if current.name == "tests":
+                server_root = current.parent
+
+                # Step 2: Verify it's actually server root (check for pyproject.toml)
+                if (server_root / "pyproject.toml").exists():
+                    return server_root
+
+            current = current.parent
+
+        raise RuntimeError("Could not find server root directory (tests directory not found)")
+
+    def _format_with_ruff(self, file_path: Path) -> None:
+        """Format the generated file with ruff."""
+        try:
+            # Find server root reliably
+            server_root = self._find_server_root()
+            ruff_path = server_root / ".venv" / "bin" / "ruff"
+
+            subprocess.run(  # noqa: S603
+                [str(ruff_path), "check", "--fix", str(file_path)],
+                check=True,
+                capture_output=True,
+                text=True,
+                cwd=server_root,
+            )
+            logger.info(f"Formatted {file_path} with ruff")
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to format {file_path} with ruff: {e.stderr}")
+        except (FileNotFoundError, RuntimeError) as e:
+            logger.warning(
+                f"ruff command not found or server root not found: {e}, skipping formatting"
+            )

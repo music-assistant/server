@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
+from typing import Any, override
+from unittest.mock import Mock
 
 from niconico import NicoNico
 from niconico.exceptions import LoginFailureError
 from pydantic import BaseModel, ValidationError
 
+from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 from tests.providers.nicovideo.constants import GENERATED_FIXTURES_DIR
 from tests.providers.nicovideo.fixtures.scripts.data_generators import (
     FixtureDataGenerators,
@@ -27,6 +30,7 @@ from tests.providers.nicovideo.helpers import (
 from tests.providers.nicovideo.types import (
     FixtureAPIResultOptional,
     FixtureCategory,
+    FixtureProcessorProtocol,
 )
 
 logger = logging.getLogger(__name__)
@@ -36,7 +40,7 @@ API_CALL_DELAY_SECONDS = 1.0
 FIXTURE_LIMIT = 1
 
 
-class FixtureGenerationOrchestrator:
+class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
     """Main orchestrator for fixture generation process."""
 
     def __init__(self) -> None:
@@ -46,13 +50,15 @@ class FixtureGenerationOrchestrator:
         # Initialize components with clear responsibilities
         self.path_to_type_mapping = PathToTypeMapper()
         self.data_saver = FixtureDataSaver()
-        self.data_generators = FixtureDataGenerators(limit=self.limit)
 
-    async def save_fixture[T: BaseModel, **P](
+    @override
+    async def process_fixture[T: BaseModel, **P](
         self,
         category: FixtureCategory,
         name: str,
-        api_call: Callable[P, FixtureAPIResultOptional[T]],
+        api_call: Callable[
+            P, FixtureAPIResultOptional[T] | Coroutine[Any, Any, FixtureAPIResultOptional[T]]
+        ],
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> FixtureAPIResultOptional[T]:
@@ -64,7 +70,10 @@ class FixtureGenerationOrchestrator:
             await asyncio.sleep(API_CALL_DELAY_SECONDS)
 
             # API call
-            response = await asyncio.to_thread(api_call, *args, **kwargs)
+            if asyncio.iscoroutinefunction(api_call):
+                response = await api_call(*args, **kwargs)
+            else:
+                response = await asyncio.to_thread(api_call, *args, **kwargs)
 
             if response is None:
                 logger.warning(f"No data returned for {category}/{name}")
@@ -114,7 +123,9 @@ class FixtureGenerationOrchestrator:
             logger.info("Login successful!")
 
             logger.info("=== Generating nicovideo fixtures ===")
-            await self.data_generators.generate_all_fixtures(client, self.save_fixture)
+            service_manager = NicovideoServiceManager(Mock(), Mock())
+            data_generators = FixtureDataGenerators(self, client, service_manager, limit=self.limit)
+            await data_generators.generate_all_fixtures()
 
             logger.info("=== Generating fixture types file ===")
             self.path_to_type_mapping.generate_fixture_types_file()

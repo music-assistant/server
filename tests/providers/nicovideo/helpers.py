@@ -11,15 +11,7 @@ from pydantic import BaseModel
 
 from tests.providers.nicovideo.constants import (
     DUMMY_COUNT,
-    DUMMY_DATETIME,
-    DUMMY_DESCRIPTION,
-    DUMMY_IS_PEAK_TIME,
-    DUMMY_JWT_TOKEN,
-    DUMMY_NICOSID,
-    DUMMY_PLAYBACK_POSITION,
-    DUMMY_SEARCH_ID,
-    DUMMY_THUMBNAIL_URL,
-    DUMMY_TRACK_ID,
+    STABILIZATION_RULES,
 )
 from tests.providers.nicovideo.types import FixtureAPIResult, JsonContainer, JsonDict, JsonList
 
@@ -148,27 +140,16 @@ def _stabilize_all_fields(data: JsonValue, context: StabilizationContext) -> Jso
                 field_path=new_field_path,
             )
 
-            # Stabilize specific dynamic fields by name
-            if key == "searchId":
-                stabilized[key] = DUMMY_SEARCH_ID
-            elif key in ("lastViewedAt", "serverTime", "registeredAt"):
-                stabilized[key] = DUMMY_DATETIME
-            elif key == "nicosid":
-                stabilized[key] = DUMMY_NICOSID
-            elif "description" in key.lower():
-                stabilized[key] = DUMMY_DESCRIPTION
-            elif key == "watchTrackId":
-                stabilized[key] = DUMMY_TRACK_ID
-            elif key == "isPeakTime":
-                stabilized[key] = DUMMY_IS_PEAK_TIME
-            elif key == "thumbnailUrl":
-                stabilized[key] = DUMMY_THUMBNAIL_URL
-            elif key == "playbackPosition":
-                stabilized[key] = DUMMY_PLAYBACK_POSITION
-            elif key in ("threadKey", "accessRightKey", "editKey"):
-                stabilized[key] = DUMMY_JWT_TOKEN
-            elif key == "views" and isinstance(value, int):
-                stabilized[key] = DUMMY_COUNT
+            # Check if any stabilization rule matches this field
+            matched_rule = None
+            for rule in STABILIZATION_RULES:
+                if rule.matches(key):
+                    matched_rule = rule
+                    break
+
+            if matched_rule is not None:
+                # Apply the stabilization rule
+                stabilized[key] = matched_rule.replacement_value
             else:
                 # Recursively process nested data with updated context
                 stabilized[key] = _stabilize_all_fields(value, new_context)

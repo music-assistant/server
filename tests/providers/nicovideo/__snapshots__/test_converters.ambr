@@ -1396,6 +1396,43 @@
     'version': '',
   })
 # ---
+# name: test_converter_with_fixture[stream/stream_data.json]
+  dict({
+    'audio_format': dict({
+      'bit_depth': 16,
+      'bit_rate': 236125,
+      'channels': 2,
+      'codec_type': 'aac',
+      'content_type': 'mp4',
+      'output_format_str': 'mp4',
+      'sample_rate': 48000,
+    }),
+    'dsp': None,
+    'duration': 2,
+    'item_id': 'sm45285955',
+    'loudness': None,
+    'loudness_album': None,
+    'media_type': 'track',
+    'prefer_album_loudness': False,
+    'provider': 'nicovideo_test',
+    'size': None,
+    'stream_metadata': dict({
+      'album': 'テストシリーズ68461151-527007',
+      'artist': 'ゲスト',
+      'duration': None,
+      'image_url': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006',
+      'title': 'APIテスト用',
+      'uri': None,
+    }),
+    'stream_title': 'ゲスト - APIテスト用',
+    'stream_type': 'http',
+    'strip_silence_begin': False,
+    'strip_silence_end': False,
+    'target_loudness': None,
+    'volume_normalization_gain_correct': None,
+    'volume_normalization_mode': None,
+  })
+# ---
 # name: test_converter_with_fixture[tracks/own_videos.json]
   dict({
     'album': None,

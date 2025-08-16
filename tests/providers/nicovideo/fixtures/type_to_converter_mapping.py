@@ -24,6 +24,10 @@ from niconico.objects.video import EssentialVideo, Mylist
 from niconico.objects.video.watch import WatchData
 from pydantic import BaseModel
 
+from music_assistant.providers.nicovideo.converters.stream import (
+    StreamConversionData,
+)
+
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
     from tests.providers.nicovideo.types import FixtureAPIResultOptional
@@ -148,6 +152,11 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
             if isinstance(item.content, EssentialVideo)
             and (track := cm.track.convert_by_essential_video(item.content)) is not None
         ],
+    ),
+    # Stream Types
+    TypeToConverterMapping[StreamConversionData](
+        source_type=StreamConversionData,
+        convert_func=lambda data, cm: cm.stream.convert_by_stream_data(data),
     ),
 ]
 

@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import UnplayableMediaError
 
-from music_assistant.providers.nicovideo.converters.stream import StreamConversionData
+from music_assistant.providers.nicovideo.converters.stream import (
+    StreamConversionData,
+)
 from music_assistant.providers.nicovideo.services.base import NicovideoBaseService
 
 if TYPE_CHECKING:
@@ -88,8 +90,8 @@ class NicovideoVideoService(NicovideoBaseService):
 
         return hls_url
 
-    async def get_stream_details(self, video_id: str) -> StreamDetails:
-        """Get StreamDetails for a video using WatchData and converter."""
+    async def _get_stream_data(self, video_id: str) -> StreamConversionData:
+        """Get StreamConversionData for a video."""
         # 1. Fetch watch data
         watch_data = await self.service_manager._call_with_throttler(
             self.niconico_py_client.video.watch.get_watch_data, video_id
@@ -109,14 +111,16 @@ class NicovideoVideoService(NicovideoBaseService):
             raise UnplayableMediaError("Failed to fetch domand_bid")
 
         # 5. Create conversion data for converter
-        stream_data = StreamConversionData(
+        return StreamConversionData(
             watch_data=watch_data,
             selected_audio=selected_audio,
             hls_url=hls_url,
             domand_bid=domand_bid,
         )
 
-        # 6. Convert to StreamDetails using converter
+    async def get_stream_details(self, video_id: str) -> StreamDetails:
+        """Get StreamDetails for a video using WatchData and converter."""
+        stream_data = await self._get_stream_data(video_id)
         return self.converter_manager.stream.convert_by_stream_data(stream_data)
 
     async def like_video(self, video_id: str) -> bool:

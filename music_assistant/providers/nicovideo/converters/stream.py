@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
-
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import UnplayableMediaError
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
+from niconico.objects.video.watch import (  # noqa: TC002 - Using by StreamConversionData(BaseModel)
+    WatchData,
+    WatchMediaDomandAudio,
+)
+from pydantic import BaseModel
 
 from music_assistant.providers.nicovideo.constants import NICOVIDEO_USER_AGENT
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase
-from music_assistant.providers.nicovideo.helpers import create_audio_format
+from music_assistant.providers.nicovideo.helpers import (
+    create_audio_format,
+)
 
-if TYPE_CHECKING:
-    from niconico.objects.video.watch import WatchData, WatchMediaDomandAudio
 
-
-@dataclass
-class StreamConversionData:
+class StreamConversionData(BaseModel):
     """Data needed for StreamDetails conversion."""
 
     watch_data: WatchData
