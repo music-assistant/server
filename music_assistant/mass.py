@@ -112,10 +112,10 @@ class MusicAssistant:
     streams: StreamsController
     _aiobrowser: AsyncServiceBrowser
 
-    def __init__(self, storage_path: str, safe_mode: bool = False) -> None:
+    def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
         self.storage_path = storage_path
-        self.cache_path = os.path.join(storage_path, ".cache")
+        self.cache_path = cache_path
         self.safe_mode = safe_mode
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
