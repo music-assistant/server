@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
-
+from music_assistant.models.music_provider import MusicProvider
 from music_assistant_models.enums import (
     ContentType,
     ImageType,
@@ -29,8 +29,6 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
-
-from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
@@ -319,7 +317,8 @@ class RadioParadiseProvider(MusicProvider):
                 return song
 
         # If no exact match, return first song
-        return cast("dict[str, Any]",songs.get("0"))
+        first_song = songs.get("0")
+        return first_song if first_song is not None else {}
 
     def _get_next_song(
         self, songs: dict[str, Any], current_song: dict[str, Any]
