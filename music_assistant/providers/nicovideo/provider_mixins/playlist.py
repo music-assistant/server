@@ -95,6 +95,9 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     ) -> None:
         """Remove track(s) from playlist."""
         # Get current playlist tracks to find track IDs at the specified positions
+        # Note: NicoNico's mylist does not allow duplicate entries of the same video_id
+        # within a single playlist. Therefore, mapping from 1-based positions to
+        # video_id is safe and uniquely identifies the target items.
         playlist_tracks = await self.get_playlist_tracks(prov_playlist_id)
 
         # Extract track IDs to remove based on positions

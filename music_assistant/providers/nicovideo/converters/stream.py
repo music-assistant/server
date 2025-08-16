@@ -57,6 +57,10 @@ class NicovideoStreamConverter(NicovideoConverterBase):
                 bit_rate=selected_audio.bit_rate,
             ),
             media_type=MediaType.TRACK,
+            # NOTE:
+            # Even though the underlying resource is HLS (m3u8), we intentionally set HTTP here.
+            # Using HLS causes auth to fail in downstream (cookies/headers not propagated by
+            # consumer path for HLS). HTTP works reliably with the provided extra input args.
             stream_type=StreamType.HTTP,
             duration=watch_data.video.duration,
             stream_metadata=StreamMetadata(

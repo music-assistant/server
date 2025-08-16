@@ -89,7 +89,8 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             # Raise error with user-friendly message
             raise ProviderUnavailableError(
                 f"Failed to follow artist '{item.name}' on niconico video. "
-                f"This might be due to API limits or network issues."
+                "Possible reasons: API limits (e.g., follow cap around 800), "
+                "rate limiting, or network issues."
             )
 
     @override
@@ -114,5 +115,5 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             # Raise error with user-friendly message
             raise ProviderUnavailableError(
                 f"Failed to unfollow artist (ID: {prov_item_id}) on niconico video. "
-                f"This might be due to API limits or network issues."
+                "Possible reasons: API limits, rate limiting, or network issues."
             )
