@@ -208,6 +208,7 @@ async def get_config_entries_impl(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     return (
+        # Authentication Category
         ConfigEntry(
             key=CONF_MAIL,
             type=ConfigEntryType.STRING,
@@ -243,7 +244,8 @@ async def get_config_entries_impl(
             ),
             category="Authentication",
         ),
-        # Basic integration features
+        # Content Category
+        ## Basic integration features
         ConfigEntry(
             key=CONF_AUTO_LIKE_ON_LIBRARY_ADD,
             type=ConfigEntryType.BOOLEAN,
@@ -270,7 +272,7 @@ async def get_config_entries_impl(
             ),
             category="Content",
         ),
-        # Own content settings
+        ## Own content settings
         ConfigEntry(
             key=CONF_INCLUDE_OWN_MYLISTS_TRACKS,
             type=ConfigEntryType.BOOLEAN,
@@ -310,7 +312,7 @@ async def get_config_entries_impl(
             ),
             category="Content",
         ),
-        # Followed content settings
+        ## Followed content settings
         ConfigEntry(
             key=CONF_INCLUDE_FOLLOWED_MYLISTS,
             type=ConfigEntryType.BOOLEAN,
@@ -336,6 +338,7 @@ async def get_config_entries_impl(
             ),
             category="Content",
         ),
+        # Recommendation Category
         ConfigEntry(
             key=CONF_RECOMMENDATION_FILTER_TAGS,
             type=ConfigEntryType.STRING,
