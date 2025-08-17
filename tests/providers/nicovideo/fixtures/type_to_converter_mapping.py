@@ -91,7 +91,7 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
     # Album Types
     TypeToConverterMapping[SeriesData](
         source_type=SeriesData,
-        convert_func=lambda data, cm: cm.album.convert_by_series(data),
+        convert_func=lambda data, cm: cm.album.convert_series_to_album_with_tracks(data),
     ),
     TypeToConverterMapping[UserSeriesItem](
         source_type=UserSeriesItem,
