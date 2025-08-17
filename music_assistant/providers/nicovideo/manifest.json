@@ -1,7 +1,6 @@
 {
   "type": "music",
   "domain": "nicovideo",
-  "stage": "experimental",
   "name": "niconico video",
   "description": "Support for niconico video(nicovideo) in Music Assistant",
   "codeowners": ["@Shi-553"],
