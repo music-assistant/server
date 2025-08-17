@@ -50,10 +50,9 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
                         yield artist
 
         # Include followed artists if user is logged in
-        if self.service_manager.auth.is_logged_in():
-            following_artists = await self.service_manager.user.get_own_followings()
-            for artist in following_artists:
-                yield artist
+        following_artists = await self.service_manager.user.get_own_followings()
+        for artist in following_artists:
+            yield artist
 
     @override
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:

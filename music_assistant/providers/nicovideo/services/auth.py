@@ -24,13 +24,14 @@ class NicovideoAuthService(NicovideoBaseService):
         super().__init__(service_manager)
         self._periodic_relogin_task: TimerHandle | None = None
 
+    @property
     def is_logged_in(self) -> bool:
         """Check if the user is logged in to niconico."""
         return self.niconico_py_client.logined
 
     async def try_login(self) -> bool:
         """Attempt to login to niconico with the configured credentials."""
-        if self.is_logged_in():
+        if self.is_logged_in:
             return True
 
         config = self.nicovideo_config
@@ -110,7 +111,7 @@ class NicovideoAuthService(NicovideoBaseService):
     async def try_logout(self) -> None:
         """Log out from the niconico service."""
         if self.niconico_py_client:
-            if self.is_logged_in():
+            if self.is_logged_in:
                 await asyncio.to_thread(self.niconico_py_client.logout)
             self.service_manager.reset_niconico_py_client()
 

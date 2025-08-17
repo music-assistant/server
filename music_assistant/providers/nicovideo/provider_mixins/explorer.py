@@ -241,6 +241,9 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                     "video_recommendation_recommend", limit=current_limit
                 )
 
+                if not batch_tracks:
+                    break  # No more tracks to process
+
                 # Filter out duplicates
                 new_tracks = [
                     track for track in batch_tracks if track.item_id not in seen_track_ids

@@ -38,9 +38,6 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        if not self.service_manager.auth.is_logged_in():
-            return
-
         # Check config settings for including tracks
         include_following_tracks = self.nicovideo_config.get_include_followed_mylists_tracks()
         include_own_tracks = self.nicovideo_config.get_include_own_mylists_tracks()

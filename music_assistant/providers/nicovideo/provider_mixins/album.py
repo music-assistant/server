@@ -48,9 +48,6 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider (user's own series)."""
-        if not self.service_manager.auth.is_logged_in():
-            return
-
         # Check config setting for including own series as albums
         if not self.nicovideo_config.get_include_own_series_albums():
             return

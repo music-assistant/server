@@ -59,8 +59,6 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Playlist, None]:
         """Retrieve library playlists from the provider."""
-        if not self.service_manager.auth.is_logged_in():
-            return
         # Get user's own playlists (editable)
         own_playlists = await self.service_manager.mylist.get_own_mylists()
         for playlist in own_playlists:

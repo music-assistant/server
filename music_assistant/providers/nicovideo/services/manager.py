@@ -16,7 +16,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from niconico import NicoNico
-from niconico.exceptions import LoginFailureError
+from niconico.exceptions import LoginFailureError, LoginRequiredError, PremiumRequiredError
 from pydantic import ValidationError
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager
@@ -116,9 +116,17 @@ class NicovideoServiceManager:
     def _log_call_exception(self, operation: str, err: Exception) -> None:
         """Log exceptions with classification and caller info."""
         caller_info = self._extract_caller_info()
-        if isinstance(err, LoginFailureError):
-            self.logger.warning(
+        if isinstance(err, LoginRequiredError):
+            self.logger.debug(
                 "Authentication required for %s called from %s: %s", operation, caller_info, err
+            )
+        elif isinstance(err, PremiumRequiredError):
+            self.logger.warning(
+                "Premium account required for %s called from %s: %s", operation, caller_info, err
+            )
+        elif isinstance(err, LoginFailureError):
+            self.logger.warning(
+                "Login failed for %s called from %s: %s", operation, caller_info, err
             )
         elif isinstance(err, (ConnectionError, TimeoutError)):
             self.logger.warning("Network error %s called from %s: %s", operation, caller_info, err)
