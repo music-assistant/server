@@ -19,7 +19,7 @@ CONF_VISUALIZATION = "visualization"
 
 CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 
-
+DEFAULT_PLAYER_VOLUME = 20
 DEFAULT_VISUALIZATION = SlimVisualisationType.NONE
 
 # sync constants
