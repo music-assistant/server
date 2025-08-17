@@ -7,7 +7,9 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ImageType, LinkType
 from music_assistant_models.media_items import (
+    Artist,
     AudioFormat,
+    ItemMapping,
     MediaItemImage,
     MediaItemLink,
     MediaItemMetadata,
@@ -41,13 +43,19 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         # Since EssentialVideo doesn't have detailed audio format info, we use defaults
         audio_format = create_audio_format()
 
+        # Build artists using artist converter (prefer full Artist over ItemMapping)
+        artists_list: UniqueList[Artist | ItemMapping] = UniqueList()
+        if video.owner.id_ is not None:
+            artist_obj = self.converter_manager.artist.convert_by_owner_or_user(video.owner)
+            artists_list.append(artist_obj)
+
         # Create base track with enhanced metadata
         return Track(
             item_id=video.id_,
             provider=self.provider.lookup_key,
             name=video.title,
             duration=video.duration,
-            artists=self.helper.create_artist_mapping(video.owner),
+            artists=artists_list,
             # Videos that cannot be played will have a duration of 0.
             is_playable=video.duration > 0 and not video.is_payment_required,
             metadata=self._create_track_metadata(
@@ -105,13 +113,19 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         # Create audio format from watch data
         audio_format = self._create_audio_format_from_watch_data(watch_data)
 
+        # Build artists using artist converter (avoid adding if owner id is missing)
+        artists_list: UniqueList[Artist | ItemMapping] = UniqueList()
+        if owner.id_ is not None:
+            artist_obj = self.converter_manager.artist.convert_by_owner_or_user(owner)
+            artists_list.append(artist_obj)
+
         # Create base track with enhanced metadata
         track = Track(
             item_id=video.id_,
             provider=self.provider.lookup_key,
             name=video.title,
             duration=video.duration,
-            artists=self.helper.create_artist_mapping(owner),
+            artists=artists_list,
             # Videos that cannot be played will have a duration of 0.
             is_playable=video.duration > 0 and not video.is_authentication_required,
             metadata=self._create_track_metadata_from_watch_video(
@@ -127,12 +141,11 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             ),
         )
 
-        # Add album information if series data is available
-        if watch_data.series:
-            track.album = self.helper.create_album_mapping(
-                album_id=str(watch_data.series.id_),
-                album_name=watch_data.series.title,
-                thumbnail_url=watch_data.series.thumbnail_url,
+        # Add album information if series data is available (prefer full Album over ItemMapping)
+        if watch_data.series is not None:
+            track.album = self.converter_manager.album.convert_by_series(
+                watch_data.series,
+                artists_list=artists_list,
             )
 
         return track
