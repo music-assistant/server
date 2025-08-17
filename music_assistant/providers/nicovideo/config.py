@@ -33,7 +33,6 @@ from music_assistant.providers.nicovideo.constants import (
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
 
-    from music_assistant.mass import MusicAssistant
     from music_assistant.models.provider import Provider
 
 
@@ -183,6 +182,7 @@ class NicovideoConfig:
         """Get and cast sensitive contents configuration value."""
         # Since it seems to be automatically controlled by the display settings of niconico users,
         # “mask” is always returned here.
+        # Sources: https://blog.nicovideo.jp/niconews/150863.html
         return "mask"
 
     def save_user_session(self, user_session: str) -> None:
@@ -194,21 +194,9 @@ class NicovideoConfig:
         self.set(CONF_MFA, None)
 
 
-async def get_config_entries_impl(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
+def _authentication_config_entries() -> tuple[ConfigEntry, ...]:
+    """Return authentication related config entries."""
     return (
-        # Authentication Category
         ConfigEntry(
             key=CONF_MAIL,
             type=ConfigEntryType.STRING,
@@ -244,8 +232,13 @@ async def get_config_entries_impl(
             ),
             category="Authentication",
         ),
-        # Content Category
-        ## Basic integration features
+    )
+
+
+def _content_config_entries() -> tuple[ConfigEntry, ...]:
+    """Return content related config entries."""
+    return (
+        # Basic integration features
         ConfigEntry(
             key=CONF_AUTO_LIKE_ON_LIBRARY_ADD,
             type=ConfigEntryType.BOOLEAN,
@@ -272,7 +265,7 @@ async def get_config_entries_impl(
             ),
             category="Content",
         ),
-        ## Own content settings
+        # Own content settings
         ConfigEntry(
             key=CONF_INCLUDE_OWN_MYLISTS_TRACKS,
             type=ConfigEntryType.BOOLEAN,
@@ -312,7 +305,7 @@ async def get_config_entries_impl(
             ),
             category="Content",
         ),
-        ## Followed content settings
+        # Followed content settings
         ConfigEntry(
             key=CONF_INCLUDE_FOLLOWED_MYLISTS,
             type=ConfigEntryType.BOOLEAN,
@@ -338,7 +331,12 @@ async def get_config_entries_impl(
             ),
             category="Content",
         ),
-        # Recommendation Category
+    )
+
+
+def _recommendation_config_entries() -> tuple[ConfigEntry, ...]:
+    """Return recommendation related config entries."""
+    return (
         ConfigEntry(
             key=CONF_RECOMMENDATION_FILTER_TAGS,
             type=ConfigEntryType.STRING,
@@ -416,4 +414,14 @@ async def get_config_entries_impl(
             category="Recommendations",
             range=(1, 100),
         ),
+    )
+
+
+async def get_config_entries_impl() -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    # Combine entries from logical categories
+    return (
+        _authentication_config_entries()
+        + _content_config_entries()
+        + _recommendation_config_entries()
     )
