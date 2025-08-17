@@ -8,6 +8,7 @@ from music_assistant_models.enums import ImageType, LinkType
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    ItemMapping,
     MediaItemImage,
     MediaItemLink,
     MediaItemMetadata,
@@ -15,6 +16,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 from niconico.objects.nvapi import SeriesData
 from niconico.objects.video.search import EssentialSeries
+from niconico.objects.video.watch import WatchSeries
 
 if TYPE_CHECKING:
     from niconico.objects.user import UserSeriesItem
@@ -26,7 +28,11 @@ from music_assistant.providers.nicovideo.helpers import AlbumWithTracks
 class NicovideoAlbumConverter(NicovideoConverterBase):
     """Handles album conversion for nicovideo."""
 
-    def convert_by_series(self, series: SeriesData | UserSeriesItem | EssentialSeries) -> Album:
+    def convert_by_series(
+        self,
+        series: SeriesData | UserSeriesItem | EssentialSeries | WatchSeries,
+        artists_list: UniqueList[Artist | ItemMapping] | None = None,
+    ) -> Album:
         """Convert a nicovideo SeriesData, UserSeriesItem, or EssentialSeries into an Album."""
         # Extract common data based on series type
         if isinstance(series, SeriesData):
@@ -42,6 +48,13 @@ class NicovideoAlbumConverter(NicovideoConverterBase):
                     owner_name = series_owner.user.nickname
                 elif series_owner.type_ == "channel" and series_owner.channel:
                     owner_name = series_owner.channel.name
+        elif isinstance(series, WatchSeries):
+            item_id = str(series.id_)
+            name = series.title
+            description = series.description or ""
+            thumbnail_url = series.thumbnail_url
+            owner_id = None
+            owner_name = None
         elif isinstance(series, EssentialSeries):
             item_id = str(series.id_)
             name = series.title
@@ -76,9 +89,11 @@ class NicovideoAlbumConverter(NicovideoConverterBase):
             provider_mappings=self.helper.create_provider_mapping(item_id, "series"),
         )
 
-        # Add artist (series owner) if available
+        # Build artists list from provided artists and/or series owner
+        artists_out = UniqueList(artists_list)
+
         if owner_id:
-            artist = Artist(
+            owner_artist = Artist(
                 item_id=str(owner_id),
                 provider=self.provider.lookup_key,
                 name=owner_name if owner_name else "",
@@ -87,7 +102,9 @@ class NicovideoAlbumConverter(NicovideoConverterBase):
                     url_path="user",
                 ),
             )
-            album.artists = UniqueList([artist])
+            artists_out.append(owner_artist)
+        if artists_out:
+            album.artists = artists_out
 
         # Add thumbnail image if available (exclude default no-thumbnail image)
         if thumbnail_url and not thumbnail_url.endswith("/series/no_thumbnail.png"):
