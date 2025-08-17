@@ -9,10 +9,10 @@ Fixtures generated with user credentials will contain personal user data.
 Always submit fixtures created with a dedicated test account only.
 
 Usage:
-1. Set up environment variables (NICONICO_EMAIL and NICONICO_PASSWORD) OR
+1. Set up environment variables (NICONICO_SESSION) OR
 2. Set up a TEST_USER_SESSION in this file.
 3. Run this file in the terminal.
-4. Fixture files will be generated in the fixtures directory.
+4. Fixture files will be generated in the tests/providers/nicovideo/generated directory.
 5. Use fixtures in tests.
 
 Authentication Priority:
