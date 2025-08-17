@@ -1,9 +1,9 @@
-name: Provider Fixtures Update and Test
+name: nicovideo Provider Fixtures Update and Test
 description: "To use it, you need to set the GitHub secret variable NICONICO_SESSION to the test account session."
 
 on:
   # Daily execution
-  # Requires GitHub repository variable ENABLE_SCHEDULABLE_FIXTURE_UPDATES to enable scheduled fixture updates
+  # Requires GitHub repository variable ENABLE_NICOVIDEO_SCHEDULABLE_FIXTURE_UPDATES to enable scheduled fixture updates
   schedule:
     - cron:  '00 0 * * *'
 
@@ -11,13 +11,12 @@ on:
   workflow_dispatch:
     inputs:
       provider:
-        description: 'Provider to update fixtures for (or "all" for all providers)'
+        description: 'Provider to update fixtures for'
         required: true
         default: 'nicovideo'
         type: choice
         options:
           - nicovideo
-          - all
 
       run_tests:
         description: 'Run tests after updating fixtures'
@@ -32,7 +31,7 @@ jobs:
   setup-and-update-fixtures:
     name: Update NicoVideo Fixtures and Run Tests
     runs-on: ubuntu-latest
-    if: (vars.ENABLE_SCHEDULABLE_FIXTURE_UPDATES == 'true' && github.event_name == 'schedule') || (github.event.inputs.provider == 'nicovideo' || github.event.inputs.provider == 'all' || github.event_name == 'push')
+    if: (vars.ENABLE_NICOVIDEO_SCHEDULABLE_FIXTURE_UPDATES == 'true' && github.event_name == 'schedule') || (github.event.inputs.provider == 'nicovideo' || github.event_name == 'push')
 
     steps:
       - name: Checkout repository
