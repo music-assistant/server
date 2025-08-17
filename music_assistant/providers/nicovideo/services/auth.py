@@ -35,7 +35,7 @@ class NicovideoAuthService(NicovideoBaseService):
 
         config = self.nicovideo_config
         credentials = config.get_auth_credentials()
-        username = credentials.username
+        username = credentials.mail
         password = credentials.password
         mfa = credentials.mfa
         user_session = credentials.user_session
@@ -132,6 +132,14 @@ class NicovideoAuthService(NicovideoBaseService):
         """Periodic re-login every 30 days."""
         try:
             self.logger.debug("Performing periodic re-login to refresh the session.")
+
+            config = self.nicovideo_config
+            credentials = config.get_auth_credentials()
+            if not (credentials.mail or credentials.password):
+                self.logger.debug("No login credentials provided, skipping periodic re-login.")
+                self.start_periodic_relogin_task()
+                return
+
             await self.try_logout()
             await asyncio.sleep(3)  # Short delay to ensure logout completes
             await self.try_login()

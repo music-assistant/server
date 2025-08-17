@@ -56,7 +56,7 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
             # Check if login credentials are provided
             credentials = self.nicovideo_config.get_auth_credentials()
             has_credentials = bool(
-                credentials.user_session or (credentials.username and credentials.password)
+                credentials.user_session or (credentials.mail and credentials.password)
             )
 
             if has_credentials:
@@ -79,8 +79,6 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
         try:
             # Stop the periodic relogin task
             self.service_manager.auth.stop_periodic_relogin_task()
-            # Logout from niconico
-            await self.service_manager.auth.try_logout()
             self.logger.debug("nicovideo provider unloaded successfully")
         except Exception as err:
             self.logger.warning("Error during nicovideo provider unload: %s", err)

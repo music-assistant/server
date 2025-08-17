@@ -41,10 +41,10 @@ class AuthCredentials:
     """Type for authentication credentials."""
 
     def __init__(
-        self, username: str | None, password: str | None, mfa: str | None, user_session: str | None
+        self, mail: str | None, password: str | None, mfa: str | None, user_session: str | None
     ) -> None:
         """Initialize authentication credentials."""
-        self.username = username
+        self.mail = mail
         self.password = password
         self.mfa = mfa
         self.user_session = user_session
@@ -173,7 +173,7 @@ class NicovideoConfig:
     def get_auth_credentials(self) -> AuthCredentials:
         """Get authentication credentials."""
         return AuthCredentials(
-            username=self.get_str_or_none(CONF_MAIL),
+            mail=self.get_str_or_none(CONF_MAIL),
             password=self.get_str_or_none(CONF_PASSWORD),
             mfa=self.get_str_or_none(CONF_MFA),
             user_session=self.get_str_or_none(CONF_USER_SESSION),
