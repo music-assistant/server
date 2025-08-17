@@ -48,6 +48,9 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
                 for artist in track.artists:
                     if isinstance(artist, Artist):
                         yield artist
+                    else:
+                        # Convert ItemMapping to Artist
+                        yield self.mass.music.artists.artist_from_item_mapping(artist)
 
         # Include followed artists if user is logged in
         following_artists = await self.service_manager.user.get_own_followings()

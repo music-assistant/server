@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, override
 
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import ImageType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.util import TaskManager
@@ -101,8 +101,16 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
         # Update album information in cached tracks
         async def update_track_with_album(track: Track) -> None:
             """Update single track with album information and cache it."""
+            # Get album thumbnail URL from album metadata
+            thumbnail_url = None
+            if album.metadata.images:
+                for image in album.metadata.images:
+                    if image.type == ImageType.THUMB:
+                        thumbnail_url = image.path
+                        break
+
             track.album = self.service_manager.converter_manager.helper.create_album_mapping(
-                album.item_id, album.name
+                album.item_id, album.name, thumbnail_url=thumbnail_url
             )
             await cache_track(self, track)
 

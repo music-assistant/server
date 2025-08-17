@@ -8,8 +8,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Artist, ItemMapping, ProviderMapping
+from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.media_items import (
+    Artist,
+    ItemMapping,
+    MediaItemImage,
+    ProviderMapping,
+)
 from music_assistant_models.unique_list import UniqueList
 from niconico.objects.user import NicoUser
 
@@ -43,40 +48,64 @@ class NicovideoConverterHelper(NicovideoConverterBase):
         return 0
 
     # ItemMapping creation methods
-    def create_album_mapping(self, album_id: str, album_name: str) -> ItemMapping:
+    def create_album_mapping(
+        self, album_id: str, album_name: str, *, thumbnail_url: str | None = None
+    ) -> ItemMapping:
         """Create an ItemMapping for album references without full metadata."""
-        return ItemMapping(
+        item_mapping = ItemMapping(
             media_type=MediaType.ALBUM,
             item_id=album_id,
             provider=self.provider.lookup_key,
             name=album_name,
         )
 
+        # Add image if available (exclude default no-thumbnail image)
+        if thumbnail_url and not thumbnail_url.endswith("/series/no_thumbnail.png"):
+            item_mapping.image = MediaItemImage(
+                type=ImageType.THUMB,
+                path=thumbnail_url,
+                provider=self.provider.lookup_key,
+                remotely_accessible=True,
+            )
+
+        return item_mapping
+
     def create_artist_mapping(
         self, owner_or_user: Owner | NicoUser
     ) -> UniqueList[Artist | ItemMapping]:
         """Create an ItemMapping for artist references without full metadata."""
         # Handle different object types for ID and name
+        icon_url: str | None
         if isinstance(owner_or_user, NicoUser):
             item_id = str(owner_or_user.id_)
             name = owner_or_user.nickname
+            icon_url = owner_or_user.icons.large
         else:  # Owner
             # Skip Owner objects without valid ID to avoid AssertionError
             if not owner_or_user.id_:
                 return UniqueList()
             item_id = str(owner_or_user.id_)
             name = owner_or_user.name if owner_or_user.name else ""
+            icon_url = owner_or_user.icon_url
 
-        return UniqueList[Artist | ItemMapping](
-            [
-                ItemMapping(
-                    media_type=MediaType.ARTIST,
-                    item_id=item_id,
-                    provider=self.provider.lookup_key,
-                    name=name,
-                )
-            ]
+        # Create the ItemMapping
+        item_mapping = ItemMapping(
+            media_type=MediaType.ARTIST,
+            item_id=item_id,
+            provider=self.provider.lookup_key,
+            name=name,
         )
+
+        # Add image if available
+        if icon_url:
+            item_mapping.image = MediaItemImage(
+                type=ImageType.THUMB,
+                path=icon_url,
+                provider=self.provider.lookup_key,
+                remotely_accessible=True,
+            )
+
+        return UniqueList[Artist | ItemMapping]([item_mapping])
 
     # ProviderMapping creation methods
     def create_provider_mapping(

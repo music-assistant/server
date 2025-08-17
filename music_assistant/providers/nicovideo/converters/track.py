@@ -132,6 +132,7 @@ class NicovideoTrackConverter(NicovideoConverterBase):
             track.album = self.helper.create_album_mapping(
                 album_id=str(watch_data.series.id_),
                 album_name=watch_data.series.title,
+                thumbnail_url=watch_data.series.thumbnail_url,
             )
 
         return track
