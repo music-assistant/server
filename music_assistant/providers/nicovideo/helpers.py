@@ -30,8 +30,6 @@ from music_assistant.providers.nicovideo.constants import (
 if TYPE_CHECKING:
     import logging
 
-    from requests.cookies import RequestsCookieJar
-
     from music_assistant.models.music_provider import MusicProvider
 
 
@@ -49,19 +47,6 @@ class AlbumWithTracks(DataClassDictMixin):
 
     album: Album
     tracks: list[Track]
-
-
-def convert_to_netscape(cookie: RequestsCookieJar, domain: str) -> str:
-    """Convert a raw cookie into Netscape format for yt-dlp."""
-    domain = domain.removeprefix("https://").removeprefix("http://")
-    netscape_cookie = "# Netscape HTTP Cookie File\n"
-    for morsel in iter(cookie):
-        netscape_cookie += (
-            f"{domain}\tTRUE\t/\t"
-            f"{str(getattr(morsel, 'secure', False)).upper()}\t0\t"
-            f"{getattr(morsel, 'name', '')}\t{getattr(morsel, 'value', '')}\n"
-        )
-    return netscape_cookie
 
 
 async def cache_track(provider: MusicProvider, track: Track) -> None:
