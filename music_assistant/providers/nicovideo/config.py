@@ -235,7 +235,7 @@ async def get_config_entries_impl(
         ConfigEntry(
             key=CONF_USER_SESSION,
             type=ConfigEntryType.SECURE_STRING,
-            label="User Session (Cookie)",
+            label="User Session ( 'user_session' in Cookie)",
             required=False,
             description=(
                 "Enter the user_session cookie value.\n"
