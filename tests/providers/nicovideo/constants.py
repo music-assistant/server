@@ -19,7 +19,6 @@ SAMPLE_SERIES_ID = "527007"
 
 # Stabilization constants
 DUMMY_COUNT = 1
-DUMMY_DESCRIPTION = "This is a dummy description for testing purposes."
 
 
 @dataclass(frozen=True)
@@ -58,5 +57,7 @@ STABILIZATION_RULES: list[StabilizationInfo] = [
     StabilizationInfo("editKey", "dummy.jwt.token.for.testing"),
     StabilizationInfo("views", DUMMY_COUNT),
     # Partial matches
-    StabilizationInfo("description", DUMMY_DESCRIPTION, is_partial_match=True),
+    StabilizationInfo(
+        "description", "This is a dummy description for testing purposes.", is_partial_match=True
+    ),
 ]
