@@ -1552,8 +1552,9 @@ class LocalFileSystemProvider(MusicProvider):
                 )
                 raise MediaNotFoundError(f"File not found: {file_path}") from err
 
-    # run in thread because strictly taken this may be blocking IO
-    return await asyncio.to_thread(_create_item)
+        # run in thread because strictly taken this may be blocking IO
+        return await asyncio.to_thread(_create_item)
+
     async def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
