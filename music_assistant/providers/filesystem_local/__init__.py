@@ -1524,28 +1524,36 @@ class LocalFileSystemProvider(MusicProvider):
     ) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
         absolute_path = self.get_absolute_path(file_path)
-
+    
         def _create_item() -> FileSystemItem:
-            if os.path.isdir(absolute_path):
+            try:
+                if os.path.isdir(absolute_path):
+                    return FileSystemItem(
+                        filename=os.path.basename(file_path),
+                        relative_path=get_relative_path(self.base_path, file_path),
+                        absolute_path=absolute_path,
+                        is_dir=True,
+                    )
+                stat = os.stat(absolute_path, follow_symlinks=False)
                 return FileSystemItem(
                     filename=os.path.basename(file_path),
                     relative_path=get_relative_path(self.base_path, file_path),
                     absolute_path=absolute_path,
-                    is_dir=True,
+                    is_dir=False,
+                    checksum=str(int(stat.st_mtime)),
+                    file_size=stat.st_size,
                 )
-            stat = os.stat(absolute_path, follow_symlinks=False)
-            return FileSystemItem(
-                filename=os.path.basename(file_path),
-                relative_path=get_relative_path(self.base_path, file_path),
-                absolute_path=absolute_path,
-                is_dir=False,
-                checksum=str(int(stat.st_mtime)),
-                file_size=stat.st_size,
-            )
+            except (FileNotFoundError, OSError) as err:
+                # Log the missing file and raise MediaNotFoundError so the queue can skip it
+                self.logger.warning(
+                    "File not found during resolve: %s - Error: %s", 
+                    absolute_path, 
+                    str(err)
+                )
+                raise MediaNotFoundError(f"File not found: {file_path}") from err
 
-        # run in thread because strictly taken this may be blocking IO
-        return await asyncio.to_thread(_create_item)
-
+    # run in thread because strictly taken this may be blocking IO
+    return await asyncio.to_thread(_create_item)
     async def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
