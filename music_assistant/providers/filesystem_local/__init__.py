@@ -853,7 +853,7 @@ class LocalFileSystemProvider(MusicProvider):
                 item_id
             )
             msg = f"Media file not found: {item_id}"
-            raise MediaNotFoundError(msg) from err
+            raise MediaNotFoundError(msg)
 
     async def resolve_image(self, path: str) -> str | bytes:
         """
