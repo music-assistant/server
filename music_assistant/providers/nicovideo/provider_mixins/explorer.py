@@ -61,26 +61,27 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         """
         recommendation_folders = []
 
-        # Get target count from config
-        target_count = self.nicovideo_config.recommendations.recommendation_count
+        recommendations_config = self.nicovideo_config.recommendations
 
-        # General recommendations
-        # Start with the target count, but be prepared to fetch more if filtering reduces count
-        tracks = await self._fetch_recommendations_with_filtering(target_count)
-        if tracks:
+        # Main recommendations
+        main_recommendation_tracks = await self._fetch_recommendations_with_filtering(
+            recommendations_config.main_recommendation_count
+        )
+        if main_recommendation_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
                     item_id="nicovideo_recommendations",
                     name="nicovideo recommendations",
                     provider=self.lookup_key,
                     icon="mdi-star-circle-outline",
-                    items=UniqueList(tracks),
+                    items=UniqueList(main_recommendation_tracks),
                 )
             )
 
         # History Tracks
-        history_count = self.nicovideo_config.recommendations.history_count
-        history_tracks = await self.service_manager.user.get_user_history(limit=history_count)
+        history_tracks = await self.service_manager.user.get_user_history(
+            limit=recommendations_config.history_count
+        )
         if history_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
@@ -93,26 +94,23 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             )
 
         # Following activities recommendations
-        # Following Activities
-        following_count = self.nicovideo_config.recommendations.following_activities_count
-        following_tracks = await self.service_manager.user.get_following_activities(
-            limit=following_count
+        following_activities_tracks = await self.service_manager.user.get_following_activities(
+            limit=recommendations_config.following_activities_count
         )
-        if following_tracks:
+        if following_activities_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
                     item_id="nicovideo_following_activities",
                     name="New Tracks from Followed Users",
                     provider=self.lookup_key,
                     icon="mdi-account-plus-outline",
-                    items=UniqueList(following_tracks),
+                    items=UniqueList(following_activities_tracks),
                 )
             )
 
         # Like History recommendations
-        like_history_count = self.nicovideo_config.recommendations.history_count  # Same as history
         like_history_tracks = await self.service_manager.user.get_like_history(
-            limit=like_history_count
+            limit=recommendations_config.like_history_count
         )
         if like_history_tracks:
             recommendation_folders.append(
@@ -126,41 +124,39 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             )
 
         # Tag-based recommendations
-        recommendation_tags = self.nicovideo_config.recommendations.tag_recommendation_tags
-        if recommendation_tags:
-            for tag in recommendation_tags:
-                tag_recommendation_tracks = await self.service_manager.search.search_videos_by_tag(
-                    tag, target_count, "personalized", "none"
-                )
-                if tag_recommendation_tracks:
-                    recommendation_folders.append(
-                        RecommendationFolder(
-                            item_id=f"nicovideo_tag_recommendations_{tag}",
-                            name=f"Tag-based Recommendations: {tag}",
-                            provider=self.lookup_key,
-                            icon="mdi-tag-outline",
-                            items=UniqueList(tag_recommendation_tracks),
-                        )
+        for tag in recommendations_config.tag_based_recommendation_tags:
+            tag_based_tracks = await self.service_manager.search.search_videos_by_tag(
+                tag,
+                recommendations_config.tag_based_recommendation_count,
+                "personalized",
+                "none",
+            )
+            if tag_based_tracks:
+                recommendation_folders.append(
+                    RecommendationFolder(
+                        item_id=f"nicovideo_tag_recommendations_{tag}",
+                        name=f"Tag-based Recommendations: {tag}",
+                        provider=self.lookup_key,
+                        icon="mdi-tag-outline",
+                        items=UniqueList(tag_based_tracks),
                     )
+                )
 
         # New tracks by tags
-        # Tag-based new tracks
-        new_tracks_tags = self.nicovideo_config.recommendations.tag_recommendation_new_tracks_tags
-        if new_tracks_tags:
-            for tag in new_tracks_tags:
-                new_tracks_by_tags = await self.service_manager.search.search_videos_by_tag(
-                    tag, target_count, "registeredAt", "desc"
-                )
-                if new_tracks_by_tags:
-                    recommendation_folders.append(
-                        RecommendationFolder(
-                            item_id=f"nicovideo_new_tracks_by_tags_{tag}",
-                            name=f"New Tracks by Tags: {tag}",
-                            provider=self.lookup_key,
-                            icon="mdi-new-box",
-                            items=UniqueList(new_tracks_by_tags),
-                        )
+        for new_tracks_tag in recommendations_config.tag_new_tracks_tags:
+            tag_new_tracks = await self.service_manager.search.search_videos_by_tag(
+                new_tracks_tag, recommendations_config.tag_new_tracks_count, "registeredAt", "desc"
+            )
+            if tag_new_tracks:
+                recommendation_folders.append(
+                    RecommendationFolder(
+                        item_id=f"nicovideo_new_tracks_by_tags_{new_tracks_tag}",
+                        name=f"New Tracks by Tags: {new_tracks_tag}",
+                        provider=self.lookup_key,
+                        icon="mdi-new-box",
+                        items=UniqueList(tag_new_tracks),
                     )
+                )
 
         return recommendation_folders
 
@@ -169,7 +165,9 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         # Use config count if limit is default
         target_count = (
-            self.nicovideo_config.recommendations.recommendation_count if limit == 25 else limit
+            self.nicovideo_config.recommendations.main_recommendation_count
+            if limit == 25
+            else limit
         )
 
         return await self._fetch_similar_tracks_with_filtering(prov_track_id, target_count)

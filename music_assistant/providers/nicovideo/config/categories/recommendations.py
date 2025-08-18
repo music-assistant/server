@@ -13,7 +13,7 @@ class RecommendationsConfigCategory(ConfigCategoryBase):
 
     recommendation_filter_tags = _rec.str_list_config(
         key="recommendation_filter_tags",
-        label="Filter tags for recommendations / similar tracks",
+        label="Tag filter for main recommendations / similar tracks",
         description=(
             "Comma-separated list of tags that tracks must have at least one of "
             "to appear in main recommendations and similar tracks.\n"
@@ -23,9 +23,9 @@ class RecommendationsConfigCategory(ConfigCategoryBase):
         ),
     )
 
-    recommendation_count = _rec.int_config(
-        key="recommendation_count",
-        label="Number of recommendations",
+    main_recommendation_count = _rec.int_config(
+        key="main_recommendation_count",
+        label="Number of main recommendations",
         default=25,
         min_val=1,
         max_val=100,
@@ -36,8 +36,8 @@ class RecommendationsConfigCategory(ConfigCategoryBase):
         ),
     )
 
-    tag_recommendation_tags = _rec.str_list_config(
-        key="tag_recommendation_tags",
+    tag_based_recommendation_tags = _rec.str_list_config(
+        key="tag_based_recommendation_tags",
         label="Tags for tag-based recommendations",
         description=(
             "Comma-separated list of tags to search for recommended tracks.\n"
@@ -46,16 +46,32 @@ class RecommendationsConfigCategory(ConfigCategoryBase):
             "Example: 'VOCALOID,音楽,ボカロ'"
         ),
     )
+    tag_based_recommendation_count = _rec.int_config(
+        key="tag_based_recommendation_count",
+        label="Number of tag-based recommendations",
+        default=25,
+        min_val=1,
+        max_val=100,
+        description="Number of tracks to fetch for tag-based recommendations.",
+    )
 
-    tag_recommendation_new_tracks_tags = _rec.str_list_config(
-        key="tag_recommendation_new_tracks_tags",
-        label="Tags for tag-based new tracks recommendations",
+    tag_new_tracks_tags = _rec.str_list_config(
+        key="tag_new_tracks_tags",
+        label="Tags for new track recommendations",
         description=(
             "Comma-separated list of tags to search for new tracks.\n"
             "Latest tracks with these tags will be shown in 'New Tracks by Tags' section.\n"
             "Leave empty to disable tag-based new tracks.\n"
             "Example: 'VOCALOID,音楽,ボカロ'"
         ),
+    )
+    tag_new_tracks_count = _rec.int_config(
+        key="tag_new_tracks_count",
+        label="Number of new track recommendations",
+        default=25,
+        min_val=1,
+        max_val=100,
+        description="Number of latest tracks to fetch for the 'New Tracks by Tags' section.",
     )
 
     history_count = _rec.int_config(
@@ -65,6 +81,15 @@ class RecommendationsConfigCategory(ConfigCategoryBase):
         min_val=1,
         max_val=100,
         description="Number of recently watched tracks to show in recommendations.",
+    )
+
+    like_history_count = _rec.int_config(
+        key="like_history_count",
+        label="Number of like history tracks",
+        default=50,
+        min_val=1,
+        max_val=100,
+        description="Number of recently liked tracks to show in recommendations.",
     )
 
     following_activities_count = _rec.int_config(
