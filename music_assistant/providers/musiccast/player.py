@@ -290,6 +290,19 @@ class MusicCastPlayer(Player):
 
         self.update_state()
 
+    @property
+    def synced_to(self) -> str | None:
+        """
+        Return the id of the player this player is synced to (sync leader).
+
+        If this player is not synced to another player (or is the sync leader itself),
+        this should return None.
+        """
+        if self.zone_device.is_client:
+            # we are a client, so synced to a server
+            return self._get_player_id_from_zone_device(self.zone_device.group_server)
+        return None
+
     async def _cmd_run(self, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
         """Help function for all player cmds."""
         try:
