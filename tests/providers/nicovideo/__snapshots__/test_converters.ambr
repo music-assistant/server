@@ -1821,7 +1821,7 @@
     'dsp': None,
     'duration': 2,
     'item_id': 'sm45285955',
-    'loudness': None,
+    'loudness': -7000.0,
     'loudness_album': None,
     'media_type': 'track',
     'prefer_album_loudness': False,
