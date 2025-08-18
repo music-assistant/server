@@ -1524,7 +1524,7 @@ class LocalFileSystemProvider(MusicProvider):
     ) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
         absolute_path = self.get_absolute_path(file_path)
-    
+
         def _create_item() -> FileSystemItem:
             try:
                 if os.path.isdir(absolute_path):
