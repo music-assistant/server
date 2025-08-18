@@ -1546,8 +1546,8 @@ class LocalFileSystemProvider(MusicProvider):
             except (FileNotFoundError, OSError) as err:
                 # Log the missing file and raise MediaNotFoundError so the queue can skip it
                 self.logger.warning(
-                    "File not found during resolve: %s - Error: %s", 
-                    absolute_path, 
+                    "File not found during resolve: %s - Error: %s",
+                    absolute_path,
                     str(err)
                 )
                 raise MediaNotFoundError(f"File not found: {file_path}") from err
