@@ -63,12 +63,10 @@ from music_assistant_models.media_items import (
     PodcastEpisode,
     ProviderMapping,
     Radio,
-    RecommendationFolder,
     SearchResults,
     Track,
 )
 from music_assistant_models.streamdetails import StreamDetails
-from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
@@ -82,6 +80,7 @@ from music_assistant.providers.ard_audiothek.database_queries import (
     show_episode_query,
     show_length_query,
     show_query,
+    subscriptions_query,
 )
 
 if TYPE_CHECKING:
@@ -162,7 +161,7 @@ async def _login(session: ClientSession, email: str, password: str) -> tuple[str
 
 
 def _create_aiohttptransport(headers: dict[str, str] | None = None) -> AIOHTTPTransport:
-    return AIOHTTPTransport(url=ARD_AUDIOTHEK_GRAPHQL, headers=headers)
+    return AIOHTTPTransport(url=ARD_AUDIOTHEK_GRAPHQL, headers=headers, ssl=True)
 
 
 async def get_config_entries(
@@ -305,10 +304,8 @@ class ARDAudiothek(MusicProvider):
         return {
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
-            ProviderFeature.RECOMMENDATIONS,
             ProviderFeature.LIBRARY_RADIOS,
             ProviderFeature.LIBRARY_PODCASTS,
-            ProviderFeature.LIBRARY_PODCASTS_EDIT,
             # ProviderFeature.SIMILAR_TRACKS,
             # see the ProviderFeature enum for all available features
         }
@@ -360,6 +357,7 @@ class ARDAudiothek(MusicProvider):
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
         self._client_initialized = False
+        await self.get_client()
 
     # timestamps = await self.mass.cache.get(
     #     key=CACHE_KEY_TIMESTAMP,
@@ -515,11 +513,21 @@ class ARDAudiothek(MusicProvider):
             prov_radio_id,
         )
 
-    # async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
-    #     """Retrieve library/subscribed podcasts from the provider.
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+        """Retrieve library/subscribed podcasts from the provider.
 
-    #     Minified podcast information is enough.
-    #     """
+        Minified podcast information is enough.
+        """
+        if not self.user_id:
+            return
+        async with await self.get_client() as session:
+            result = (
+                await session.execute(
+                    subscriptions_query, variable_values={"loginId": self.user_id}
+                )
+            )["allEndUsers"]["nodes"][0]["subscriptions"]["programSets"]["nodes"]
+        for show in result:
+            yield await self.get_podcast(show["subscribedProgramSet"]["coreId"])
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
@@ -600,11 +608,10 @@ class ARDAudiothek(MusicProvider):
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get podcast episodes."""
         async with await self.get_client() as session:
-            length = (
-                await session.execute(
-                    show_length_query, variable_values={"showId": prov_podcast_id}
-                )
-            )["show"]["items"]["totalCount"]
+            length = await session.execute(
+                show_length_query, variable_values={"showId": prov_podcast_id}
+            )
+            length = length["show"]["items"]["totalCount"]
             step_size = 128
             for offset in range(0, length, step_size):
                 result = (
@@ -679,42 +686,6 @@ class ARDAudiothek(MusicProvider):
             can_seek=seek,
             allow_seek=seek,
         )
-
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this provider's recommendations.
-
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
-        """
-        # Get this provider's recommendations.
-        # This is only called if you reported the RECOMMENDATIONS feature in the supported_features.
-        return [
-            RecommendationFolder(
-                item_id="ardaudiothek-recommendations",
-                name="ARD Audiothek: Recommendations",
-                icon="mdi-trending-up",
-                # translation_key=shelf.id_,
-                items=UniqueList(
-                    [
-                        Podcast(
-                            name="Test",
-                            item_id="0",
-                            publisher="Jan",
-                            provider=self.lookup_key,
-                            provider_mappings={
-                                ProviderMapping(
-                                    item_id="none",
-                                    provider_domain=self.domain,
-                                    provider_instance=self.instance_id,
-                                )
-                            },
-                        )
-                    ]
-                ),
-                provider=self.lookup_key,
-            )
-        ]
 
     @use_cache(3600)
     async def get_organizations(self, path: str) -> list[BrowseFolder]:
@@ -822,7 +793,7 @@ def _parse_podcast(
         provider=lookup_key,
         provider_mappings={
             ProviderMapping(
-                item_id="none",
+                item_id=podcast_id,
                 provider_domain=domain,
                 provider_instance=instance_id,
             )
@@ -899,6 +870,10 @@ def _parse_radio(
     radio.metadata.add_image(create_media_image(domain, radio_query["imagesList"]))
 
     return radio
+
+
+async def _update_history() -> None:
+    pass
 
 
 def _parse_podcast_episode(

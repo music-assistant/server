@@ -272,3 +272,48 @@ query CheckLogin($loginId: String!) {
 }
 """
 )
+
+
+subscriptions_query = gql(
+    """
+query GetBookmarksByLoginId($loginId: String!) {
+  allEndUsers(filter: { loginId: { eq: $loginId } }) {
+    count
+    nodes {
+      subscriptions {
+        programSets {
+          nodes {
+            subscribedProgramSet {
+              coreId
+              title
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+)
+
+
+get_history_query = gql(
+    """
+query GetBookmarksByLoginId($loginId: String!) {
+  allEndUsers(filter: { loginId: { eq: $loginId } }) {
+    count
+    nodes {
+      history {
+        nodes {
+          progress
+          item {
+            coreId
+            title
+          }
+        }
+      }
+    }
+  }
+}
+"""
+)
