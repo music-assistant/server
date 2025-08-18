@@ -42,7 +42,7 @@ class NicovideoUserService(NicovideoBaseService):
     ) -> list[Track]:
         """Get recommendations from nicovideo."""
         config = self.nicovideo_config
-        sensitive_contents = config.get_sensitive_contents_config()
+        sensitive_contents = config.content.sensitive_contents_config
         recommendations = await self.service_manager._call_with_throttler(
             self.niconico_py_client.user.get_recommendations,
             recipe_id,
@@ -68,7 +68,7 @@ class NicovideoUserService(NicovideoBaseService):
     async def get_similar_tracks(self, track_id: str, limit: int = 25) -> list[Track]:
         """Get tracks similar to the given track."""
         config = self.nicovideo_config
-        sensitive_contents = config.get_sensitive_contents_config()
+        sensitive_contents = config.content.sensitive_contents_config
         recommendation_api_item = await self.service_manager._call_with_throttler(
             self.niconico_py_client.user.get_recommendations,
             "video_watch_recommendation",
@@ -133,7 +133,7 @@ class NicovideoUserService(NicovideoBaseService):
     async def get_own_videos(self, limit: int = 100) -> list[Track]:
         """Get user's own uploaded videos from nicovideo."""
         config = self.nicovideo_config
-        sensitive_contents = config.get_sensitive_contents_config()
+        sensitive_contents = config.content.sensitive_contents_config
 
         # Calculate page_size based on limit
         page_size = min(limit, 100)  # API max likely 100

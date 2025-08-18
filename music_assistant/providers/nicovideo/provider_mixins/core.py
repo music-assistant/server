@@ -54,9 +54,9 @@ class NicovideoMusicProviderCoreMixin(NicovideoMusicProviderMixinBase):
         """Handle async initialization of the provider."""
         try:
             # Check if login credentials are provided
-            credentials = self.nicovideo_config.get_auth_credentials()
             has_credentials = bool(
-                credentials.user_session or (credentials.mail and credentials.password)
+                self.nicovideo_config.auth.user_session
+                or (self.nicovideo_config.auth.mail and self.nicovideo_config.auth.password)
             )
 
             if has_credentials:

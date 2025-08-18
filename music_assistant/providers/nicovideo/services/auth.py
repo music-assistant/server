@@ -35,11 +35,10 @@ class NicovideoAuthService(NicovideoBaseService):
             return True
 
         config = self.nicovideo_config
-        credentials = config.get_auth_credentials()
-        username = credentials.mail
-        password = credentials.password
-        mfa = credentials.mfa
-        user_session = credentials.user_session
+        username = config.auth.mail
+        password = config.auth.password
+        mfa = config.auth.mfa
+        user_session = config.auth.user_session
         max_retries = 3
         retry_delay_seconds = 1
         async with self.service_manager.niconico_api_throttler.bypass():
@@ -72,10 +71,10 @@ class NicovideoAuthService(NicovideoBaseService):
                     self.logger.info("Successfully authenticated with Nicovideo!")
                     # Clear MFA code after successful use (one-time password should not be reused)
                     if mfa:
-                        config.clear_mfa_code()
+                        config.auth.clear_mfa_code()
                     session = self.niconico_py_client.get_user_session()
                     if session:
-                        config.save_user_session(session)
+                        config.auth.save_user_session(session)
                         log_verbose(
                             self.logger,
                             "Saved user session for future logins (length: %d chars)",
@@ -135,8 +134,7 @@ class NicovideoAuthService(NicovideoBaseService):
             self.logger.debug("Performing periodic re-login to refresh the session.")
 
             config = self.nicovideo_config
-            credentials = config.get_auth_credentials()
-            if not (credentials.mail or credentials.password):
+            if not (config.auth.mail or config.auth.password):
                 self.logger.debug("No login credentials provided, skipping periodic re-login.")
                 self.start_periodic_relogin_task()
                 return

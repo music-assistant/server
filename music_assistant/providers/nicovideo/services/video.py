@@ -31,7 +31,7 @@ class NicovideoVideoService(NicovideoBaseService):
     ) -> list[Track]:
         """Get user videos and convert as Track list."""
         config = self.nicovideo_config
-        sensitive_contents = config.get_sensitive_contents_config()
+        sensitive_contents = config.content.sensitive_contents_config
         user_video_data = await self.service_manager._call_with_throttler(
             self.niconico_py_client.user.get_user_videos,
             user_id,

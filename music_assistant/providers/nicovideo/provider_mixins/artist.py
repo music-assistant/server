@@ -41,7 +41,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
     ) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
         # Get artists from library tracks (if enabled in config)
-        if self.nicovideo_config.get_include_library_track_artists():
+        if self.nicovideo_config.content.include_library_track_artists:
             async for track in self.mass.music.tracks.iter_library_items(
                 provider=self.instance_id,
             ):

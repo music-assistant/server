@@ -62,7 +62,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         recommendation_folders = []
 
         # Get target count from config
-        target_count = self.nicovideo_config.get_recommendation_count()
+        target_count = self.nicovideo_config.recommendations.recommendation_count
 
         # General recommendations
         # Start with the target count, but be prepared to fetch more if filtering reduces count
@@ -78,8 +78,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 )
             )
 
-        # History-based recommendations
-        history_count = self.nicovideo_config.get_history_count()
+        # History Tracks
+        history_count = self.nicovideo_config.recommendations.history_count
         history_tracks = await self.service_manager.user.get_user_history(limit=history_count)
         if history_tracks:
             recommendation_folders.append(
@@ -93,7 +93,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             )
 
         # Following activities recommendations
-        following_count = self.nicovideo_config.get_following_activities_count()
+        # Following Activities
+        following_count = self.nicovideo_config.recommendations.following_activities_count
         following_tracks = await self.service_manager.user.get_following_activities(
             limit=following_count
         )
@@ -109,7 +110,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             )
 
         # Like History recommendations
-        like_history_count = self.nicovideo_config.get_history_count()  # Same as history
+        like_history_count = self.nicovideo_config.recommendations.history_count  # Same as history
         like_history_tracks = await self.service_manager.user.get_like_history(
             limit=like_history_count
         )
@@ -125,7 +126,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             )
 
         # Tag-based recommendations
-        recommendation_tags = self.nicovideo_config.get_tag_recommendation_tags()
+        recommendation_tags = self.nicovideo_config.recommendations.tag_recommendation_tags
         if recommendation_tags:
             for tag in recommendation_tags:
                 tag_recommendation_tracks = await self.service_manager.search.search_videos_by_tag(
@@ -143,7 +144,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                     )
 
         # New tracks by tags
-        new_tracks_tags = self.nicovideo_config.get_tag_recommendation_new_tracks_tags()
+        # Tag-based new tracks
+        new_tracks_tags = self.nicovideo_config.recommendations.tag_recommendation_new_tracks_tags
         if new_tracks_tags:
             for tag in new_tracks_tags:
                 new_tracks_by_tags = await self.service_manager.search.search_videos_by_tag(
@@ -166,7 +168,9 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         # Use config count if limit is default
-        target_count = self.nicovideo_config.get_recommendation_count() if limit == 25 else limit
+        target_count = (
+            self.nicovideo_config.recommendations.recommendation_count if limit == 25 else limit
+        )
 
         return await self._fetch_similar_tracks_with_filtering(prov_track_id, target_count)
 
@@ -185,7 +189,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
 
     async def _filter_tracks_by_tags(self, tracks: list[Track]) -> list[Track]:
         """Filter tracks based on required tags from configuration."""
-        required_tags = self.nicovideo_config.get_recommendation_filter_tags()
+        required_tags = self.nicovideo_config.recommendations.recommendation_filter_tags
         if not required_tags:
             # No filtering needed
             return tracks
@@ -223,7 +227,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
 
     async def _fetch_recommendations_with_filtering(self, target_count: int) -> list[Track]:
         """Fetch recommendations with dynamic count adjustment for tag filtering."""
-        required_tags = self.nicovideo_config.get_recommendation_filter_tags()
+        required_tags = self.nicovideo_config.recommendations.recommendation_filter_tags
         if not required_tags:
             # No filtering needed, just fetch the target count
             return await self.service_manager.user.get_recommendations(limit=target_count)
@@ -283,7 +287,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         self, prov_track_id: str, target_count: int
     ) -> list[Track]:
         """Fetch similar tracks with dynamic count adjustment for tag filtering."""
-        required_tags = self.nicovideo_config.get_recommendation_filter_tags()
+        required_tags = self.nicovideo_config.recommendations.recommendation_filter_tags
         if not required_tags:
             # No filtering needed, just fetch the target count
             return await self.service_manager.user.get_similar_tracks(

@@ -65,7 +65,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
             yield playlist
 
         # Include following mylists if enabled in config
-        include_following = self.nicovideo_config.get_include_followed_mylists()
+        include_following = self.nicovideo_config.content.include_followed_mylists
         if include_following:
             following_playlists = await self.service_manager.user.get_following_playlists()
             for playlist in following_playlists:
