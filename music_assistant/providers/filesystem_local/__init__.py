@@ -850,7 +850,7 @@ class LocalFileSystemProvider(MusicProvider):
         except FileNotFoundError:
             self.logger.warning(
                 "File not found for media item %s",
-                item_id
+                item_id,
             )
             msg = f"Media file not found: {item_id}"
             raise MediaNotFoundError(msg)
