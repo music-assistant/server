@@ -6,6 +6,7 @@ Used for retrieval of lyrics.
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
@@ -83,7 +84,7 @@ class GeniusProvider(MetadataProvider):
             )
             return None
 
-        song_lyrics = self._fetch_lyrics(artist_name, track.name)
+        song_lyrics = await asyncio.to_thread(self._fetch_lyrics, artist_name, track.name)
 
         if song_lyrics:
             metadata = MediaItemMetadata()
@@ -96,6 +97,7 @@ class GeniusProvider(MetadataProvider):
         return None
 
     def _fetch_lyrics(self, artist: str, title: str) -> str | None:
+        """Fetch lyrics - NOTE: not async friendly."""
         # blank artist / title?
         if artist is None or len(artist.strip()) == 0 or title is None or len(title.strip()) == 0:
             self.logger.error("Cannot fetch lyrics without artist and title")
