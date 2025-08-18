@@ -847,11 +847,10 @@ class LocalFileSystemProvider(MusicProvider):
             if media_type == MediaType.PODCAST_EPISODE:
                 return await self._get_stream_details_for_podcast_episode(item_id)
             return await self._get_stream_details_for_track(item_id)
-        except FileNotFoundError as err:
+        except FileNotFoundError:
             self.logger.warning(
-                "File not found for media item %s: %s",
-                item_id,
-                str(err),
+                "File not found for media item %s",
+                item_id
             )
             msg = f"Media file not found: {item_id}"
             raise MediaNotFoundError(msg) from err
