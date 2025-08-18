@@ -11,6 +11,18 @@ class RecommendationsConfigCategory(ConfigCategoryBase):
 
     _rec = ConfigFactory("Recommendations")
 
+    recommendation_filter_tags = _rec.str_list_config(
+        key="recommendation_filter_tags",
+        label="Filter tags for recommendations / similar tracks",
+        description=(
+            "Comma-separated list of tags that tracks must have at least one of "
+            "to appear in main recommendations and similar tracks.\n"
+            "Leave empty to disable tag filtering.\n"
+            "Not used for tag-based recommendations.\n"
+            "Example: 'VOCALOID,音楽,ボカロ'"
+        ),
+    )
+
     recommendation_count = _rec.int_config(
         key="recommendation_count",
         label="Number of recommendations",
@@ -42,18 +54,6 @@ class RecommendationsConfigCategory(ConfigCategoryBase):
             "Comma-separated list of tags to search for new tracks.\n"
             "Latest tracks with these tags will be shown in 'New Tracks by Tags' section.\n"
             "Leave empty to disable tag-based new tracks.\n"
-            "Example: 'VOCALOID,音楽,ボカロ'"
-        ),
-    )
-
-    recommendation_filter_tags = _rec.str_list_config(
-        key="recommendation_filter_tags",
-        label="Filter tags for recommendations / similar tracks",
-        description=(
-            "Comma-separated list of tags that tracks must have at least one of "
-            "to appear in main recommendations and similar tracks.\n"
-            "Leave empty to disable tag filtering.\n"
-            "Not used for tag-based recommendations.\n"
             "Example: 'VOCALOID,音楽,ボカロ'"
         ),
     )
