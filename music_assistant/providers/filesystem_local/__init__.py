@@ -841,11 +841,20 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        if media_type == MediaType.AUDIOBOOK:
-            return await self._get_stream_details_for_audiobook(item_id)
-        if media_type == MediaType.PODCAST_EPISODE:
-            return await self._get_stream_details_for_podcast_episode(item_id)
-        return await self._get_stream_details_for_track(item_id)
+        try:
+            if media_type == MediaType.AUDIOBOOK:
+                return await self._get_stream_details_for_audiobook(item_id)
+            if media_type == MediaType.PODCAST_EPISODE:
+                return await self._get_stream_details_for_podcast_episode(item_id)
+            return await self._get_stream_details_for_track(item_id)
+        except FileNotFoundError as err:
+            self.logger.warning(
+                "File not found for media item %s: %s",
+                item_id,
+                str(err),
+            )
+            msg = f"Media file not found: {item_id}"
+            raise MediaNotFoundError(msg) from err
 
     async def resolve_image(self, path: str) -> str | bytes:
         """
@@ -1526,32 +1535,22 @@ class LocalFileSystemProvider(MusicProvider):
         absolute_path = self.get_absolute_path(file_path)
 
         def _create_item() -> FileSystemItem:
-            try:
-                if os.path.isdir(absolute_path):
-                    return FileSystemItem(
-                        filename=os.path.basename(file_path),
-                        relative_path=get_relative_path(self.base_path, file_path),
-                        absolute_path=absolute_path,
-                        is_dir=True,
-                    )
-                stat = os.stat(absolute_path, follow_symlinks=False)
+            if os.path.isdir(absolute_path):
                 return FileSystemItem(
                     filename=os.path.basename(file_path),
                     relative_path=get_relative_path(self.base_path, file_path),
                     absolute_path=absolute_path,
-                    is_dir=False,
-                    checksum=str(int(stat.st_mtime)),
-                    file_size=stat.st_size,
+                    is_dir=True,
                 )
-            except (FileNotFoundError, OSError) as err:
-                # Log the missing file and raise MediaNotFoundError so the queue can skip it
-                self.logger.warning(
-                    "File not found during resolve: %s - Error: %s",
-                    absolute_path,
-                    str(err),
-                )
-                msg = f"File not found: {file_path}"
-                raise MediaNotFoundError(msg) from err
+            stat = os.stat(absolute_path, follow_symlinks=False)
+            return FileSystemItem(
+                filename=os.path.basename(file_path),
+                relative_path=get_relative_path(self.base_path, file_path),
+                absolute_path=absolute_path,
+                is_dir=False,
+                checksum=str(int(stat.st_mtime)),
+                file_size=stat.st_size,
+            )
 
         # run in thread because strictly taken this may be blocking IO
         return await asyncio.to_thread(_create_item)
