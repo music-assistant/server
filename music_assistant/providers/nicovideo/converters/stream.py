@@ -70,6 +70,7 @@ class NicovideoStreamConverter(NicovideoConverterBase):
                 image_url=image.path if image else None,
             ),
             path=stream_data.hls_url,
+            loudness=selected_audio.integrated_loudness,
             extra_input_args=extra_args,
             allow_seek=True,
             can_seek=True,
