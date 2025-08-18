@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from aioslimproto.models import EventType as SlimEventType
+from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_PORT, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
@@ -20,7 +22,6 @@ from .player import SqueezelitePlayer
 
 if TYPE_CHECKING:
     from aioslimproto.client import SlimClient
-    from aioslimproto.models import EventType as SlimEventType
 
 
 @dataclass
@@ -90,7 +91,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
-        self.slimproto.subscribe(self._client_callback)
+        self.slimproto.subscribe(self._handle_slimproto_event)
         self.mass.streams.register_dynamic_route(
             "/slimproto/multi", self._serve_multi_client_stream
         )
@@ -109,31 +110,37 @@ class SqueezelitePlayerProvider(PlayerProvider):
         self.mass.streams.unregister_dynamic_route("/slimproto/multi")
         self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
 
-    async def _player_join(self, slimplayer: SlimClient) -> None:
-        """Handle player joining the slimproto server."""
-        player_id = slimplayer.player_id
-        if player_id in self._players:
+    def get_corrected_elapsed_milliseconds(self, slimplayer: SlimClient) -> int:
+        """Return corrected elapsed milliseconds for a slimplayer."""
+        sync_delay = self.mass.config.get_raw_player_config_value(
+            slimplayer.player_id, CONF_SYNC_ADJUST, 0
+        )
+        return slimplayer.elapsed_milliseconds - sync_delay
+
+    def _handle_slimproto_event(
+        self,
+        event: SlimEvent,
+    ) -> None:
+        if self.mass.closing:
             return
 
-        self.logger.debug("Player %s joined the server", player_id)
+        # handle new player connect (or reconnect of existing player)
+        if event.type == SlimEventType.PLAYER_CONNECTED:
+            if not (slimclient := self.slimproto.get_player(event.player_id)):
+                return  # should not happen, but guard anyways
+            player = SqueezelitePlayer(self, event.player_id, slimclient)
+            self.mass.create_task(player.setup())
+            return
 
-        # Create SqueezelitePlayer instance
-        player = SqueezelitePlayer(self, player_id, slimplayer)
-        self._players[player_id] = player
+        if not (player := self.mass.players.get(event.player_id)):
+            return  # guard for unknown player
+        if TYPE_CHECKING:
+            player = cast("SqueezelitePlayer", player)
 
-        # Register with Music Assistant
-        await player.setup()
+        # handle player disconnect
+        if event.type == SlimEventType.PLAYER_DISCONNECTED:
+            self.mass.create_task(self.mass.players.unregister(player.player_id))
+            return
 
-    async def _player_leave(self, player_id: str) -> None:
-        """Handle player leaving the slimproto server."""
-        self.logger.debug("Player %s left the server", player_id)
-
-        if self._players.pop(player_id, None):
-            if mass_player := self.mass.players.get(player_id):
-                mass_player.available = False
-                self.mass.players.update(player_id)
-
-    async def _player_update(self, player_id: str, event: SlimEventType) -> None:
-        """Handle player update from slimproto server."""
-        if player := self._players.get(player_id):
-            await player.handle_slim_event(event)
+        # forward all other events to the player itself
+        player.handle_slim_event(event)
