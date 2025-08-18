@@ -12,6 +12,7 @@ from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
+from propcache import under_cached_property as cached_property
 
 from music_assistant.models.player import Player
 from music_assistant.providers.musiccast.avt_helpers import (
@@ -290,7 +291,7 @@ class MusicCastPlayer(Player):
 
         self.update_state()
 
-    @property
+    @cached_property
     def synced_to(self) -> str | None:
         """
         Return the id of the player this player is synced to (sync leader).
