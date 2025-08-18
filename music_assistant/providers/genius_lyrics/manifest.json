@@ -8,7 +8,6 @@
   "requirements": ["lyricsgenius==3.6.5"],
   "documentation": "",
   "multi_instance": false,
-  "builtin": true,
   "allow_disable": true,
   "icon": "mdi-script-text"
 }
