@@ -232,11 +232,6 @@ async def get_config_entries(
             value=values.get(CONF_PASSWORD),
         ),
         ConfigEntry(
-            key="label_general",
-            type=ConfigEntryType.LABEL,
-            label="General config:",
-        ),
-        ConfigEntry(
             key=CONF_MAX_BITRATE,
             type=ConfigEntryType.INTEGER,
             label="Maximum bitrate for streams (0 for unlimited)",
@@ -248,10 +243,10 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PODCAST_FINISHED,
             type=ConfigEntryType.INTEGER,
-            label="Percentage reached until podcast episode marked as finished",
+            label="Percentage reached until podcast episode is marked as finished",
             required=False,
-            description="This setting defines with how much of a podcast has to be not heard until"
-            " an episode is marked as finished",
+            description="This setting defines the percentage of how much of a podcast "
+            "has to be left unheard until an episode is marked as finished",
             default_value=95,
             value=values.get(CONF_PODCAST_FINISHED),
         ),
