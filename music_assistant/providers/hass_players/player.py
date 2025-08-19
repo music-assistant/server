@@ -186,7 +186,7 @@ class HomeAssistantPlayer(Player):
             )
         except FailedCommand as exc:
             # some HA players do not support STOP
-            if "does not support this service" not in str(exc):
+            if "does not support" not in str(exc):
                 raise
             if PlayerFeature.PAUSE in self.supported_features:
                 await self.pause()

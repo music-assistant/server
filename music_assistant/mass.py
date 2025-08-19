@@ -880,16 +880,3 @@ class MusicAssistant:
             await mkdirs(self.storage_path)
         if not await isdir(self.cache_path):
             await mkdirs(self.cache_path)
-        # cleanup old cache files from their old locations
-        # TODO: Remove this code after MA version 2.5+
-        old_cache_db = os.path.join(self.storage_path, "cache.db")
-        if await isfile(old_cache_db):
-            await rmfile(old_cache_db)
-        for filename in await listdir(self.storage_path):
-            if filename.startswith(("spotify", "collage")):
-                old_loc = os.path.join(self.storage_path, filename)
-                new_loc = os.path.join(self.cache_path, filename)
-                if await isfile(new_loc):
-                    await rmfile(old_loc)
-                else:
-                    await rename(old_loc, new_loc)
