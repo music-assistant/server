@@ -92,6 +92,7 @@ class ResonatePlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_active_source = media.queue_id
 
+        # TODO: Don't just use 48kHz since it may not be optimal depending of the grouped players
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
             sample_rate=48000,
