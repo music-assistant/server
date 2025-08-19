@@ -371,9 +371,10 @@ class ARDAudiothek(MusicProvider):
             return
 
         async with await self.get_client() as session:
-            result = (
-                await session.execute(get_history_query, variable_values={"loginId": self.user_id})
-            )["allEndUsers"]["nodes"][0]["history"]["nodes"]
+            get_history_query.variable_values = {"loginId": self.user_id}
+            result = (await session.execute(get_history_query))["allEndUsers"]["nodes"][0][
+                "history"
+            ]["nodes"]
 
             new_progress = {}  # type: dict[str, tuple[bool, float]]
             time_limit = int(str(self.config.get_value(CONF_PODCAST_FINISHED)))
@@ -420,9 +421,9 @@ class ARDAudiothek(MusicProvider):
         if media_type != MediaType.PODCAST_EPISODE:
             return
         async with await self.get_client() as session:
+            update_history_entry.variable_values = {"itemId": prov_item_id, "progress": position}
             await session.execute(
                 update_history_entry,
-                variable_values={"itemId": prov_item_id, "progress": position},
             )
 
     @property
@@ -454,11 +455,8 @@ class ARDAudiothek(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         async with await self.get_client() as session:
-            search_shows = (
-                await session.execute(
-                    search_shows_query, variable_values={"query": search_query, "limit": limit}
-                )
-            )["search"]["shows"]["nodes"]
+            search_shows_query.variable_values = {"query": search_query, "limit": limit}
+            search_shows = (await session.execute(search_shows_query))["search"]["shows"]["nodes"]
 
         podcasts = []
         for element in search_shows:
@@ -472,15 +470,13 @@ class ARDAudiothek(MusicProvider):
                 )
             ]
         async with await self.get_client() as session:
-            search_radios = (
-                await session.execute(
-                    search_radios_query,
-                    variable_values={
-                        "filter": {"title": {"includes": search_query}},
-                        "first": limit,
-                    },
-                )
-            )["permanentLivestreams"]["nodes"]
+            search_radios_query.variable_values = {
+                "filter": {"title": {"includes": search_query}},
+                "first": limit,
+            }
+            search_radios = (await session.execute(search_radios_query))["permanentLivestreams"][
+                "nodes"
+            ]
 
         radios = []
         for element in search_radios:
@@ -500,9 +496,8 @@ class ARDAudiothek(MusicProvider):
         # Get full details of a single Radio station.
         # Mandatory only if you reported LIBRARY_RADIOS in the supported_features.
         async with await self.get_client() as session:
-            rad = (
-                await session.execute(livestream_query, variable_values={"coreId": prov_radio_id})
-            )["permanentLivestreamByCoreId"]
+            livestream_query.variable_values = {"coreId": prov_radio_id}
+            rad = (await session.execute(livestream_query))["permanentLivestreamByCoreId"]
 
         return _parse_radio(
             self.domain,
@@ -519,11 +514,10 @@ class ARDAudiothek(MusicProvider):
         if not self.user_id:
             return
         async with await self.get_client() as session:
-            result = (
-                await session.execute(
-                    get_subscriptions_query, variable_values={"loginId": self.user_id}
-                )
-            )["allEndUsers"]["nodes"][0]["subscriptions"]["programSets"]["nodes"]
+            get_subscriptions_query.variable_values = {"loginId": self.user_id}
+            result = (await session.execute(get_subscriptions_query))["allEndUsers"]["nodes"][0][
+                "subscriptions"
+            ]["programSets"]["nodes"]
         for show in result:
             yield await self.get_podcast(show["subscribedProgramSet"]["coreId"])
 
@@ -560,9 +554,8 @@ class ARDAudiothek(MusicProvider):
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast."""
         async with await self.get_client() as session:
-            result = (
-                await session.execute(show_query, variable_values={"showId": prov_podcast_id})
-            )["show"]
+            show_query.variable_values = {"showId": prov_podcast_id}
+            result = (await session.execute(show_query))["show"]
 
         return _parse_podcast(
             self.domain,
@@ -578,22 +571,17 @@ class ARDAudiothek(MusicProvider):
         """Get podcast episodes."""
         await self._update_progress()
         async with await self.get_client() as session:
-            length = await session.execute(
-                show_length_query, variable_values={"showId": prov_podcast_id}
-            )
+            show_length_query.variable_values = {"showId": prov_podcast_id}
+            length = await session.execute(show_length_query)
             length = length["show"]["items"]["totalCount"]
             step_size = 128
             for offset in range(0, length, step_size):
-                result = (
-                    await session.execute(
-                        show_query,
-                        variable_values={
-                            "showId": prov_podcast_id,
-                            "first": step_size,
-                            "offset": offset,
-                        },
-                    )
-                )["show"]
+                show_query.variable_values = {
+                    "showId": prov_podcast_id,
+                    "first": step_size,
+                    "offset": offset,
+                }
+                result = (await session.execute(show_query))["show"]
                 for idx, episode in enumerate(result["items"]["nodes"]):
                     if len(episode["audioList"]) == 0:
                         continue
@@ -616,11 +604,8 @@ class ARDAudiothek(MusicProvider):
         """Get single podcast episode."""
         await self._update_progress()
         async with await self.get_client() as session:
-            result = (
-                await session.execute(
-                    show_episode_query, variable_values={"coreId": prov_episode_id}
-                )
-            )["itemByCoreId"]
+            show_episode_query.variable_values = {"coreId": prov_episode_id}
+            result = (await session.execute(show_episode_query))["itemByCoreId"]
         if result is None:
             raise MediaNotFoundError("Episode not found")
         progress = self._get_progress(prov_episode_id)
@@ -638,14 +623,12 @@ class ARDAudiothek(MusicProvider):
         """Get streamdetails for a radio station."""
         async with await self.get_client() as session:
             if media_type == MediaType.RADIO:
-                result = (
-                    await session.execute(livestream_query, variable_values={"coreId": item_id})
-                )["permanentLivestreamByCoreId"]
+                livestream_query.variable_values = {"coreId": item_id}
+                result = (await session.execute(livestream_query))["permanentLivestreamByCoreId"]
                 seek = False
             elif media_type == MediaType.PODCAST_EPISODE:
-                result = (
-                    await session.execute(show_episode_query, variable_values={"coreId": item_id})
-                )["itemByCoreId"]
+                show_episode_query.variable_values = {"coreId": item_id}
+                result = (await session.execute(show_episode_query))["itemByCoreId"]
                 seek = True
 
         streams = result["audioList"]
@@ -708,11 +691,10 @@ class ARDAudiothek(MusicProvider):
     async def get_publication_services(self, path: str, core_id: str) -> list[BrowseFolder]:
         """Create a list of publications for a given organization."""
         async with await self.get_client() as session:
-            result = (
-                await session.execute(
-                    publication_services_query, variable_values={"coreId": core_id}
-                )
-            )["organizationByCoreId"]["publicationServicesByOrganizationName"]["nodes"]
+            publication_services_query.variable_values = {"coreId": core_id}
+            result = (await session.execute(publication_services_query))["organizationByCoreId"][
+                "publicationServicesByOrganizationName"
+            ]["nodes"]
         publications = []
 
         for pub in result:
@@ -733,9 +715,8 @@ class ARDAudiothek(MusicProvider):
     async def get_publications_list(self, core_id: str) -> list[Radio | Podcast]:
         """Create list of available radio stations and shows for a publication service."""
         async with await self.get_client() as session:
-            result = (
-                await session.execute(publications_list_query, variable_values={"coreId": core_id})
-            )["publicationServiceByCoreId"]
+            publications_list_query.variable_values = {"coreId": core_id}
+            result = (await session.execute(publications_list_query))["publicationServiceByCoreId"]
 
         publications = []  # type: list[Radio | Podcast]
 

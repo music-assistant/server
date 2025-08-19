@@ -24,7 +24,7 @@ cryptography==45.0.6
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 duration-parser==1.0.1
-gql[all]==3.5.3
+gql[all]==4.0.0
 hass-client==1.2.0
 ibroadcastaio==0.4.0
 ifaddr==0.2.0
