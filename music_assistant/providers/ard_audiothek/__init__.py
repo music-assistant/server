@@ -650,7 +650,14 @@ class ARDAudiothek(MusicProvider):
                 seek = True
 
         streams = result["audioList"]
-        selected_stream = max(streams, key=lambda x: x["audioBitrate"])
+
+        def filter_func(val: dict[str, Any]) -> bool:
+            if self.max_bitrate == 0:
+                return True
+            return int(val["audioBitrate"]) < self.max_bitrate
+
+        filtered_streams = filter(filter_func, streams)
+        selected_stream = max(filtered_streams, key=lambda x: x["audioBitrate"])
 
         return StreamDetails(
             provider=self.domain,
