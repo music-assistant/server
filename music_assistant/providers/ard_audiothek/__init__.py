@@ -379,7 +379,11 @@ class ARDAudiothek(MusicProvider):
             time_limit = int(str(self.config.get_value(CONF_PODCAST_FINISHED)))
             for x in result:
                 core_id = x["item"]["coreId"]
+                if core_id is None:
+                    continue
                 duration = x["item"]["duration"]
+                if duration is None:
+                    continue
                 progress = x["progress"]
                 time_limit_reached = (progress / duration) * 100 > time_limit
                 new_progress[core_id] = (time_limit_reached, progress)

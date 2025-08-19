@@ -276,11 +276,11 @@ query CheckLogin($loginId: String!) {
 
 get_subscriptions_query = gql(
     """
-query GetBookmarksByLoginId($loginId: String!) {
+query GetBookmarksByLoginId($loginId: String!, $count: Int = 96) {
   allEndUsers(filter: { loginId: { eq: $loginId } }) {
     count
     nodes {
-      subscriptions {
+      subscriptions(first: $count, orderBy: LASTLISTENEDAT_DESC) {
         programSets {
           nodes {
             subscribedProgramSet {
@@ -298,11 +298,11 @@ query GetBookmarksByLoginId($loginId: String!) {
 
 get_history_query = gql(
     """
-query GetBookmarksByLoginId($loginId: String!) {
+query GetBookmarksByLoginId($loginId: String!, $count: Int = 96) {
   allEndUsers(filter: { loginId: { eq: $loginId } }) {
     count
     nodes {
-      history {
+      history(first: $count, orderBy: LASTLISTENEDAT_DESC) {
         nodes {
           progress
           item {
