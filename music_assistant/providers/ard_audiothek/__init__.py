@@ -64,13 +64,14 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     Radio,
     SearchResults,
-    Track,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.database_queries import (
+    get_history_query,
+    get_subscriptions_query,
     livestream_query,
     organizations_query,
     publication_services_query,
@@ -80,7 +81,7 @@ from music_assistant.providers.ard_audiothek.database_queries import (
     show_episode_query,
     show_length_query,
     show_query,
-    subscriptions_query,
+    update_history_entry,
 )
 
 if TYPE_CHECKING:
@@ -105,6 +106,7 @@ CONF_ACTION_CLEAR_AUTH = "clear_auth"
 
 # General config
 CONF_MAX_BITRATE = "max_num_episodes"
+CONF_PODCAST_FINISHED = "podcast_finished_time"
 
 IDENTITY_TOOLKIT_BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts"
 ARD_ACCOUNTS_URL = "https://accounts.ard.de"
@@ -242,6 +244,16 @@ async def get_config_entries(
             value=values.get(CONF_MAX_BITRATE),
         ),
         ConfigEntry(
+            key=CONF_PODCAST_FINISHED,
+            type=ConfigEntryType.INTEGER,
+            label="Percentage reached until podcast episode marked as finished",
+            required=False,
+            description="This setting defines with how much of a podcast has to be not heard until"
+            " an episode is marked as finished",
+            default_value=95,
+            value=values.get(CONF_PODCAST_FINISHED),
+        ),
+        ConfigEntry(
             key=CONF_TOKEN_BEARER,
             type=ConfigEntryType.SECURE_STRING,
             label="token",
@@ -306,8 +318,6 @@ class ARDAudiothek(MusicProvider):
             ProviderFeature.SEARCH,
             ProviderFeature.LIBRARY_RADIOS,
             ProviderFeature.LIBRARY_PODCASTS,
-            # ProviderFeature.SIMILAR_TRACKS,
-            # see the ProviderFeature enum for all available features
         }
 
     async def get_client(self) -> Client:
@@ -359,58 +369,60 @@ class ARDAudiothek(MusicProvider):
         self._client_initialized = False
         await self.get_client()
 
-    # timestamps = await self.mass.cache.get(
-    #     key=CACHE_KEY_TIMESTAMP,
-    #     base_key=self.lookup_key,
-    #     category=CACHE_CATEGORY_OTHER,
-    #     default=None,
-    # )
-    # if timestamps is None:
-    #     self.timestamp_subscriptions: int = 0
-    #     self.timestamp_actions: int = 0
-    # else:
-    #     self.timestamp_subscriptions, self.timestamp_actions = timestamps
+    async def _update_progress(self) -> None:
+        if not self.user_id:
+            return
 
-    # self.logger.debug(
-    #     "Our timestamps are (subscriptions, actions)  (%s, %s)",
-    #     self.timestamp_subscriptions,
-    #     self.timestamp_actions,
-    # )
+        async with await self.get_client() as session:
+            result = (
+                await session.execute(get_history_query, variable_values={"loginId": self.user_id})
+            )["allEndUsers"]["nodes"][0]["history"]["nodes"]
 
-    # feeds = await self.mass.cache.get(
-    #     key=CACHE_KEY_FEEDS,
-    #     base_key=self.lookup_key,
-    #     category=CACHE_CATEGORY_OTHER,
-    #     default=None,
-    # )
-    # if feeds is None:
-    #     self.feeds: set[str] = set()
-    # else:
-    #     self.feeds = set(feeds)  # feeds is a list here
+            new_progress = {}  # type: dict[str, tuple[bool, float]]
+            time_limit = int(str(self.config.get_value(CONF_PODCAST_FINISHED)))
+            for x in result:
+                core_id = x["item"]["coreId"]
+                duration = x["item"]["duration"]
+                progress = x["progress"]
+                time_limit_reached = (progress / duration) * 100 > time_limit
+                new_progress[core_id] = (time_limit_reached, progress)
+            self.remote_progress = new_progress
 
-    # # we are syncing the playlog, but not event based. A simple check in on_played,
-    # # should be sufficient
-    # self.progress_guard_timestamp = 0.0
+    def _get_progress(self, episode_id: str) -> tuple[bool, int]:
+        if episode_id in self.remote_progress:
+            return self.remote_progress[episode_id][0], int(
+                self.remote_progress[episode_id][1] * 1000
+            )
+        return False, 0
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        # OPTIONAL
-        # this is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # In most cases this can be omitted for music providers.
+    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+        """Return: finished, position_ms."""
+        assert media_type == MediaType.PODCAST_EPISODE
+        await self._update_progress()
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
+        return self._get_progress(item_id)
 
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-        is_removed will be set to True when the provider is removed from the configuration.
-        """
-        # OPTIONAL
-        # This is an optional method that you can implement if
-        # relevant or leave out completely if not needed.
-        # It will be called when the provider is unloaded from Music Assistant.
-        # for example to disconnect from a service or clean up resources.
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Update progress."""
+        if not self.user_id:
+            return
+        if media_item is None or not isinstance(media_item, PodcastEpisode):
+            return
+        if media_type != MediaType.PODCAST_EPISODE:
+            return
+        async with await self.get_client() as session:
+            await session.execute(
+                update_history_entry,
+                variable_values={"itemId": prov_item_id, "progress": position},
+            )
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -440,11 +452,6 @@ class ARDAudiothek(MusicProvider):
         :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
-        # OPTIONAL
-        # Will only be called if you reported the SEARCH feature in the supported_features.
-        # It allows searching your provider for media items.
-        # See the model for SearchResults for more information on what to return, but
-        # in general you should return a list of MediaItems for each media type.
         async with await self.get_client() as session:
             search_shows = (
                 await session.execute(
@@ -487,16 +494,6 @@ class ARDAudiothek(MusicProvider):
 
         return SearchResults(podcasts=podcasts, radio=radios)
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve library/subscribed radio stations from the provider."""
-        # OPTIONAL
-        # Will only be called if you reported the LIBRARY_RADIOS feature
-        # in the supported_features and you did not override the default sync method.
-        # It allows retrieving the library/favorite radio stations from your provider.
-        # Warning: Async generator:
-        # You should yield Radio objects for each radio station in the library.
-        yield  # type: ignore[misc]
-
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         # Get full details of a single Radio station.
@@ -523,40 +520,11 @@ class ARDAudiothek(MusicProvider):
         async with await self.get_client() as session:
             result = (
                 await session.execute(
-                    subscriptions_query, variable_values={"loginId": self.user_id}
+                    get_subscriptions_query, variable_values={"loginId": self.user_id}
                 )
             )["allEndUsers"]["nodes"][0]["subscriptions"]["programSets"]["nodes"]
         for show in result:
             yield await self.get_podcast(show["subscribedProgramSet"]["coreId"])
-
-    async def library_add(self, item: MediaItemType) -> bool:
-        """Add item to provider's library. Return true on success."""
-        # Add an item to your provider's library.
-        # This is only called if the provider supports the EDIT feature for the media type.
-        return True
-
-    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove item from provider's library. Return true on success."""
-        # Remove an item from your provider's library.
-        # This is only called if the provider supports the EDIT feature for the media type.
-        return True
-
-    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Add track(s) to playlist."""
-        # Add track(s) to a playlist.
-        # This is only called if the provider supports the PLAYLIST_TRACKS_EDIT feature.
-
-    async def remove_playlist_tracks(
-        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
-    ) -> None:
-        """Remove track(s) from playlist."""
-        # Remove track(s) from a playlist.
-        # This is only called if the provider supports the PLAYLIST_TRACKS_EDIT feature.
-
-    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:  # type: ignore[empty-body]
-        """Retrieve a dynamic list of similar tracks based on the provided track."""
-        # Get a list of similar tracks based on the provided track.
-        # This is only called if the provider supports the SIMILAR_TRACKS feature.
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
@@ -607,6 +575,7 @@ class ARDAudiothek(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get podcast episodes."""
+        await self._update_progress()
         async with await self.get_client() as session:
             length = await session.execute(
                 show_length_query, variable_values={"showId": prov_podcast_id}
@@ -629,17 +598,22 @@ class ARDAudiothek(MusicProvider):
                         continue
                     if episode["status"] == "DEPUBLISHED":
                         continue
+                    episode_id = episode["coreId"]
+
+                    progress = self._get_progress(episode_id)
                     yield _parse_podcast_episode(
                         self.domain,
                         self.lookup_key,
                         self.instance_id,
                         episode,
-                        prov_podcast_id,
+                        episode_id,
                         idx,
+                        progress,
                     )
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
+        await self._update_progress()
         async with await self.get_client() as session:
             result = (
                 await session.execute(
@@ -648,6 +622,7 @@ class ARDAudiothek(MusicProvider):
             )["itemByCoreId"]
         if result is None:
             raise MediaNotFoundError("Episode not found")
+        progress = self._get_progress(prov_episode_id)
         return _parse_podcast_episode(
             self.domain,
             self.lookup_key,
@@ -655,6 +630,7 @@ class ARDAudiothek(MusicProvider):
             result,
             result["showId"],
             result["rowId"],
+            progress,
         )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -872,10 +848,6 @@ def _parse_radio(
     return radio
 
 
-async def _update_history() -> None:
-    pass
-
-
 def _parse_podcast_episode(
     domain: str,
     lookup_key: str,
@@ -883,6 +855,7 @@ def _parse_podcast_episode(
     episode: dict[str, Any],
     podcast_id: str,
     idx: int,
+    progress: tuple[bool, int],
 ) -> PodcastEpisode:
     podcast_episode = PodcastEpisode(
         name=episode["title"],
@@ -903,6 +876,8 @@ def _parse_podcast_episode(
             )
         },
         position=idx,
+        fully_played=progress[0],
+        resume_position_ms=progress[1],
     )
 
     podcast_episode.metadata.add_image(create_media_image(domain, episode["imagesList"]))

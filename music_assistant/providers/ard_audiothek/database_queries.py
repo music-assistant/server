@@ -274,7 +274,7 @@ query CheckLogin($loginId: String!) {
 )
 
 
-subscriptions_query = gql(
+get_subscriptions_query = gql(
     """
 query GetBookmarksByLoginId($loginId: String!) {
   allEndUsers(filter: { loginId: { eq: $loginId } }) {
@@ -285,7 +285,6 @@ query GetBookmarksByLoginId($loginId: String!) {
           nodes {
             subscribedProgramSet {
               coreId
-              title
             }
           }
         }
@@ -308,7 +307,7 @@ query GetBookmarksByLoginId($loginId: String!) {
           progress
           item {
             coreId
-            title
+            duration
           }
         }
       }
@@ -316,4 +315,25 @@ query GetBookmarksByLoginId($loginId: String!) {
   }
 }
 """
+)
+
+update_history_entry = gql(
+    """
+mutation AddHistoryEntry(
+  $itemId: ID!
+  $progress: Float!
+) {
+  upsertHistoryEntry(
+    input: {
+      item: { id: $itemId }
+      progress: $progress
+    }
+  ) {
+    changedHistoryEntry {
+      id
+      progress
+      lastListenedAt
+    }
+  }
+}"""
 )
