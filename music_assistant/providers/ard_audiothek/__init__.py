@@ -48,6 +48,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     ImageType,
+    LinkType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -58,6 +59,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
+    MediaItemLink,
     MediaItemType,
     Podcast,
     PodcastEpisode,
@@ -755,6 +757,27 @@ class ARDAudiothek(MusicProvider):
         return publications
 
 
+def _parse_social_media(
+    homepage_url: str | None, social_media_accounts: list[dict[str, None | str]]
+) -> set[MediaItemLink]:
+    return_set = set()
+    if homepage_url:
+        return_set.add(MediaItemLink(type=LinkType.WEBSITE, url=homepage_url))
+    for entry in social_media_accounts:
+        if entry["url"]:
+            link_type = None
+            match entry["service"]:
+                case "FACEBOOK":
+                    link_type = LinkType.FACEBOOK
+                case "INSTAGRAM":
+                    link_type = LinkType.INSTAGRAM
+                case "TIKTOK":
+                    link_type = LinkType.TIKTOK
+            if link_type:
+                return_set.add(MediaItemLink(type=link_type, url=entry["url"]))
+    return return_set
+
+
 def _parse_podcast(
     domain: str,
     lookup_key: str,
@@ -777,23 +800,10 @@ def _parse_podcast(
         total_episodes=podcast_query["items"]["totalCount"],
     )
 
-    media_links = None
-
-    podcast.metadata.links = media_links
-    # {
-    #     MediaItemLink(
-    #         type=LinkType.WEBSITE,
-    #         url="http://www.br.de/on3/index.html",
-    #     ),
-    #     MediaItemLink(
-    #         type=LinkType.TIKTOK,
-    #         url="https://www.tiktok.com/@deinpuls",
-    #     ),
-    #     MediaItemLink(
-    #         type=LinkType.INSTAGRAM,
-    #         url="https://www.instagram.com/dein_puls",
-    #     ),
-    # }
+    podcast.metadata.links = _parse_social_media(
+        podcast_query["publicationService"]["homepageUrl"],
+        podcast_query["publicationService"]["socialMediaAccounts"],
+    )
 
     podcast.metadata.description = podcast_query["synopsis"]
     podcast.metadata.genres = {r["title"] for r in podcast_query["editorialCategoriesList"]}
@@ -822,23 +832,10 @@ def _parse_radio(
         },
     )
 
-    media_links = None
-
-    radio.metadata.links = media_links
-    # {
-    #     MediaItemLink(
-    #         type=LinkType.WEBSITE,
-    #         url="http://www.br.de/on3/index.html",
-    #     ),
-    #     MediaItemLink(
-    #         type=LinkType.TIKTOK,
-    #         url="https://www.tiktok.com/@deinpuls",
-    #     ),
-    #     MediaItemLink(
-    #         type=LinkType.INSTAGRAM,
-    #         url="https://www.instagram.com/dein_puls",
-    #     ),
-    # }
+    radio.metadata.links = _parse_social_media(
+        radio_query["publicationService"]["homepageUrl"],
+        radio_query["publicationService"]["socialMediaAccounts"],
+    )
 
     radio.metadata.description = radio_query["publicationService"]["synopsis"]
     radio.metadata.genres = {radio_query["publicationService"]["genre"]}
