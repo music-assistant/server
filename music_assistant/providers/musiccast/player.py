@@ -299,9 +299,9 @@ class MusicCastPlayer(Player):
         If this player is not synced to another player (or is the sync leader itself),
         this should return None.
         """
-        if self.zone_device.is_client:
-            # we are a client, so synced to a server
-            return self._get_player_id_from_zone_device(self.zone_device.group_server)
+        if self.zone_device.is_network_client:
+            server_id = self._get_player_id_from_zone_device(self.zone_device.group_server)
+            return server_id if server_id != self.player_id else None
         return None
 
     async def _cmd_run(self, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
