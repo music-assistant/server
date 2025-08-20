@@ -8,5 +8,5 @@
   "documentation": "https://music-assistant.io/plugins/listenbrainz_scrobble/",
   "multi_instance": false,
   "builtin": false,
-  "requirements": ["liblistenbrainz==0.5.6"]
+  "requirements": ["liblistenbrainz==0.6.0"]
 }

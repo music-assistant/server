@@ -44,7 +44,6 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.media_items import UniqueList
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
@@ -62,6 +61,8 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_PLAYER_DSP,
+    CONF_PLAYERS,
     CONF_TTS_PRE_ANNOUNCE,
 )
 from music_assistant.helpers.api import api_command
@@ -898,37 +899,23 @@ class PlayerController(CoreController):
         async with self._player_throttlers[player_id]:
             await player.enqueue_next_media(media)
 
-    @api_command("players/cmd/group")
-    @handle_player_command
-    async def cmd_group(self, player_id: str, target_player: str) -> None:
-        """Handle GROUP command for given player.
-
-        Join/add the given player(id) to the given (leader) player/sync group.
-        If the target player itself is already synced to another player, this may fail.
-        If the player can not be synced with the given target player, this may fail.
-
-        :param player_id: player_id of the player to handle the command.
-        :param target_player: player_id of the syncgroup leader or group player.
-
-        :raises UnsupportedFeaturedException: if the target player does not support grouping.
-        :raises PlayerCommandFailed: if the target player is already synced to another player.
-        :raises PlayerUnavailableError: if the target player is not available.
-        :raises PlayerCommandFailed: if the player is already grouped to another player.
+    @api_command("players/cmd/set_members")
+    async def cmd_set_members(
+        self,
+        target_player: str,
+        player_ids_to_add: list[str] | None = None,
+        player_ids_to_remove: list[str] | None = None,
+    ) -> None:
         """
-        await self.cmd_group_many(target_player, [player_id])
-
-    @api_command("players/cmd/group_many")
-    async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
-        """
-        Join given player(s) to target player.
+        Join/unjoin given player(s) to/from target player.
 
         Will add the given player(s) to the target player (sync leader or group player).
 
         :param target_player: player_id of the syncgroup leader or group player.
-        :param child_player_ids: list of player_ids to add to the target player.
+        :param player_ids_to_add: List of player_id's to add to the target player.
+        :param player_ids_to_remove: List of player_id's to remove from the target player.
 
         :raises UnsupportedFeaturedException: if the target player does not support grouping.
-        :raises PlayerCommandFailed: if the target player is already synced to another player.
         :raises PlayerUnavailableError: if the target player is not available.
         """
         parent_player: Player | None = self.get(target_player, True)
@@ -945,9 +932,11 @@ class PlayerController(CoreController):
             )
 
         # filter all player ids on compatibility and availability
-        final_player_ids: UniqueList[str] = UniqueList()
-        for child_player_id in child_player_ids:
+        final_player_ids_to_add: list[str] = []
+        for child_player_id in player_ids_to_add or []:
             if child_player_id == target_player:
+                continue
+            if child_player_id in final_player_ids_to_add:
                 continue
             if not (child_player := self.get(child_player_id)) or not child_player.available:
                 self.logger.warning("Player %s is not available", child_player_id)
@@ -970,32 +959,46 @@ class PlayerController(CoreController):
             ):
                 continue  # already synced to this target
 
-            # perform some sanity checks on the child player
-            # if we're not joining a group player
-            if (
-                parent_player.type == PlayerType.PLAYER
-                and child_player.group_members
-                and child_player.playback_state != PlaybackState.IDLE
-            ):
-                # guard edge case: childplayer is already a sync leader on its own
-                raise PlayerCommandFailed(
-                    f"Player {child_player.name} is already synced with other players, "
-                    "you need to ungroup it first before you can join it to another player.",
-                )
-
             # power on the player if needed
             if not child_player.powered and child_player.power_control != PLAYER_CONTROL_NONE:
                 await self.cmd_power(child_player.player_id, True, skip_update=True)
             # if we reach here, all checks passed
-            final_player_ids.append(child_player_id)
+            final_player_ids_to_add.append(child_player_id)
 
         # forward command to the player after all (base) sanity checks
         async with self._player_throttlers[target_player]:
             await parent_player.set_members(
-                player_ids_to_add=[
-                    x for x in final_player_ids if x not in parent_player.group_members
-                ]
+                player_ids_to_add=final_player_ids_to_add, player_ids_to_remove=player_ids_to_remove
             )
+
+    @api_command("players/cmd/group")
+    @handle_player_command
+    async def cmd_group(self, player_id: str, target_player: str) -> None:
+        """Handle GROUP command for given player.
+
+        Join/add the given player(id) to the given (leader) player/sync group.
+        If the target player itself is already synced to another player, this may fail.
+        If the player can not be synced with the given target player, this may fail.
+
+        :param player_id: player_id of the player to handle the command.
+        :param target_player: player_id of the syncgroup leader or group player.
+
+        :raises UnsupportedFeaturedException: if the target player does not support grouping.
+        :raises PlayerCommandFailed: if the target player is already synced to another player.
+        :raises PlayerUnavailableError: if the target player is not available.
+        :raises PlayerCommandFailed: if the player is already grouped to another player.
+        """
+        await self.cmd_set_members(target_player, player_ids_to_add=[player_id])
+
+    @api_command("players/cmd/group_many")
+    async def cmd_group_many(self, target_player: str, child_player_ids: list[str]) -> None:
+        """
+        Join given player(s) to target player.
+
+        Will add the given player(s) to the target player (sync leader or group player).
+        NOTE: This is a (deprecated) alias for cmd_set_members.
+        """
+        await self.cmd_set_members(target_player, player_ids_to_add=child_player_ids)
 
     @api_command("players/cmd/ungroup")
     @handle_player_command
@@ -1006,10 +1009,15 @@ class PlayerController(CoreController):
         If the player is not currently grouped to any other player,
         this will silently be ignored.
 
-            - player_id: player_id of the player to handle the command.
+        NOTE: This is a (deprecated) alias for cmd_set_members.
         """
         if not (player := self.get(player_id)):
             self.logger.warning("Player %s is not available", player_id)
+            return
+
+        if player.synced_to and (synced_player := self.get(player.synced_to)):
+            # player is a sync member
+            await synced_player.set_members(player_ids_to_remove=[player_id])
             return
 
         if (
@@ -1026,23 +1034,6 @@ class PlayerController(CoreController):
 
         if PlayerFeature.SET_MEMBERS not in player.supported_features:
             self.logger.warning("Player %s does not support (un)group commands", player.name)
-            return
-
-        # handle (edge)case where un ungroup command is sent to a sync leader;
-        # we dissolve the entire syncgroup in this case.
-        # while maybe not strictly needed to do this for all player providers,
-        # we do this to keep the functionality consistent across all providers
-        if player.group_members:
-            self.logger.warning(
-                "Detected ungroup command to player %s which is a sync(group) leader, "
-                "all sync members will be ungrouped!",
-                player.name,
-            )
-            async with TaskManager(self.mass) as tg:
-                for group_child_id in player.group_members:
-                    if group_child_id == player_id:
-                        continue
-                    tg.create_task(self.cmd_ungroup(group_child_id))
             return
 
         # forward command to the player once all checks passed
@@ -1081,15 +1072,15 @@ class PlayerController(CoreController):
         :param player_id: ID of the group player to remove.
         """
         if not (player := self.get(player_id)):
-            raise PlayerUnavailableError(f"Player {player_id} not found")
+            # we simply permanently delete the player by wiping its config
+            self.mass.config.remove(f"players/{player_id}")
+            return
         if player.type != PlayerType.GROUP:
             raise UnsupportedFeaturedException(
                 f"Player {player.display_name} is not a group player"
             )
-        provider = self.mass.get_provider(player.provider.instance_id)
-        provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
-        provider = cast("PlayerProvider", provider)
-        await provider.remove_group_player(player_id)
+        player.provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
+        await player.provider.remove_group_player(player_id)
 
     @api_command("players/add_currently_playing_to_favorites")
     async def add_currently_playing_to_favorites(self, player_id: str) -> None:
@@ -1252,19 +1243,34 @@ class PlayerController(CoreController):
             self.mass.config.remove(f"players/{player_id}")
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
+    @api_command("players/remove")
     async def remove(self, player_id: str) -> None:
         """
         Remove a player from a provider.
 
         Can only be called when a PlayerProvider supports ProviderFeature.REMOVE_PLAYER.
         """
-        player = self.get(player_id, True)
-        assert player is not None  # for type checker
-        if ProviderFeature.REMOVE_PLAYER not in player.provider.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Provider {player.provider.name} does not support removing players"
-            )
+        player = self.get(player_id)
+        if player is None:
+            # we simply permanently delete the player by wiping its config
+            conf_key = f"{CONF_PLAYERS}/{player_id}"
+            dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
+            for key in (conf_key, dsp_conf_key):
+                self.mass.config.remove(key)
+            return
+        if player.type == PlayerType.GROUP:
+            # Handle group player removal
+            await player.provider.remove_group_player(player_id)
+            return
+        player.provider.check_feature(ProviderFeature.REMOVE_PLAYER)
         await player.provider.remove_player(player_id)
+        # check for group memberships that need to be updated
+        if player.active_group and (group_player := self.mass.players.get(player.active_group)):
+            # try to remove from the group
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+                await group_player.set_members(
+                    player_ids_to_remove=[player_id],
+                )
 
     def signal_player_state_update(
         self,

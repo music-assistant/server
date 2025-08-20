@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import logging
 import os
-from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -23,11 +22,10 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.dsp import DSPConfig, DSPConfigPreset, ToneControlFilter
-from music_assistant_models.enums import EventType, ProviderFeature, ProviderType
+from music_assistant_models.enums import EventType, ProviderType
 from music_assistant_models.errors import (
     ActionUnavailable,
     InvalidDataError,
-    PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import get_global_cache_value
@@ -431,33 +429,20 @@ class ConfigController:
         """Remove PlayerConfig."""
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
-        existing = self.get(conf_key)
-        if not existing:
+        player_config = self.get(conf_key)
+        if not player_config:
             msg = f"Player configuration for {player_id} does not exist"
             raise KeyError(msg)
-        player = self.mass.players.get(player_id)
-        player_provider = player.provider
-        if player_provider and ProviderFeature.REMOVE_PLAYER in player_provider.supported_features:
-            # provider supports removal of player (e.g. group player)
-            await player_provider.remove_player(player_id)
-        elif player and player_provider and player.available:
-            # removing a player config while it is active is not allowed
-            # unless the provider reports it has the remove_player feature (e.g. group player)
-            raise ActionUnavailable("Can not remove config for an active player!")
-        # check for group memberships that need to be updated
-        if (
-            player
-            and player.active_group
-            and (group_player := self.mass.players.get(player.active_group))
-        ):
-            # try to remove from the group
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await group_player.set_members(
-                    player_ids_to_remove=[player_id],
-                )
-        # tell the player manager to remove the player if its lingering around
-        # set cleanup_flag to false otherwise we end up in an infinite loop
-        self.mass.players.remove(player_id, cleanup_config=False)
+        if self.mass.players.get(player_id):
+            try:
+                await self.mass.players.remove(player_id)
+            except UnsupportedFeaturedException:
+                # removing a player config while it is active is not allowed
+                # unless the provider reports it has the remove_player feature
+                raise ActionUnavailable("Can not remove config for an active player!")
+            # tell the player manager to remove the player if its lingering around
+            # set permanent to false otherwise we end up in an infinite loop
+            self.mass.players.unregister(player_id, permanent=False)
         # remove the actual config if all of the above passed
         self.remove(conf_key)
         # Also remove the DSP config if it exists
@@ -607,6 +592,7 @@ class ConfigController:
             provider=provider,
             player_id=player_id,
             enabled=enabled,
+            name=name,
             default_name=name,
         )
         default_conf_raw = default_conf.to_raw()
@@ -856,7 +842,7 @@ class ConfigController:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _migrate(self) -> None:
+    async def _migrate(self) -> None:  # noqa: PLR0915
         changed = False
 
         # some type hints to help with the code below
@@ -909,6 +895,7 @@ class ConfigController:
                     break
 
         # migrate player_group entries
+        ugp_found = False
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
             if not player_config.get("provider").startswith("player_group"):
                 continue
@@ -920,8 +907,21 @@ class ConfigController:
             changed = True
             if group_type == "universal":
                 player_config["provider"] = "universal_group"
+                ugp_found = True
             else:
                 player_config["provider"] = group_type
+        for provider_config in list(self._data.get(CONF_PROVIDERS, {}).values()):
+            instance_id = provider_config["instance_id"]
+            if not instance_id.startswith("player_group"):
+                continue
+            # this is the legacy player_group provider, migrate into 'universal_group'
+            changed = True
+            self._data[CONF_PROVIDERS].pop(instance_id, None)
+            if not ugp_found:
+                continue
+            provider_config["domain"] = "universal_group"
+            provider_config["instance_id"] = "universal_group"
+            self._data[CONF_PROVIDERS]["universal_group"] = provider_config
 
         if changed:
             await self._async_save()
