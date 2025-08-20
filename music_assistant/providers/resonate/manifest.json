@@ -1,11 +1,12 @@
 {
   "type": "player",
   "domain": "resonate",
+  "stage": "alpha",
   "name": "Resonate",
-  "description": "WIP resonate provider",
+  "description": "Resonate provider for Music Assistant.",
   "codeowners": ["@music-assistant"],
+  "requirements": ["aioresonate==0.1.0"],
   "multi_instance": false,
-  "builtin": true,
-  "allow_disable": false,
+  "builtin": false,
   "mdns_discovery": ["_resonate._tcp.local."]
 }
