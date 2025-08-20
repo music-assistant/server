@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast, override
 
@@ -48,6 +49,8 @@ class ResonatePlayer(Player):
         self._attr_device_info = DeviceInfo()
         self._attr_volume_level = player.volume
         self._attr_volume_muted = player.muted
+        self._attr_available = True
+        self._attr_needs_poll = False
 
     async def event_cb(self, event: PlayerEvent) -> None:
         """Event callback registered to the resonate server."""
@@ -89,6 +92,8 @@ class ResonatePlayer(Player):
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
         self._attr_current_media = media
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_active_source = media.queue_id
 
