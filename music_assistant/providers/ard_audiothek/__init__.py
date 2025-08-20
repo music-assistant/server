@@ -1,39 +1,4 @@
-"""
-DEMO/TEMPLATE Music Provider for Music Assistant.
-
-This is an empty music provider with no actual implementation.
-Its meant to get started developing a new music provider for Music Assistant.
-
-Use it as a reference to discover what methods exists and what they should return.
-Also it is good to look at existing music providers to get a better understanding,
-due to the fact that providers may be flexible and support different features.
-
-If you are relying on a third-party library to interact with the music source,
-you can then reference your library in the manifest in the requirements section,
-which is a list of (versioned!) python modules (pip syntax) that should be installed
-when the provider is selected by the user.
-
-Please keep in mind that Music Assistant is a fully async application and all
-methods should be implemented as async methods. If you are not familiar with
-async programming in Python, we recommend you to read up on it first.
-If you are using a third-party library that is not async, you can need to use the several
-helper methods such as asyncio.to_thread or the create_task in the mass object to wrap
-the calls to the library in a thread.
-
-To add a new provider to Music Assistant, you need to create a new folder
-in the providers folder with the name of your provider (e.g. 'my_music_provider').
-In that folder you should create (at least) a __init__.py file and a manifest.json file.
-
-Optional is an icon.svg file that will be used as the icon for the provider in the UI,
-but we also support that you specify a material design icon in the manifest.json file.
-
-IMPORTANT NOTE:
-We strongly recommend developing on either macOS or Linux and start your development
-environment by running the setup.sh script in the scripts folder of the repository.
-This will create a virtual environment and install all dependencies needed for development.
-See also our general DEVELOPMENT.md guide in the repository for more information.
-
-"""
+"""ARD Audiotek Music Provider for Music Assistant."""
 
 from __future__ import annotations
 
@@ -69,6 +34,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.database_queries import (
@@ -95,9 +61,7 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 # Config for login
-CONF_USER_NAME = "username"
 CONF_EMAIL = "email"
-CONF_PASSWORD = "password"
 CONF_TOKEN_BEARER = "token"
 CONF_EXPIRY_TIME = "token_expiry"
 CONF_USERID = "login_url"
@@ -111,6 +75,7 @@ CONF_MAX_BITRATE = "max_num_episodes"
 CONF_PODCAST_FINISHED = "podcast_finished_time"
 
 IDENTITY_TOOLKIT_BASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts"
+IDENTITY_TOOLKIT_TOKEN = "AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90"
 ARD_ACCOUNTS_URL = "https://accounts.ard.de"
 ARD_AUDIOTHEK_GRAPHQL = "https://api.ardaudiothek.de/graphql"
 
@@ -121,15 +86,12 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    # setup is called when the user wants to setup a new provider instance.
-    # you are free to do any preflight checks here and but you must return
-    #  an instance of the provider.
     return ARDAudiothek(mass, manifest, config)
 
 
 async def _login(session: ClientSession, email: str, password: str) -> tuple[str, str, str]:
     response = await session.post(
-        f"{IDENTITY_TOOLKIT_BASE_URL}:signInWithPassword?key=AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90",
+        f"{IDENTITY_TOOLKIT_BASE_URL}:signInWithPassword?key={IDENTITY_TOOLKIT_TOKEN}",
         headers={"User-Agent": "Music Assistant", "Origin": ARD_ACCOUNTS_URL},
         json={
             "returnSecureToken": True,
@@ -148,7 +110,7 @@ async def _login(session: ClientSession, email: str, password: str) -> tuple[str
     uid = data["localId"]
 
     response = await session.post(
-        f"{IDENTITY_TOOLKIT_BASE_URL}:lookup?key=AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90",
+        f"{IDENTITY_TOOLKIT_BASE_URL}:lookup?key={IDENTITY_TOOLKIT_TOKEN}",
         headers={"User-Agent": "Music Assistant", "Origin": ARD_ACCOUNTS_URL},
         json={
             "idToken": token,
@@ -182,23 +144,6 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    # Config Entries are used to configure the Music Provider if needed.
-    # See the models of ConfigEntry and ConfigValueType for more information what is supported.
-    # The ConfigEntry is a dataclass that represents a single configuration entry.
-    # The ConfigValueType is an Enum that represents the type of value that
-    # can be stored in a ConfigEntry.
-    # If your provider does not need any configuration, you can return an empty tuple.
-
-    # We support flow-like configuration where you can have multiple steps of configuration
-    # using the 'action' parameter to distinguish between the different steps.
-    # The 'values' parameter contains the raw values of the config entries that were filled in
-    # by the user in the UI. This is a dictionary with the key being the config entry id
-    # and the value being the actual value filled in by the user.
-
-    # For authentication flows where the user needs to be redirected to a login page
-    # or some other external service, we have a simple helper that can help you with those steps
-    # and a callback url that you can use to redirect the user back to the Music Assistant UI.
-    # See for example the Deezer provider for an example of how to use this.
     if values is None:
         values = {}
 
@@ -210,7 +155,7 @@ async def get_config_entries(
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
-            label=f"Successfully signed in as {values.get(CONF_USER_NAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",  # noqa: E501
+            label=f"Successfully signed in as {values.get(CONF_USERNAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",  # noqa: E501
             hidden=not authenticated,
         ),
         ConfigEntry(
@@ -276,32 +221,18 @@ async def get_config_entries(
             value=values.get(CONF_EXPIRY_TIME),
         ),
         ConfigEntry(
-            key=CONF_USER_NAME,
+            key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
             label="username",
             hidden=True,
             required=False,
-            value=values.get(CONF_USER_NAME),
+            value=values.get(CONF_USERNAME),
         ),
     )
 
 
 class ARDAudiothek(MusicProvider):
-    """
-    Example/demo Music provider.
-
-    Note that this is always subclassed from MusicProvider,
-    which in turn is a subclass of the generic Provider model.
-
-    The base implementation already takes care of some convenience methods,
-    such as the mass object and the logger. Take a look at the base class
-    for more information on what is available.
-
-    Just like with any other subclass, make sure that if you override
-    any of the default methods (such as __init__), you call the super() method.
-    In most cases its not needed to override any of the builtin methods and you only
-    implement the abc methods with your actual implementation.
-    """
+    """ARD Audiothek Music provider."""
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -342,7 +273,7 @@ class ARDAudiothek(MusicProvider):
             )
             self.update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
             self.update_config_value(CONF_USERID, self.user_id, encrypted=True)
-            self.update_config_value(CONF_USER_NAME, _username)
+            self.update_config_value(CONF_USERNAME, _username)
             self.update_config_value(
                 CONF_EXPIRY_TIME, str((datetime.now() + timedelta(hours=1)).timestamp())
             )
@@ -428,17 +359,7 @@ class ARDAudiothek(MusicProvider):
 
     @property
     def is_streaming_provider(self) -> bool:
-        """
-        Return True if the provider is a streaming provider.
-
-        This literally means that the catalog is not the same as the library contents.
-        For local based providers (files, plex), the catalog is the same as the library content.
-        It also means that data is if this provider is NOT a streaming provider,
-        data cross instances is unique, the catalog and library differs per instance.
-
-        Setting this to True will only query one instance of the provider for search and lookups.
-        Setting this to False will query all instances of this provider for search and lookups.
-        """
+        """Search and lookup always search remote."""
         # For streaming providers return True here but for local file based providers return False.
         return True
 
@@ -522,18 +443,11 @@ class ARDAudiothek(MusicProvider):
             yield await self.get_podcast(show["subscribedProgramSet"]["coreId"])
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """Browse through the ARD Audiothek.
 
+        This supports browsing through Podcasts and Radio stations.
         :param path: The path to browse, (e.g. provider_id://artists).
         """
-        # Browse your provider's recommendations/media items.
-        # This is only called if you reported the BROWSE feature in the supported_features.
-        # You should return a list of MediaItems or ItemMappings for the given path.
-        # Note that you can return nested levels with BrowseFolder items.
-
-        # The MusicProvider base model has a default implementation of this method
-        # that will call the get_library_* methods if you did not override it.
-
         part_parts = path.split("://")[1].split("/")
         organization = part_parts[0] if part_parts else ""
         provider = part_parts[1] if len(part_parts) > 1 else ""
