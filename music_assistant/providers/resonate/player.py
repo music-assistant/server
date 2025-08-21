@@ -16,7 +16,7 @@ from music_assistant_models.player import DeviceInfo
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
-    from aioresonate.server import Player as PlayerInstance
+    from aioresonate.server import Player as PlayerAPI
 
     from .provider import ResonateProvider
 
@@ -24,20 +24,20 @@ if TYPE_CHECKING:
 class ResonatePlayer(Player):
     """A resonate audio player in Music Assistant."""
 
-    player: PlayerInstance
+    api: PlayerAPI
     unsub_event_cb: Callable[[], None]
 
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
-        player = provider.server.get_player(player_id)
-        assert player is not None
-        self.player = player
-        self.unsub_event_cb = player.add_event_listener(self.event_cb)
+        resonate_player = provider.server.get_player(player_id)
+        assert resonate_player is not None
+        self.api = resonate_player
+        self.unsub_event_cb = resonate_player.add_event_listener(self.event_cb)
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
-        self._attr_name = player.name
+        self._attr_name = resonate_player.name
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
             PlayerFeature.SET_MEMBERS,
@@ -47,8 +47,8 @@ class ResonatePlayer(Player):
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._attr_device_info = DeviceInfo()
-        self._attr_volume_level = player.volume
-        self._attr_volume_muted = player.muted
+        self._attr_volume_level = resonate_player.volume
+        self._attr_volume_muted = resonate_player.muted
         self._attr_available = True
         self._attr_needs_poll = False
 
@@ -67,14 +67,14 @@ class ResonatePlayer(Player):
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         # TODO: what if volume_level is 0?
-        self.player.set_volume(volume_level)
+        self.api.set_volume(volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
         if muted:
-            self.player.mute()
+            self.api.mute()
         else:
-            self.player.unmute()
+            self.api.unmute()
         self.update_state()
 
     @override
@@ -82,7 +82,7 @@ class ResonatePlayer(Player):
         """Stop command."""
         self.logger.info("Received STOP command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
-        self.player.group.stop()
+        self.api.group.stop()
         self.update_state()
 
     @override
@@ -111,7 +111,7 @@ class ResonatePlayer(Player):
         queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
         assert queue_item
 
-        await self.player.group.play_media(
+        await self.api.group.play_media(
             self.mass.streams.get_queue_flow_stream(
                 queue=queue, start_queue_item=queue_item, pcm_format=pcm_format
             ),
@@ -132,12 +132,12 @@ class ResonatePlayer(Player):
         for player_id in player_ids_to_remove or []:
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
-            self.player.group.remove_player(player.player)
+            self.api.group.remove_player(player.api)
             self._attr_group_members.remove(player_id)
         for player_id in player_ids_to_add or []:
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
-            self.player.group.add_player(player.player)
+            self.api.group.add_player(player.api)
             self._attr_group_members.append(player_id)
         self.update_state()
 
