@@ -56,7 +56,7 @@ class ResonatePlayer(Player):
         """Event callback registered to the resonate server."""
         self.logger.debug("Received PlayerEvent: %s", event)
         match event:
-            case VolumeChangedEvent(volume, muted):
+            case VolumeChangedEvent(volume=volume, muted=muted):
                 self._attr_volume_level = volume
                 self._attr_volume_muted = muted
                 self.update_state()
