@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 class ResonateProvider(PlayerProvider):
     """Player Provider for Resonate."""
 
-    server: ResonateServer
+    server_api: ResonateServer
     unsub_event_cb: Callable[[], None]
 
     def __init__(
@@ -34,8 +34,8 @@ class ResonateProvider(PlayerProvider):
     ) -> None:
         """Initialize a new Resonate player provider."""
         super().__init__(mass, manifest, config)
-        self.server = ResonateServer(self.mass.loop, mass.server_id, "Music Assistant")
-        self.unsub_event_cb = self.server.add_event_listener(self.event_cb)
+        self.server_api = ResonateServer(self.mass.loop, mass.server_id, "Music Assistant")
+        self.unsub_event_cb = self.server_api.add_event_listener(self.event_cb)
 
     async def event_cb(self, event: ResonateEvent) -> None:
         """Event callback registered to the resonate server."""
@@ -89,6 +89,6 @@ class ResonateProvider(PlayerProvider):
             url = "ws://" + ip + ":" + str(get_port_from_zeroconf(info)) + path.decode()
 
             self.logger.debug("Discovered resonate player, connecting to %s", url)
-            _ = self.mass.create_task(self.server.connect_to_player(url))
+            _ = self.mass.create_task(self.server_api.connect_to_player(url))
         # player_id = info.decoded_properties["player_id"]
         # TODO add player discovery handling here

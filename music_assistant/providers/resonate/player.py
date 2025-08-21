@@ -30,7 +30,7 @@ class ResonatePlayer(Player):
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
-        resonate_player = provider.server.get_player(player_id)
+        resonate_player = provider.server_api.get_player(player_id)
         assert resonate_player is not None
         self.api = resonate_player
         self.unsub_event_cb = resonate_player.add_event_listener(self.event_cb)
