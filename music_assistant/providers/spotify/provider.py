@@ -493,7 +493,7 @@ class SpotifyProvider(MusicProvider):
 
         return StreamDetails(
             item_id=item_id,
-            provider=self.lookup_key,  # Fixed: was self.provider.lookup_key
+            provider=self.lookup_key,
             audio_format=AudioFormat(
                 content_type=ContentType.OGG,
                 bit_rate=bit_rate,
