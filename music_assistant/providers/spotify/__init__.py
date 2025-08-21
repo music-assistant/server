@@ -18,7 +18,10 @@ from .constants import (
     CONF_ACTION_AUTH,
     CONF_ACTION_CLEAR_AUTH,
     CONF_CLIENT_ID,
+    CONF_ENABLE_PODCASTS,
+    CONF_PLAYED_THRESHOLD,
     CONF_REFRESH_TOKEN,
+    CONF_SYNC_PLAYED_STATUS,
     SCOPE,
 )
 from .provider import SpotifyProvider
@@ -126,6 +129,34 @@ async def get_config_entries(
             required=False,
             value=values.get(CONF_CLIENT_ID) if values else None,
             hidden=not auth_required,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_PODCASTS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable Podcast Support",
+            description="Enable support for Spotify podcasts and episodes. "
+            "This will include podcasts in search results and library.",
+            default_value=True,
+            value=values.get(CONF_ENABLE_PODCASTS, True) if values else True,
+        ),
+        ConfigEntry(
+            key=CONF_SYNC_PLAYED_STATUS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Sync Played Status from Spotify",
+            description="Automatically sync episode played status from Spotify to Music Assistant. "
+            "Episodes marked as played in Spotify will be marked as played in MA.",
+            default_value=True,
+            value=values.get(CONF_SYNC_PLAYED_STATUS, True) if values else True,
+        ),
+        ConfigEntry(
+            key=CONF_PLAYED_THRESHOLD,
+            type=ConfigEntryType.INTEGER,
+            label="Played Threshold (%)",
+            description="Percentage of episode completion to consider it 'played' "
+            "when not explicitly marked by Spotify (50 = 50%, 90 = 90%).",
+            default_value=90,
+            value=values.get(CONF_PLAYED_THRESHOLD, 90) if values else 90,
+            range=(1, 100),
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH,
