@@ -75,6 +75,12 @@ class ResonateProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+        self.logger.debug(
+            "MDNS service state change for resonate, name=%s, state_change=%s, info=%s",
+            name,
+            state_change,
+            info,
+        )
         if state_change == ServiceStateChange.Removed:
             # we don't listen for removed players here.
             # instead we just wait for the player connection to fail
