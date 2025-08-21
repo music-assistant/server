@@ -97,10 +97,10 @@ async def setup(
 
 
 async def get_config_entries(
-    _mass: MusicAssistant,
-    _instance_id: str | None = None,
-    _action: str | None = None,
-    _values: dict[str, ConfigValueType] | None = None,
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return ()
@@ -188,6 +188,12 @@ class RadioParadiseProvider(MusicProvider):
             duration=0,
         )
 
+        # Set initial metadata if available
+        metadata = await self._get_channel_metadata(item_id)
+        if metadata and metadata.get("current"):
+            current_song = metadata["current"]
+            stream_details.stream_metadata = self._build_stream_metadata(current_song, metadata)
+
         # Store the monitoring task in streamdetails.data for cleanup in on_streamed
         monitor_task = self.mass.create_task(self._monitor_stream_metadata(stream_details))
         stream_details.data = {"monitor_task": monitor_task}
@@ -233,53 +239,52 @@ class RadioParadiseProvider(MusicProvider):
         )
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
-            """Get current track and upcoming tracks from Radio Paradise's block API.
+        """Get current track and upcoming tracks from Radio Paradise's block API.
 
-            Args:
-                channel_id: Radio Paradise channel ID (0-5)
+        Args:
+            channel_id: Radio Paradise channel ID (0-5)
 
-            Returns:
-                Dict with current song, next song, and block data, or None if API fails
-            """
-            if channel_id not in RADIO_PARADISE_CHANNELS:
-                return None
+        Returns:
+            Dict with current song, next song, and block data, or None if API fails
+        """
+        if channel_id not in RADIO_PARADISE_CHANNELS:
+            return None
 
-            try:
-                # Use block API for much richer data
-                api_url = (
-                    f"https://api.radioparadise.com/api/get_block?bitrate=4&info=true&chan={channel_id}"
-                )
-                timeout = aiohttp.ClientTimeout(total=10)
+        try:
+            # Use block API for much richer data
+            api_url = (
+                f"https://api.radioparadise.com/api/get_block?bitrate=4&info=true&chan={channel_id}"
+            )
+            timeout = aiohttp.ClientTimeout(total=10)
 
-                async with self.mass.http_session.get(api_url, timeout=timeout) as response:
-                    if response.status != 200:
-                        self.logger.debug(f"Block API call failed with status {response.status}")
-                        return None
+            async with self.mass.http_session.get(api_url, timeout=timeout) as response:
+                if response.status != 200:
+                    self.logger.debug(f"Block API call failed with status {response.status}")
+                    return None
 
-                    data = await response.json()
+                data = await response.json()
 
-                    # Find currently playing song based on elapsed time
-                    current_time_ms = self._get_current_block_position(data)
-                    current_song = self._find_current_song(data.get("song", {}), current_time_ms)
+                # Find currently playing song based on elapsed time
+                current_time_ms = self._get_current_block_position(data)
+                current_song = self.find_current_song(data.get("song", {}), current_time_ms)
 
-                    if not current_song:
-                        self.logger.debug(f"No current song found for channel {channel_id}")
-                        return None
+                if not current_song:
+                    self.logger.debug(f"No current song found for channel {channel_id}")
+                    return None
 
-                    # Get next song
-                    next_song = self._get_next_song(data.get("song", {}), current_song)
+                # Get next song
+                next_song = self._get_next_song(data.get("song", {}), current_song)
 
-                    return {"current": current_song, "next": next_song, "block_data": data}
+                return {"current": current_song, "next": next_song, "block_data": data}
 
-            except aiohttp.ClientError as exc:
-                self.logger.debug(f"Failed to get block metadata for channel {channel_id}: {exc}")
-                return None
-            except Exception as exc:
-                self.logger.debug(
-                    f"Unexpected error getting block metadata for channel {channel_id}: {exc}"
-                )
-                return None
-
+        except aiohttp.ClientError as exc:
+            self.logger.debug(f"Failed to get block metadata for channel {channel_id}: {exc}")
+            return None
+        except Exception as exc:
+            self.logger.debug(
+                f"Unexpected error getting block metadata for channel {channel_id}: {exc}"
+            )
+            return None
 
     def _get_current_block_position(self, block_data: dict[str, Any]) -> int:
         """Calculate current playback position within a Radio Paradise block.
@@ -294,8 +299,8 @@ class RadioParadiseProvider(MusicProvider):
         sched_time = int(block_data.get("sched_time_millis", current_time_ms))
         return current_time_ms - sched_time
 
-    def _find_current_song(
-        self, songs: dict[str, Any], current_time_ms: int
+    def find_current_song(
+        self, songs: dict[str, dict[str, Any]], current_time_ms: int
     ) -> dict[str, Any] | None:
         """Find which song should currently be playing based on elapsed time.
 
@@ -316,8 +321,6 @@ class RadioParadiseProvider(MusicProvider):
 
             if song_start <= current_time_ms < song_end:
                 return song
-
-        return None
 
         # If no exact match, return first song
         first_song = songs.get("0")
@@ -391,7 +394,7 @@ class RadioParadiseProvider(MusicProvider):
 
                         last_track_event = current_event
 
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)
         except asyncio.CancelledError:
             self.logger.debug(f"Monitor task cancelled for {item_id}")
         except aiohttp.ClientError as exc:
@@ -500,8 +503,10 @@ class RadioParadiseProvider(MusicProvider):
                 song_event = song.get("event")
 
                 # Skip current and next song, only include songs that come after current
-                if (song_event not in (current_event, next_event) and
-                    int(song.get("elapsed", 0)) > current_elapsed):
+                if (
+                    song_event not in (current_event, next_event)
+                    and int(song.get("elapsed", 0)) > current_elapsed
+                ):
                     artist_name = song.get("artist", "")
                     if artist_name and artist_name not in seen_artists:
                         seen_artists.add(artist_name)
