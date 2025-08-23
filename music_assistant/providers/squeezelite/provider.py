@@ -22,6 +22,10 @@ from .player import SqueezelitePlayer
 
 if TYPE_CHECKING:
     from aioslimproto.client import SlimClient
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant import MusicAssistant
 
 
 @dataclass
@@ -36,9 +40,14 @@ class StreamInfo:
 class SqueezelitePlayerProvider(PlayerProvider):
     """Player provider for players using slimproto (like Squeezelite)."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+    ) -> None:
         """Initialize the provider."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass, manifest, config)
         self.slimproto: SlimServer | None = None
         self._players: dict[str, SqueezelitePlayer] = {}
         self._multi_client_streams: dict[str, StreamInfo] = {}
@@ -62,9 +71,9 @@ class SqueezelitePlayerProvider(PlayerProvider):
             logging.getLogger("aioslimproto").setLevel(self.logger.level + 10)
 
         # Get all port configurations
-        control_port = self.config.get_value(CONF_PORT)
-        telnet_port = self.config.get_value(CONF_CLI_TELNET_PORT)
-        json_port = self.config.get_value(CONF_CLI_JSON_PORT)
+        control_port = cast("int", self.config.get_value(CONF_PORT))
+        telnet_port = cast("int | None", self.config.get_value(CONF_CLI_TELNET_PORT))
+        json_port = cast("int | None", self.config.get_value(CONF_CLI_JSON_PORT))
 
         # Validate ALL required ports before starting ANY services
         await self._validate_all_ports(control_port, telnet_port, json_port)
@@ -86,10 +95,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             raise SetupFailedError(f"Failed to start SlimProto server: {err}") from err
 
     async def _validate_all_ports(
-        self,
-        control_port: int,
-        telnet_port: int | None,
-        json_port: int | None
+        self, control_port: int, telnet_port: int | None, json_port: int | None
     ) -> None:
         """Validate that all required ports are available before starting any services."""
         ports_to_check = [(control_port, "SlimProto control")]
