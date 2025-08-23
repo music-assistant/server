@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
@@ -134,17 +134,19 @@ class SqueezelitePlayerProvider(PlayerProvider):
         self._players.clear()
         self._multi_client_streams.clear()
 
+    async def _serve_multi_client_stream(self, request: Any) -> Any:
+        """Serve the multi-client stream endpoint (stub)."""
+        raise NotImplementedError
+
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
+        if not self.slimproto:
+            return  # or raise SetupFailedError if this should never happen
         self.slimproto.subscribe(self._handle_slimproto_event)
         self.mass.streams.register_dynamic_route(
             "/slimproto/multi", self._serve_multi_client_stream
         )
-        # it seems that WiiM devices do not use the json rpc port that is broadcasted
-        # in the discovery info but instead they just assume that the jsonrpc endpoint
-        # lives on the same server as stream URL. So we need to provide a jsonrpc.js
-        # endpoint that just redirects to the jsonrpc handler within the slimproto package.
         self.mass.streams.register_dynamic_route(
             "/jsonrpc.js", self.slimproto.cli._handle_jsonrpc_client
         )
@@ -158,35 +160,37 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
     def get_corrected_elapsed_milliseconds(self, slimplayer: SlimClient) -> int:
         """Return corrected elapsed milliseconds for a slimplayer."""
-        sync_delay = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_SYNC_ADJUST, 0
+        sync_delay = cast(
+            "int",
+            self.mass.config.get_raw_player_config_value(slimplayer.player_id, CONF_SYNC_ADJUST, 0),
         )
-        return slimplayer.elapsed_milliseconds - sync_delay
+        return cast("int", slimplayer.elapsed_milliseconds - sync_delay)
 
     def _handle_slimproto_event(
         self,
         event: SlimEvent,
     ) -> None:
-        if self.mass.closing:
+        """Handle events from SlimProto players."""
+        # Exit early if system is closing or slimproto server is not initialized
+        if self.mass.closing or not self.slimproto:
             return
 
-        # handle new player connect (or reconnect of existing player)
+        # Handle new player connect (or reconnect of existing player)
         if event.type == SlimEventType.PLAYER_CONNECTED:
-            if not (slimclient := self.slimproto.get_player(event.player_id)):
+            slimclient = self.slimproto.get_player(event.player_id)
+            if not slimclient:
                 return  # should not happen, but guard anyways
             player = SqueezelitePlayer(self, event.player_id, slimclient)
             self.mass.create_task(player.setup())
             return
 
-        if not (player := self.mass.players.get(event.player_id)):
-            return  # guard for unknown player
-        if TYPE_CHECKING:
-            player = cast("SqueezelitePlayer", player)
+        # Get existing player from Music Assistant
+        player_generic = self.mass.players.get(event.player_id)
+        if not player_generic:
+            return  # unknown player, ignore event
+        player = cast("SqueezelitePlayer", player_generic)
 
-        # handle player disconnect
+        # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
             self.mass.create_task(self.mass.players.unregister(player.player_id))
             return
-
-        # forward all other events to the player itself
-        player.handle_slim_event(event)
