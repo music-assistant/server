@@ -86,17 +86,17 @@ class SqueezelitePlayerProvider(PlayerProvider):
             raise SetupFailedError(f"Failed to start SlimProto server: {err}") from err
 
     async def _validate_all_ports(
-        self, 
-        control_port: int, 
-        telnet_port: int | None, 
+        self,
+        control_port: int,
+        telnet_port: int | None,
         json_port: int | None
     ) -> None:
         """Validate that all required ports are available before starting any services."""
         ports_to_check = [(control_port, "SlimProto control")]
-        
+
         if telnet_port and telnet_port > 0:
             ports_to_check.append((telnet_port, "Telnet CLI"))
-            
+
         if json_port and json_port > 0:
             ports_to_check.append((json_port, "JSON-RPC CLI"))
 
