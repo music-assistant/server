@@ -167,14 +167,14 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
                 ignore_str in dash_content.lower() for ignore_str in IGNORE_TITLE_PARTS
             )
             if should_ignore:
-                name = name[:dash_match.start()].strip()  # Remove entirely
+                name = name[: dash_match.start()].strip()  # Remove entirely
             else:
                 is_version = any(
                     version_str in dash_content.lower() for version_str in VERSION_PARTS
                 )
                 if is_version:
                     version_parts.append(dash_content)
-                    name = name[:dash_match.start()].strip()
+                    name = name[: dash_match.start()].strip()
                 # If neither ignore nor version, leave it in the name
 
     name = re.sub(r"\s{2,}", " ", name).strip()
