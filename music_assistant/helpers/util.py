@@ -84,6 +84,8 @@ IGNORE_TITLE_PARTS = (
     "explicit",
 )
 
+_BRACKETED = re.compile(r"\s*(\(([^)]*)\)|\[([^\]]*)\])\s*")
+
 
 def filename_from_string(string: str) -> str:
     """Create filename from unsafe string."""
@@ -128,28 +130,29 @@ def try_parse_duration(duration_str: str) -> float:
 
 
 def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
-    """Try to parse version from the title."""
+    """
+    Parse a title into (name, version).
+    - Removes and collects any text inside () or [] as the version.
+    - Leaves everything else intact, including trailing words like
+      'Soundtrack', 'Live at Wembley', or 'Unplugged'.
+    """
     version = track_version or ""
-    for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
-        for title_part in re.findall(regex, title):
-            for ignore_str in IGNORE_TITLE_PARTS:
-                if ignore_str in title_part.lower():
-                    title = title.replace(title_part, "").strip()
-                    continue
-            for version_str in VERSION_PARTS:
-                if version_str not in title_part.lower():
-                    continue
-                version = (
-                    title_part.replace("(", "")
-                    .replace(")", "")
-                    .replace("[", "")
-                    .replace("]", "")
-                    .replace("-", "")
-                    .strip()
-                )
-                title = title.replace(title_part, "").strip()
-                return (title, version)
-    return title, version
+    version_parts: list[str] = []
+
+    def _collect(match: re.Match) -> str:
+        text = (match.group(2) or match.group(3) or "").strip()
+        if text:
+            version_parts.append(text)
+        return " "  # strip from title
+
+    # Strip bracketed content and collect
+    name = _BRACKETED.sub(_collect, title)
+    name = re.sub(r"\s{2,}", " ", name).strip()
+
+    if version_parts:
+        version = " ".join(version_parts)
+
+    return name, version
 
 
 def strip_ads(line: str) -> str:
