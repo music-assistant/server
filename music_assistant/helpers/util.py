@@ -163,11 +163,15 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
         dash_content = dash_match.group(1).strip()
         if dash_content:
             # Apply same ignore/version logic to dash content
-            should_ignore = any(ignore_str in dash_content.lower() for ignore_str in IGNORE_TITLE_PARTS)
+            should_ignore = any(
+                ignore_str in dash_content.lower() for ignore_str in IGNORE_TITLE_PARTS
+            )
             if should_ignore:
                 name = name[:dash_match.start()].strip()  # Remove entirely
             else:
-                is_version = any(version_str in dash_content.lower() for version_str in VERSION_PARTS)
+                is_version = any(
+                    version_str in dash_content.lower() for version_str in VERSION_PARTS
+                )
                 if is_version:
                     version_parts.append(dash_content)
                     name = name[:dash_match.start()].strip()
