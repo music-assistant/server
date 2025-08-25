@@ -6,8 +6,14 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast, override
 
-from aioresonate.server import AudioFormat as ResonateAudioFormat
-from aioresonate.server import PlayerEvent, VolumeChangedEvent
+from aioresonate.server import (
+    AudioFormat as ResonateAudioFormat,
+)
+from aioresonate.server import (
+    PlayerEvent,
+    VolumeChangedEvent,
+)
+from aioresonate.server.player import StreamPauseEvent, StreamStartEvent, StreamStopEvent
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ContentType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.media_items import AudioFormat
@@ -60,6 +66,21 @@ class ResonatePlayer(Player):
                 self._attr_volume_level = volume
                 self._attr_volume_muted = muted
                 self.update_state()
+            case StreamStartEvent():
+                synced_to = self.synced_to
+                await self.mass.player_queues.play(
+                    synced_to if synced_to is not None else self.player_id
+                )
+            case StreamStopEvent():
+                synced_to = self.synced_to
+                await self.mass.player_queues.stop(
+                    synced_to if synced_to is not None else self.player_id
+                )
+            case StreamPauseEvent():
+                synced_to = self.synced_to
+                await self.mass.player_queues.pause(
+                    synced_to if synced_to is not None else self.player_id
+                )
             case _:
                 self.logger.error("Unknown resonate player event: %s", event)
 
