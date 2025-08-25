@@ -85,7 +85,7 @@ IGNORE_TITLE_PARTS = (
 )
 
 _BRACKETED = re.compile(r"\s*(\(([^)]*)\)|\[([^\]]*)\])\s*")
-
+_DASH_SUFFIX = re.compile(r"\s*-\s*(.*)")
 
 def filename_from_string(string: str) -> str:
     """Create filename from unsafe string."""
@@ -134,20 +134,45 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
     Parse a title into (name, version).
 
     - Removes and collects any text inside () or [] as the version.
-    - Leaves everything else intact, including trailing words like
-      'Soundtrack', 'Live at Wembley', or 'Unplugged'.
+    - Also handles " - ..." patterns for features, remixes, etc.
     """
     version = track_version or ""
     version_parts: list[str] = []
 
-    def _collect(match: re.Match[str]) -> str:
+    def _collect_bracketed(match: re.Match[str]) -> str:
         text = (match.group(2) or match.group(3) or "").strip()
         if text:
-            version_parts.append(text)
-        return " "  # strip from title
+            # Check if should be ignored (feat., ft., etc.)
+            for ignore_str in IGNORE_TITLE_PARTS:
+                if ignore_str in text.lower():
+                    return " "  # Remove entirely, don't add to version
 
-    # Strip bracketed content and collect
-    name = _BRACKETED.sub(_collect, title)
+            # Check if it's a version part
+            for version_str in VERSION_PARTS:
+                if version_str in text.lower():
+                    version_parts.append(text)
+                    return " "
+        return match.group(0)  # Keep original if neither ignored nor version
+
+    # Handle bracketed content
+    name = _BRACKETED.sub(_collect_bracketed, title)
+
+    # Handle dash patterns
+    dash_match = _DASH_SUFFIX.search(name)
+    if dash_match:
+        dash_content = dash_match.group(1).strip()
+        if dash_content:
+            # Apply same ignore/version logic to dash content
+            should_ignore = any(ignore_str in dash_content.lower() for ignore_str in IGNORE_TITLE_PARTS)
+            if should_ignore:
+                name = name[:dash_match.start()].strip()  # Remove entirely
+            else:
+                is_version = any(version_str in dash_content.lower() for version_str in VERSION_PARTS)
+                if is_version:
+                    version_parts.append(dash_content)
+                    name = name[:dash_match.start()].strip()
+                # If neither ignore nor version, leave it in the name
+
     name = re.sub(r"\s{2,}", " ", name).strip()
 
     if version_parts:
