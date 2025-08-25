@@ -132,6 +132,7 @@ def try_parse_duration(duration_str: str) -> float:
 def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
     """
     Parse a title into (name, version).
+
     - Removes and collects any text inside () or [] as the version.
     - Leaves everything else intact, including trailing words like
       'Soundtrack', 'Live at Wembley', or 'Unplugged'.
@@ -139,7 +140,7 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
     version = track_version or ""
     version_parts: list[str] = []
 
-    def _collect(match: re.Match) -> str:
+    def _collect(match: re.Match[str]) -> str:
         text = (match.group(2) or match.group(3) or "").strip()
         if text:
             version_parts.append(text)
