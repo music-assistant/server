@@ -146,6 +146,10 @@ class SqueezelitePlayerProvider(PlayerProvider):
         self.mass.streams.register_dynamic_route(
             "/slimproto/multi", self._serve_multi_client_stream
         )
+        # it seems that WiiM devices do not use the json rpc port that is broadcasted
+        # in the discovery info but instead they just assume that the jsonrpc endpoint
+        # lives on the same server as stream URL. So we need to provide a jsonrpc.js
+        # endpoint that just redirects to the jsonrpc handler within the slimproto package.
         self.mass.streams.register_dynamic_route(
             "/jsonrpc.js", self.slimproto.cli._handle_jsonrpc_client
         )
