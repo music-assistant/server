@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, cast
 
 from aioresonate.server import (
     AudioFormat as ResonateAudioFormat,
@@ -84,7 +84,6 @@ class ResonatePlayer(Player):
             case _:
                 self.logger.error("Unknown resonate player event: %s", event)
 
-    @override
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         # TODO: what if volume_level is 0?
@@ -98,7 +97,6 @@ class ResonatePlayer(Player):
             self.api.unmute()
         self.update_state()
 
-    @override
     async def stop(self) -> None:
         """Stop command."""
         self.logger.info("Received STOP command on player %s", self.display_name)
@@ -106,7 +104,6 @@ class ResonatePlayer(Player):
         self.api.group.stop()
         self.update_state()
 
-    @override
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
         self.logger.info(
@@ -140,7 +137,6 @@ class ResonatePlayer(Player):
         )
         self.update_state()
 
-    @override
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -162,7 +158,6 @@ class ResonatePlayer(Player):
             self._attr_group_members.append(player_id)
         self.update_state()
 
-    @override
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         # OPTIONAL
