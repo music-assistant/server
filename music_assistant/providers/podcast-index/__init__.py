@@ -43,16 +43,11 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key="header",
-            type=ConfigEntryType.LABEL,
-            label="Get your free API credentials at https://api.podcastindex.org/",
-        ),
-        ConfigEntry(
             key=CONF_API_KEY,
             type=ConfigEntryType.STRING,
             label="API Key",
             required=True,
-            description="Your Podcast Index API key",
+            description="Your Podcast Index API key. Get your free API credentials at https://api.podcastindex.org/",
         ),
         ConfigEntry(
             key=CONF_API_SECRET,
