@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.errors import (
+    InvalidDataError,
     LoginFailed,
     ProviderUnavailableError,
 )
@@ -48,7 +49,6 @@ async def make_api_request(
     auth_hash = hashlib.sha1(auth_string.encode()).hexdigest()
 
     headers = {
-        "User-Agent": f"MusicAssistant/{mass.version}",
         "X-Auth-Key": api_key,
         "X-Auth-Date": auth_date,
         "Authorization": auth_hash,
@@ -63,10 +63,10 @@ async def make_api_request(
             try:
                 data: dict[str, Any] = await response.json()
             except aiohttp.ContentTypeError as err:
-                raise ProviderUnavailableError("Invalid JSON response from API") from err
+                raise InvalidDataError("Invalid JSON response from API") from err
 
             if str(data.get("status")).lower() != "true":
-                raise ProviderUnavailableError(data.get("description") or "API error")
+                raise InvalidDataError(data.get("description") or "API error")
 
             return data
 
