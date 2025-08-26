@@ -37,7 +37,13 @@ class ResonateProvider(PlayerProvider):
         self.server_api = ResonateServer(
             self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
         )
-        self.unregister_cbs = [self.server_api.add_event_listener(self.event_cb)]
+        self.unregister_cbs = [
+            self.server_api.add_event_listener(self.event_cb),
+            # For the web player
+            self.mass.webserver.register_dynamic_route(
+                "/resonate", self.server_api.on_player_connect
+            ),
+        ]
 
     async def event_cb(self, event: ResonateEvent) -> None:
         """Event callback registered to the resonate server."""
