@@ -66,6 +66,14 @@ class ResonateProvider(PlayerProvider):
         return {ProviderFeature.SYNC_PLAYERS}
 
     @override
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        # Start server for handling incoming Resonate connections on
+        # /resonate on the default port
+        await self.server_api.start_server(port=8927)
+
+    @override
     async def unload(self, is_removed: bool = False) -> None:
         """
         Handle unload/close of the provider.
@@ -73,6 +81,9 @@ class ResonateProvider(PlayerProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
+        # Stop the Resonate server
+        await self.server_api.close()
+
         for cb in self.unregister_cbs:
             cb()
         self.unregister_cbs = []
