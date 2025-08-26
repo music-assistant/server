@@ -141,8 +141,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
-        if not self.slimproto:
-            return  # or raise SetupFailedError if this should never happen
+        assert self.slimproto is not None  # for type checker
         self.slimproto.subscribe(self._handle_slimproto_event)
         self.mass.streams.register_dynamic_route(
             "/slimproto/multi", self._serve_multi_client_stream
