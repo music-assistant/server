@@ -1576,6 +1576,8 @@ class PlayerQueuesController(CoreController):
 
                 if next_item := await self.preload_next_queue_item(queue_id, item_id_in_buffer):
                     self._enqueue_next_item(queue_id, next_item)
+                    # trigger smart fades analysis now that streamdetails are ready
+                    self.mass.streams._trigger_smart_fades_analysis_for_next_track(next_item)
             except QueueEmpty:
                 return
 

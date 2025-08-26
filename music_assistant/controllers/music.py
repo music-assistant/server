@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -40,6 +41,9 @@ from music_assistant_models.media_items import (
 from music_assistant_models.provider import SyncTask
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant_models.smart_fades import SmartFadesAnalysis
+import numpy as np
+
 from music_assistant.constants import (
     CACHE_CATEGORY_MUSIC_SEARCH,
     DB_TABLE_ALBUM_ARTISTS,
@@ -48,6 +52,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_LOUDNESS_MEASUREMENTS,
+    DB_TABLE_SMART_FADES_ANALYSIS,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PODCASTS,
@@ -824,6 +829,52 @@ class MusicController(CoreController):
         if album_loudness not in (None, inf, -inf):
             values["loudness_album"] = album_loudness
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
+
+    async def set_smart_fades_analysis(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        analysis: SmartFadesAnalysis,
+    ) -> None:
+        """Store Smart Fades BPM analysis for a track in db."""
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return
+        if analysis.bpm <= 0 or analysis.confidence < 0:
+            # skip invalid values
+            return
+        values = {
+            "item_id": item_id,
+            "provider": provider.lookup_key,
+            "bpm": analysis.bpm,
+            "beats": json.dumps(analysis.beats.tolist()),
+            "downbeats": json.dumps(analysis.downbeats.tolist()),
+            "confidence": analysis.confidence,
+        }
+        await self.database.insert_or_replace(DB_TABLE_SMART_FADES_ANALYSIS, values)
+
+    async def get_smart_fades_analysis(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> SmartFadesAnalysis | None:
+        """Get Smart Fades BPM analysis for a track from db."""
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return None
+        db_row = await self.database.get_row(
+            DB_TABLE_SMART_FADES_ANALYSIS,
+            {
+                "item_id": item_id,
+                "provider": provider.lookup_key,
+            },
+        )
+        if db_row and db_row["bpm"] > 0:
+            return SmartFadesAnalysis(
+                bpm=float(db_row["bpm"]),
+                beats=np.array(json.loads(db_row["beats"])),
+                downbeats=np.array(json.loads(db_row["downbeats"])),
+                confidence=float(db_row["confidence"]),
+            )
+        return None
 
     async def get_loudness(
         self,
@@ -1883,6 +1934,20 @@ class MusicController(CoreController):
                     UNIQUE(media_type,item_id,provider));"""
         )
 
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [bpm] REAL NOT NULL,
+                    [beats] TEXT NOT NULL,
+                    [downbeats] TEXT NOT NULL,
+                    [confidence] REAL NOT NULL,
+                    [analysis_version] INTEGER DEFAULT 1,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider));"""
+        )
+
         await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
@@ -1982,6 +2047,11 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}_idx "
             f"on {DB_TABLE_LOUDNESS_MEASUREMENTS}(media_type,item_id,provider);"
+        )
+        # index on smart fades analysis table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}_idx "
+            f"on {DB_TABLE_SMART_FADES_ANALYSIS}(item_id,provider);"
         )
         await self.database.commit()
 
