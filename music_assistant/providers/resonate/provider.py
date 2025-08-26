@@ -27,7 +27,7 @@ class ResonateProvider(PlayerProvider):
     """Player Provider for Resonate."""
 
     server_api: ResonateServer
-    unsub_event_cb: Callable[[], None]
+    unregister_cbs: list[Callable[[], None]]
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -37,7 +37,7 @@ class ResonateProvider(PlayerProvider):
         self.server_api = ResonateServer(
             self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
         )
-        self.unsub_event_cb = self.server_api.add_event_listener(self.event_cb)
+        self.unregister_cbs = [self.server_api.add_event_listener(self.event_cb)]
 
     async def event_cb(self, event: ResonateEvent) -> None:
         """Event callback registered to the resonate server."""
@@ -67,7 +67,9 @@ class ResonateProvider(PlayerProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
-        self.unsub_event_cb()
+        for cb in self.unregister_cbs:
+            cb()
+        self.unregister_cbs = []
         for player in self.players:
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
