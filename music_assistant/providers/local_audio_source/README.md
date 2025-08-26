@@ -21,7 +21,7 @@
 - **Announcements & Paging Microphone**  
   Plug in a USB microphone and use it for announcements. Great for paging in a business, office, or house intercom setup.
 
-- **Vynyl Turntable/Player**  
+- **Vinyl Turntable/Player**  
   Connect your turntable (via phono preamp) directly to your PC’s line-in, and enjoy your vinyl collection throughout your Music Assistant ecosystem.
 
 ---
