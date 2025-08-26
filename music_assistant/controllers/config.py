@@ -95,10 +95,8 @@ def validate_announcement_chime_url(url: str) -> None:
                 f"URL must point to an audio file ({', '.join(audio_extensions)})"
             )
 
-    except InvalidDataError:
-        raise  # Re-raise InvalidDataError as-is
     except Exception as e:
-        raise InvalidDataError(f"Invalid URL format: {e!s}")
+        raise InvalidDataError(f"Invalid URL format: {e!s}") from e
 
 
 async def test_announcement_chime_url(url: str) -> None:
