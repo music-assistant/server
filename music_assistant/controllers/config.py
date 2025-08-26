@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 import os
@@ -11,7 +10,6 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import aiofiles
-import aiohttp
 import shortuuid
 from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
@@ -97,44 +95,6 @@ def validate_announcement_chime_url(url: str) -> None:
 
     except Exception as e:
         raise InvalidDataError(f"Invalid URL format: {e!s}") from e
-
-
-async def test_announcement_chime_url(url: str) -> None:
-    """Test if the chime URL is accessible."""
-    if not url or not url.strip():
-        return  # Empty URL is valid
-
-    url = url.strip()
-
-    try:
-        timeout = aiohttp.ClientTimeout(total=10)  # 10 second timeout
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            try:
-                # Try HEAD first (more efficient)
-                async with session.head(url) as response:
-                    if response.status == 404:
-                        raise InvalidDataError("The file at that URL doesn't seem to exist")
-                    if response.status != 200:
-                        raise InvalidDataError(f"URL returned status code {response.status}")
-            except aiohttp.ClientResponseError as e:
-                if e.status == 405:  # Method not allowed, try GET
-                    async with session.get(url) as response:
-                        if response.status == 404:
-                            raise InvalidDataError("The file at that URL doesn't seem to exist")
-                        if response.status != 200:
-                            raise InvalidDataError(f"URL returned status code {response.status}")
-                if e.status == 404:
-                    raise InvalidDataError("The file at that URL doesn't seem to exist")
-                raise InvalidDataError(f"URL not accessible: HTTP {e.status}")
-
-    except aiohttp.ClientError as e:
-        raise InvalidDataError(f"URL not accessible: {e!s}")
-    except TimeoutError:
-        raise InvalidDataError("URL connection timeout - may be unreachable")
-    except InvalidDataError:
-        raise  # Re-raise InvalidDataError as-is
-    except Exception as e:
-        raise InvalidDataError(f"Error accessing URL: {e!s}")
 
 
 class ConfigController:
@@ -773,23 +733,8 @@ class ConfigController:
         """Save CoreController Config values."""
         # Add validation for streams announcement_chime_url
         if domain == "streams" and "announcement_chime_url" in values:
-            url_value = values["announcement_chime_url"]
-
-            # Convert to string and validate
-            if url_value is None:
-                url = ""
-            elif isinstance(url_value, str):
-                url = url_value
-            else:
-                # Handle other types by converting to string
-                url = str(url_value)
-
-            # First validate URL format
+            url = str(values["announcement_chime_url"] or "")
             validate_announcement_chime_url(url)
-
-            # Then test if URL is accessible (only if not empty)
-            if url and url.strip():
-                await test_announcement_chime_url(url)
 
         config = await self.get_core_config(domain)
         changed_keys = config.update(values)
