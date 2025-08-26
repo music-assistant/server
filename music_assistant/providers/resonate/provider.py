@@ -34,7 +34,9 @@ class ResonateProvider(PlayerProvider):
     ) -> None:
         """Initialize a new Resonate player provider."""
         super().__init__(mass, manifest, config)
-        self.server_api = ResonateServer(self.mass.loop, mass.server_id, "Music Assistant")
+        self.server_api = ResonateServer(
+            self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
+        )
         self.unsub_event_cb = self.server_api.add_event_listener(self.event_cb)
 
     async def event_cb(self, event: ResonateEvent) -> None:
