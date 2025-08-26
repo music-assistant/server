@@ -187,13 +187,15 @@ class SqueezelitePlayerProvider(PlayerProvider):
             self.mass.create_task(player.setup())
             return
 
-        # Get existing player from Music Assistant
-        player_generic = self.mass.players.get(event.player_id)
-        if not player_generic:
-            return  # unknown player, ignore event
-        player = cast("SqueezelitePlayer", player_generic)
+        if not (player := self.mass.players.get(event.player_id)):
+            return  # guard for unknown player
+        if TYPE_CHECKING:
+            player = cast("SqueezelitePlayer", player)
 
         # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
             self.mass.create_task(self.mass.players.unregister(player.player_id))
             return
+
+        # forward all other events to the player itself
+        player.handle_slim_event(event)
