@@ -712,7 +712,7 @@ class Player(ABC):
         if power_control == PLAYER_CONTROL_FAKE:
             return bool(self.extra_data.get(ATTR_FAKE_POWER, False))
         if power_control == PLAYER_CONTROL_NATIVE:
-            return cast("bool", self.powered)
+            return self.powered
         if power_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(power_control):
@@ -736,7 +736,7 @@ class Player(ABC):
         if volume_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(volume_control):
-            return int(control.volume_level)
+            return control.volume_level
         return None
 
     @cached_property
@@ -756,7 +756,7 @@ class Player(ABC):
         if mute_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(mute_control):
-            return cast("bool | None", control.volume_muted)
+            return control.volume_muted
         return None
 
     @cached_property
@@ -882,28 +882,25 @@ class Player(ABC):
     @final
     def power_control(self) -> str:
         """Return the power control type."""
-        result: str = PLAYER_CONTROL_NONE
         if conf := self._config.get_value(CONF_POWER_CONTROL):
-            result = str(conf)
-        return result
+            return str(conf)
+        return PLAYER_CONTROL_NONE
 
     @cached_property
     @final
     def volume_control(self) -> str:
         """Return the volume control type."""
-        result: str = PLAYER_CONTROL_NONE
         if conf := self._config.get_value(CONF_VOLUME_CONTROL):
-            result = str(conf)
-        return result
+            return str(conf)
+        return PLAYER_CONTROL_NONE
 
     @cached_property
     @final
     def mute_control(self) -> str:
         """Return the mute control type."""
-        result: str = PLAYER_CONTROL_NONE
         if conf := self._config.get_value(CONF_MUTE_CONTROL):
-            result = str(conf)
-        return result
+            return str(conf)
+        return PLAYER_CONTROL_NONE
 
     @cached_property
     @final
@@ -1058,7 +1055,7 @@ class Player(ABC):
     @final
     def to_dict(self) -> dict[str, Any]:
         """Return the (serializable) dict representation of the Player."""
-        return cast("dict[str, Any]", self.state.to_dict())
+        return self.state.to_dict()
 
     @final
     def supports_feature(self, feature: PlayerFeature) -> bool:

@@ -594,5 +594,5 @@ def compare_explicit(base: MediaItemMetadata, compare: MediaItemMetadata) -> boo
     if base.explicit is not None and compare.explicit is not None:
         # explicitness info is not always present in metadata
         # only strict compare them if both have the info set
-        return bool(base.explicit) == bool(compare.explicit)
+        return base.explicit == compare.explicit
     return None
