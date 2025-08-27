@@ -3,56 +3,27 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Protocol, final
+from typing import TYPE_CHECKING, Any, final
 
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
+    from music_assistant_models.provider import ProviderManifest
     from zeroconf import ServiceStateChange
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
 
 
-# Protocols to give mypy enough type info
-class ProviderManifestProto(Protocol):
-    """Protocol describing the minimal interface of ProviderManifest for type checking."""
-
-    domain: str
-    name: str
-    type: ProviderType
-    stage: ProviderStage
-    multi_instance: bool
-
-
-class ProviderConfigProto(Protocol):
-    """Protocol describing the minimal interface of ProviderConfig for type checking."""
-
-    instance_id: str
-    name: str | None
-
-    def get_value(self, key: str) -> str | None:
-        """Return the value for the given config key."""
-
-    values: dict[str, Any]  # simplified for your usage in update_config_value
-
-
-# Use these Protocols as type hints in the Provider class
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
 
-    mass: MusicAssistant
-    manifest: ProviderManifestProto
-    config: ProviderConfigProto
-    logger: logging.Logger
-    cache: Any
-    available: bool
-
     def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifestProto, config: ProviderConfigProto
+        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
         self.mass = mass
@@ -66,6 +37,7 @@ class Provider:
         else:
             self.logger.setLevel(log_level)
         if logging.getLogger().level > self.logger.level:
+            # if the root logger's level is higher, we need to adjust that too
             logging.getLogger().setLevel(self.logger.level)
         self.logger.debug("Log level configured to %s", log_level)
         self.cache = mass.cache
@@ -79,6 +51,7 @@ class Provider:
     @property
     def lookup_key(self) -> str:
         """Return instance_id if multi_instance capable or domain otherwise."""
+        # should not be overridden in normal circumstances
         return self.instance_id if self.manifest.multi_instance else self.domain
 
     async def handle_async_init(self) -> None:
@@ -123,6 +96,7 @@ class Provider:
     def name(self) -> str:
         """Return (custom) friendly name for this provider instance."""
         if self.config.name:
+            # always prefer user-set name from config
             return self.config.name
         return self.default_name
 
@@ -130,12 +104,16 @@ class Provider:
     @final
     def default_name(self) -> str:
         """Return a default friendly name for this provider instance."""
+        # create default name based on instance count
         instances = [x.instance_id for x in self.mass.music.providers if x.domain == self.domain]
         if len(instances) <= 1:
+            # only one instance (or no instances yet at all) - return provider name
             return self.manifest.name
         instance_name_postfix = self.instance_name_postfix
         if not instance_name_postfix:
+            # default implementation - simply use the instance number/index
             instance_name_postfix = str(instances.index(self.instance_id) + 1)
+        # append instance name to provider name
         return f"{self.manifest.name} [{self.instance_name_postfix}]"
 
     @property
@@ -152,6 +130,7 @@ class Provider:
     def update_config_value(self, key: str, value: Any, encrypted: bool = False) -> None:
         """Update a config value."""
         self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
+        # also update the cached copy within the provider instance
         self.config.values[key].value = value
 
     def unload_with_error(self, error: str) -> None:
