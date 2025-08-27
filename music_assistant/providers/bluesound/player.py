@@ -90,7 +90,7 @@ class BluesoundPlayer(Player):
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             ConfigEntry.from_dict(
-                {**CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(), "default_value": "basic"}
+                {**CONF_ENTRY_ENABLE_ICY_METADATA.to_dict(), "default_value": "full"}
             ),
         ]
 
