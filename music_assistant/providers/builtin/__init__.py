@@ -318,7 +318,8 @@ class BuiltinProvider(MusicProvider):
             yield await self.get_playlist(item["item_id"])
         # return builtin playlists
         for item_id in BUILTIN_PLAYLISTS:
-            if self.config.get_value(item_id) is False:
+            config_value = self.config.get_value(item_id)
+            if config_value in ("false", "False", "0", None):
                 continue
             yield await self.get_playlist(item_id)
 

@@ -100,8 +100,8 @@ class OpenSonicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
-        port = self.config.get_value(CONF_PORT)
-        port = int(str(port)) if port is not None else 443
+        port_raw = self.config.get_value(CONF_PORT)
+        port = int(str(port_raw)) if port_raw is not None else 443
         path = self.config.get_value(CONF_PATH)
         if path is None:
             path = ""

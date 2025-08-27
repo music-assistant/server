@@ -189,7 +189,7 @@ class MyDemoMusicprovider(MusicProvider):
         # For streaming providers return True here but for local file based providers return False.
         return True
 
-    async def search(  # type: ignore[empty-body]
+    async def search(
         self,
         search_query: str,
         media_types: list[MediaType],
@@ -249,7 +249,7 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows retrieving the library/favorite albums from your provider.
         # Warning: Async generator:
         # You should yield Album objects for each album in the library.
-        yield  # type: ignore[misc]
+        yield
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
@@ -259,7 +259,7 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows retrieving the library/favorite tracks from your provider.
         # Warning: Async generator:
         # You should yield Track objects for each track in the library.
-        yield  # type: ignore[misc]
+        yield
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library/subscribed playlists from the provider."""
@@ -269,7 +269,7 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows retrieving the library/favorite playlists from your provider.
         # Warning: Async generator:
         # You should yield Playlist objects for each playlist in the library.
-        yield  # type: ignore[misc]
+        yield
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
@@ -279,9 +279,9 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows retrieving the library/favorite radio stations from your provider.
         # Warning: Async generator:
         # You should yield Radio objects for each radio station in the library.
-        yield  # type: ignore[misc]
+        yield
 
-    async def get_artist(self, prov_artist_id: str) -> Artist:  # type: ignore[empty-body]
+    async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         # Get full details of a single Artist.
         # Mandatory only if you reported LIBRARY_ARTISTS in the supported_features.
@@ -297,22 +297,22 @@ class MyDemoMusicprovider(MusicProvider):
         # Mandatory only if you reported ARTIST_TOPTRACKS in the supported_features.
         # Note that (local) file based providers will simply return all artist tracks here.
 
-    async def get_album(self, prov_album_id: str) -> Album:  # type: ignore[empty-body]
+    async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         # Get full details of a single Album.
         # Mandatory only if you reported LIBRARY_ALBUMS in the supported_features.
 
-    async def get_track(self, prov_track_id: str) -> Track:  # type: ignore[empty-body]
+    async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         # Get full details of a single Track.
         # Mandatory only if you reported LIBRARY_TRACKS in the supported_features.
 
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:  # type: ignore[empty-body]
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         # Get full details of a single Playlist.
         # Mandatory only if you reported LIBRARY_PLAYLISTS in the supported
 
-    async def get_radio(self, prov_radio_id: str) -> Radio:  # type: ignore[empty-body]
+    async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         # Get full details of a single Radio station.
         # Mandatory only if you reported LIBRARY_RADIOS in the supported_features.
@@ -358,7 +358,7 @@ class MyDemoMusicprovider(MusicProvider):
         # Remove track(s) from a playlist.
         # This is only called if the provider supports the PLAYLIST_TRACKS_EDIT feature.
 
-    async def create_playlist(self, name: str) -> Playlist:  # type: ignore[empty-body]
+    async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         # Create a new playlist on the provider.
         # This is only called if the provider supports the PLAYLIST_CREATE feature.

@@ -89,12 +89,12 @@ _R = TypeVar("_R")
 
 def is_music_provider(provider: ProviderInstanceType) -> TypeGuard[MusicProvider]:
     """Type guard that returns true if a provider is a music provider."""
-    return provider.type == ProviderType.MUSIC
+    return bool(provider.type == ProviderType.MUSIC)
 
 
 def is_player_provider(provider: ProviderInstanceType) -> TypeGuard[PlayerProvider]:
     """Type guard that returns true if a provider is a player provider."""
-    return provider.type == ProviderType.PLAYER
+    return bool(provider.type == ProviderType.PLAYER)
 
 
 class MusicAssistant:
