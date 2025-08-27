@@ -14,6 +14,7 @@ from itertools import zip_longest
 from math import inf
 from typing import TYPE_CHECKING, Final, cast
 
+import numpy as np
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -39,10 +40,8 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.provider import SyncTask
-from music_assistant_models.unique_list import UniqueList
-
 from music_assistant_models.smart_fades import SmartFadesAnalysis
-import numpy as np
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     CACHE_CATEGORY_MUSIC_SEARCH,
@@ -52,13 +51,13 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_LOUDNESS_MEASUREMENTS,
-    DB_TABLE_SMART_FADES_ANALYSIS,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
+    DB_TABLE_SMART_FADES_ANALYSIS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,

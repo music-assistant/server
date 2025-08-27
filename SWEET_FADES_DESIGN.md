@@ -5,7 +5,7 @@ Implementation of DJ-like intelligent crossfading similar to Apple's AutoMix fea
 
 **Key Features:**
 - BPM matching with gradual tempo adjustment
-- Low/high-pass filtering during transitions  
+- Low/high-pass filtering during transitions
 - Smart intro/outro detection for dynamic crossfade timing
 - Real-time and ad-hoc analysis modes
 
@@ -27,7 +27,7 @@ Implementation of DJ-like intelligent crossfading similar to Apple's AutoMix fea
 
 #### Player Queue Management (`player_queues.py`)
 - **Next track preloading**: `preload_next_queue_item` method
-- **Track buffer loading**: `track_loaded_in_buffer` method  
+- **Track buffer loading**: `track_loaded_in_buffer` method
 - **Next item detection**: `get_next_item` method
 
 #### Audio Analysis Infrastructure (`audio.py`)
@@ -60,7 +60,7 @@ class SweetFadesAnalyzer:
 
 **Analysis Pipeline:**
 1. Beat Detection (Madmom RNNBeatProcessor)
-2. Tempo Estimation (BPM + downbeats) 
+2. Tempo Estimation (BPM + downbeats)
 3. Intro/Outro Detection (Essentia onset/offset)
 4. Harmonic Analysis (future: key detection)
 
@@ -71,7 +71,7 @@ CREATE TABLE sweet_fades_analysis (
     provider TEXT,
     bpm REAL,
     intro_duration REAL,
-    outro_duration REAL, 
+    outro_duration REAL,
     beats_json TEXT,
     downbeats_json TEXT,
     analysis_version INTEGER,
@@ -93,7 +93,7 @@ class SweetFadesAnalysis:
 
 async def sweet_crossfade_pcm_parts(
     fade_in_part: bytes,
-    fade_out_part: bytes, 
+    fade_out_part: bytes,
     current_analysis: SweetFadesAnalysis,
     next_analysis: SweetFadesAnalysis,
     pcm_format: AudioFormat,
@@ -115,7 +115,7 @@ async def sweet_crossfade_pcm_parts(
 ### 5. Configuration
 ```python
 CONF_SWEET_FADES = "sweet_fades_enabled"
-CONF_SWEET_FADES_MODE = "sweet_fades_mode"  # "realtime", "adhoc", "disabled"  
+CONF_SWEET_FADES_MODE = "sweet_fades_mode"  # "realtime", "adhoc", "disabled"
 CONF_SWEET_FADES_MIN_DURATION = "sweet_fades_min_duration"
 CONF_SWEET_FADES_MAX_DURATION = "sweet_fades_max_duration"
 ```
@@ -126,7 +126,7 @@ def _get_crossfade_strategy(self, queue_item, next_item) -> str:
     if not sweet_fades_enabled:
         return "standard"
     if both_tracks_analyzed:
-        return "sweet_fades" 
+        return "sweet_fades"
     elif realtime_mode and next_track_available:
         return "realtime_analysis"
     else:
@@ -141,10 +141,11 @@ def _get_crossfade_strategy(self, queue_item, next_item) -> str:
 - [ ] Enhance existing crossfade with tempo adjustment
 - [ ] Database schema and caching
 
-### Phase 2: Intelligent Transition Detection  
+### Phase 2: Intelligent Transition Detection
 - [ ] Add Essentia dependency
 - [ ] Implement intro/outro detection
 - [ ] Dynamic crossfade duration
+- [ ] Crossfades curves? tri, qsin and iqsin 
 - [ ] Real-time analysis pipeline
 
 ### Phase 3: Advanced Features
@@ -179,11 +180,11 @@ music_assistant/
 
 ## Development Context
 
-**Current branch**: `feat/sweet_fades`  
+**Current branch**: `feat/sweet_fades`
 **Analysis date**: 2025-08-24
 **Analyzed files:**
 - `/music_assistant/controllers/streams.py` - Audio streaming pipeline
-- `/music_assistant/controllers/player_queues.py` - Queue management  
+- `/music_assistant/controllers/player_queues.py` - Queue management
 - `/music_assistant/helpers/audio.py` - Audio processing helpers
 - pyCrossfade library analysis - Reference implementation
 - Plugin architecture evaluation - Ruled out for performance reasons

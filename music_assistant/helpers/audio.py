@@ -620,7 +620,7 @@ async def get_stream_details(
         streamdetails.loudness = result[0]
         streamdetails.loudness_album = result[1]
     streamdetails.prefer_album_loudness = prefer_album_loudness
-    
+
     # handle smart fades analysis details
     if queue_item.media_type == MediaType.TRACK:
         if smart_fades_analysis := await mass.music.get_smart_fades_analysis(

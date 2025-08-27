@@ -32,6 +32,8 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.smart_fades import SmartFadesAnalysis
 
+from music_assistant.helpers.smart_fades import MAX_SMART_CROSSFADE_DURATION
+
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     CONF_ALLOW_AUDIO_CACHE,
@@ -64,10 +66,10 @@ from music_assistant.helpers.audio import (
     get_silence,
     get_stream_details,
 )
-from music_assistant.helpers.smart_fades import analyze_track_for_smart_fades
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
+from music_assistant.helpers.smart_fades import analyze_track_for_smart_fades
 from music_assistant.helpers.util import (
     get_folder_size,
     get_free_space,
@@ -786,7 +788,9 @@ class StreamsController(CoreController):
         assert pcm_format.content_type.is_pcm()
         queue_track = None
         last_fadeout_part = b""
-        last_fadeout_analysis = None  # Smart fades analysis for the track that created last_fadeout_part
+        last_fadeout_analysis = (
+            None  # Smart fades analysis for the track that created last_fadeout_part
+        )
         queue.flow_mode = True
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
@@ -840,7 +844,8 @@ class StreamsController(CoreController):
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-            crossfade_size = int(pcm_sample_size * crossfade_duration)
+            # Use max smart crossfade duration to ensure sufficient audio bytes for optimal transitions
+            crossfade_size = int(pcm_sample_size * MAX_SMART_CROSSFADE_DURATION)
             bytes_written = 0
             buffer = b""
             # handle incoming audio chunks
@@ -863,20 +868,25 @@ class StreamsController(CoreController):
                     # perform crossfade
                     fadein_part = buffer[:crossfade_size]
                     remaining_bytes = buffer[crossfade_size:]
-                    
+
                     # Check if both tracks have smart fades analysis for BPM matching
-                    current_analysis = getattr(queue_track.streamdetails, 'smart_fades', None)
-                    if (last_fadeout_analysis and current_analysis 
-                        and last_fadeout_analysis.confidence > 0.3 
-                        and current_analysis.confidence > 0.3):
+                    current_analysis = getattr(queue_track.streamdetails, "smart_fades", None)
+                    if (
+                        last_fadeout_analysis
+                        and current_analysis
+                        and last_fadeout_analysis.confidence > 0.3
+                        and current_analysis.confidence > 0.3
+                    ):
                         # Use smart crossfade with BPM matching
                         from music_assistant.helpers.smart_fades import smart_crossfade_pcm_parts
+
                         crossfade_part = await smart_crossfade_pcm_parts(
                             fade_in_part=fadein_part,
                             fade_out_part=last_fadeout_part,
                             fade_in_analysis=current_analysis,
                             fade_out_analysis=last_fadeout_analysis,
                             pcm_format=pcm_format,
+                            max_fallback_duration=crossfade_duration,
                         )
                     else:
                         # Use standard crossfade
@@ -916,7 +926,7 @@ class StreamsController(CoreController):
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_size:]
                 # Also save the smart fades analysis for BPM matching
-                last_fadeout_analysis = getattr(queue_track.streamdetails, 'smart_fades', None)
+                last_fadeout_analysis = getattr(queue_track.streamdetails, "smart_fades", None)
                 remaining_bytes = buffer[:-crossfade_size]
                 if remaining_bytes:
                     yield remaining_bytes
@@ -1141,8 +1151,8 @@ class StreamsController(CoreController):
         bytes_written = 0
         pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
         # buffer size needs to be big enough to include the crossfade part
-
-        crossfade_size = int(pcm_sample_size * crossfade_duration)
+        # Use max smart crossfade duration to ensure sufficient audio bytes for optimal transitions
+        crossfade_size = int(pcm_sample_size * MAX_SMART_CROSSFADE_DURATION)
 
         async for chunk in self.get_queue_item_stream(queue_item, pcm_format):
             # ALWAYS APPEND CHUNK TO BUFFER
@@ -1157,14 +1167,18 @@ class StreamsController(CoreController):
                 # perform crossfade
                 fade_in_part = buffer[:crossfade_size]
                 remaining_bytes = buffer[crossfade_size:]
-                
+
                 # Check if both tracks have smart fades analysis for BPM matching
-                current_analysis = getattr(queue_item.streamdetails, 'smart_fades', None)
-                if (crossfade_data.smart_fades_analysis and current_analysis 
-                    and crossfade_data.smart_fades_analysis.confidence > 0.3 
-                    and current_analysis.confidence > 0.3):
+                current_analysis = getattr(queue_item.streamdetails, "smart_fades", None)
+                if (
+                    crossfade_data.smart_fades_analysis
+                    and current_analysis
+                    and crossfade_data.smart_fades_analysis.confidence > 0.3
+                    and current_analysis.confidence > 0.3
+                ):
                     # Use smart crossfade with BPM matching
                     from music_assistant.helpers.smart_fades import smart_crossfade_pcm_parts
+
                     crossfade_part = await smart_crossfade_pcm_parts(
                         fade_in_part=fade_in_part,
                         fade_out_part=crossfade_data.fadeout_part,
@@ -1172,6 +1186,7 @@ class StreamsController(CoreController):
                         fade_out_analysis=crossfade_data.smart_fades_analysis,
                         pcm_format=pcm_format,
                         fade_out_pcm_format=crossfade_data.pcm_format,
+                        max_fallback_duration=crossfade_duration,
                     )
                 else:
                     # Use standard crossfade
@@ -1218,7 +1233,9 @@ class StreamsController(CoreController):
             crossfade_data.session_id = session_id
             crossfade_data.queue_item_id = queue_item.queue_item_id
             # Also save the smart fades analysis for BPM matching
-            crossfade_data.smart_fades_analysis = getattr(queue_item.streamdetails, 'smart_fades', None)
+            crossfade_data.smart_fades_analysis = getattr(
+                queue_item.streamdetails, "smart_fades", None
+            )
             remaining_bytes = buffer[:-crossfade_size]
             if remaining_bytes:
                 yield remaining_bytes
@@ -1404,12 +1421,14 @@ class StreamsController(CoreController):
             if not next_item or not next_item.streamdetails:
                 self.logger.debug("Next track has no streamdetails for smart fades analysis")
                 return
-            
+
             # Only analyze tracks (not radio streams)
             if next_item.media_type != MediaType.TRACK:
-                self.logger.debug("Skipping smart fades analysis for non-track item: %s", next_item.name)
+                self.logger.debug(
+                    "Skipping smart fades analysis for non-track item: %s", next_item.name
+                )
                 return
-            
+
             # Start background analysis task
             task_id = f"smart_fades_analysis_{next_item.queue_item_id}"
             self.mass.create_task(
@@ -1417,50 +1436,52 @@ class StreamsController(CoreController):
                 task_id=task_id,
                 abort_existing=True,
             )
-            
-            self.logger.debug(
-                "Triggered smart fades analysis for next track: %s", 
-                next_item.name
-            )
-            
+
+            self.logger.debug("Triggered smart fades analysis for next track: %s", next_item.name)
+
         except Exception as e:
-            self.logger.warning(
-                "Failed to trigger smart fades analysis: %s", 
-                e, exc_info=True
-            )
+            self.logger.warning("Failed to trigger smart fades analysis: %s", e, exc_info=True)
 
     async def _analyze_next_track_for_smart_fades(self, queue_item: QueueItem) -> None:
         """Analyze the next track for smart fades in the background."""
         try:
             if not queue_item.streamdetails:
-                self.logger.warning("No stream details for smart fades analysis: %s", queue_item.name)
+                self.logger.warning(
+                    "No stream details for smart fades analysis: %s", queue_item.name
+                )
                 return
-            
+
             # Check if we already have analysis for this track
             # First check if it's already loaded in streamdetails
-            if hasattr(queue_item.streamdetails, 'smart_fades') and queue_item.streamdetails.smart_fades:
+            if (
+                hasattr(queue_item.streamdetails, "smart_fades")
+                and queue_item.streamdetails.smart_fades
+            ):
                 existing_analysis = queue_item.streamdetails.smart_fades
                 if existing_analysis.confidence > 0.3:
                     self.logger.debug(
                         "Smart fades analysis already loaded in streamdetails for %s: BPM=%.1f, confidence=%.2f",
-                        queue_item.name, existing_analysis.bpm, existing_analysis.confidence
+                        queue_item.name,
+                        existing_analysis.bpm,
+                        existing_analysis.confidence,
                     )
                     return
-            
+
             # Check database if not in streamdetails
             existing_analysis = await self.mass.music.get_smart_fades_analysis(
-                queue_item.media_item.item_id,
-                queue_item.media_item.provider
+                queue_item.media_item.item_id, queue_item.media_item.provider
             )
             if existing_analysis and existing_analysis.confidence > 0.3:
                 self.logger.debug(
                     "Smart fades analysis already exists in database for %s: BPM=%.1f, confidence=%.2f",
-                    queue_item.name, existing_analysis.bpm, existing_analysis.confidence
+                    queue_item.name,
+                    existing_analysis.bpm,
+                    existing_analysis.confidence,
                 )
                 # Cache it in streamdetails for future use
                 queue_item.streamdetails.smart_fades = existing_analysis
                 return
-            
+
             # Use hardcoded 44100 PCM format for smart fades analysis
             pcm_format = AudioFormat(
                 content_type=ContentType.PCM_F32LE,
@@ -1468,7 +1489,7 @@ class StreamsController(CoreController):
                 bit_depth=32,
                 channels=2,
             )
-            
+
             # Get the media stream for analysis
             async def get_analysis_stream():
                 async for chunk in get_media_stream(
@@ -1478,28 +1499,27 @@ class StreamsController(CoreController):
                     filter_params=[],
                 ):
                     yield chunk
-            
+
             # Perform the analysis
             analysis = await analyze_track_for_smart_fades(
                 queue_item, get_analysis_stream(), queue_item.streamdetails, pcm_format
             )
-            
+
             if analysis:
                 self.logger.info(
                     "Smart fades analysis completed for %s: BPM=%.1f, confidence=%.2f",
-                    queue_item.name, analysis.bpm, analysis.confidence
+                    queue_item.name,
+                    analysis.bpm,
+                    analysis.confidence,
                 )
                 # Store analysis results in database for future use
                 await self.mass.music.set_smart_fades_analysis(
-                    queue_item.media_item.item_id,
-                    queue_item.media_item.provider,
-                    analysis
+                    queue_item.media_item.item_id, queue_item.media_item.provider, analysis
                 )
             else:
                 self.logger.debug("Smart fades analysis failed for: %s", queue_item.name)
-                
+
         except Exception as e:
             self.logger.error(
-                "Smart fades analysis error for %s: %s", 
-                queue_item.name, e, exc_info=True
+                "Smart fades analysis error for %s: %s", queue_item.name, e, exc_info=True
             )
