@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
@@ -164,8 +164,7 @@ class DemoPlayerprovider(PlayerProvider):
         # This is an optional method that you can implement if
         # you want to (manually) discover players on the
         # network and you do not use mdns discovery.
-        number_of_players_raw = self.config.get_value(CONF_NUMBER_OF_PLAYERS)
-        number_of_players = int(number_of_players_raw) if number_of_players_raw else 0
+        number_of_players = cast("int", self.config.get_value(CONF_NUMBER_OF_PLAYERS, 0))
         self.logger.info(
             "Discovering %s demo players",
             number_of_players,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
@@ -189,9 +189,9 @@ class RadioBrowserProvider(MusicProvider):
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
-        stored_radios_raw = self.config.get_value(CONF_STORED_RADIOS)
-        stored_radios: list[str] = stored_radios_raw if isinstance(stored_radios_raw, list) else []
-
+        stored_radios = self.config.get_value(CONF_STORED_RADIOS)
+        if TYPE_CHECKING:
+            stored_radios = cast("list[str]", stored_radios)
         for item in stored_radios:
             try:
                 yield await self.get_radio(item)
@@ -200,9 +200,9 @@ class RadioBrowserProvider(MusicProvider):
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
-        stored_radios_raw = self.config.get_value(CONF_STORED_RADIOS)
-        stored_radios: list[str] = stored_radios_raw if isinstance(stored_radios_raw, list) else []
-
+        stored_radios = self.config.get_value(CONF_STORED_RADIOS)
+        if TYPE_CHECKING:
+            stored_radios = cast("list[str]", stored_radios)
         if item.item_id in stored_radios:
             return False
         self.logger.debug("Adding radio %s to stored radios", item.item_id)
@@ -212,9 +212,9 @@ class RadioBrowserProvider(MusicProvider):
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from provider's library. Return true on success."""
-        stored_radios_raw = self.config.get_value(CONF_STORED_RADIOS)
-        stored_radios: list[str] = stored_radios_raw if isinstance(stored_radios_raw, list) else []
-
+        stored_radios = self.config.get_value(CONF_STORED_RADIOS)
+        if TYPE_CHECKING:
+            stored_radios = cast("list[str]", stored_radios)
         if prov_item_id not in stored_radios:
             return False
         self.logger.debug("Removing radio %s from stored radios", prov_item_id)

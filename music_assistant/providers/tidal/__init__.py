@@ -336,29 +336,26 @@ class TidalProvider(MusicProvider):
         # Load auth info from individual config values
         access_token = self.config.get_value(CONF_AUTH_TOKEN)
         refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
-        expires_at_config = self.config.get_value(CONF_EXPIRY_TIME)
+        expires_at = self.config.get_value(CONF_EXPIRY_TIME)
         user_id = self.config.get_value(CONF_USER_ID)
+
         if not access_token or not refresh_token:
             raise LoginFailed("Missing authentication data")
 
         # Handle conversion from ISO format to timestamp if needed
-        expires_at: float
-        if isinstance(expires_at_config, str) and "T" in expires_at_config:
+        if isinstance(expires_at, str) and "T" in expires_at:
             # This looks like an ISO format date
             try:
-                dt = datetime.fromisoformat(expires_at_config)
+                dt = datetime.fromisoformat(expires_at)
                 # Convert to timestamp
                 expires_at = dt.timestamp()
                 # Update the config with the numeric value
                 self.update_config_value(CONF_EXPIRY_TIME, expires_at)
             except ValueError:
                 self.logger.warning(
-                    "Could not parse expiry time %s, setting to expired", expires_at_config
+                    "Could not parse expiry time %s, setting to expired", expires_at
                 )
-                expires_at = 0.0
-        else:
-            # Assume it's already a numeric timestamp or None
-            expires_at = float(expires_at_config or 0)
+                expires_at = 0
 
         # Create auth data dictionary from individual config values
         auth_data = {
