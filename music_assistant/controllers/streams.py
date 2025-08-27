@@ -32,8 +32,6 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.smart_fades import SmartFadesAnalysis
 
-from music_assistant.helpers.smart_fades import MAX_SMART_CROSSFADE_DURATION
-
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     CONF_ALLOW_AUDIO_CACHE,
@@ -69,7 +67,10 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
-from music_assistant.helpers.smart_fades import analyze_track_for_smart_fades
+from music_assistant.helpers.smart_fades import (
+    MAX_SMART_CROSSFADE_DURATION,
+    analyze_track_for_smart_fades,
+)
 from music_assistant.helpers.util import (
     get_folder_size,
     get_free_space,
@@ -871,6 +872,16 @@ class StreamsController(CoreController):
 
                     # Check if both tracks have smart fades analysis for BPM matching
                     current_analysis = getattr(queue_track.streamdetails, "smart_fades", None)
+
+                    # Debug logging for crossfade decision
+                    self.logger.debug(
+                        "Crossfade analysis check: fadeout_analysis=%s (conf=%.2f), current_analysis=%s (conf=%.2f)",
+                        bool(last_fadeout_analysis),
+                        last_fadeout_analysis.confidence if last_fadeout_analysis else 0.0,
+                        bool(current_analysis),
+                        current_analysis.confidence if current_analysis else 0.0,
+                    )
+
                     if (
                         last_fadeout_analysis
                         and current_analysis
@@ -878,6 +889,11 @@ class StreamsController(CoreController):
                         and current_analysis.confidence > 0.3
                     ):
                         # Use smart crossfade with BPM matching
+                        self.logger.debug(
+                            "Using smart crossfade: fadeout_bpm=%.1f, fadein_bpm=%.1f",
+                            last_fadeout_analysis.bpm,
+                            current_analysis.bpm,
+                        )
                         from music_assistant.helpers.smart_fades import smart_crossfade_pcm_parts
 
                         crossfade_part = await smart_crossfade_pcm_parts(
@@ -890,6 +906,20 @@ class StreamsController(CoreController):
                         )
                     else:
                         # Use standard crossfade
+                        if not last_fadeout_analysis:
+                            self.logger.debug("Using standard crossfade: no fadeout analysis")
+                        elif not current_analysis:
+                            self.logger.debug("Using standard crossfade: no current track analysis")
+                        elif last_fadeout_analysis.confidence <= 0.3:
+                            self.logger.debug(
+                                "Using standard crossfade: fadeout confidence too low (%.2f)",
+                                last_fadeout_analysis.confidence,
+                            )
+                        elif current_analysis.confidence <= 0.3:
+                            self.logger.debug(
+                                "Using standard crossfade: current track confidence too low (%.2f)",
+                                current_analysis.confidence,
+                            )
                         crossfade_part = await crossfade_pcm_parts(
                             fadein_part,
                             last_fadeout_part,
@@ -1170,6 +1200,18 @@ class StreamsController(CoreController):
 
                 # Check if both tracks have smart fades analysis for BPM matching
                 current_analysis = getattr(queue_item.streamdetails, "smart_fades", None)
+
+                # Debug logging for crossfade decision
+                self.logger.debug(
+                    "Crossfade analysis check (queued): fadeout_analysis=%s (conf=%.2f), current_analysis=%s (conf=%.2f)",
+                    bool(crossfade_data.smart_fades_analysis),
+                    crossfade_data.smart_fades_analysis.confidence
+                    if crossfade_data.smart_fades_analysis
+                    else 0.0,
+                    bool(current_analysis),
+                    current_analysis.confidence if current_analysis else 0.0,
+                )
+
                 if (
                     crossfade_data.smart_fades_analysis
                     and current_analysis
@@ -1177,6 +1219,11 @@ class StreamsController(CoreController):
                     and current_analysis.confidence > 0.3
                 ):
                     # Use smart crossfade with BPM matching
+                    self.logger.debug(
+                        "Using smart crossfade (queued): fadeout_bpm=%.1f, fadein_bpm=%.1f",
+                        crossfade_data.smart_fades_analysis.bpm,
+                        current_analysis.bpm,
+                    )
                     from music_assistant.helpers.smart_fades import smart_crossfade_pcm_parts
 
                     crossfade_part = await smart_crossfade_pcm_parts(
@@ -1190,6 +1237,22 @@ class StreamsController(CoreController):
                     )
                 else:
                     # Use standard crossfade
+                    if not crossfade_data.smart_fades_analysis:
+                        self.logger.debug("Using standard crossfade (queued): no fadeout analysis")
+                    elif not current_analysis:
+                        self.logger.debug(
+                            "Using standard crossfade (queued): no current track analysis"
+                        )
+                    elif crossfade_data.smart_fades_analysis.confidence <= 0.3:
+                        self.logger.debug(
+                            "Using standard crossfade (queued): fadeout confidence too low (%.2f)",
+                            crossfade_data.smart_fades_analysis.confidence,
+                        )
+                    elif current_analysis.confidence <= 0.3:
+                        self.logger.debug(
+                            "Using standard crossfade (queued): current track confidence too low (%.2f)",
+                            current_analysis.confidence,
+                        )
                     crossfade_part = await crossfade_pcm_parts(
                         fade_in_part=fade_in_part,
                         fade_out_part=crossfade_data.fadeout_part,
@@ -1471,14 +1534,14 @@ class StreamsController(CoreController):
             existing_analysis = await self.mass.music.get_smart_fades_analysis(
                 queue_item.media_item.item_id, queue_item.media_item.provider
             )
-            if existing_analysis and existing_analysis.confidence > 0.3:
+            if existing_analysis:
                 self.logger.debug(
                     "Smart fades analysis already exists in database for %s: BPM=%.1f, confidence=%.2f",
                     queue_item.name,
                     existing_analysis.bpm,
                     existing_analysis.confidence,
                 )
-                # Cache it in streamdetails for future use
+                # Cache it in streamdetails for future use (even if low confidence)
                 queue_item.streamdetails.smart_fades = existing_analysis
                 return
 
@@ -1514,7 +1577,12 @@ class StreamsController(CoreController):
                 )
                 # Store analysis results in database for future use
                 await self.mass.music.set_smart_fades_analysis(
-                    queue_item.media_item.item_id, queue_item.media_item.provider, analysis
+                    queue_item.media_item.item_id, queue_item.streamdetails.provider, analysis
+                )
+                # Cache the analysis in streamdetails for immediate use
+                queue_item.streamdetails.smart_fades = analysis
+                self.logger.debug(
+                    "Cached smart fades analysis in streamdetails for %s", queue_item.name
                 )
             else:
                 self.logger.debug("Smart fades analysis failed for: %s", queue_item.name)

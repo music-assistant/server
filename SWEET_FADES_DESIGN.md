@@ -145,7 +145,7 @@ def _get_crossfade_strategy(self, queue_item, next_item) -> str:
 - [ ] Add Essentia dependency
 - [ ] Implement intro/outro detection
 - [ ] Dynamic crossfade duration
-- [ ] Crossfades curves? tri, qsin and iqsin 
+- [ ] Crossfades curves? tri, qsin and iqsin
 - [ ] Real-time analysis pipeline
 
 ### Phase 3: Advanced Features

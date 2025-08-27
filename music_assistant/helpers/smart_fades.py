@@ -1,4 +1,4 @@
-"""Smart Fades - BPM matching crossfade analysis using pyCrossfade approach."""
+"""Smart Fades - Intelligent fades with perfect timing and adaptive filtering."""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.smart_fades import SmartFadesAnalysis
 
 from music_assistant.constants import MASS_LOGGER_NAME
-from music_assistant.helpers.audio import communicate, crossfade_pcm_parts
+from music_assistant.helpers.audio import crossfade_pcm_parts
+from music_assistant.helpers.process import communicate
 from music_assistant.helpers.util import remove_file
 
 if TYPE_CHECKING:
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.smart_fades")
 
-# Maximum duration for smart crossfades in seconds
+# Maximum duration for smart fades in seconds
 MAX_SMART_CROSSFADE_DURATION = 30
 
 
@@ -53,7 +54,7 @@ async def _analyze_track_beats(
         return await asyncio.to_thread(_madmom_beat_analysis, audio_array, sample_rate)
 
     except Exception as e:
-        LOGGER.error("Beat tracking analysis failed: %s", e, exc_info=True)
+        LOGGER.exception("Beat tracking analysis failed: %s", e)
         return None
 
 
@@ -121,7 +122,7 @@ def _madmom_beat_analysis(audio_array: np.ndarray, sample_rate: int) -> SmartFad
     if len(beats) > 1:
         beat_intervals = np.diff(beats)
         avg_interval = np.mean(beat_intervals)
-        bpm = 60.0 / avg_interval if avg_interval > 0 else 120.0
+        bpm = float(60.0 / avg_interval) if avg_interval > 0 else 120.0
         LOGGER.debug(
             "BPM calculation: %d beats, avg_interval=%.4fs, raw_bpm=%.1f",
             len(beats),
@@ -137,7 +138,7 @@ def _madmom_beat_analysis(audio_array: np.ndarray, sample_rate: int) -> SmartFad
         beat_intervals = np.diff(beats)
         interval_std = np.std(beat_intervals)
         avg_interval = np.mean(beat_intervals)
-        confidence = 1.0 - min(interval_std / avg_interval, 1.0) if avg_interval > 0 else 0.0
+        confidence = float(1.0 - min(interval_std / avg_interval, 1.0)) if avg_interval > 0 else 0.0
     else:
         confidence = 0.0
 
@@ -149,7 +150,8 @@ def _madmom_beat_analysis(audio_array: np.ndarray, sample_rate: int) -> SmartFad
     )
 
     LOGGER.info(
-        "Beat analysis complete (pyCrossfade style): BPM=%.1f, %d beats, %d downbeats, confidence=%.2f",
+        "Beat analysis complete (pyCrossfade style): BPM=%.1f, %d beats, "
+        "%d downbeats, confidence=%.2f",
         bpm,
         len(beats),
         len(downbeats),
@@ -166,7 +168,7 @@ async def analyze_track_for_smart_fades(
     audio_format: AudioFormat,
 ) -> SmartFadesAnalysis | None:
     """
-    Analyze a track's beats for BPM matching crossfade (pyCrossfade approach).
+    Analyze a track's beats for BPM matching smart fade (pyCrossfade approach).
 
     This is the main entry point for beat analysis.
     """
@@ -191,7 +193,8 @@ async def analyze_track_for_smart_fades(
 
         # Use duration directly from streamdetails instead of calculating from bytes
         LOGGER.debug(
-            "Collected %.2fs of audio data for analysis (%d bytes, format: %s, %dHz, %d-bit, %d channels)",
+            "Collected %.2fs of audio data for analysis "
+            "(%d bytes, format: %s, %dHz, %d-bit, %d channels)",
             streamdetails.duration,
             len(audio_data),
             audio_format.content_type,
@@ -203,21 +206,31 @@ async def analyze_track_for_smart_fades(
         # Perform beat analysis
         analysis = await _analyze_track_beats(audio_data, sample_rate)
 
-        if analysis and analysis.confidence > 0.3:  # Minimum confidence threshold
+        if analysis:
             total_time = time.perf_counter() - start_time
-            LOGGER.info(
-                "Beat analysis successful for %s: BPM=%.1f, %d beats, confidence=%.2f (took %.2fs)",
-                queue_item.name,
-                analysis.bpm,
-                len(analysis.beats),
-                analysis.confidence,
-                total_time,
-            )
+            if analysis.confidence > 0.3:  # Good confidence threshold
+                LOGGER.info(
+                    "Beat analysis successful for %s: BPM=%.1f, %d beats, "
+                    "confidence=%.2f (took %.2fs)",
+                    queue_item.name,
+                    analysis.bpm,
+                    len(analysis.beats),
+                    analysis.confidence,
+                    total_time,
+                )
+            else:
+                LOGGER.warning(
+                    "Beat analysis low confidence for %s: BPM=%.1f, confidence=%.2f (took %.2fs)",
+                    queue_item.name,
+                    analysis.bpm,
+                    analysis.confidence,
+                    total_time,
+                )
             return analysis
         else:
             total_time = time.perf_counter() - start_time
             LOGGER.warning(
-                "Beat analysis failed or low confidence for %s (took %.2fs)",
+                "Beat analysis failed for %s (took %.2fs)",
                 queue_item.name,
                 total_time,
             )
@@ -225,76 +238,22 @@ async def analyze_track_for_smart_fades(
 
     except Exception as e:
         total_time = time.perf_counter() - start_time
-        LOGGER.error(
+        LOGGER.exception(
             "Beat analysis error for %s: %s (took %.2fs)",
             queue_item.name,
             e,
             total_time,
-            exc_info=True,
         )
         return None
 
 
-def _validate_crossfade_compatibility(
-    fade_out_analysis: SmartFadesAnalysis, fade_in_analysis: SmartFadesAnalysis
-) -> tuple[bool, str]:
-    """Check if tracks are suitable for smart crossfading."""
-    # Check confidence levels
-    if fade_out_analysis.confidence < 0.4 or fade_in_analysis.confidence < 0.4:
-        return False, "Low confidence in beat analysis"
-
-    # Check BPM compatibility (avoid extreme stretching)
-    bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
-    if bpm_ratio < 0.7 or bpm_ratio > 1.4:
-        return False, f"BPM difference too extreme ({bpm_ratio:.2f}x)"
-
-    # Check if we have enough beat data
-    if len(fade_out_analysis.beats) < 8 or len(fade_in_analysis.beats) < 8:
-        return False, "Insufficient beat data for smart crossfade"
-
-    # Check beat consistency (avoid tracks with tempo changes)
-    if len(fade_out_analysis.beats) > 1:
-        fade_out_intervals = np.diff(fade_out_analysis.beats)
-        fade_out_consistency = (
-            np.std(fade_out_intervals) / np.mean(fade_out_intervals)
-            if np.mean(fade_out_intervals) > 0
-            else 1.0
-        )
-    else:
-        fade_out_consistency = 1.0
-
-    if len(fade_in_analysis.beats) > 1:
-        fade_in_intervals = np.diff(fade_in_analysis.beats)
-        fade_in_consistency = (
-            np.std(fade_in_intervals) / np.mean(fade_in_intervals)
-            if np.mean(fade_in_intervals) > 0
-            else 1.0
-        )
-    else:
-        fade_in_consistency = 1.0
-
-    # Log consistency values for debugging
-    LOGGER.debug(
-        "Tempo consistency: fade_out=%.3f, fade_in=%.3f", fade_out_consistency, fade_in_consistency
-    )
-
-    # Relax tempo consistency threshold - real music has natural tempo variations
-    if fade_out_consistency > 0.30 or fade_in_consistency > 0.30:
-        return (
-            False,
-            f"Tracks have inconsistent tempo (CV: {fade_out_consistency:.3f}, {fade_in_consistency:.3f})",
-        )
-
-    return True, "Compatible for smart crossfade"
-
-
-def _calculate_optimal_crossfade_timing(
+def _calculate_optimal_fade_timing(
     fade_out_analysis: SmartFadesAnalysis,
     fade_in_analysis: SmartFadesAnalysis,
     crossfade_bars: int = 4,
     max_fallback_duration: float = 15.0,
 ) -> float:
-    """Calculate precise crossfade timing based on actual beat positions."""
+    """Calculate precise fade timing based on actual beat positions."""
     # PRIMARY: Try to use downbeats for more musical timing (NO CAP)
     if (
         len(fade_out_analysis.downbeats) >= crossfade_bars
@@ -312,7 +271,7 @@ def _calculate_optimal_crossfade_timing(
         )
 
         if fade_out_duration > 0 and fade_in_duration > 0:
-            # Use the average for balanced crossfade
+            # Use the average for balanced fade
             optimal_duration = (fade_out_duration + fade_in_duration) / 2
             # Apply reasonable absolute limit (much higher than user cap)
             smart_duration = min(
@@ -339,7 +298,7 @@ def _calculate_optimal_crossfade_timing(
         # Apply reasonable absolute limit
         smart_duration = min(optimal_duration, MAX_SMART_CROSSFADE_DURATION)
         LOGGER.debug("Smart timing from beats: %.2fs", smart_duration)
-        return smart_duration
+        return float(smart_duration)
 
     # FALLBACK: Calculate from BPM (APPLY USER CAP HERE)
     seconds_per_beat = 60.0 / fade_out_analysis.bpm
@@ -355,8 +314,6 @@ def _calculate_optimal_crossfade_timing(
 
     LOGGER.debug("Using BPM fallback timing: %.2fs", capped_duration)
     return capped_duration
-
-
 
 
 def _create_adaptive_frequency_filters(
@@ -392,6 +349,54 @@ def _create_adaptive_frequency_filters(
     ]
 
 
+def _create_enhanced_smart_fade_filters(
+    fade_out_analysis: SmartFadesAnalysis,
+    fade_in_analysis: SmartFadesAnalysis,
+    fade_out_input: str,
+    fade_in_input: str,
+    crossfade_duration: float,
+) -> tuple[list[str], str]:
+    """
+    Create smart fade filters with perfect timing and adaptive filtering.
+
+    Focuses on beat-perfect timing and intelligent frequency separation
+    for smooth, natural fades.
+
+    Returns:
+        (filter_list, fade_in_label) - where fade_in_label is the final input label for fade_in
+    """
+    filters = []
+    current_fade_out_label = fade_out_input
+    current_fade_in_label = fade_in_input
+
+    # Step 1: Artifact-free approach - no tempo modification
+    # Log BPM information for transparency
+    bpm_diff_percent = abs(1.0 - fade_in_analysis.bpm / fade_out_analysis.bpm)
+    LOGGER.debug(
+        "Smart fade: fadeout=%.1f BPM, fadein=%.1f BPM, difference=%.1f%%",
+        fade_out_analysis.bpm,
+        fade_in_analysis.bpm,
+        bpm_diff_percent * 100,
+    )
+
+    # Pass audio through without tempo modification - the "smart" is in timing and filtering
+    filters.append(f"{fade_out_input}anull[fadeout_clean]")  # codespell:ignore
+    filters.append(f"{fade_in_input}anull[fadein_clean]")  # codespell:ignore
+    current_fade_out_label = "[fadeout_clean]"
+    current_fade_in_label = "[fadein_clean]"
+
+    # Step 2: Apply adaptive frequency filters
+    frequency_filters = _create_adaptive_frequency_filters(
+        fade_out_analysis, fade_in_analysis, current_fade_out_label, current_fade_in_label
+    )
+    filters.extend(frequency_filters)
+
+    # Step 3: Apply crossfade
+    filters.append(f"[fadeout_hp][fadein_lp]acrossfade=d={crossfade_duration}")
+
+    return filters, current_fade_in_label
+
+
 async def smart_crossfade_pcm_parts(
     fade_in_part: bytes,
     fade_out_part: bytes,
@@ -403,7 +408,7 @@ async def smart_crossfade_pcm_parts(
     max_fallback_duration: float = 15.0,
 ) -> bytes:
     """
-    Apply basic smart crossfade with dynamic duration and frequency filtering.
+    Apply smart fade with beat-perfect timing and adaptive filtering.
 
     Args:
         fade_in_part: Audio data for incoming track
@@ -412,42 +417,36 @@ async def smart_crossfade_pcm_parts(
         fade_out_analysis: Beat analysis for outgoing track
         pcm_format: Audio format for incoming track
         fade_out_pcm_format: Audio format for outgoing track (if different)
-        crossfade_bars: Number of bars to crossfade over
+        crossfade_bars: Number of bars to fade over
         max_fallback_duration: Maximum duration for BPM-based fallback timing
 
     Returns:
-        Crossfaded audio data with frequency filtering applied
+        Faded audio data with beat-perfect timing and adaptive filtering applied
     """
     if fade_out_pcm_format is None:
         fade_out_pcm_format = pcm_format
 
     LOGGER.info(
-        "Applying smart crossfade: fade_out_bpm=%.1f, fade_in_bpm=%.1f, %d bars",
+        "Applying smart fade: fade_out_bpm=%.1f, fade_in_bpm=%.1f, %d bars",
         fade_out_analysis.bpm,
         fade_in_analysis.bpm,
         crossfade_bars,
     )
 
-    # Validate compatibility first
-    is_compatible, reason = _validate_crossfade_compatibility(fade_out_analysis, fade_in_analysis)
-    if not is_compatible:
-        LOGGER.info("Smart crossfade not suitable: %s. Using standard crossfade.", reason)
-        return await crossfade_pcm_parts(
-            fade_in_part, fade_out_part, pcm_format, fade_out_pcm_format
-        )
-
     try:
         # BPM information for logging (no tempo adjustment in basic implementation)
-        LOGGER.debug("Track BPMs: fade_out=%.1f, fade_in=%.1f", fade_out_analysis.bpm, fade_in_analysis.bpm)
+        LOGGER.debug(
+            "Track BPMs: fade_out=%.1f, fade_in=%.1f", fade_out_analysis.bpm, fade_in_analysis.bpm
+        )
 
-        # Calculate optimal crossfade duration using beat analysis
+        # Calculate optimal fade duration using beat analysis
         # For smart analysis: allow longer durations, only cap BPM fallback
-        crossfade_duration = _calculate_optimal_crossfade_timing(
+        crossfade_duration = _calculate_optimal_fade_timing(
             fade_out_analysis, fade_in_analysis, crossfade_bars, max_fallback_duration
         )
 
         LOGGER.debug(
-            "Smart crossfade duration: %.2fs (%d bars, based on beat analysis)",
+            "Smart fade duration: %.2fs (%d bars, based on beat analysis)",
             crossfade_duration,
             crossfade_bars,
         )
@@ -457,7 +456,7 @@ async def smart_crossfade_pcm_parts(
         async with aiofiles.open(fadeout_filename, "wb") as outfile:
             await outfile.write(fade_out_part)
 
-        # Build FFmpeg command for enhanced smart crossfade
+        # Build FFmpeg command for enhanced smart fade
         args = [
             # Generic args
             "ffmpeg",
@@ -492,18 +491,13 @@ async def smart_crossfade_pcm_parts(
             "-",
         ]
 
-        # Build basic filter chain with frequency filtering only
-        filter_complex = []
-
-        # Create adaptive frequency filters based on track characteristics  
-        frequency_filters = _create_adaptive_frequency_filters(
-            fade_out_analysis, fade_in_analysis, "[0]", "[1]"
-        )
-        filter_complex.extend(frequency_filters)
-
-        # Basic crossfade with standard linear curve
-        filter_complex.append(
-            f"[fadeout_hp][fadein_lp]acrossfade=d={crossfade_duration}"
+        # Build enhanced filter chain with adaptive frequency filtering
+        filter_complex, _ = _create_enhanced_smart_fade_filters(
+            fade_out_analysis,
+            fade_in_analysis,
+            "[0]",
+            "[1]",
+            crossfade_duration,
         )
 
         args.extend(
@@ -525,27 +519,37 @@ async def smart_crossfade_pcm_parts(
             ]
         )
 
-        LOGGER.debug("Enhanced smart crossfade FFmpeg command: %s", " ".join(args))
+        LOGGER.debug("Smart fade FFmpeg command: %s", " ".join(args))
 
-        # Execute the enhanced smart crossfade
-        _, crossfaded_audio, _ = await communicate(args, fade_in_part)
+        # Execute the enhanced smart fade
+        _, crossfaded_audio, stderr = await communicate(args, fade_in_part)
         await remove_file(fadeout_filename)
+
+        LOGGER.debug(
+            "FFmpeg smart fade execution: input_size=%d bytes, output_size=%d bytes, stderr=%s",
+            len(fade_in_part),
+            len(crossfaded_audio) if crossfaded_audio else 0,
+            stderr.decode() if stderr else "(none)",
+        )
 
         if crossfaded_audio:
             LOGGER.info(
-                "Basic smart crossfade successful: duration=%.2fs with frequency filtering",
+                "Smart fade successful: duration=%.2fs",
                 crossfade_duration,
             )
             return crossfaded_audio
         else:
-            LOGGER.warning("Basic smart crossfade failed, falling back to standard crossfade")
+            LOGGER.warning(
+                "Smart fade failed, falling back to standard crossfade. FFmpeg stderr: %s",
+                stderr.decode() if stderr else "(no stderr output)",
+            )
             # Fallback to standard crossfade
             return await crossfade_pcm_parts(
                 fade_in_part, fade_out_part, pcm_format, fade_out_pcm_format
             )
 
     except Exception as e:
-        LOGGER.error("Basic smart crossfade error: %s", e, exc_info=True)
+        LOGGER.exception("Smart fade error: %s", e)
         # Fallback to standard crossfade
         return await crossfade_pcm_parts(
             fade_in_part, fade_out_part, pcm_format, fade_out_pcm_format
