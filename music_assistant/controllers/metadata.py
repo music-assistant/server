@@ -339,7 +339,6 @@ class MetaDataController(CoreController):
                 return None  # can not happen, but guard for type checker
             media_item = cast("MediaItemType", retrieved_item)
 
-        # The rest of the original code, which is correct
         if media_item and media_item.metadata.images:
             for img in media_item.metadata.images:
                 if img.type != img_type:
@@ -626,18 +625,6 @@ class MetaDataController(CoreController):
         if (force_refresh or needs_refresh) and self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
             for provider in self.providers:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
-                    continue
-
-                # Stop unnecessary calls to lrclib
-                if (
-                    provider.lookup_key == "lrclib"
-                    and track.metadata
-                    and (track.metadata.lyrics or track.metadata.lrc_lyrics)
-                ):
-                    self.logger.debug(
-                        "Lyrics already exist for %s, skipping LRCLIB lookup for this track.",
-                        track.name,
-                    )
                     continue
 
                 if metadata := await provider.get_track_metadata(track):
