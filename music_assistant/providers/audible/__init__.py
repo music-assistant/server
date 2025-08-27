@@ -220,7 +220,7 @@ class Audibleprovider(MusicProvider):
     ) -> None:
         """Initialize the Audible Audiobook Provider."""
         super().__init__(mass, manifest, config)
-        self.locale = self.config.get_value(CONF_LOCALE) or "us"
+        self.locale = cast("str", self.config.get_value(CONF_LOCALE) or "us")
         self.auth_file = cast("str", self.config.get_value(CONF_AUTH_FILE))
         self._client: audible.AsyncClient | None = None
         audible.log_helper.set_level(getLevelName(self.logger.level))
