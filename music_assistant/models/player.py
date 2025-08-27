@@ -696,8 +696,8 @@ class Player(ABC):
         """Return the display name of the player."""
         if custom_name := self._config.name:
             # always prefer the custom name over the default name
-            return cast("str", custom_name)
-        return cast("str", self.name or self._config.default_name or self.player_id)
+            return custom_name
+        return self.name or self._config.default_name or self.player_id
 
     @cached_property
     @final
@@ -716,7 +716,7 @@ class Player(ABC):
         if power_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(power_control):
-            return cast("bool", control.power_state)
+            return control.power_state
         return None
 
     @cached_property
@@ -822,7 +822,7 @@ class Player(ABC):
     @final
     def enabled(self) -> bool:
         """Return if the player is enabled."""
-        return cast("bool", self._config.enabled)
+        return self._config.enabled
 
     @property
     def corrected_elapsed_time(self) -> float | None:

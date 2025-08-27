@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from difflib import SequenceMatcher
-from typing import cast
 
 import unidecode
 from music_assistant_models.enums import ExternalID, MediaType
@@ -245,7 +244,7 @@ def compare_track(
     # otherwise fail all other cases.
     # Note that as this stage, all other info already matches,
     # such as title, artist etc.
-    return cast("bool", abs(base_item.duration - compare_item.duration) <= 2)
+    return abs(base_item.duration - compare_item.duration) <= 2
 
 
 def compare_playlist(
