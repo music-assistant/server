@@ -30,8 +30,7 @@ class LibrespotStreamer:
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         # Ensure librespot binary is available
-        if not self.provider._librespot_bin:
-            raise AudioError(f"Librespot binary not available for {streamdetails.item_id}")
+        assert self.provider._librespot_bin
 
         # Use explicit media type from streamdetails
         if hasattr(streamdetails, "media_type") and streamdetails.media_type:

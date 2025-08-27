@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 import pkce
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.auth import AuthenticationHelper
@@ -18,7 +18,6 @@ from .constants import (
     CONF_ACTION_AUTH,
     CONF_ACTION_CLEAR_AUTH,
     CONF_CLIENT_ID,
-    CONF_ENABLE_PODCASTS,
     CONF_PLAYED_THRESHOLD,
     CONF_REFRESH_TOKEN,
     CONF_SYNC_PLAYED_STATUS,
@@ -53,6 +52,9 @@ async def get_config_entries(
         # spotify PKCE auth flow
         # https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
 
+        if values is None:
+            raise InvalidDataError("values cannot be None for authentication action")
+
         code_verifier, code_challenge = pkce.generate_pkce_pair()
         async with AuthenticationHelper(mass, cast("str", values["session_id"])) as auth_helper:
             params = {
@@ -84,12 +86,13 @@ async def get_config_entries(
 
     # handle action clear authentication
     if action == CONF_ACTION_CLEAR_AUTH:
-        assert values
+        if values is None:
+            raise InvalidDataError("values cannot be None for clear auth action")
         values[CONF_REFRESH_TOKEN] = None
 
-    auth_required = values.get(CONF_REFRESH_TOKEN) in (None, "")
+    auth_required = (values or {}).get(CONF_REFRESH_TOKEN) in (None, "")
 
-    if auth_required:
+    if auth_required and values is not None:
         values[CONF_CLIENT_ID] = None
         label_text = (
             "You need to authenticate to Spotify. Click the authenticate button below "
@@ -129,15 +132,6 @@ async def get_config_entries(
             required=False,
             value=values.get(CONF_CLIENT_ID) if values else None,
             hidden=not auth_required,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_PODCASTS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Podcast Support",
-            description="Enable support for Spotify podcasts and episodes. "
-            "This will include podcasts in search results and library.",
-            default_value=True,
-            value=values.get(CONF_ENABLE_PODCASTS, True) if values else True,
         ),
         ConfigEntry(
             key=CONF_SYNC_PLAYED_STATUS,

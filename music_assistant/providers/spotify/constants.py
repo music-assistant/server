@@ -60,9 +60,3 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
 }
-
-# Podcast Features
-PODCAST_FEATURES = {
-    ProviderFeature.LIBRARY_PODCASTS,
-    ProviderFeature.LIBRARY_PODCASTS_EDIT,
-}
