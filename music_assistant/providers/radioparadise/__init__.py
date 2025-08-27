@@ -386,7 +386,7 @@ class RadioParadiseProvider(MusicProvider):
                         # Create StreamMetadata object with full track info
                         stream_metadata = self._build_stream_metadata(current_song, metadata)
 
-                        self.logger.info(
+                        self.logger.debug(
                             f"Updating stream metadata for {item_id}: "
                             f"{stream_metadata.artist} - {stream_metadata.title}"
                         )
