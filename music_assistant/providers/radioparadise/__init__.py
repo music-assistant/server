@@ -43,7 +43,9 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 # Base URL for station icons
-STATION_ICONS_BASE_URL = "https://raw.githubusercontent.com/music-assistant/music-assistant.io/main/docs/assets/icons"
+STATION_ICONS_BASE_URL = (
+    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/main/docs/assets/icons"
+)
 
 # Radio Paradise channel configurations with hardcoded channels
 RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
@@ -168,7 +170,6 @@ class RadioParadiseProvider(MusicProvider):
 
         # If API call fails or no current song, static station icon from _parse_radio() is used
         return radio
-
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
