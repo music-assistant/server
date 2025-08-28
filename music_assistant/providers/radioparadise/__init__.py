@@ -127,35 +127,40 @@ class RadioParadiseProvider(MusicProvider):
         return True
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve library/subscribed radio stations from the provider."""
+        """Retrieve library/subscribed radio stations from the provider with cover art."""
         for channel_id in RADIO_PARADISE_CHANNELS:
-            yield self._parse_radio(channel_id)
+            radio = self._parse_radio(channel_id)
+            await self._add_cover_art(radio, channel_id)
+            yield radio
+
+    async def _add_cover_art(self, radio: Radio, channel_id: str) -> None:
+        """Add cover art to radio object from current metadata."""
+        try:
+            metadata = await self._get_channel_metadata(channel_id)
+            if metadata and metadata.get("current"):
+                current_song = metadata["current"]
+                cover_path = current_song.get("cover")
+                if cover_path:
+                    cover_url = f"https://img.radioparadise.com/{cover_path}"
+                    images = [
+                        MediaItemImage(
+                            provider=self.lookup_key,
+                            type=ImageType.THUMB,
+                            path=cover_url,
+                            remotely_accessible=True,
+                        )
+                    ]
+                    radio.metadata.images = UniqueList(images)
+        except Exception as exc:
+            self.logger.debug(f"Could not get cover art for channel {channel_id}: {exc}")
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         if prov_radio_id not in RADIO_PARADISE_CHANNELS:
             raise MediaNotFoundError("Station not found")
 
-        # Start with basic radio object
         radio = self._parse_radio(prov_radio_id)
-
-        # Enhance with current metadata (API call only when specifically requested)
-        metadata = await self._get_channel_metadata(prov_radio_id)
-        if metadata and metadata.get("current"):
-            current_song = metadata["current"]
-            cover_path = current_song.get("cover")
-            if cover_path:
-                cover_url = f"https://img.radioparadise.com/{cover_path}"
-                images = [
-                    MediaItemImage(
-                        provider=self.lookup_key,
-                        type=ImageType.THUMB,
-                        path=cover_url,
-                        remotely_accessible=True,
-                    )
-                ]
-                radio.metadata.images = UniqueList(images)
-
+        await self._add_cover_art(radio, prov_radio_id)
         return radio
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
