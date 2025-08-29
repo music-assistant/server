@@ -986,19 +986,21 @@ class StreamsController(CoreController):
         player = self.mass.players.get(player_id)
         plugin_prov: PluginProvider = self.mass.get_provider(plugin_source_id)
         plugin_source = plugin_prov.get_source()
-        if plugin_source.in_use_by and plugin_source.in_use_by != player_id:
-            raise RuntimeError(
-                f"PluginSource plugin_source.name is already in use by {plugin_source.in_use_by}"
-            )
-        self.logger.debug("Start streaming PluginSource %s to %s", plugin_source_id, player_id)
-        audio_input = (
-            plugin_prov.get_audio_stream(player_id)
-            if plugin_source.stream_type == StreamType.CUSTOM
-            else plugin_source.path
-        )
-        player.active_source = plugin_source_id
-        plugin_source.in_use_by = player_id
+        error = None
         try:
+            if plugin_source.in_use_by and plugin_source.in_use_by != player_id:
+                error = RuntimeError(
+                    f"PluginSource plugin_source.name is already in use by {plugin_source.in_use_by}"
+                )
+                raise error
+            self.logger.debug("Start streaming PluginSource %s to %s", plugin_source_id, player_id)
+            audio_input = (
+                plugin_prov.get_audio_stream(player_id)
+                if plugin_source.stream_type == StreamType.CUSTOM
+                else plugin_source.path
+            )
+            player.active_source = plugin_source_id
+            plugin_source.in_use_by = player_id
             async for chunk in get_ffmpeg_stream(
                 audio_input=audio_input,
                 input_format=plugin_source.audio_format,
@@ -1008,6 +1010,9 @@ class StreamsController(CoreController):
                 chunk_size=int(get_chunksize(output_format) / 10),
             ):
                 yield chunk
+        except Exception as exc:
+            error = exc
+            raise
         finally:
             self.logger.debug(
                 "Finished streaming PluginSource %s to %s", plugin_source_id, player_id
