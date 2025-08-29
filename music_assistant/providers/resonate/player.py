@@ -58,8 +58,8 @@ class ResonatePlayer(Player):
         self._attr_volume_level = resonate_player.volume
         self._attr_volume_muted = resonate_player.muted
         self._attr_available = True
-        self._attr_needs_poll = True
-        self._attr_poll_interval = 5
+        self._attr_poll_interval = 5  # For metadata updates
+        self._attr_needs_poll = False
 
     async def event_cb(self, event: PlayerEvent) -> None:
         """Event callback registered to the resonate server."""
@@ -117,6 +117,7 @@ class ResonatePlayer(Player):
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
         self._attr_active_source = media.queue_id
+        self._attr_needs_poll = True  # Watch for metadata changes
 
         # TODO: Don't just use 48kHz since it may not be optimal depending of the grouped players
         pcm_format = AudioFormat(
@@ -139,6 +140,7 @@ class ResonatePlayer(Player):
             ResonateAudioFormat(pcm_format.sample_rate, pcm_format.bit_depth, pcm_format.channels),
         )
         self.update_state()
+        await self.update_metadata()
 
     async def set_members(
         self,
@@ -164,6 +166,13 @@ class ResonatePlayer(Player):
     async def poll(self) -> None:
         """Poll player for metadata updates and send to resonate players."""
         # TODO: finish this once spec is finalized
+        if self.playback_state != PlaybackState.PLAYING:
+            self._attr_needs_poll = False
+            return
+        await self.update_metadata()
+
+    async def update_metadata(self) -> None:
+        """Extract and send current media metadata to resonate players."""
         # Get current media from active queue
         queue = self.mass.player_queues.get_active_queue(self.player_id)
         if not queue or not queue.current_item:
@@ -173,15 +182,17 @@ class ResonatePlayer(Player):
 
         # Extract metadata following the same pattern as RAOP implementation
         title = current_item.name
-        artist = ""
-        album = ""
+        artist = None
+        album = None
+        track = None
+        year = None
 
-        if current_item.streamdetails and current_item.streamdetails.stream_title:
+        if (streamdetails := current_item.streamdetails) and streamdetails.stream_title:
             # stream title/metadata from radio/live stream
-            if " - " in current_item.streamdetails.stream_title:
-                artist, title = current_item.streamdetails.stream_title.split(" - ", 1)
+            if " - " in streamdetails.stream_title:
+                artist, title = streamdetails.stream_title.split(" - ", 1)
             else:
-                title = current_item.streamdetails.stream_title
+                title = streamdetails.stream_title
                 artist = ""
             # set album to radio station name
             album = current_item.name
@@ -191,13 +202,16 @@ class ResonatePlayer(Player):
                 artist = artist_str
             if _album := getattr(media_item, "album", None):
                 album = _album.name
+                year = _album.year
+            if _track_number := getattr(media_item, "track_number", None):
+                track = _track_number
 
         metadata = Metadata(
             title=title or "",
             artist=artist or "",
             album=album or "",
-            year=0,  # QueueItem doesn't have year info
-            track=0,  # QueueItem doesn't have track info
+            year=year or 0,
+            track=track or 0,
             repeat=RepeatMode.OFF,  # TODO: Get actual repeat mode from queue
             shuffle=False,  # TODO: Get actual shuffle state from queue
         )
