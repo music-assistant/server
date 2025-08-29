@@ -12,10 +12,12 @@ import aiofiles
 import madmom
 import numpy as np
 import shortuuid
+import multiprocessing
+import time
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.smart_fades import SmartFadesAnalysis
 
-from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.audio import crossfade_pcm_parts
 from music_assistant.helpers.process import communicate
 from music_assistant.helpers.util import remove_file
@@ -26,40 +28,27 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.smart_fades")
 
-# Maximum duration for smart fades in seconds
 MAX_SMART_CROSSFADE_DURATION = 30
+# Reduced from 100fps to 25fps for faster analysis - 40ms precision is sufficient for crossfading
+ANALYSIS_FPS = 25
+
 
 
 async def _analyze_track_beats(
     audio_data: bytes,
     sample_rate: int = 44100,
 ) -> SmartFadesAnalysis | None:
-    """
-    Analyze track for beat tracking (following pyCrossfade approach).
-
-    Args:
-        audio_data: Raw PCM audio data
-        sample_rate: Audio sample rate
-
-    Returns:
-        Beat tracking analysis results or None if failed
-    """
-    LOGGER.debug("Starting beat tracking analysis (pyCrossfade style)")
-
+    """Analyze track for beat tracking."""
     try:
-        # Convert audio data to numpy array for madmom
-        audio_array = await asyncio.to_thread(_prepare_audio_for_madmom, audio_data, sample_rate)
-
-        # Perform beat tracking analysis using madmom
+        audio_array = _prepare_audio_for_madmom(audio_data, sample_rate)
         return await asyncio.to_thread(_madmom_beat_analysis, audio_array, sample_rate)
-
     except Exception as e:
         LOGGER.exception("Beat tracking analysis failed: %s", e)
         return None
 
 
 def _prepare_audio_for_madmom(pcm_data: bytes, sample_rate: int) -> np.ndarray:
-    """Convert PCM bytes to numpy array for madmom (pyCrossfade style)."""
+    """Convert PCM bytes to numpy array for madmom."""
     # The audio format from streams.py is PCM_F32LE (32-bit float, little endian, 2 channels)
     # Each sample is 4 bytes (32-bit) * 2 channels = 8 bytes per frame
 
@@ -84,27 +73,44 @@ def _prepare_audio_for_madmom(pcm_data: bytes, sample_rate: int) -> np.ndarray:
 
 
 def _madmom_beat_analysis(audio_array: np.ndarray, sample_rate: int) -> SmartFadesAnalysis:
-    """Perform beat analysis using madmom (following pyCrossfade approach)."""
-    LOGGER.debug("Running madmom beat analysis on %d samples", len(audio_array))
-
-    # Beat tracking (pyCrossfade approach)
-    # This follows the madmom pattern used in pyCrossfade
+    """Perform beat analysis using madmom ."""   
+    
+    # Use most cores but leave some headroom for the main app
+    num_cores = max(1, multiprocessing.cpu_count() - 2)
+    LOGGER.debug("Running madmom beat analysis on %d samples using %d cores (fps=%d)", 
+                 len(audio_array), num_cores, ANALYSIS_FPS)
+    
+    # RNN Beat Processing
+    start_time = time.perf_counter()
     beat_processor = madmom.features.beats.RNNBeatProcessor()
     beat_activations = beat_processor.process(audio_array, sample_rate=sample_rate)
+    rnn_duration = time.perf_counter() - start_time
+    LOGGER.log(VERBOSE_LOG_LEVEL, "RNNBeatProcessor.process() took %.3fs", rnn_duration)
 
-    beat_tracker = madmom.features.beats.BeatTrackingProcessor(fps=100)
+    # Beat Tracking
+    start_time = time.perf_counter()
+    beat_tracker = madmom.features.beats.BeatTrackingProcessor(fps=ANALYSIS_FPS)
     beats = beat_tracker.process(beat_activations)
+    tracking_duration = time.perf_counter() - start_time
+    LOGGER.log(VERBOSE_LOG_LEVEL, "BeatTrackingProcessor.process() took %.3fs", tracking_duration)
 
     # Downbeat tracking (pyCrossfade approach)
     try:
+        # RNN Downbeat Processing
+        start_time = time.perf_counter()
         downbeat_processor = madmom.features.downbeats.RNNDownBeatProcessor()
         downbeat_activations = downbeat_processor.process(audio_array, sample_rate=sample_rate)
+        rnn_downbeat_duration = time.perf_counter() - start_time
+        LOGGER.log(VERBOSE_LOG_LEVEL, "RNNDownBeatProcessor.process() took %.3fs", rnn_downbeat_duration)
 
-        # DBNDownBeatTrackingProcessor processes activations only
+        # DBN Downbeat Tracking (with threading)
+        start_time = time.perf_counter()
         downbeat_tracker = madmom.features.downbeats.DBNDownBeatTrackingProcessor(
-            beats_per_bar=4, fps=100
+            beats_per_bar=4, fps=ANALYSIS_FPS, num_threads=num_cores
         )
         downbeat_output = downbeat_tracker.process(downbeat_activations)
+        dbn_downbeat_duration = time.perf_counter() - start_time
+        LOGGER.log(VERBOSE_LOG_LEVEL, "DBNDownBeatTrackingProcessor.process() took %.3fs", dbn_downbeat_duration)
 
         # Extract only the downbeats (beat_number == 1)
         if len(downbeat_output) > 0 and downbeat_output.ndim == 2:
@@ -150,7 +156,7 @@ def _madmom_beat_analysis(audio_array: np.ndarray, sample_rate: int) -> SmartFad
     )
 
     LOGGER.info(
-        "Beat analysis complete (pyCrossfade style): BPM=%.1f, %d beats, "
+        "Beat analysis complete : BPM=%.1f, %d beats, "
         "%d downbeats, confidence=%.2f",
         bpm,
         len(beats),
@@ -173,19 +179,13 @@ async def analyze_track_for_smart_fades(
     This is the main entry point for beat analysis.
     """
     start_time = time.perf_counter()
-    LOGGER.info("Starting beat analysis for track (pyCrossfade style): %s", queue_item.name)
+    LOGGER.info("Starting beat analysis for track : %s", queue_item.name)
 
     try:
-        # Collect audio data from the separate analysis stream
+        # Collect audio data from the separate analysis stream for processing
         audio_data = b""
-        sample_rate = audio_format.sample_rate
-        # Remove limit - analyze entire track for complete BPM matching (pyCrossfade style)
-        max_bytes = float("inf")
-
         async for chunk in audio_stream:
             audio_data += chunk
-            if len(audio_data) >= max_bytes:
-                break
 
         if len(audio_data) == 0:
             LOGGER.warning("No audio data received for analysis: %s", queue_item.name)
@@ -204,14 +204,14 @@ async def analyze_track_for_smart_fades(
         )
 
         # Perform beat analysis
-        analysis = await _analyze_track_beats(audio_data, sample_rate)
+        analysis = await _analyze_track_beats(audio_data, audio_format.sample_rate)
 
         if analysis:
             total_time = time.perf_counter() - start_time
             if analysis.confidence > 0.3:  # Good confidence threshold
                 LOGGER.info(
                     "Beat analysis successful for %s: BPM=%.1f, %d beats, "
-                    "confidence=%.2f (took %.2fs)",
+                    "Confidence=%.2f (took %.2fs)",
                     queue_item.name,
                     analysis.bpm,
                     len(analysis.beats),
@@ -504,7 +504,6 @@ async def smart_crossfade_pcm_parts(
             [
                 "-filter_complex",
                 ";".join(filter_complex),
-                # output args
                 "-acodec",
                 pcm_format.content_type.name.lower(),
                 "-ac",

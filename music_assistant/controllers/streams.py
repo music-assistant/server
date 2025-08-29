@@ -1497,7 +1497,6 @@ class StreamsController(CoreController):
             self.mass.create_task(
                 self._analyze_next_track_for_smart_fades(next_item),
                 task_id=task_id,
-                abort_existing=True,
             )
 
             self.logger.debug("Triggered smart fades analysis for next track: %s", next_item.name)
