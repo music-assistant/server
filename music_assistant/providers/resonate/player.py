@@ -221,9 +221,5 @@ class ResonatePlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
-        # OPTIONAL
-        # this method is optional and should be implemented if you need to handle
-        # any logic when the player is unloaded from the Player controller.
-        # This is called when the player is removed from the Player controller.
-        self.logger.info("Player %s unloaded", self.name)
         self.unsub_event_cb()
+        await self.api.disconnect()
