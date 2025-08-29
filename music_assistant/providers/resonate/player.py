@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
+from aioresonate.models.types import RepeatMode
 from aioresonate.server import (
     AudioFormat as ResonateAudioFormat,
 )
@@ -13,6 +14,7 @@ from aioresonate.server import (
     PlayerEvent,
     VolumeChangedEvent,
 )
+from aioresonate.server.group import Metadata
 from aioresonate.server.player import StreamPauseEvent, StreamStartEvent, StreamStopEvent
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ContentType, PlaybackState, PlayerFeature, PlayerType
@@ -56,7 +58,8 @@ class ResonatePlayer(Player):
         self._attr_volume_level = resonate_player.volume
         self._attr_volume_muted = resonate_player.muted
         self._attr_available = True
-        self._attr_needs_poll = False
+        self._attr_needs_poll = True
+        self._attr_poll_interval = 5
 
     async def event_cb(self, event: PlayerEvent) -> None:
         """Event callback registered to the resonate server."""
@@ -101,7 +104,7 @@ class ResonatePlayer(Player):
         """Stop command."""
         self.logger.info("Received STOP command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
-        self.api.group.stop()
+        _ = self.api.group.stop()
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -157,6 +160,50 @@ class ResonatePlayer(Player):
             self.api.group.add_player(player.api)
             self._attr_group_members.append(player_id)
         self.update_state()
+
+    async def poll(self) -> None:
+        """Poll player for metadata updates and send to resonate players."""
+        # TODO: finish this once spec is finalized
+        # Get current media from active queue
+        queue = self.mass.player_queues.get_active_queue(self.player_id)
+        if not queue or not queue.current_item:
+            return
+
+        current_item = queue.current_item
+
+        # Extract metadata following the same pattern as RAOP implementation
+        title = current_item.name
+        artist = ""
+        album = ""
+
+        if current_item.streamdetails and current_item.streamdetails.stream_title:
+            # stream title/metadata from radio/live stream
+            if " - " in current_item.streamdetails.stream_title:
+                artist, title = current_item.streamdetails.stream_title.split(" - ", 1)
+            else:
+                title = current_item.streamdetails.stream_title
+                artist = ""
+            # set album to radio station name
+            album = current_item.name
+        elif media_item := current_item.media_item:
+            title = media_item.name
+            if artist_str := getattr(media_item, "artist_str", None):
+                artist = artist_str
+            if _album := getattr(media_item, "album", None):
+                album = _album.name
+
+        metadata = Metadata(
+            title=title or "",
+            artist=artist or "",
+            album=album or "",
+            year=0,  # QueueItem doesn't have year info
+            track=0,  # QueueItem doesn't have track info
+            repeat=RepeatMode.OFF,  # TODO: Get actual repeat mode from queue
+            shuffle=False,  # TODO: Get actual shuffle state from queue
+        )
+
+        # Send metadata to the group
+        self.api.group.set_metadata(metadata)
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
