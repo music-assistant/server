@@ -848,6 +848,7 @@ class MusicController(CoreController):
             "beats": json.dumps(analysis.beats.tolist()),
             "downbeats": json.dumps(analysis.downbeats.tolist()),
             "confidence": analysis.confidence,
+            "duration": analysis.duration,
         }
         await self.database.insert_or_replace(DB_TABLE_SMART_FADES_ANALYSIS, values)
 
@@ -872,6 +873,7 @@ class MusicController(CoreController):
                 beats=np.array(json.loads(db_row["beats"])),
                 downbeats=np.array(json.loads(db_row["downbeats"])),
                 confidence=float(db_row["confidence"]),
+                duration=float(db_row["duration"]),
             )
         return None
 
@@ -1942,6 +1944,7 @@ class MusicController(CoreController):
                     [beats] TEXT NOT NULL,
                     [downbeats] TEXT NOT NULL,
                     [confidence] REAL NOT NULL,
+                    [duration] REAL,
                     [analysis_version] INTEGER DEFAULT 1,
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
                     UNIQUE(item_id,provider));"""

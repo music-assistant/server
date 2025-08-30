@@ -628,7 +628,7 @@ async def get_stream_details(
             streamdetails.provider,
         ):
             LOGGER.debug(
-                "Found smart fades analysis in the database for %s: %s",
+                "Found smart fades analysis in the database for %s",
                 queue_item.uri
             )
             streamdetails.smart_fades = smart_fades_analysis
