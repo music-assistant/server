@@ -484,7 +484,7 @@ class SqueezelitePlayer(Player):
                     childs_ready += 1
             if childs_total == childs_ready:
                 break
-            count -= 1
+            count += 1
 
         # all child's ready (or timeout) - start play
         async with TaskManager(self.mass) as tg:
