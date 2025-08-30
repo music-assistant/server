@@ -627,6 +627,10 @@ async def get_stream_details(
             streamdetails.item_id,
             streamdetails.provider,
         ):
+            LOGGER.debug(
+                "Found smart fades analysis in the database for %s: %s",
+                queue_item.uri
+            )
             streamdetails.smart_fades = smart_fades_analysis
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")

@@ -136,7 +136,6 @@ class StreamsController(CoreController):
         self.allow_cache_default = "auto"
         self._crossfade_data: dict[str, CrossfadeData] = {}
         self._bind_ip: str = "0.0.0.0"
-        self._smart_fades_analyzer = SmartFadesAnalyzer(self.mass)
         self._smart_fades_mixer = SmartFadesMixer(self.mass)
 
     @property
@@ -1374,105 +1373,4 @@ class StreamsController(CoreController):
             return 0
         # all checks passed, crossfade is enabled/allowed
         return True
-
-    def _trigger_smart_fades_analysis_for_next_track(self, next_item: QueueItem) -> None:
-        """Trigger smart fades analysis for the next track (called from player_queues)."""
-        # TODO: Refactor into SmartFadeAnalyzer
-        try:
-            if not next_item or not next_item.streamdetails:
-                self.logger.debug("Next track has no streamdetails for smart fades analysis")
-                return
-
-            # Only analyze tracks (not radio streams)
-            if next_item.media_type != MediaType.TRACK:
-                self.logger.debug(
-                    "Skipping smart fades analysis for non-track item: %s", next_item.name
-                )
-                return
-
-            # Start background analysis task
-            task_id = f"smart_fades_analysis_{next_item.queue_item_id}"
-            self.mass.create_task(
-                self._analyze_next_track_for_smart_fades(next_item),
-                task_id=task_id,
-            )
-
-            self.logger.debug("Triggered smart fades analysis for next track: %s", next_item.name)
-
-        except Exception as e:
-            self.logger.warning("Failed to trigger smart fades analysis: %s", e, exc_info=True)
-
-    async def _analyze_next_track_for_smart_fades(self, queue_item: QueueItem) -> None:
-        """Analyze the next track for smart fades in the background."""
-        # TODO: Refactor into SmartFadeAnalyzer
-        try:
-            if not queue_item.streamdetails:
-                self.logger.warning(
-                    "No stream details for smart fades analysis: %s", queue_item.name
-                )
-                return
-
-            # Return early in case analysis already exists
-            if queue_item.streamdetails.smart_fades:
-                return
-
-            # Check database if not in streamdetails
-            existing_analysis = await self.mass.music.get_smart_fades_analysis(
-                queue_item.media_item.item_id, queue_item.media_item.provider
-            )
-            if existing_analysis:
-                self.logger.debug(
-                    "Smart fades analysis already exists in database for %s: BPM=%.1f, confidence=%.2f",
-                    queue_item.name,
-                    existing_analysis.bpm,
-                    existing_analysis.confidence,
-                )
-                queue_item.streamdetails.smart_fades = existing_analysis
-                return
-
-            # Use hardcoded 44100 PCM format for smart fades analysis
-            pcm_format = AudioFormat(
-                content_type=ContentType.PCM_F32LE,
-                sample_rate=44100,
-                bit_depth=32,
-                channels=2,
-            )
-
-            # Get the media stream for analysis
-            async def get_analysis_stream():
-                async for chunk in get_media_stream(
-                    self.mass,
-                    streamdetails=queue_item.streamdetails,
-                    pcm_format=pcm_format,
-                    filter_params=[],
-                ):
-                    yield chunk
-
-            # Perform the analysis using OO approach
-            analysis = await self._smart_fades_analyzer.analyze(
-                queue_item.streamdetails, get_analysis_stream()
-            )
-
-            if analysis:
-                self.logger.info(
-                    "Smart fades analysis completed for %s: BPM=%.1f, confidence=%.2f",
-                    queue_item.name,
-                    analysis.bpm,
-                    analysis.confidence,
-                )
-                # Store analysis results in database for future use
-                await self.mass.music.set_smart_fades_analysis(
-                    queue_item.media_item.item_id, queue_item.streamdetails.provider, analysis
-                )
-                # Cache the analysis in streamdetails for immediate use
-                queue_item.streamdetails.smart_fades = analysis
-                self.logger.debug(
-                    "Cached smart fades analysis in streamdetails for %s", queue_item.name
-                )
-            else:
-                self.logger.debug("Smart fades analysis failed for: %s", queue_item.name)
-
-        except Exception as e:
-            self.logger.error(
-                "Smart fades analysis error for %s: %s", queue_item.name, e, exc_info=True
-            )
+   

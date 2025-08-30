@@ -14,12 +14,12 @@ import aiofiles
 import madmom
 import numpy as np
 import shortuuid
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.smart_fades import SmartFadesAnalysis
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.audio import crossfade_pcm_parts
+from music_assistant.helpers.audio import crossfade_pcm_parts, get_media_stream
 from music_assistant.helpers.process import communicate
 from music_assistant.helpers.util import remove_file
 
@@ -29,8 +29,13 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 MAX_SMART_CROSSFADE_DURATION = 30
-
 ANALYSIS_FPS = 100
+ANALYSIS_PCM_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_F32LE, 
+    sample_rate=44100, 
+    bit_depth=32, 
+    channels=2
+)
 
 
 @dataclass
@@ -55,141 +60,89 @@ class SmartFadesAnalyzer:
     async def analyze(
         self,
         streamdetails: StreamDetails,
-        audio_stream: AsyncGenerator[bytes, None],
     ) -> SmartFadesAnalysis | None:
-        """
-        Analyze a track's beats for BPM matching smart fade (pyCrossfade approach).
-
-        This is the main entry point for beat analysis.
-
-        Args:
-            streamdetails: Stream details containing track metadata and audio format
-            audio_stream: Audio data stream for analysis
-        """
-        # PCM format is hardcoded as specified
-        pcm_format = AudioFormat(
-            content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=2
-        )
-
-        # Get track name for logging (derive from streamdetails)
-        track_name = self._get_track_name_from_streamdetails(streamdetails)
+        """Analyze a track's beats for BPM matching smart fade."""
+        # Only analyze tracks (not radio streams)
+        stream_details_name = f"{streamdetails.provider}/{streamdetails.item_id}"
+        if streamdetails.media_type != MediaType.TRACK:
+            self.logger.debug(
+                "Skipping smart fades analysis for non-track item: %s", stream_details_name
+            )
+            return
 
         start_time = time.perf_counter()
-        self.logger.info("Starting beat analysis for track : %s", track_name)
-
+        self.logger.info("Starting beat analysis for track : %s", stream_details_name)
         try:
-            # Collect audio data from stream
-            audio_data = await self._collect_audio_data(audio_stream, track_name)
-            if audio_data is None:
-                return None
-
-            # Log audio collection details
-            self._log_audio_collection_details(streamdetails, audio_data, pcm_format)
-
+            audio_data = await self._get_audio_bytes_from_stream_details(streamdetails)
+            self.logger.log(VERBOSE_LOG_LEVEL,
+                "Collected %.2fs of audio data for analysis "
+                "(%d bytes, format: %s, %dHz, %d-bit, %d channels)",
+                streamdetails.duration or 0,
+                len(audio_data),
+                ANALYSIS_PCM_FORMAT.content_type,
+                ANALYSIS_PCM_FORMAT.sample_rate,
+                ANALYSIS_PCM_FORMAT.bit_depth,
+                ANALYSIS_PCM_FORMAT.channels,
+            )
             # Perform beat analysis
-            analysis = await self._analyze_track_beats(audio_data, pcm_format.sample_rate)
-
-            # Log analysis results and return
-            return self._handle_analysis_results(analysis, track_name, start_time)
+            analysis = await self._analyze_track_beats(audio_data)
+            total_time = time.perf_counter() - start_time
+            if not analysis:
+                self.logger.debug("No analysis results found after analyzing audio for: %s (took %.2fs).", stream_details_name, total_time)
+                return None
+            self.logger.info(
+                "Smart fades analysis completed for %s: BPM=%.1f, confidence=%.2f",
+                stream_details_name,
+                analysis.bpm,
+                analysis.confidence,
+            )
+            # Store analysis results in database for future use
+            self.mass.create_task(
+                self.mass.music.set_smart_fades_analysis(
+                    streamdetails.item_id, streamdetails.provider, analysis
+                )
+            )
+            return analysis 
 
         except Exception as e:
             total_time = time.perf_counter() - start_time
             self.logger.exception(
                 "Beat analysis error for %s: %s (took %.2fs)",
-                track_name,
+                stream_details_name,
                 e,
                 total_time,
             )
             return None
 
-    def _get_track_name_from_streamdetails(self, streamdetails: StreamDetails) -> str:
-        """Extract track name from streamdetails for logging."""
-        if streamdetails.stream_title:
-            return streamdetails.stream_title
-        # Try to get a more readable name from the URI or fallback to URI
-        return streamdetails.uri
-
-    async def _collect_audio_data(
-        self, audio_stream: AsyncGenerator[bytes, None], track_name: str
-    ) -> bytes | None:
-        """Collect audio data from stream for analysis."""
+    async def _get_audio_bytes_from_stream_details(self, streamdetails: StreamDetails) -> bytes:
+        """Retrieve bytes from the audio stream."""
         audio_data = b""
-        async for chunk in audio_stream:
+        async for chunk in get_media_stream(
+            self.mass,
+            streamdetails=streamdetails,
+            pcm_format=ANALYSIS_PCM_FORMAT,
+            filter_params=[],
+        ):
             audio_data += chunk
-
-        if len(audio_data) == 0:
-            self.logger.warning("No audio data received for analysis: %s", track_name)
+        if audio_data is None:
+            self.logger.warning("No audio data received for analysis: %s", f"{streamdetails.provider}/{streamdetails.item_id}")
             return None
-
         return audio_data
-
-    def _log_audio_collection_details(
-        self, streamdetails: StreamDetails, audio_data: bytes, pcm_format: AudioFormat
-    ) -> None:
-        """Log details about collected audio data."""
-        self.logger.debug(
-            "Collected %.2fs of audio data for analysis "
-            "(%d bytes, format: %s, %dHz, %d-bit, %d channels)",
-            streamdetails.duration or 0,
-            len(audio_data),
-            pcm_format.content_type,
-            pcm_format.sample_rate,
-            pcm_format.bit_depth,
-            pcm_format.channels,
-        )
-
-    def _handle_analysis_results(
-        self, analysis: SmartFadesAnalysis | None, track_name: str, start_time: float
-    ) -> SmartFadesAnalysis | None:
-        """Handle and log analysis results."""
-        total_time = time.perf_counter() - start_time
-
-        if analysis:
-            if analysis.confidence > 0.3:  # Good confidence threshold
-                self.logger.info(
-                    "Beat analysis successful for %s: BPM=%.1f, %d beats, "
-                    "Confidence=%.2f (took %.2fs)",
-                    track_name,
-                    analysis.bpm,
-                    len(analysis.beats),
-                    analysis.confidence,
-                    total_time,
-                )
-            else:
-                self.logger.warning(
-                    "Beat analysis low confidence for %s: BPM=%.1f, confidence=%.2f (took %.2fs)",
-                    track_name,
-                    analysis.bpm,
-                    analysis.confidence,
-                    total_time,
-                )
-            return analysis
-        else:
-            self.logger.warning(
-                "Beat analysis failed for %s (took %.2fs)",
-                track_name,
-                total_time,
-            )
-            return None
 
     async def _analyze_track_beats(
         self,
         audio_data: bytes,
-        sample_rate: int = 44100,
     ) -> SmartFadesAnalysis | None:
         """Analyze track for beat tracking."""
         try:
-            audio_array = self._prepare_audio_for_madmom(audio_data, sample_rate)
-            return await asyncio.to_thread(self._madmom_beat_analysis, audio_array, sample_rate)
+            audio_array = self._prepare_audio_for_madmom(audio_data)
+            return await asyncio.to_thread(self._madmom_beat_analysis, audio_array)
         except Exception as e:
             self.logger.exception("Beat tracking analysis failed: %s", e)
             return None
 
-    def _prepare_audio_for_madmom(self, pcm_data: bytes, sample_rate: int) -> np.ndarray:
+    def _prepare_audio_for_madmom(self, pcm_data: bytes) -> np.ndarray:
         """Convert PCM bytes to numpy array for madmom."""
-        # The audio format from streams.py is PCM_F32LE (32-bit float, little endian, 2 channels)
-        # Each sample is 4 bytes (32-bit) * 2 channels = 8 bytes per frame
-
         # Convert from 32-bit float PCM to numpy array
         audio_array = np.frombuffer(pcm_data, dtype=np.float32)
 
@@ -200,7 +153,7 @@ class SmartFadesAnalyzer:
 
         # Calculate actual duration from original bytes and format
         # PCM_F32LE: 4 bytes per sample * 2 channels = 8 bytes per frame
-        actual_duration = len(pcm_data) / (sample_rate * 4 * 2)  # 4 bytes * 2 channels
+        actual_duration = len(pcm_data) / (ANALYSIS_PCM_FORMAT.sample_rate * 4 * 2)  # 4 bytes * 2 channels
         self.logger.debug(
             "Prepared %.2fs of audio for madmom analysis (%d samples)",
             actual_duration,
@@ -210,7 +163,7 @@ class SmartFadesAnalyzer:
         return audio_array
 
     def _madmom_beat_analysis(
-        self, audio_array: np.ndarray, sample_rate: int
+        self, audio_array: np.ndarray
     ) -> SmartFadesAnalysis:
         """Perform beat analysis using madmom."""
         # Use most cores but leave some headroom for the main app
@@ -225,7 +178,7 @@ class SmartFadesAnalyzer:
         # RNN Beat Processing
         start_time = time.perf_counter()
         beat_processor = madmom.features.beats.RNNBeatProcessor()
-        beat_activations = beat_processor.process(audio_array, sample_rate=sample_rate)
+        beat_activations = beat_processor.process(audio_array, sample_rate=ANALYSIS_PCM_FORMAT.sample_rate)
         rnn_duration = time.perf_counter() - start_time
         self.logger.log(VERBOSE_LOG_LEVEL, "RNNBeatProcessor.process() took %.3fs", rnn_duration)
 
@@ -238,12 +191,12 @@ class SmartFadesAnalyzer:
             VERBOSE_LOG_LEVEL, "BeatTrackingProcessor.process() took %.3fs", tracking_duration
         )
 
-        # Downbeat tracking (pyCrossfade approach)
+        # Downbeat tracking
         try:
             # RNN Downbeat Processing
             start_time = time.perf_counter()
             downbeat_processor = madmom.features.downbeats.RNNDownBeatProcessor()
-            downbeat_activations = downbeat_processor.process(audio_array, sample_rate=sample_rate)
+            downbeat_activations = downbeat_processor.process(audio_array, sample_rate=ANALYSIS_PCM_FORMAT.sample_rate)
             rnn_downbeat_duration = time.perf_counter() - start_time
             self.logger.log(
                 VERBOSE_LOG_LEVEL,

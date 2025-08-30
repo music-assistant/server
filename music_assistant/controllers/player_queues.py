@@ -21,6 +21,7 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import shortuuid
+from music_assistant.helpers.smart_fades import SmartFadesAnalyzer
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -139,6 +140,7 @@ class PlayerQueuesController(CoreController):
             "Music Assistant's core controller which manages the queues for all players."
         )
         self.manifest.icon = "playlist-music"
+        self._smart_fades_analyzer = SmartFadesAnalyzer(self.mass)
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -1548,7 +1550,7 @@ class PlayerQueuesController(CoreController):
                 )
 
         task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)
+        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)        
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
@@ -1576,8 +1578,7 @@ class PlayerQueuesController(CoreController):
 
                 if next_item := await self.preload_next_queue_item(queue_id, item_id_in_buffer):
                     self._enqueue_next_item(queue_id, next_item)
-                    # trigger smart fades analysis now that streamdetails are ready
-                    self.mass.streams._trigger_smart_fades_analysis_for_next_track(next_item)
+                    self._trigger_smart_fades_analysis(next_item)
             except QueueEmpty:
                 return
 
@@ -2116,4 +2117,21 @@ class PlayerQueuesController(CoreController):
                 fully_played=fully_played,
                 is_playing=is_playing,
             ),
+        )
+
+    def _trigger_smart_fades_analysis(self, next_item: QueueItem) -> None:
+        """Trigger analysis for smart fades if needed."""
+        # TODO: Make conditional based on smart fade config
+        if not next_item.streamdetails:
+            self.logger.warning("No stream details for smart fades analysis: %s", next_item.name)
+            return
+        if next_item.streamdetails.smart_fades:
+            return
+        async def _trigger_smart_fades_analysis(next_item: QueueItem) -> None:
+            analysis = await self._smart_fades_analyzer.analyze(next_item.streamdetails)
+            # Store the analysis on the queue item for future reference
+            next_item.streamdetails.smart_fades = analysis
+        task_id = f"smart_fades_analysis_{next_item.streamdetails.provider}_{next_item.streamdetails.item_id}"
+        self.mass.create_task(
+            _trigger_smart_fades_analysis, next_item, task_id=task_id
         )
