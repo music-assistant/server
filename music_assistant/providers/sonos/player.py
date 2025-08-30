@@ -718,7 +718,7 @@ class SonosPlayer(Player):
             if not retry_on_fail or not self.mass_player:
                 raise
             self._attr_available = False
-            self.mass.players.update(self.player_id)
+            self.update_state()
             self.reconnect(min(retry_on_fail + 30, 3600))
             return
         self.connected = True
@@ -739,7 +739,7 @@ class SonosPlayer(Player):
                     # we rely on mdns to pick it up again later
                     await self._disconnect()
                     self._attr_available = False
-                    self.mass.players.update(self.player_id)
+                    self.update_state()
                     self.reconnect(5)
 
         self._listen_task = self.mass.create_task(_listener())

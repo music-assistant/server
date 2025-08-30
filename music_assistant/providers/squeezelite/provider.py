@@ -3,34 +3,26 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from aiohttp import web
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import ContentType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import CONF_CLI_JSON_PORT, CONF_CLI_TELNET_PORT
-from .multi_client_stream import MultiClientStream
 from .player import SqueezelitePlayer
 
 if TYPE_CHECKING:
     from aioslimproto.client import SlimClient
-
-
-@dataclass
-class StreamInfo:
-    """Dataclass to store stream information."""
-
-    stream_id: str
-    players: list[str]
-    stream_obj: MultiClientStream
 
 
 class SqueezelitePlayerProvider(PlayerProvider):
@@ -41,7 +33,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
         super().__init__(*args, **kwargs)
         self.slimproto: SlimServer | None = None
         self._players: dict[str, SqueezelitePlayer] = {}
-        self._multi_client_streams: dict[str, StreamInfo] = {}
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -144,3 +135,54 @@ class SqueezelitePlayerProvider(PlayerProvider):
 
         # forward all other events to the player itself
         player.handle_slim_event(event)
+
+    async def _serve_multi_client_stream(self, request: web.Request) -> web.Response:
+        """Serve the multi-client flow stream audio to a player."""
+        player_id = request.query.get("player_id")
+        fmt = request.query.get("fmt")
+        child_player_id = request.query.get("child_player_id")
+
+        if not (sync_parent := self.mass.players.get(player_id)):
+            raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
+        sync_parent = cast("SqueezelitePlayer", sync_parent)
+
+        if not (child_player := self.mass.players.get(child_player_id)):
+            raise web.HTTPNotFound(reason=f"Unknown player: {child_player_id}")
+
+        if not (stream := sync_parent.multi_client_stream) or stream.done:
+            raise web.HTTPNotFound(f"There is no active stream for {player_id}!")
+
+        resp = web.StreamResponse(
+            status=200,
+            reason="OK",
+            headers={
+                "Content-Type": f"audio/{fmt}",
+            },
+        )
+        await resp.prepare(request)
+
+        # return early if this is not a GET request
+        if request.method != "GET":
+            return resp
+
+        # all checks passed, start streaming!
+        self.logger.debug(
+            "Start serving multi-client flow audio stream to %s",
+            child_player.display_name,
+        )
+        output_format = AudioFormat(content_type=ContentType.try_parse(fmt))
+        async for chunk in stream.get_stream(
+            output_format=output_format,
+            filter_params=get_player_filter_params(
+                self.mass, child_player_id, stream.audio_format, output_format
+            )
+            if child_player_id
+            else None,
+        ):
+            try:
+                await resp.write(chunk)
+            except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                # race condition
+                break
+
+        return resp
