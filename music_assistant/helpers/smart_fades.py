@@ -6,8 +6,6 @@ import asyncio
 import logging
 import multiprocessing
 import time
-from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -18,7 +16,7 @@ from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.smart_fades import SmartFadesAnalysis
 
-from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.audio import crossfade_pcm_parts, get_media_stream
 from music_assistant.helpers.process import communicate
 from music_assistant.helpers.util import remove_file
@@ -31,11 +29,9 @@ if TYPE_CHECKING:
 MAX_SMART_CROSSFADE_DURATION = 45  # Increased from 30s to support 16-bar crossfades at slower BPMs
 ANALYSIS_FPS = 100
 ANALYSIS_PCM_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_F32LE, 
-    sample_rate=44100, 
-    bit_depth=32, 
-    channels=2
+    content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=2
 )
+
 
 class SmartFadesAnalyzer:
     """Smart fades analyzer that performs audio analysis."""
@@ -56,13 +52,14 @@ class SmartFadesAnalyzer:
             self.logger.debug(
                 "Skipping smart fades analysis for non-track item: %s", stream_details_name
             )
-            return
+            return None
 
         start_time = time.perf_counter()
         self.logger.info("Starting beat analysis for track : %s", stream_details_name)
         try:
             audio_data = await self._get_audio_bytes_from_stream_details(streamdetails)
-            self.logger.log(VERBOSE_LOG_LEVEL,
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
                 "Collected %.2fs of audio data for analysis "
                 "(%d bytes, format: %s, %dHz, %d-bit, %d channels)",
                 streamdetails.duration or 0,
@@ -76,7 +73,11 @@ class SmartFadesAnalyzer:
             analysis = await self._analyze_track_beats(audio_data)
             total_time = time.perf_counter() - start_time
             if not analysis:
-                self.logger.debug("No analysis results found after analyzing audio for: %s (took %.2fs).", stream_details_name, total_time)
+                self.logger.debug(
+                    "No analysis results found after analyzing audio for: %s (took %.2fs).",
+                    stream_details_name,
+                    total_time,
+                )
                 return None
             self.logger.info(
                 "Smart fades analysis completed for %s: BPM=%.1f, confidence=%.2f",
@@ -90,7 +91,7 @@ class SmartFadesAnalyzer:
                     streamdetails.item_id, streamdetails.provider, analysis
                 )
             )
-            return analysis 
+            return analysis
 
         except Exception as e:
             total_time = time.perf_counter() - start_time
@@ -112,9 +113,12 @@ class SmartFadesAnalyzer:
             filter_params=[],
         ):
             audio_data += chunk
-        if audio_data is None:
-            self.logger.warning("No audio data received for analysis: %s", f"{streamdetails.provider}/{streamdetails.item_id}")
-            return None
+        if not audio_data:
+            self.logger.warning(
+                "No audio data received for analysis: %s",
+                f"{streamdetails.provider}/{streamdetails.item_id}",
+            )
+            return b""
         return audio_data
 
     async def _analyze_track_beats(
@@ -125,7 +129,7 @@ class SmartFadesAnalyzer:
         try:
             # Calculate actual duration from audio data
             actual_duration = len(audio_data) / ANALYSIS_PCM_FORMAT.pcm_sample_size
-            
+
             audio_array = self._prepare_audio_for_madmom(audio_data)
             analysis = await asyncio.to_thread(self._madmom_beat_analysis, audio_array)
             if analysis:
@@ -148,7 +152,9 @@ class SmartFadesAnalyzer:
 
         # Calculate actual duration from original bytes and format
         # PCM_F32LE: 4 bytes per sample * 2 channels = 8 bytes per frame
-        actual_duration = len(pcm_data) / (ANALYSIS_PCM_FORMAT.sample_rate * 4 * 2)  # 4 bytes * 2 channels
+        actual_duration = len(pcm_data) / (
+            ANALYSIS_PCM_FORMAT.sample_rate * 4 * 2
+        )  # 4 bytes * 2 channels
         self.logger.debug(
             "Prepared %.2fs of audio for madmom analysis (%d samples)",
             actual_duration,
@@ -157,9 +163,7 @@ class SmartFadesAnalyzer:
 
         return audio_array
 
-    def _madmom_beat_analysis(
-        self, audio_array: np.ndarray
-    ) -> SmartFadesAnalysis:
+    def _madmom_beat_analysis(self, audio_array: np.ndarray) -> SmartFadesAnalysis:
         """Perform beat analysis using madmom."""
         # Use most cores but leave some headroom for the main app
         num_cores = max(1, multiprocessing.cpu_count() - 2)
@@ -173,7 +177,9 @@ class SmartFadesAnalyzer:
         # RNN Beat Processing
         start_time = time.perf_counter()
         beat_processor = madmom.features.beats.RNNBeatProcessor()
-        beat_activations = beat_processor.process(audio_array, sample_rate=ANALYSIS_PCM_FORMAT.sample_rate)
+        beat_activations = beat_processor.process(
+            audio_array, sample_rate=ANALYSIS_PCM_FORMAT.sample_rate
+        )
         rnn_duration = time.perf_counter() - start_time
         self.logger.log(VERBOSE_LOG_LEVEL, "RNNBeatProcessor.process() took %.3fs", rnn_duration)
 
@@ -191,7 +197,9 @@ class SmartFadesAnalyzer:
             # RNN Downbeat Processing
             start_time = time.perf_counter()
             downbeat_processor = madmom.features.downbeats.RNNDownBeatProcessor()
-            downbeat_activations = downbeat_processor.process(audio_array, sample_rate=ANALYSIS_PCM_FORMAT.sample_rate)
+            downbeat_activations = downbeat_processor.process(
+                audio_array, sample_rate=ANALYSIS_PCM_FORMAT.sample_rate
+            )
             rnn_downbeat_duration = time.perf_counter() - start_time
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
@@ -229,7 +237,7 @@ class SmartFadesAnalyzer:
             beat_intervals = np.diff(beats)
             avg_interval = np.mean(beat_intervals)
             raw_bpm = float(60.0 / avg_interval) if avg_interval > 0 else 120.0
-            
+
             # Check if this might be half-time detection (BPM too low)
             # If raw BPM is significantly low, try doubling it
             if raw_bpm < 80:
@@ -246,7 +254,7 @@ class SmartFadesAnalyzer:
                     bpm = raw_bpm
             else:
                 bpm = raw_bpm
-            
+
             self.logger.debug(
                 "BPM calculation: %d beats, avg_interval=%.4fs, raw_bpm=%.1f, final_bpm=%.1f",
                 len(beats),
@@ -302,10 +310,9 @@ class SmartFadesMixer:
         fade_in_analysis: SmartFadesAnalysis,
         fade_out_analysis: SmartFadesAnalysis,
         pcm_format: AudioFormat,
-        fallback_crossfade_duration: int = 10
+        fallback_crossfade_duration: int = 10,
     ) -> bytes:
         """Apply crossfade with internal state management and smart/standard fallback logic."""
-
         # Debug logging for crossfade decision
         self.logger.debug(
             "Crossfade analysis check: fadeout_analysis=%s (conf=%.2f), fadein_analysis=%s (conf=%.2f)",
@@ -326,7 +333,7 @@ class SmartFadesMixer:
             optimal_bars = self._calculate_optimal_crossfade_bars(
                 fade_out_analysis.bpm, fade_in_analysis.bpm
             )
-            
+
             # Use smart crossfade with BPM matching
             self.logger.debug(
                 "Using smart crossfade: fadeout_bpm=%.1f, fadein_bpm=%.1f, bars=%d",
@@ -334,37 +341,36 @@ class SmartFadesMixer:
                 fade_in_analysis.bpm,
                 optimal_bars,
             )
-            
+
             try:
                 return await self._apply_smart_crossfade(
                     fade_out_analysis,
-                    fade_in_analysis, 
+                    fade_in_analysis,
                     fade_out_part,
                     fade_in_part,
                     pcm_format,
-                    optimal_bars
+                    optimal_bars,
                 )
             except Exception as e:
                 self.logger.warning(
                     "Smart crossfade failed: %s, falling back to standard crossfade", e
                 )
                 # Fall through to standard crossfade
-        else:
-            # Log why we're using standard crossfade
-            if not fade_out_analysis:
-                self.logger.debug("Using standard crossfade: no fadeout analysis")
-            elif not fade_in_analysis:
-                self.logger.debug("Using standard crossfade: no fadein analysis")
-            elif fade_out_analysis.confidence <= 0.3:
-                self.logger.debug(
-                    "Using standard crossfade: fadeout confidence too low (%.2f)",
-                    fade_out_analysis.confidence,
-                )
-            elif fade_in_analysis.confidence <= 0.3:
-                self.logger.debug(
-                    "Using standard crossfade: fadein confidence too low (%.2f)",
-                    fade_in_analysis.confidence,
-                )
+        # Log why we're using standard crossfade
+        elif not fade_out_analysis:
+            self.logger.debug("Using standard crossfade: no fadeout analysis")
+        elif not fade_in_analysis:
+            self.logger.debug("Using standard crossfade: no fadein analysis")
+        elif fade_out_analysis.confidence <= 0.3:
+            self.logger.debug(
+                "Using standard crossfade: fadeout confidence too low (%.2f)",
+                fade_out_analysis.confidence,
+            )
+        elif fade_in_analysis.confidence <= 0.3:
+            self.logger.debug(
+                "Using standard crossfade: fadein confidence too low (%.2f)",
+                fade_in_analysis.confidence,
+            )
 
         # Use standard crossfade
         return await self.default_crossfade(
@@ -507,108 +513,154 @@ class SmartFadesMixer:
                 fadeout_buffer_pos, fadein_buffer_pos = self._translate_beat_positions_to_buffer(
                     fadeout_start_pos, fadein_start_pos, fade_out_analysis, fade_in_analysis
                 )
-                
+
                 if fadeout_buffer_pos is not None and fadein_buffer_pos is not None:
                     # Calculate byte positions from time positions
                     sample_size = pcm_format.channels * (pcm_format.bit_depth // 8)
-                    
+
                     # Ensure sample boundary alignment for pre-crossfade
                     fadeout_split_bytes = int(fadeout_buffer_pos * pcm_format.pcm_sample_size)
                     original_fadeout_bytes = fadeout_split_bytes
                     fadeout_split_bytes = (fadeout_split_bytes // sample_size) * sample_size
-                    
+
                     if original_fadeout_bytes != fadeout_split_bytes:
                         self.logger.debug(
                             "Pre-crossfade alignment: %d -> %d bytes (adjusted by %d)",
-                            original_fadeout_bytes, fadeout_split_bytes,
-                            fadeout_split_bytes - original_fadeout_bytes
+                            original_fadeout_bytes,
+                            fadeout_split_bytes,
+                            fadeout_split_bytes - original_fadeout_bytes,
                         )
-                    
+
                     fadein_split_bytes = int(fadein_buffer_pos * pcm_format.pcm_sample_size)
-                    
+
                     # Pre-crossfade: everything before beat-aligned fadeout position
-                    pre_crossfade = fade_out_part[:fadeout_split_bytes] if fadeout_split_bytes > 0 else b""
-                    
+                    pre_crossfade = (
+                        fade_out_part[:fadeout_split_bytes] if fadeout_split_bytes > 0 else b""
+                    )
+
                     # Post-crossfade: everything after the crossfaded portion of fadein track
                     # The crossfade consumes optimal_duration seconds starting from fadein_buffer_pos
                     fadein_consumed_end_pos = fadein_buffer_pos + optimal_duration
-                    fadein_consumed_end_bytes = int(fadein_consumed_end_pos * pcm_format.pcm_sample_size)
-                    
+                    fadein_consumed_end_bytes = int(
+                        fadein_consumed_end_pos * pcm_format.pcm_sample_size
+                    )
+
                     # Ensure sample boundary alignment for post-crossfade
                     original_end_bytes = fadein_consumed_end_bytes
-                    fadein_consumed_end_bytes = (fadein_consumed_end_bytes // sample_size) * sample_size
-                    
+                    fadein_consumed_end_bytes = (
+                        fadein_consumed_end_bytes // sample_size
+                    ) * sample_size
+
                     if original_end_bytes != fadein_consumed_end_bytes:
                         self.logger.debug(
                             "Post-crossfade alignment: %d -> %d bytes (adjusted by %d)",
-                            original_end_bytes, fadein_consumed_end_bytes, 
-                            fadein_consumed_end_bytes - original_end_bytes
+                            original_end_bytes,
+                            fadein_consumed_end_bytes,
+                            fadein_consumed_end_bytes - original_end_bytes,
                         )
-                    
-                    post_crossfade = fade_in_part[fadein_consumed_end_bytes:] if fadein_consumed_end_bytes < len(fade_in_part) else b""
-                    
+
+                    post_crossfade = (
+                        fade_in_part[fadein_consumed_end_bytes:]
+                        if fadein_consumed_end_bytes < len(fade_in_part)
+                        else b""
+                    )
+
                     self.logger.debug(
                         "Crossfade consumes fadein from %.2fs to %.2fs (bytes %d to %d)",
-                        fadein_buffer_pos, fadein_consumed_end_pos, fadein_split_bytes, fadein_consumed_end_bytes
+                        fadein_buffer_pos,
+                        fadein_consumed_end_pos,
+                        fadein_split_bytes,
+                        fadein_consumed_end_bytes,
                     )
-                    
+
                     # Detailed boundary analysis
                     self.logger.debug(
                         "Boundary precision: crossfade_end_byte=%d, post_start_byte=%d, gap/overlap=%d bytes",
-                        fadein_consumed_end_bytes, fadein_consumed_end_bytes, 0
+                        fadein_consumed_end_bytes,
+                        fadein_consumed_end_bytes,
+                        0,
                     )
-                    
+
                     if len(post_crossfade) > 0:
                         post_duration_seconds = len(post_crossfade) / pcm_format.pcm_sample_size
                         self.logger.debug(
                             "Post-crossfade section: %d bytes = %.2fs duration, starts at buffer pos %.2fs",
-                            len(post_crossfade), post_duration_seconds, fadein_consumed_end_pos
+                            len(post_crossfade),
+                            post_duration_seconds,
+                            fadein_consumed_end_pos,
                         )
                     else:
-                        self.logger.debug("Post-crossfade section: empty (crossfade consumed entire fadein buffer)")
-                    
+                        self.logger.debug(
+                            "Post-crossfade section: empty (crossfade consumed entire fadein buffer)"
+                        )
+
                     self.logger.debug(
                         "Beat-aligned sections: fadeout_split=%.2fs (%d bytes), fadein_split=%.2fs (%d bytes)",
-                        fadeout_buffer_pos, fadeout_split_bytes, fadein_buffer_pos, fadein_split_bytes
+                        fadeout_buffer_pos,
+                        fadeout_split_bytes,
+                        fadein_buffer_pos,
+                        fadein_split_bytes,
                     )
                 else:
                     # Fallback to theoretical calculation
                     theoretical_crossfade_size = int(pcm_format.pcm_sample_size * optimal_duration)
-                    pre_crossfade = fade_out_part[:-theoretical_crossfade_size] if len(fade_out_part) > theoretical_crossfade_size else b""
-                    post_crossfade = fade_in_part[theoretical_crossfade_size:] if len(fade_in_part) > theoretical_crossfade_size else b""
+                    pre_crossfade = (
+                        fade_out_part[:-theoretical_crossfade_size]
+                        if len(fade_out_part) > theoretical_crossfade_size
+                        else b""
+                    )
+                    post_crossfade = (
+                        fade_in_part[theoretical_crossfade_size:]
+                        if len(fade_in_part) > theoretical_crossfade_size
+                        else b""
+                    )
                     self.logger.debug("Using theoretical split due to beat alignment failure")
             else:
                 # No beat alignment - use theoretical duration
                 theoretical_crossfade_size = int(pcm_format.pcm_sample_size * optimal_duration)
-                pre_crossfade = fade_out_part[:-theoretical_crossfade_size] if len(fade_out_part) > theoretical_crossfade_size else b""
-                post_crossfade = fade_in_part[theoretical_crossfade_size:] if len(fade_in_part) > theoretical_crossfade_size else b""
+                pre_crossfade = (
+                    fade_out_part[:-theoretical_crossfade_size]
+                    if len(fade_out_part) > theoretical_crossfade_size
+                    else b""
+                )
+                post_crossfade = (
+                    fade_in_part[theoretical_crossfade_size:]
+                    if len(fade_in_part) > theoretical_crossfade_size
+                    else b""
+                )
                 self.logger.debug("Using theoretical split (no beat alignment)")
-            
-            # Use different concatenation approach based on whether beat alignment was used
+
+            # Use different concatenation approaches based on beat alignment availability
             if fadeout_start_pos is not None and fadein_start_pos is not None:
-                # Beat-aligned crossfade: FFmpeg output is complete, no post-crossfade needed
+                # Beat-aligned: Use 2-section to avoid duplicate intro bug
                 complete_audio = pre_crossfade + crossfaded_audio
                 self.logger.debug(
-                    "Beat-aligned concatenation: pre=%d + cross=%d = %d bytes total (no post-crossfade)",
-                    len(pre_crossfade), len(crossfaded_audio), len(complete_audio)
+                    "Beat-aligned concatenation: pre=%d + cross=%d = %d bytes total (post-crossfade excluded to avoid duplication)",
+                    len(pre_crossfade),
+                    len(crossfaded_audio),
+                    len(complete_audio),
                 )
             else:
-                # Fallback crossfade: Use three-section approach
+                # Fallback: Use 3-section approach
                 complete_audio = pre_crossfade + crossfaded_audio + post_crossfade
                 self.logger.debug(
                     "Fallback concatenation: pre=%d + cross=%d + post=%d = %d bytes total",
-                    len(pre_crossfade), len(crossfaded_audio), len(post_crossfade), len(complete_audio)
+                    len(pre_crossfade),
+                    len(crossfaded_audio),
+                    len(post_crossfade),
+                    len(complete_audio),
                 )
-            
+
             # Verify byte alignment - audio samples should be aligned to sample boundaries
             sample_size = pcm_format.channels * (pcm_format.bit_depth // 8)
             crossfade_alignment = len(crossfaded_audio) % sample_size
-            
+
             if fadeout_start_pos is not None and fadein_start_pos is not None:
                 # Beat-aligned: only check crossfade alignment
                 self.logger.debug(
                     "Sample alignment check: crossfade_alignment=%d (should be 0), sample_size=%d",
-                    crossfade_alignment, sample_size
+                    crossfade_alignment,
+                    sample_size,
                 )
                 if crossfade_alignment != 0:
                     self.logger.warning("Sample boundary misalignment detected in crossfaded audio")
@@ -617,11 +669,15 @@ class SmartFadesMixer:
                 post_alignment = len(post_crossfade) % sample_size
                 self.logger.debug(
                     "Sample alignment check: crossfade_alignment=%d, post_alignment=%d (should be 0), sample_size=%d",
-                    crossfade_alignment, post_alignment, sample_size
+                    crossfade_alignment,
+                    post_alignment,
+                    sample_size,
                 )
                 if crossfade_alignment != 0 or post_alignment != 0:
-                    self.logger.warning("Sample boundary misalignment detected - this may cause static at junction points")
-            
+                    self.logger.warning(
+                        "Sample boundary misalignment detected - this may cause static at junction points"
+                    )
+
             if fadeout_start_pos is not None and fadein_start_pos is not None:
                 self.logger.info(
                     "Smart fade successful: duration=%.2fs, beat-aligned sections(pre=%d, cross=%d bytes)",
@@ -648,18 +704,20 @@ class SmartFadesMixer:
     def _calculate_optimal_crossfade_bars(self, bpm_out: float, bpm_in: float) -> int:
         """Calculate optimal crossfade bars based on BPM compatibility."""
         bpm_diff_percent = abs(1.0 - bpm_in / bpm_out) * 100
-        
+
         self.logger.debug(
             "BPM compatibility analysis: fadeout=%.1f, fadein=%.1f, difference=%.1f%%",
             bpm_out,
             bpm_in,
             bpm_diff_percent,
         )
-        
+
         if bpm_diff_percent < 1.5:
             # Very close BPMs - long crossfade sounds natural with beat alignment
             bars = 16
-            self.logger.debug("Very compatible BPMs (%.1f%%) - using %d bars", bpm_diff_percent, bars)
+            self.logger.debug(
+                "Very compatible BPMs (%.1f%%) - using %d bars", bpm_diff_percent, bars
+            )
         elif bpm_diff_percent < 3.0:
             # Close BPMs - medium-long crossfade
             bars = 8
@@ -667,20 +725,28 @@ class SmartFadesMixer:
         elif bpm_diff_percent < 8.0:
             # Small difference - medium crossfade
             bars = 4
-            self.logger.debug("Small BPM difference (%.1f%%) - using %d bars", bpm_diff_percent, bars)
+            self.logger.debug(
+                "Small BPM difference (%.1f%%) - using %d bars", bpm_diff_percent, bars
+            )
         elif bpm_diff_percent < 15.0:
             # Medium difference - short crossfade
             bars = 2
-            self.logger.debug("Moderate BPM difference (%.1f%%) - using %d bars", bpm_diff_percent, bars)
+            self.logger.debug(
+                "Moderate BPM difference (%.1f%%) - using %d bars", bpm_diff_percent, bars
+            )
         elif bpm_diff_percent < 25.0:
             # Large difference - very short crossfade
             bars = 2
-            self.logger.debug("Large BPM difference (%.1f%%) - using %d bars", bpm_diff_percent, bars)
+            self.logger.debug(
+                "Large BPM difference (%.1f%%) - using %d bars", bpm_diff_percent, bars
+            )
         else:
             # Huge difference - minimal crossfade to avoid drift
             bars = 1
-            self.logger.debug("Extreme BPM difference (%.1f%%) - using %d bar only", bpm_diff_percent, bars)
-        
+            self.logger.debug(
+                "Extreme BPM difference (%.1f%%) - using %d bar only", bpm_diff_percent, bars
+            )
+
         return bars
 
     def _calculate_optimal_fade_timing(
@@ -692,7 +758,7 @@ class SmartFadesMixer:
     ) -> tuple[float, float | None, float | None]:
         """
         Calculate precise fade timing and beat positions for alignment.
-        
+
         Returns:
             (crossfade_duration, fadeout_start_pos, fadein_start_pos)
             where positions are in seconds from audio start, or None if no beat alignment
@@ -720,14 +786,16 @@ class SmartFadesMixer:
                 smart_duration = min(
                     optimal_duration, MAX_SMART_CROSSFADE_DURATION
                 )  # Reasonable absolute max
-                
+
                 # Calculate beat-aligned positions
                 fadeout_start_pos = fade_out_downbeats[0]  # Start fade at first downbeat
-                fadein_start_pos = fade_in_downbeats[0]    # Start fadein at first downbeat
-                
+                fadein_start_pos = fade_in_downbeats[0]  # Start fadein at first downbeat
+
                 self.logger.debug(
                     "Smart timing from downbeats: %.2fs, fadeout_start=%.2fs, fadein_start=%.2fs",
-                    smart_duration, fadeout_start_pos, fadein_start_pos
+                    smart_duration,
+                    fadeout_start_pos,
+                    fadein_start_pos,
                 )
                 return smart_duration, fadeout_start_pos, fadein_start_pos
 
@@ -748,14 +816,18 @@ class SmartFadesMixer:
             optimal_duration = (fade_out_beats_duration + fade_in_beats_duration) / 2
             # Apply reasonable absolute limit
             smart_duration = min(optimal_duration, MAX_SMART_CROSSFADE_DURATION)
-            
+
             # Calculate beat-aligned positions using regular beats
-            fadeout_start_pos = fade_out_analysis.beats[-required_beats]  # Start fade at calculated beat
-            fadein_start_pos = fade_in_analysis.beats[0]                  # Start fadein at first beat
-            
+            fadeout_start_pos = fade_out_analysis.beats[
+                -required_beats
+            ]  # Start fade at calculated beat
+            fadein_start_pos = fade_in_analysis.beats[0]  # Start fadein at first beat
+
             self.logger.debug(
                 "Smart timing from beats: %.2fs, fadeout_start=%.2fs, fadein_start=%.2fs",
-                smart_duration, fadeout_start_pos, fadein_start_pos
+                smart_duration,
+                fadeout_start_pos,
+                fadein_start_pos,
             )
             return float(smart_duration), fadeout_start_pos, fadein_start_pos
 
@@ -807,6 +879,55 @@ class SmartFadesMixer:
             f"{fade_in_input}lowpass=f={low_pass_freq}:poles=2[fadein_lp]",
         ]
 
+    def _calculate_phase_offset(
+        self,
+        beats_out: np.ndarray,
+        beats_in: np.ndarray,
+        crossfade_start_out: float,
+        crossfade_start_in: float,
+    ) -> float:
+        """
+        Calculate phase offset between two beat arrays at crossfade point.
+        Returns offset in seconds that needs to be corrected.
+        """
+        if len(beats_out) < 2 or len(beats_in) < 2:
+            return 0.0
+
+        # Find nearest beats to crossfade points
+        out_beat_idx = np.argmin(np.abs(beats_out - crossfade_start_out))
+        in_beat_idx = np.argmin(np.abs(beats_in - crossfade_start_in))
+
+        # Calculate beat intervals (tempo)
+        out_start_idx = max(0, int(out_beat_idx - 4))
+        out_end_idx = int(out_beat_idx + 1)
+        out_interval = np.mean(np.diff(beats_out[out_start_idx:out_end_idx]))
+
+        in_end_idx = min(len(beats_in), int(in_beat_idx + 5))
+        in_interval = np.mean(np.diff(beats_in[int(in_beat_idx) : in_end_idx]))
+
+        # Calculate phase within the beat grid
+        out_phase = (crossfade_start_out - beats_out[out_beat_idx]) % out_interval
+        in_phase = (crossfade_start_in - beats_in[in_beat_idx]) % in_interval
+
+        # Normalize phases to same tempo for comparison
+        normalized_in_phase = in_phase * (out_interval / in_interval)
+
+        # Calculate phase difference (how much to shift fadein to align)
+        phase_diff = out_phase - normalized_in_phase
+
+        # Keep adjustment within half a beat to avoid jumps
+        if abs(phase_diff) > out_interval / 2:
+            phase_diff = phase_diff - np.sign(phase_diff) * out_interval
+
+        self.logger.debug(
+            "Phase analysis: out_phase=%.3fs, in_phase=%.3fs, offset=%.3fs",
+            out_phase,
+            normalized_in_phase,
+            phase_diff,
+        )
+
+        return float(phase_diff)
+
     def _create_enhanced_smart_fade_filters(
         self,
         fade_out_analysis: SmartFadesAnalysis,
@@ -846,17 +967,43 @@ class SmartFadesMixer:
             fadeout_buffer_pos, fadein_buffer_pos = self._translate_beat_positions_to_buffer(
                 fadeout_start_pos, fadein_start_pos, fade_out_analysis, fade_in_analysis
             )
-            
+
             if fadeout_buffer_pos is not None and fadein_buffer_pos is not None:
-                # Apply beat-aligned audio slicing using buffer coordinates
-                filters.append(f"{fade_out_input}atrim=start={fadeout_buffer_pos}[fadeout_aligned]")
-                filters.append(f"{fade_in_input}atrim=start={fadein_buffer_pos}[fadein_aligned]")
+                # Calculate phase offset for micro-timing adjustment
+                phase_offset = self._calculate_phase_offset(
+                    fade_out_analysis.beats,
+                    fade_in_analysis.beats,
+                    fadeout_start_pos,
+                    fadein_start_pos,
+                )
+
+                # Apply beat-aligned audio slicing with phase correction and PTS reset
+                filters.append(
+                    f"{fade_out_input}atrim=start={fadeout_buffer_pos},asetpts=PTS-STARTPTS[fadeout_aligned]"
+                )
+
+                # Apply phase offset to fadein if significant (>10ms)
+                if abs(phase_offset) > 0.01:
+                    adjusted_fadein_pos = max(0, fadein_buffer_pos + phase_offset)
+                    filters.append(
+                        f"{fade_in_input}atrim=start={adjusted_fadein_pos},asetpts=PTS-STARTPTS[fadein_aligned]"
+                    )
+                    self.logger.debug("Applied phase correction: offset=%.3fs", phase_offset)
+                else:
+                    filters.append(
+                        f"{fade_in_input}atrim=start={fadein_buffer_pos},asetpts=PTS-STARTPTS[fadein_aligned]"
+                    )
+
                 current_fade_out_label = "[fadeout_aligned]"
                 current_fade_in_label = "[fadein_aligned]"
-                
+
                 self.logger.debug(
-                    "Applied beat alignment: track_pos(%.2fs,%.2fs) -> buffer_pos(%.2fs,%.2fs)",
-                    fadeout_start_pos, fadein_start_pos, fadeout_buffer_pos, fadein_buffer_pos
+                    "Applied beat alignment with PTS reset: track_pos(%.2fs,%.2fs) -> buffer_pos(%.2fs,%.2fs), phase_offset=%.3fs",
+                    fadeout_start_pos,
+                    fadein_start_pos,
+                    fadeout_buffer_pos,
+                    fadein_buffer_pos,
+                    phase_offset,
                 )
             else:
                 # Beat positions outside buffer range, use standard processing
@@ -864,10 +1011,11 @@ class SmartFadesMixer:
                 filters.append(f"{fade_in_input}anull[fadein_clean]")  # codespell:ignore
                 current_fade_out_label = "[fadeout_clean]"
                 current_fade_in_label = "[fadein_clean]"
-                
+
                 self.logger.debug(
                     "Beat positions outside buffer range: fadeout=%.2fs, fadein=%.2fs - using standard crossfade",
-                    fadeout_start_pos, fadein_start_pos
+                    fadeout_start_pos,
+                    fadein_start_pos,
                 )
         else:
             # No beat alignment - pass through audio unchanged
@@ -876,16 +1024,147 @@ class SmartFadesMixer:
             current_fade_out_label = "[fadeout_clean]"
             current_fade_in_label = "[fadein_clean]"
 
-        # Step 2: Apply adaptive frequency filters
-        frequency_filters = self._create_adaptive_frequency_filters(
-            fade_out_analysis, fade_in_analysis, current_fade_out_label, current_fade_in_label
+        # Step 2: Apply gentle 2-band complementary filtering with opposing ramps
+        frequency_filters = self._create_gentle_complementary_filters(
+            fade_out_analysis,
+            fade_in_analysis,
+            current_fade_out_label,
+            current_fade_in_label,
+            crossfade_duration,
         )
         filters.extend(frequency_filters)
 
-        # Step 3: Apply crossfade
-        filters.append(f"[fadeout_hp][fadein_lp]acrossfade=d={crossfade_duration}")
+        # Step 3: Apply linear crossfade (no curves to avoid interfering with gradual EQ ramping)
+        filters.append(f"[fadeout_eq][fadein_eq]acrossfade=d={crossfade_duration}")
 
         return filters, current_fade_in_label
+
+    def _create_professional_eq_filters(
+        self,
+        fade_out_analysis: SmartFadesAnalysis,
+        fade_in_analysis: SmartFadesAnalysis,
+        fade_out_label: str,
+        fade_in_label: str,
+    ) -> list[str]:
+        """
+        Create professional 3-band EQ filters for smooth frequency transitions.
+
+        Uses complementary filtering approach:
+        - Fadeout: Progressively remove low frequencies (bass) and preserve highs
+        - Fadein: Progressively remove high frequencies (treble) and preserve lows
+        """
+        filters = []
+
+        # Analyze frequency characteristics
+        # Higher BPM tracks typically have more energy in higher frequencies
+        bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
+
+        # Professional DJ-style frequency splitting points
+        low_cutoff = 120  # Bass/Low-Mid boundary
+        high_cutoff = 4000  # Mid/High boundary
+
+        # Adjust cutoff points based on BPM characteristics
+        if bpm_ratio > 1.2:  # Fadein significantly faster
+            # Emphasize bass transition - fadein likely more energetic
+            low_cutoff = 150
+            high_cutoff = 3500
+        elif bpm_ratio < 0.8:  # Fadeout significantly faster
+            # Emphasize treble transition - fadeout likely more energetic
+            low_cutoff = 100
+            high_cutoff = 4500
+
+        self.logger.debug(
+            "Professional EQ setup: low_cutoff=%dHz, high_cutoff=%dHz, bpm_ratio=%.2f",
+            low_cutoff,
+            high_cutoff,
+            bpm_ratio,
+        )
+
+        # Fadeout track: Progressive high-pass filtering (remove bass gradually)
+        # 3-band approach: preserve highs, reduce mids, heavily cut lows
+        filters.extend(
+            [
+                # Low band: High-pass filter to remove bass frequencies
+                f"{fade_out_label}highpass=f={low_cutoff}:poles=2:width_type=h:width=0.707[fadeout_hp]",
+                # Mid band: Gentle high-pass to clean up low-mids
+                f"[fadeout_hp]highpass=f={low_cutoff // 2}:poles=1:width_type=h:width=0.707[fadeout_mid]",
+                # High band: Preserve treble with gentle boost
+                f"[fadeout_mid]treble=gain=2:frequency={high_cutoff}:width_type=h:width=0.5[fadeout_eq]",
+            ]
+        )
+
+        # Fadein track: Progressive low-pass filtering (remove treble gradually)
+        # 3-band approach: preserve lows, reduce mids, heavily cut highs
+        filters.extend(
+            [
+                # High band: Low-pass filter to remove treble frequencies
+                f"{fade_in_label}lowpass=f={high_cutoff}:poles=2:width_type=h:width=0.707[fadein_lp]",
+                # Mid band: Gentle low-pass to clean up high-mids
+                f"[fadein_lp]lowpass=f={high_cutoff * 1.5}:poles=1:width_type=h:width=0.707[fadein_mid]",
+                # Low band: Preserve bass with gentle boost
+                f"[fadein_mid]bass=gain=2:frequency={low_cutoff}:width_type=h:width=0.5[fadein_eq]",
+            ]
+        )
+
+        return filters
+
+    def _create_gentle_complementary_filters(
+        self,
+        fade_out_analysis: SmartFadesAnalysis,
+        fade_in_analysis: SmartFadesAnalysis,
+        fade_out_label: str,
+        fade_in_label: str,
+        crossfade_duration: float,
+    ) -> list[str]:
+        """
+        Create gradual complementary filters using volume ramping for smooth transitions.
+
+        Gradual approach using volume filter with time expressions:
+        - Fadeout: Gradually ramps UP from unfiltered to high-pass filtered
+        - Fadein: Gradually ramps DOWN from low-pass filtered to unfiltered
+        - Uses complementary volume curves that sum to 1.0 for constant audio level
+        """
+        # BPM-adaptive crossover frequency selection
+        bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
+        avg_bmp = (fade_out_analysis.bpm + fade_in_analysis.bpm) / 2
+
+        # Conservative crossover range: 800Hz (slow) to 1200Hz (fast)
+        # Higher BPM tracks get higher crossover to preserve more energy
+        if avg_bmp < 90:
+            crossover_freq = 800  # Slower tracks - lower crossover
+        elif avg_bmp > 140:
+            crossover_freq = 1200  # Faster tracks - higher crossover
+        else:
+            # Linear interpolation between 90-140 BPM
+            crossover_freq = int(800 + (avg_bmp - 90) * (400 / 50))
+
+        # Further adjust based on BPM compatibility
+        if abs(bpm_ratio - 1.0) > 0.3:  # BPM difference > 30%
+            # Reduce crossover frequency for mismatched BPMs to minimize artifacts
+            crossover_freq = int(crossover_freq * 0.8)
+
+        self.logger.debug(
+            "Gradual complementary EQ (normalize=0): crossover=%dHz, duration=%.1fs, avg_bpm=%.1f, bpm_ratio=%.2f",
+            crossover_freq,
+            crossfade_duration,
+            avg_bmp,
+            bpm_ratio,
+        )
+
+        return [
+            # FADEOUT: Gradual ramp UP (unfiltered → filtered)
+            f"{fade_out_label}asplit=2[fadeout_orig][fadeout_tohp]",
+            f"[fadeout_tohp]highpass=f={crossover_freq}:poles=1[fadeout_filtered]",
+            f"[fadeout_orig]volume='1-t/{crossfade_duration}':eval=frame[fadeout_orig_faded]",
+            f"[fadeout_filtered]volume='t/{crossfade_duration}':eval=frame[fadeout_filtered_faded]",
+            "[fadeout_orig_faded][fadeout_filtered_faded]amix=inputs=2:duration=first:normalize=0[fadeout_eq]",
+            # FADEIN: Gradual ramp DOWN (filtered → unfiltered)
+            f"{fade_in_label}asplit=2[fadein_orig][fadein_tolp]",
+            f"[fadein_tolp]lowpass=f={crossover_freq}:poles=1[fadein_filtered]",
+            f"[fadein_filtered]volume='1-t/{crossfade_duration}':eval=frame[fadein_filtered_faded]",
+            f"[fadein_orig]volume='t/{crossfade_duration}':eval=frame[fadein_orig_faded]",
+            "[fadein_filtered_faded][fadein_orig_faded]amix=inputs=2:duration=first:normalize=0[fadein_eq]",
+        ]
 
     def _translate_beat_positions_to_buffer(
         self,
@@ -896,53 +1175,56 @@ class SmartFadesMixer:
     ) -> tuple[float | None, float | None]:
         """
         Translate beat positions from full-track coordinates to buffer coordinates.
-        
+
         Buffer layout:
         - fadeout_buffer: LAST MAX_SMART_CROSSFADE_DURATION seconds of fadeout track
         - fadein_buffer: FIRST MAX_SMART_CROSSFADE_DURATION seconds of fadein track
         """
         fadeout_buffer_pos = None
         fadein_buffer_pos = None
-        
+
         # Translate fadeout position (from end of track to buffer start)
-        if (fade_out_analysis.duration and 
-            fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION):
-            
+        if fade_out_analysis.duration and fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION:
             # Buffer contains seconds [duration-MAX, duration] mapped to [0, MAX]
             buffer_start = fade_out_analysis.duration - MAX_SMART_CROSSFADE_DURATION
-            
+
             if fadeout_start_pos >= buffer_start:
                 fadeout_buffer_pos = fadeout_start_pos - buffer_start
                 self.logger.debug(
                     "Fadeout: track_pos=%.2fs -> buffer_pos=%.2fs (track_duration=%.2fs)",
-                    fadeout_start_pos, fadeout_buffer_pos, fade_out_analysis.duration
+                    fadeout_start_pos,
+                    fadeout_buffer_pos,
+                    fade_out_analysis.duration,
                 )
             else:
                 self.logger.debug(
                     "Fadeout beat position %.2fs is outside buffer range (%.2fs-%.2fs)",
-                    fadeout_start_pos, buffer_start, fade_out_analysis.duration
+                    fadeout_start_pos,
+                    buffer_start,
+                    fade_out_analysis.duration,
                 )
         elif fade_out_analysis.duration:
             # Short track - entire track fits in buffer
             fadeout_buffer_pos = fadeout_start_pos
             self.logger.debug(
                 "Fadeout: short track, track_pos=%.2fs = buffer_pos=%.2fs",
-                fadeout_start_pos, fadeout_buffer_pos
+                fadeout_start_pos,
+                fadeout_buffer_pos,
             )
-        
+
         # Translate fadein position (first part of track, direct mapping)
         if fadein_start_pos <= MAX_SMART_CROSSFADE_DURATION:
             fadein_buffer_pos = fadein_start_pos
             self.logger.debug(
-                "Fadein: track_pos=%.2fs = buffer_pos=%.2fs",
-                fadein_start_pos, fadein_buffer_pos
+                "Fadein: track_pos=%.2fs = buffer_pos=%.2fs", fadein_start_pos, fadein_buffer_pos
             )
         else:
             self.logger.debug(
                 "Fadein beat position %.2fs is outside buffer range (0-%.2fs)",
-                fadein_start_pos, MAX_SMART_CROSSFADE_DURATION
+                fadein_start_pos,
+                MAX_SMART_CROSSFADE_DURATION,
             )
-        
+
         return fadeout_buffer_pos, fadein_buffer_pos
 
     # FALLBACK DEFAULT CROSSFADE
@@ -964,7 +1246,7 @@ class SmartFadesMixer:
             fade_out_part[-crossfade_size:],
             pcm_format=pcm_format,
         )
-        # Post-crossfade: incoming track minus the crossfaded portion  
+        # Post-crossfade: incoming track minus the crossfaded portion
         post_crossfade = fade_in_part[crossfade_size:]
         # Full result: everything concatenated
         return pre_crossfade + crossfaded_section + post_crossfade

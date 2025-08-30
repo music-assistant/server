@@ -66,8 +66,10 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
-
-from music_assistant.helpers.smart_fades import SmartFadesAnalyzer, SmartFadesMixer, MAX_SMART_CROSSFADE_DURATION
+from music_assistant.helpers.smart_fades import (
+    MAX_SMART_CROSSFADE_DURATION,
+    SmartFadesMixer,
+)
 from music_assistant.helpers.util import (
     get_folder_size,
     get_free_space,
@@ -875,7 +877,7 @@ class StreamsController(CoreController):
                         pcm_format=pcm_format,
                         fallback_crossfade_duration=crossfade_duration,
                     )
-                    
+
                     # send crossfade_part (as one big chunk)
                     bytes_written += len(crossfade_part)
                     yield crossfade_part
@@ -1174,9 +1176,9 @@ class StreamsController(CoreController):
 
             #### OTHER: enough data in buffer, feed to output
             while len(buffer) > crossfade_size:
-                yield buffer[:pcm_format.pcm_sample_size]
+                yield buffer[: pcm_format.pcm_sample_size]
                 bytes_written += pcm_format.pcm_sample_size
-                buffer = buffer[pcm_format.pcm_sample_size:]
+                buffer = buffer[pcm_format.pcm_sample_size :]
 
         #### HANDLE END OF TRACK
         if crossfade_data and crossfade_data.fadeout_part:
@@ -1373,4 +1375,3 @@ class StreamsController(CoreController):
             return 0
         # all checks passed, crossfade is enabled/allowed
         return True
-   

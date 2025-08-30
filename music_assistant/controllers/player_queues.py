@@ -21,7 +21,6 @@ from types import NoneType
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import shortuuid
-from music_assistant.helpers.smart_fades import SmartFadesAnalyzer
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -68,6 +67,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_details
+from music_assistant.helpers.smart_fades import SmartFadesAnalyzer
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
@@ -1550,7 +1550,7 @@ class PlayerQueuesController(CoreController):
                 )
 
         task_id = f"enqueue_next_item_{queue_id}"
-        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)        
+        self.mass.call_later(0.5, _enqueue_next_item_on_player, next_item, task_id=task_id)
 
     def _preload_next_item(self, queue_id: str, item_id_in_buffer: str) -> None:
         """
@@ -2127,11 +2127,11 @@ class PlayerQueuesController(CoreController):
             return
         if next_item.streamdetails.smart_fades:
             return
+
         async def _trigger_smart_fades_analysis(next_item: QueueItem) -> None:
             analysis = await self._smart_fades_analyzer.analyze(next_item.streamdetails)
             # Store the analysis on the queue item for future reference
             next_item.streamdetails.smart_fades = analysis
+
         task_id = f"smart_fades_analysis_{next_item.streamdetails.provider}_{next_item.streamdetails.item_id}"
-        self.mass.create_task(
-            _trigger_smart_fades_analysis, next_item, task_id=task_id
-        )
+        self.mass.create_task(_trigger_smart_fades_analysis, next_item, task_id=task_id)
