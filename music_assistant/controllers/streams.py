@@ -1163,6 +1163,13 @@ class StreamsController(CoreController):
                 bytes_written += len(crossfade_part)
                 yield crossfade_part
 
+                self.logger.debug(
+                    "Smart crossfade completed: crossfade_bytes=%d, bytes_written=%d, buffer_remaining=%d",
+                    len(crossfade_part),
+                    bytes_written,
+                    len(buffer) if buffer else 0,
+                )
+
                 # also write the leftover bytes from the crossfade action
                 if remaining_bytes:
                     yield remaining_bytes
