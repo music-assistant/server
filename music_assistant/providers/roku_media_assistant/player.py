@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
 
-from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE, MASS_LOGO_ONLINE
+from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import CONF_ROKU_APP_ID
@@ -164,9 +164,6 @@ class MediaAssistantPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        if not (queue := self.mass.player_queues.get_active_queue(self.player_id)):
-            return
-
         try:
             device_info = await self.roku.update()
 
@@ -179,60 +176,29 @@ class MediaAssistantPlayer(Player):
                     else False
                 )
 
-            current_duration = 0
-
-            if queue.current_item is not None and queue.current_item.media_item is not None:
-                current_duration = cast("int", queue.current_item.media_item.duration)
-
             f_media = {
                 "u": media.uri,
                 "t": "a",
-                "albumName": media.album,
+                "albumName": media.album if media.album is not None else "",
                 "songName": media.title,
                 "artistName": "Music Assistant Radio"
                 if media.media_type == MediaType.RADIO
-                else media.artist,
-                "albumArt": media.image_url,
+                else media.artist
+                if media.artist is not None
+                else "Flow Mode"
+                if self.flow_mode
+                else "Music Assistant",
+                "albumArt": ""
+                if self.flow_mode
+                else media.image_url
+                if media.image_url is not None
+                else "",
                 "songFormat": "flac",
-                "duration": "" if media.duration is None else current_duration,
-                "timeOffset": "" if media.duration is None else (current_duration - media.duration),
-                "isLive": "true" if media.media_type == MediaType.RADIO else "",
+                "duration": "" if media.duration is None else media.duration,
+                "isLive": "true"
+                if media.media_type == MediaType.RADIO or media.duration is None or self.flow_mode
+                else "",
             }
-
-            if queue.flow_mode and queue.current_item:
-                current_item = queue.current_item
-
-                image_url = (
-                    self.mass.metadata.get_image_url(current_item.image, size=512)
-                    if current_item.image
-                    else MASS_LOGO_ONLINE
-                )
-
-                album_name = ""
-                song_name = ""
-                artist_name = ""
-
-                if current_item.media_item is not None:
-                    media_item = current_item.media_item
-
-                    song_name = media_item.name if media_item is not None else ""
-
-                    if hasattr(media_item, "album"):
-                        album_name = media_item.album.name if media_item.album is not None else ""
-
-                    if hasattr(media_item, "artist_str"):
-                        artist_name = media_item.artist_str
-
-                f_media = {
-                    "u": media.uri,
-                    "t": "a",
-                    "albumName": album_name,
-                    "songName": song_name,
-                    "artistName": artist_name,
-                    "albumArt": image_url,
-                    "songFormat": "flac",
-                    "isLive": "true",
-                }
 
             if app_running:
                 await self.roku_input(f_media)
@@ -248,6 +214,7 @@ class MediaAssistantPlayer(Player):
             )
             self._attr_powered = True
             self._attr_current_media = media
+            self._attr_active_source = self.player_id
             self.update_state()
         except Exception:
             self.logger.error("Failed to Play Media on: %s", self.name)
@@ -302,9 +269,7 @@ class MediaAssistantPlayer(Player):
             app_running = device_info.app.app_id == self.provider.config.get_value(CONF_ROKU_APP_ID)
 
         # Update Device State
-        if app_running:
-            self._attr_active_source = self.player_id
-        else:
+        if not app_running:
             self._attr_active_source = None
 
         self._attr_powered = app_running
@@ -356,7 +321,7 @@ class MediaAssistantPlayer(Player):
                     image_url = (
                         self.mass.metadata.get_image_url(current_item.image, size=512)
                         if current_item.image
-                        else MASS_LOGO_ONLINE
+                        else ""
                     )
 
                     album_name = ""
