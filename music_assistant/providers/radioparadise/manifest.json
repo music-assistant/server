@@ -1,0 +1,10 @@
+{
+  "domain": "radioparadise",
+  "name": "Radio Paradise",
+  "description": "Stream high-quality FLAC radio from Radio Paradise's curated channels",
+  "documentation": "https://music-assistant.io/music-providers/radioparadise/",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@ozgav",
+  "multi_instance": false
+}

@@ -12,6 +12,7 @@ from aiomusiccast.pyamaha import MusicCastConnectionException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
+from propcache import under_cached_property as cached_property
 
 from music_assistant.models.player import Player
 from music_assistant.providers.musiccast.avt_helpers import (
@@ -290,7 +291,7 @@ class MusicCastPlayer(Player):
 
         self.update_state()
 
-    @property
+    @cached_property
     def synced_to(self) -> str | None:
         """
         Return the id of the player this player is synced to (sync leader).
@@ -298,9 +299,9 @@ class MusicCastPlayer(Player):
         If this player is not synced to another player (or is the sync leader itself),
         this should return None.
         """
-        if self.zone_device.is_client:
-            # we are a client, so synced to a server
-            return self._get_player_id_from_zone_device(self.zone_device.group_server)
+        if self.zone_device.is_network_client:
+            server_id = self._get_player_id_from_zone_device(self.zone_device.group_server)
+            return server_id if server_id != self.player_id else None
         return None
 
     async def _cmd_run(self, fun: Callable[..., Coroutine[Any, Any, None]], *args: Any) -> None:
