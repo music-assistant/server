@@ -1,10 +1,13 @@
 """Audiobookshelf (abs) provider for Music Assistant."""
+# pyright does not understand the decorator, but mypy runs just fine
+# pyright: reportIncompatibleMethodOverride=false
 
 from __future__ import annotations
 
+import functools
 import itertools
-from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING
+from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
 from aioaudiobookshelf.client.items import LibraryItemExpandedBook as AbsLibraryItemExpandedBook
@@ -12,6 +15,7 @@ from aioaudiobookshelf.client.items import (
     LibraryItemExpandedPodcast as AbsLibraryItemExpandedPodcast,
 )
 from aioaudiobookshelf.exceptions import LoginError as AbsLoginError
+from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from aioaudiobookshelf.schema.author import AuthorExpanded
 from aioaudiobookshelf.schema.calls_authors import (
     AuthorWithItemsAndSeries as AbsAuthorWithItemsAndSeries,
@@ -175,8 +179,33 @@ async def get_config_entries(
     )
 
 
+R = TypeVar("R")
+P = ParamSpec("P")
+
+
 class Audiobookshelf(MusicProvider):
     """Audiobookshelf MusicProvider."""
+
+    @staticmethod
+    def handle_refresh_token(
+        method: Callable[P, Coroutine[Any, Any, R]],
+    ) -> Callable[P, Coroutine[Any, Any, R]]:
+        """Handle an expired refresh token by relogin."""
+
+        @functools.wraps(method)
+        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            self = cast("Audiobookshelf", args[0])
+            try:
+                return await method(*args, **kwargs)
+            except RefreshTokenExpiredError:
+                self.logger.debug("Refresh token expired. Trying to renew.")
+                await self._client.session_config.authenticate(
+                    username=str(self.config.get_value(CONF_USERNAME)),
+                    password=str(self.config.get_value(CONF_PASSWORD)),
+                )
+                return await method(*args, **kwargs)
+
+        return wrapper
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -188,6 +217,7 @@ class Audiobookshelf(MusicProvider):
             ProviderFeature.RECOMMENDATIONS,
         }
 
+    @handle_refresh_token
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
         base_url = str(self.config.get_value(CONF_URL))
@@ -261,6 +291,7 @@ class Audiobookshelf(MusicProvider):
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
 
+    @handle_refresh_token
     async def unload(self, is_removed: bool = False) -> None:
         """
         Handle unload/close of the provider.
@@ -277,6 +308,7 @@ class Audiobookshelf(MusicProvider):
         # For streaming providers return True here but for local file based providers return False.
         return False
 
+    @handle_refresh_token
     async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""
         libraries = await self._client.get_all_libraries()
@@ -326,6 +358,7 @@ class Audiobookshelf(MusicProvider):
                         continue
                     yield mass_podcast
 
+    @handle_refresh_token
     async def _get_abs_expanded_podcast(
         self, prov_podcast_id: str
     ) -> AbsLibraryItemExpandedPodcast:
@@ -336,6 +369,7 @@ class Audiobookshelf(MusicProvider):
 
         return abs_podcast
 
+    @handle_refresh_token
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get single podcast."""
         abs_podcast = await self._get_abs_expanded_podcast(prov_podcast_id=prov_podcast_id)
@@ -382,6 +416,7 @@ class Audiobookshelf(MusicProvider):
             yield mass_episode
             episode_cnt += 1
 
+    @handle_refresh_token
     async def get_podcast_episode(
         self, prov_episode_id: str, add_progress: bool = True
     ) -> PodcastEpisode:
@@ -439,6 +474,7 @@ class Audiobookshelf(MusicProvider):
                     )
                     yield mass_audiobook
 
+    @handle_refresh_token
     async def _get_abs_expanded_audiobook(
         self, prov_audiobook_id: str
     ) -> AbsLibraryItemExpandedBook:
@@ -449,6 +485,7 @@ class Audiobookshelf(MusicProvider):
 
         return abs_audiobook
 
+    @handle_refresh_token
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get a single audiobook.
 
@@ -558,6 +595,7 @@ class Audiobookshelf(MusicProvider):
             allow_seek=True,
         )
 
+    @handle_refresh_token
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Return finished:bool, position_ms: int."""
         progress: None | MediaProgress = None
@@ -576,6 +614,7 @@ class Audiobookshelf(MusicProvider):
 
         return False, 0
 
+    @handle_refresh_token
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendations."""
         # We have to avoid "flooding" the home page, which becomes especially troublesome if users
@@ -789,6 +828,7 @@ class Audiobookshelf(MusicProvider):
             items_collected.append(items)
             items_by_shelf_id[shelf.id_] = items_collected
 
+    @handle_refresh_token
     async def on_played(
         self,
         media_type: MediaType,
@@ -868,6 +908,7 @@ class Audiobookshelf(MusicProvider):
                 is_finished=fully_played,
             )
 
+    @handle_refresh_token
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse for audiobookshelf.
 
