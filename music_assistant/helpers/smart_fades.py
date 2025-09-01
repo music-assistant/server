@@ -347,7 +347,7 @@ class SmartFadesMixer:
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
-            "quiet",
+            "error",
             # fadeout part (as file)
             "-acodec",
             pcm_format.content_type.name.lower(),
@@ -404,6 +404,10 @@ class SmartFadesMixer:
                 "-",
             ]
         )
+
+        # Debug log the full FFmpeg command and filter complex
+        self.logger.debug("FFmpeg command: %s", " ".join(args))
+        self.logger.debug("Filter complex: %s", ";".join(filter_complex))
 
         # Execute the enhanced smart fade with full buffer
         _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
@@ -463,7 +467,6 @@ class SmartFadesMixer:
             where positions are in seconds from audio start, or None if no beat alignment
         """
         beats_per_bar = 4
-        precision = len(str(ANALYSIS_FPS)) - 1  # 100 FPS = 2 decimal places
 
         # Try downbeats first for most musical timing
         if (
@@ -503,7 +506,7 @@ class SmartFadesMixer:
             )
 
             optimal_duration = (fade_out_duration + fade_in_duration) / 2
-            smart_duration = round(min(optimal_duration, MAX_SMART_CROSSFADE_DURATION), precision)
+            smart_duration = min(optimal_duration, MAX_SMART_CROSSFADE_DURATION)
 
             self.logger.debug(
                 "Timing from beats: %.2fs, fadeout=%.2fs, fadein=%.2fs",
@@ -519,8 +522,8 @@ class SmartFadesMixer:
 
         # Fallback: Calculate from BPM
         seconds_per_beat = 60.0 / fade_out_analysis.bpm
-        fallback_duration = round(
-            min(crossfade_bars * beats_per_bar * seconds_per_beat, max_fallback_duration), precision
+        fallback_duration = min(
+            crossfade_bars * beats_per_bar * seconds_per_beat, max_fallback_duration
         )
 
         self.logger.debug("BPM fallback timing: %.2fs (no beat alignment)", fallback_duration)
@@ -551,30 +554,30 @@ class SmartFadesMixer:
 
         # No tempo modification - preserve original audio quality
 
-        # Step 1a: Beat alignment preprocessing with coordinate translation
+        # Step 1a: Beat alignment preprocessing
         fadeout_buffer_pos = None
-        fadein_buffer_pos = None
 
         if fadeout_start_pos is not None and fadein_start_pos is not None:
-            # Translate full-track beat positions to buffer coordinates
-            fadeout_buffer_pos, fadein_buffer_pos = self._translate_beat_positions_to_buffer(
-                fadeout_start_pos, fadein_start_pos, fade_out_analysis, fade_in_analysis
+            # Translate fadeout position to buffer coordinates (fadein needs no translation)
+            fadeout_buffer_pos = self._translate_fadeout_position_to_buffer(
+                fadeout_start_pos, fade_out_analysis
             )
 
-            if fadeout_buffer_pos is not None and fadein_buffer_pos is not None:
-                # Only trim fadein track for beat alignment, keep fadeout track intact
+            # Check if both positions are within buffer ranges
+            if fadeout_buffer_pos is not None and fadein_start_pos <= MAX_SMART_CROSSFADE_DURATION:
+                # Apply beat alignment: trim fadein track, keep fadeout intact
+                filters.append(f"{fade_out_input}anull[fadeout_aligned]")  # codespell:ignore
                 filters.append(
-                    f"{fade_in_input}atrim=start={fadein_buffer_pos},asetpts=PTS-STARTPTS[fadein_aligned]"
+                    f"{fade_in_input}atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_aligned]"
                 )
-                current_fade_out_label = fade_out_input  # Use original fadeout track (no trimming)
+                current_fade_out_label = "[fadeout_aligned]"
                 current_fade_in_label = "[fadein_aligned]"
 
                 self.logger.debug(
-                    "Beat alignment: track(%.2fs,%.2fs) -> buffer(%.2fs,%.2fs)",
+                    "Beat alignment: fadeout %.2fs->%.2fs, fadein %.2fs",
                     fadeout_start_pos,
-                    fadein_start_pos,
                     fadeout_buffer_pos,
-                    fadein_buffer_pos,
+                    fadein_start_pos,
                 )
             else:
                 # Beat positions outside buffer range, use standard processing
@@ -588,6 +591,10 @@ class SmartFadesMixer:
             filters.append(f"{fade_in_input}anull[fadein_clean]")  # codespell:ignore
             current_fade_out_label = "[fadeout_clean]"
             current_fade_in_label = "[fadein_clean]"
+            # Calculate approximate position where crossfade happens in buffer
+            # The buffer contains the last MAX_SMART_CROSSFADE_DURATION seconds
+            # Crossfade happens at the very end
+            fadeout_buffer_pos = MAX_SMART_CROSSFADE_DURATION - crossfade_duration / 2
 
         # Step 2: Apply gentle 2-band complementary filtering with opposing ramps
         frequency_filters = self._create_gentle_complementary_filters(
@@ -596,7 +603,7 @@ class SmartFadesMixer:
             current_fade_out_label,
             current_fade_in_label,
             crossfade_duration,
-            fadeout_buffer_pos,  # Use already-calculated position
+            fadeout_buffer_pos,
         )
         filters.extend(frequency_filters)
 
@@ -614,17 +621,47 @@ class SmartFadesMixer:
         crossfade_duration: float,
         fadeout_buffer_pos: float | None = None,
     ) -> list[str]:
-        """Create gradual complementary filters using volume ramping for smooth transitions."""
-        # Calculate crossover frequency based on average BPM
+        """Create gradual complementary filters using frequency sweeps for smooth transitions."""
+        # Calculate target frequency based on average BPM (for DJ software style)
         avg_bpm = (fade_out_analysis.bpm + fade_in_analysis.bpm) / 2
         bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
 
-        # Linear interpolation: 90 BPM -> 800Hz, 140 BPM -> 1200Hz
-        crossover_freq = int(np.clip(800 + (avg_bpm - 90) * 8, 800, 1200))
+        # For swapped filters (DJ software style): 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
+        target_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 3000))
 
-        # Reduce frequency for mismatched BPMs
+        # Adjust for BPM mismatch
         if abs(bpm_ratio - 1.0) > 0.3:
-            crossover_freq = int(crossover_freq * 0.8)
+            target_freq = int(target_freq * 0.85)
+
+        # EQ ramp duration: 1.5x crossfade, minimum 8 seconds
+        eq_ramp_duration = max(crossfade_duration * 1.5, 8.0)
+
+        # Calculate when the EQ sweep should start
+        # The crossfade always happens at the END of the buffer, regardless of beat alignment
+        # The fadeout_buffer_pos is only used for beat alignment, not for EQ timing
+        fadeout_eq_start = max(0, MAX_SMART_CROSSFADE_DURATION - eq_ramp_duration)
+
+        self.logger.debug(
+            "EQ: %dHz, %.1fs ramp, start=%.2fs, pos=%.2fs, BPM=%.1f r=%.2f",
+            target_freq,
+            eq_ramp_duration,
+            fadeout_eq_start,
+            fadeout_buffer_pos if fadeout_buffer_pos is not None else -1,
+            avg_bpm,
+            bpm_ratio,
+        )
+
+        # Calculate crossover frequency based on average BPM
+        avg_bpm = (fade_out_analysis.bpm + fade_in_analysis.bpm) / 2
+        bmp_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
+
+        # More aggressive crossover for volume-ramped complementary filtering
+        # Linear interpolation: 90 BPM -> 1200Hz, 140 BPM -> 2000Hz  
+        crossover_freq = int(np.clip(1200 + (avg_bpm - 90) * 16, 1200, 2000))
+
+        # Less aggressive reduction for BPM mismatches since we start higher
+        if abs(bmp_ratio - 1.0) > 0.3:
+            crossover_freq = int(crossover_freq * 0.9)
 
         # EQ ramp duration: 1.5x crossfade, minimum 8 seconds
         eq_ramp_duration = max(crossfade_duration * 1.5, 8.0)
@@ -640,7 +677,7 @@ class SmartFadesMixer:
             crossover_freq,
             eq_ramp_duration,
             avg_bpm,
-            bpm_ratio,
+            bmp_ratio,
         )
 
         # Generate filter expressions using helper function
@@ -651,18 +688,18 @@ class SmartFadesMixer:
                 return f"'1-min(max(t-{start_time},0),{duration})/{duration}':eval=frame"
 
         return [
-            # Fadeout: unfiltered → high-pass filtered
-            f"{fade_out_label}asplit=2[fadeout_orig][fadeout_tohp]",
-            f"[fadeout_tohp]highpass=f={crossover_freq}:poles=1[fadeout_filtered]",
+            # Fadeout: unfiltered → low-pass filtered (swapped from high-pass)
+            f"{fade_out_label}asplit=2[fadeout_orig][fadeout_tolp]",
+            f"[fadeout_tolp]lowpass=f={crossover_freq}:poles=1[fadeout_filtered]",
             f"[fadeout_orig]volume={volume_ramp(fadeout_eq_start, eq_ramp_duration, 'down')}"
             "[fadeout_orig_faded]",
             f"[fadeout_filtered]volume={volume_ramp(fadeout_eq_start, eq_ramp_duration, 'up')}"
             "[fadeout_filtered_faded]",
             "[fadeout_orig_faded][fadeout_filtered_faded]amix=inputs=2:duration=longest:"
             "normalize=0[fadeout_eq]",
-            # Fadein: low-pass filtered → unfiltered
-            f"{fade_in_label}asplit=2[fadein_orig][fadein_tolp]",
-            f"[fadein_tolp]lowpass=f={crossover_freq}:poles=1[fadein_filtered]",
+            # Fadein: high-pass filtered → unfiltered (swapped from low-pass)
+            f"{fade_in_label}asplit=2[fadein_orig][fadein_tohp]",
+            f"[fadein_tohp]highpass=f={crossover_freq}:poles=1[fadein_filtered]",
             f"[fadein_filtered]volume={volume_ramp(0, eq_ramp_duration, 'down')}"
             "[fadein_filtered_faded]",
             f"[fadein_orig]volume={volume_ramp(0, eq_ramp_duration, 'up')}[fadein_orig_faded]",
@@ -670,66 +707,26 @@ class SmartFadesMixer:
             "normalize=0[fadein_eq]",
         ]
 
-    def _translate_beat_positions_to_buffer(
+    def _translate_fadeout_position_to_buffer(
         self,
         fadeout_start_pos: float,
-        fadein_start_pos: float,
         fade_out_analysis: SmartFadesAnalysis,
-        fade_in_analysis: SmartFadesAnalysis,
-    ) -> tuple[float | None, float | None]:
+    ) -> float | None:
         """
-        Translate beat positions from full-track coordinates to buffer coordinates.
+        Translate fadeout beat position from full-track coordinates to buffer coordinates.
 
-        Buffer layout:
-        - fadeout_buffer: LAST MAX_SMART_CROSSFADE_DURATION seconds of fadeout track
-        - fadein_buffer: FIRST MAX_SMART_CROSSFADE_DURATION seconds of fadein track
+        Buffer contains LAST MAX_SMART_CROSSFADE_DURATION seconds of fadeout track.
         """
-        fadeout_buffer_pos = None
-        fadein_buffer_pos = None
+        if not fade_out_analysis.duration:
+            return None
 
-        # Translate fadeout position (from end of track to buffer start)
-        if fade_out_analysis.duration and fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION:
+        if fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION:
             # Buffer contains seconds [duration-MAX, duration] mapped to [0, MAX]
             buffer_start = fade_out_analysis.duration - MAX_SMART_CROSSFADE_DURATION
-
-            if fadeout_start_pos >= buffer_start:
-                fadeout_buffer_pos = fadeout_start_pos - buffer_start
-                self.logger.debug(
-                    "Fadeout: track_pos=%.2fs -> buffer_pos=%.2fs (track_duration=%.2fs)",
-                    fadeout_start_pos,
-                    fadeout_buffer_pos,
-                    fade_out_analysis.duration,
-                )
-            else:
-                self.logger.debug(
-                    "Fadeout beat position %.2fs is outside buffer range (%.2fs-%.2fs)",
-                    fadeout_start_pos,
-                    buffer_start,
-                    fade_out_analysis.duration,
-                )
-        elif fade_out_analysis.duration:
-            # Short track - entire track fits in buffer
-            fadeout_buffer_pos = fadeout_start_pos
-            self.logger.debug(
-                "Fadeout: short track, track_pos=%.2fs = buffer_pos=%.2fs",
-                fadeout_start_pos,
-                fadeout_buffer_pos,
-            )
-
-        # Translate fadein position (first part of track, direct mapping)
-        if fadein_start_pos <= MAX_SMART_CROSSFADE_DURATION:
-            fadein_buffer_pos = fadein_start_pos
-            self.logger.debug(
-                "Fadein: track_pos=%.2fs = buffer_pos=%.2fs", fadein_start_pos, fadein_buffer_pos
-            )
+            return fadeout_start_pos - buffer_start if fadeout_start_pos >= buffer_start else None
         else:
-            self.logger.debug(
-                "Fadein beat position %.2fs is outside buffer range (0-%.2fs)",
-                fadein_start_pos,
-                MAX_SMART_CROSSFADE_DURATION,
-            )
-
-        return fadeout_buffer_pos, fadein_buffer_pos
+            # Short track - entire track fits in buffer (direct mapping)
+            return fadeout_start_pos
 
     # FALLBACK DEFAULT CROSSFADE
     async def default_crossfade(
