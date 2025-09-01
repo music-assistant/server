@@ -221,5 +221,6 @@ class ResonatePlayer(Player):
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
         self.unsub_event_cb()
         await self.api.disconnect()
