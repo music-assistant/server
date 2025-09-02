@@ -50,7 +50,7 @@ radios==0.3.2
 setuptools>=1.0.0
 shortuuid==1.0.13
 snapcast==2.3.7
-soco==0.30.10
+soco==0.30.11
 soundcloudpy==0.1.4
 sxm==0.2.8
 unidecode==1.4.0
