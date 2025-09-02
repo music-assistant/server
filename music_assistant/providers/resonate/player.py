@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
-from aioresonate.models.types import RepeatMode
+from aioresonate.models.types import RepeatMode as ResonateRepeatMode
 from aioresonate.server import (
     AudioFormat as ResonateAudioFormat,
 )
@@ -22,7 +22,13 @@ from aioresonate.server.player import (
     StreamStopEvent,
 )
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import ContentType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ContentType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    RepeatMode,
+)
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo
 
@@ -213,14 +219,22 @@ class ResonatePlayer(Player):
             if _track_number := getattr(media_item, "track_number", None):
                 track = _track_number
 
+        repeat = ResonateRepeatMode.OFF
+        if queue.repeat_mode == RepeatMode.ALL:
+            repeat = ResonateRepeatMode.ALL
+        elif queue.repeat_mode == RepeatMode.ONE:
+            repeat = ResonateRepeatMode.ONE
+
+        shuffle = queue.shuffle_enabled
+
         metadata = Metadata(
             title=title or "",
             artist=artist or "",
             album=album or "",
             year=year or 0,
             track=track or 0,
-            repeat=RepeatMode.OFF,  # TODO: Get actual repeat mode from queue
-            shuffle=False,  # TODO: Get actual shuffle state from queue
+            repeat=repeat,
+            shuffle=shuffle,
         )
 
         # Send metadata to the group
