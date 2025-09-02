@@ -15,7 +15,12 @@ from aioresonate.server import (
     VolumeChangedEvent,
 )
 from aioresonate.server.group import Metadata
-from aioresonate.server.player import StreamPauseEvent, StreamStartEvent, StreamStopEvent
+from aioresonate.server.player import (
+    DisconnectBehaviour,
+    StreamPauseEvent,
+    StreamStartEvent,
+    StreamStopEvent,
+)
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ContentType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.media_items import AudioFormat
@@ -41,6 +46,7 @@ class ResonatePlayer(Player):
         resonate_player = provider.server_api.get_player(player_id)
         assert resonate_player is not None
         self.api = resonate_player
+        self.api.disconnect_behaviour = DisconnectBehaviour.STOP
         self.unsub_event_cb = resonate_player.add_event_listener(self.event_cb)
 
         self.logger = self.provider.logger.getChild(player_id)
@@ -155,10 +161,12 @@ class ResonatePlayer(Player):
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
             self.api.group.remove_player(player.api)
+            player.api.disconnect_behaviour = DisconnectBehaviour.STOP
             self._attr_group_members.remove(player_id)
         for player_id in player_ids_to_add or []:
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
+            player.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
             self.api.group.add_player(player.api)
             self._attr_group_members.append(player_id)
         self.update_state()
