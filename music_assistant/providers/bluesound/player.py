@@ -314,7 +314,15 @@ class BluesoundPlayer(Player):
         if self.dynamic_poll_count > 0:
             self.dynamic_poll_count -= 1
 
-        self.status = await self.client.status()
+        try:
+            self.status = await self.client.status()
+            self._attr_available = True
+        except (PlayerUnreachableError, PlayerUnexpectedResponseError) as err:
+            self.logger.debug(f"Player {self.name} status check failed: {err}")
+            self._attr_available = False
+            self._attr_poll_interval = IDLE_POLL_INTERVAL
+            self.update_state()
+            return
 
         if (
             self.poll_state == POLL_STATE_DYNAMIC and self.dynamic_poll_count <= 0
