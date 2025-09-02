@@ -6,7 +6,8 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature
 
 from music_assistant.models.player import PlayerSource
 
-DEFAULT_POLL_INTERVAL = 10
+IDLE_POLL_INTERVAL = 30
+PLAYBACK_POLL_INTERVAL = 10
 
 PLAYER_FEATURES_BASE = {
     PlayerFeature.SET_MEMBERS,

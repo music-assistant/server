@@ -22,7 +22,8 @@ from music_assistant.constants import (
 )
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.providers.bluesound.const import (
-    DEFAULT_POLL_INTERVAL,
+    IDLE_POLL_INTERVAL,
+    PLAYBACK_POLL_INTERVAL,
     PLAYBACK_STATE_MAP,
     PLAYBACK_STATE_POLL_MAP,
     PLAYER_FEATURES_BASE,
@@ -71,7 +72,7 @@ class BluesoundPlayer(Player):
         self._attr_available = True
         self._attr_source_list = []
         self._attr_needs_poll = True
-        self._attr_poll_interval = DEFAULT_POLL_INTERVAL
+        self._attr_poll_interval = IDLE_POLL_INTERVAL
         self._attr_can_group_with = {provider.lookup_key}
 
     async def setup(self) -> None:
@@ -320,7 +321,17 @@ class BluesoundPlayer(Player):
         ) or self._attr_playback_state == PLAYBACK_STATE_POLL_MAP[self.status.state]:
             self.logger.debug(f"Changing bluos poll state from {self.poll_state} to static")
             self.poll_state = POLL_STATE_STATIC
-            self._attr_poll_interval = DEFAULT_POLL_INTERVAL
+
+        self._attr_playback_state = PLAYBACK_STATE_MAP[self.status.state]
+
+        # Update polling interval
+        if self.poll_state != POLL_STATE_DYNAMIC:
+            if self._attr_playback_state == PlaybackState.PLAYING:
+                self.logger.debug("Setting playback poll interval")
+                self._attr_poll_interval = PLAYBACK_POLL_INTERVAL
+            else:
+                self.logger.debug("Setting idle poll interval")
+                self._attr_poll_interval = IDLE_POLL_INTERVAL
 
         self.sync_status = await self.client.sync_status()
         self._attr_source_list = await self._get_bluesound_sources()
@@ -358,7 +369,6 @@ class BluesoundPlayer(Player):
             leader_player_id = self.provider.player_map.get((leader.ip, leader.port), None)
             self._attr_active_source = leader_player_id
 
-        self._attr_playback_state = PLAYBACK_STATE_MAP[self.status.state]
         self.update_state()
 
     async def select_source(self, source: str) -> None:
