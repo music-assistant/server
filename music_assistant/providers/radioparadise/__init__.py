@@ -146,7 +146,7 @@ class RadioParadiseProvider(MusicProvider):
         """Get full radio details by id."""
         if prov_radio_id not in RADIO_PARADISE_CHANNELS:
             raise MediaNotFoundError("Station not found")
-    
+
         return self._parse_radio(prov_radio_id)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
