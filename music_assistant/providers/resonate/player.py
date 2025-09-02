@@ -95,8 +95,7 @@ class ResonatePlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        # TODO: what if volume_level is 0?
-        self.api.set_volume(volume_level)
+        self.api.set_volume(min(max(1, volume_level), 100))
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
