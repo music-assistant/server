@@ -232,3 +232,7 @@ class ResonatePlayer(Player):
         await super().on_unload()
         self.unsub_event_cb()
         await self.api.disconnect()
+        # Clear group members
+        if len(self._attr_group_members) > 0:
+            self._attr_group_members.clear()
+            self.update_state()
