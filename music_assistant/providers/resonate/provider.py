@@ -117,5 +117,3 @@ class ResonateProvider(PlayerProvider):
 
             self.logger.debug("Discovered resonate player, connecting to %s", url)
             self.server_api.connect_to_player(url)
-        # player_id = info.decoded_properties["player_id"]
-        # TODO add player discovery handling here

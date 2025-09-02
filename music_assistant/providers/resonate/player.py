@@ -130,7 +130,6 @@ class ResonatePlayer(Player):
         self._attr_active_source = media.queue_id
         self._attr_needs_poll = True  # Watch for metadata changes
 
-        # TODO: Don't just use 48kHz since it may not be optimal depending of the grouped players
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
             sample_rate=48000,
@@ -178,7 +177,6 @@ class ResonatePlayer(Player):
 
     async def poll(self) -> None:
         """Poll player for metadata updates and send to resonate players."""
-        # TODO: finish this once spec is finalized
         if self.playback_state != PlaybackState.PLAYING:
             self._attr_needs_poll = False
             return
