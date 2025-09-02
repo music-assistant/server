@@ -611,7 +611,7 @@ class SmartFadesMixer:
         filters.append(f"[fadeout_eq][fadein_eq]acrossfade=d={crossfade_duration}")
 
         return filters, current_fade_in_label
-
+    
     def _create_gentle_complementary_filters(
         self,
         fade_out_analysis: SmartFadesAnalysis,
@@ -622,46 +622,16 @@ class SmartFadesMixer:
         fadeout_buffer_pos: float | None = None,
     ) -> list[str]:
         """Create gradual complementary filters using frequency sweeps for smooth transitions."""
-        # Calculate target frequency based on average BPM (for DJ software style)
+        # Calculate crossover frequency based on average BPM
         avg_bpm = (fade_out_analysis.bpm + fade_in_analysis.bpm) / 2
         bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
 
-        # For swapped filters (DJ software style): 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
-        target_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 3000))
+        # Linear interpolation: 90 BPM -> 800Hz, 140 BPM -> 1200Hz
+        crossover_freq = int(np.clip(800 + (avg_bpm - 90) * 8, 800, 1200))
 
-        # Adjust for BPM mismatch
+        # Reduce frequency for mismatched BPMs
         if abs(bpm_ratio - 1.0) > 0.3:
-            target_freq = int(target_freq * 0.85)
-
-        # EQ ramp duration: 1.5x crossfade, minimum 8 seconds
-        eq_ramp_duration = max(crossfade_duration * 1.5, 8.0)
-
-        # Calculate when the EQ sweep should start
-        # The crossfade always happens at the END of the buffer, regardless of beat alignment
-        # The fadeout_buffer_pos is only used for beat alignment, not for EQ timing
-        fadeout_eq_start = max(0, MAX_SMART_CROSSFADE_DURATION - eq_ramp_duration)
-
-        self.logger.debug(
-            "EQ: %dHz, %.1fs ramp, start=%.2fs, pos=%.2fs, BPM=%.1f r=%.2f",
-            target_freq,
-            eq_ramp_duration,
-            fadeout_eq_start,
-            fadeout_buffer_pos if fadeout_buffer_pos is not None else -1,
-            avg_bpm,
-            bpm_ratio,
-        )
-
-        # Calculate crossover frequency based on average BPM
-        avg_bpm = (fade_out_analysis.bpm + fade_in_analysis.bpm) / 2
-        bmp_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
-
-        # More aggressive crossover for volume-ramped complementary filtering
-        # Linear interpolation: 90 BPM -> 1200Hz, 140 BPM -> 2000Hz  
-        crossover_freq = int(np.clip(1200 + (avg_bpm - 90) * 16, 1200, 2000))
-
-        # Less aggressive reduction for BPM mismatches since we start higher
-        if abs(bmp_ratio - 1.0) > 0.3:
-            crossover_freq = int(crossover_freq * 0.9)
+            crossover_freq = int(crossover_freq * 0.8)
 
         # EQ ramp duration: 1.5x crossfade, minimum 8 seconds
         eq_ramp_duration = max(crossfade_duration * 1.5, 8.0)
@@ -677,7 +647,73 @@ class SmartFadesMixer:
             crossover_freq,
             eq_ramp_duration,
             avg_bpm,
-            bmp_ratio,
+            bpm_ratio,
+        )
+
+        # Generate filter expressions using helper function
+        def volume_ramp(start_time: float, duration: float, direction: str = "up") -> str:
+            if direction == "up":
+                return f"'min(max(t-{start_time},0),{duration})/{duration}':eval=frame"
+            else:
+                return f"'1-min(max(t-{start_time},0),{duration})/{duration}':eval=frame"
+
+        return [
+            # Fadeout: unfiltered → high-pass filtered
+            f"{fade_out_label}asplit=2[fadeout_orig][fadeout_tohp]",
+            f"[fadeout_tohp]highpass=f={crossover_freq}:poles=1[fadeout_filtered]",
+            f"[fadeout_orig]volume={volume_ramp(fadeout_eq_start, eq_ramp_duration, 'down')}"
+            "[fadeout_orig_faded]",
+            f"[fadeout_filtered]volume={volume_ramp(fadeout_eq_start, eq_ramp_duration, 'up')}"
+            "[fadeout_filtered_faded]",
+            "[fadeout_orig_faded][fadeout_filtered_faded]amix=inputs=2:duration=longest:"
+            "normalize=0[fadeout_eq]",
+            # Fadein: low-pass filtered → unfiltered
+            f"{fade_in_label}asplit=2[fadein_orig][fadein_tolp]",
+            f"[fadein_tolp]lowpass=f={crossover_freq}:poles=1[fadein_filtered]",
+            f"[fadein_filtered]volume={volume_ramp(0, eq_ramp_duration, 'down')}"
+            "[fadein_filtered_faded]",
+            f"[fadein_orig]volume={volume_ramp(0, eq_ramp_duration, 'up')}[fadein_orig_faded]",
+            "[fadein_filtered_faded][fadein_orig_faded]amix=inputs=2:duration=longest:"
+            "normalize=0[fadein_eq]",
+        ]
+
+    def _add_lowpass_highpass_filters(
+        self,
+        fade_out_analysis: SmartFadesAnalysis,
+        fade_in_analysis: SmartFadesAnalysis,
+        fade_out_label: str,
+        fade_in_label: str,
+        crossfade_duration: float,
+        fadeout_buffer_pos: float | None = None,
+    ) -> list[str]:
+        """Create gradual complementary filters using frequency sweeps for smooth transitions."""
+        # Calculate target frequency based on average BPM (for DJ software style)
+        avg_bpm = (fade_out_analysis.bpm + fade_in_analysis.bpm) / 2
+        bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
+
+        # For swapped filters (DJ software style): 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
+        crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 3000))
+
+        # Adjust for BPM mismatch
+        if abs(bpm_ratio - 1.0) > 0.3:
+            crossover_freq = int(crossover_freq * 0.85)
+
+        # EQ ramp duration: 2.5x crossfade for more noticeable effect, minimum 8 seconds
+        eq_ramp_duration = max(crossfade_duration * 2.5, 8.0)
+
+        # Calculate when the EQ sweep should start
+        # The crossfade always happens at the END of the buffer, regardless of beat alignment
+        # The fadeout_buffer_pos is only used for beat alignment, not for EQ timing
+        fadeout_eq_start = max(0, MAX_SMART_CROSSFADE_DURATION - eq_ramp_duration)
+
+        self.logger.debug(
+            "EQ: %dHz, %.1fs ramp, start=%.2fs, pos=%.2fs, BPM=%.1f r=%.2f",
+            crossover_freq,
+            eq_ramp_duration,
+            fadeout_eq_start,
+            fadeout_buffer_pos if fadeout_buffer_pos is not None else -1,
+            avg_bpm,
+            bpm_ratio,
         )
 
         # Generate filter expressions using helper function
