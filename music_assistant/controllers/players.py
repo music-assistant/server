@@ -1114,7 +1114,7 @@ class PlayerController(CoreController):
                 # send the streamtitle into a global search query
                 search_artist, search_title_title = stream_title.split(" - ", 1)
                 # strip off the enhanced text added by the Radio Paradise provider
-                search_title = search_title.split("|")[0].strip()
+                search_title_title = search_title_title.split("|")[0].strip()
                 if track := await self.mass.music.get_track_by_name(
                     search_title_title, search_artist
                 ):
