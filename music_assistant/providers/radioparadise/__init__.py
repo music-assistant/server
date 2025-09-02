@@ -146,30 +146,8 @@ class RadioParadiseProvider(MusicProvider):
         """Get full radio details by id."""
         if prov_radio_id not in RADIO_PARADISE_CHANNELS:
             raise MediaNotFoundError("Station not found")
-
-        # Start with basic radio object (includes static station icon)
-        radio = self._parse_radio(prov_radio_id)
-
-        # Enhance with current metadata (API call only when specifically requested)
-        metadata = await self._get_channel_metadata(prov_radio_id)
-        if metadata and metadata.get("current"):
-            current_song = metadata["current"]
-            cover_path = current_song.get("cover")
-            if cover_path:
-                # Override static station icon with current song cover art
-                cover_url = f"https://img.radioparadise.com/{cover_path}"
-                images = [
-                    MediaItemImage(
-                        provider=self.lookup_key,
-                        type=ImageType.THUMB,
-                        path=cover_url,
-                        remotely_accessible=True,
-                    )
-                ]
-                radio.metadata.images = UniqueList(images)
-
-        # If API call fails or no current song, static station icon from _parse_radio() is used
-        return radio
+    
+        return self._parse_radio(prov_radio_id)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
