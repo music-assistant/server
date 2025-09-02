@@ -6,6 +6,7 @@ import asyncio
 import logging
 import multiprocessing
 import time
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -31,6 +32,15 @@ ANALYSIS_FPS = 100
 ANALYSIS_PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=2
 )
+
+
+class DJStyleMode(StrEnum):
+    """DJ transition style modes."""
+
+    AUTO = "auto"  # Automatically select based on BPM compatibility
+    CLASSIC = "classic"  # Traditional HP/LP complementary filters
+    MODERN = "modern"  # Swapped LP/HP filters (club style)
+    OFF = "off"  # No frequency filtering, volume crossfade only
 
 
 class SmartFadesAnalyzer:
@@ -269,6 +279,7 @@ class SmartFadesMixer:
         fade_out_analysis: SmartFadesAnalysis,
         pcm_format: AudioFormat,
         fallback_crossfade_duration: int = 10,
+        dj_style_mode: DJStyleMode = DJStyleMode.AUTO,
     ) -> bytes:
         """Apply crossfade with internal state management and smart/standard fallback logic."""
         # Decide between smart crossfade and standard crossfade
@@ -278,13 +289,7 @@ class SmartFadesMixer:
             and fade_out_analysis.confidence > 0.3
             and fade_in_analysis.confidence > 0.3
         ):
-            # Calculate optimal crossfade bars based on BPM compatibility
-            optimal_bars = self._calculate_optimal_crossfade_bars(
-                fade_out_analysis.bpm, fade_in_analysis.bpm
-            )
-
             # Use smart crossfade with BPM matching
-
             try:
                 return await self._apply_smart_crossfade(
                     fade_out_analysis,
@@ -292,7 +297,7 @@ class SmartFadesMixer:
                     fade_out_part,
                     fade_in_part,
                     pcm_format,
-                    optimal_bars,
+                    dj_style_mode,
                 )
             except Exception as e:
                 self.logger.warning(
@@ -314,29 +319,34 @@ class SmartFadesMixer:
         fade_out_part: bytes,
         fade_in_part: bytes,
         pcm_format: AudioFormat,
-        crossfade_bars: int,
+        dj_style_mode: DJStyleMode = DJStyleMode.AUTO,
     ) -> bytes:
         """Apply smart crossfade with beat-perfect timing and adaptive filtering."""
-        self.logger.info(
-            "Applying smart fade: fade_out_bpm=%.1f, fade_in_bpm=%.1f, %d bars",
-            fade_out_analysis.bpm,
-            fade_in_analysis.bpm,
-            crossfade_bars,
+        # Calculate optimal crossfade bars based on BPM compatibility (e.g. 2, 4, 8 or 16 bars)
+        optimal_crossfade_bars = self._calculate_optimal_crossfade_bars(
+            fade_out_analysis, fade_in_analysis
         )
 
+        self.logger.info(
+            "Applying smart fade: fade_out_bpm=%.1f, fade_in_bpm=%.1f, %d bars, mode=%s",
+            fade_out_analysis.bpm,
+            fade_in_analysis.bpm,
+            optimal_crossfade_bars,
+            dj_style_mode,
+        )
         # Calculate optimal fade duration using beat analysis
         optimal_duration, fadeout_start_pos, fadein_start_pos = self._calculate_optimal_fade_timing(
-            fade_out_analysis, fade_in_analysis, crossfade_bars
+            fade_out_analysis, fade_in_analysis, optimal_crossfade_bars
         )
 
         self.logger.debug(
             "Smart fade: %.2fs, %d bars%s",
             optimal_duration,
-            crossfade_bars,
+            optimal_crossfade_bars,
             ", beat-aligned" if fadeout_start_pos else "",
         )
 
-        # Write the fade_out_part to a temporary file (revert to full buffer approach)
+        # Write the fade_out_part to a temporary file
         fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
         async with aiofiles.open(fadeout_filename, "wb") as outfile:
             await outfile.write(fade_out_part)
@@ -385,6 +395,7 @@ class SmartFadesMixer:
             optimal_duration,
             fadeout_start_pos,
             fadein_start_pos,
+            dj_style_mode,
         )
 
         args.extend(
@@ -426,8 +437,12 @@ class SmartFadesMixer:
 
     # SMART FADE HELPER METHODS
 
-    def _calculate_optimal_crossfade_bars(self, bpm_out: float, bpm_in: float) -> int:
+    def _calculate_optimal_crossfade_bars(
+        self, fade_out_analysis: SmartFadesAnalysis, fade_in_analysis: SmartFadesAnalysis
+    ) -> int:
         """Calculate optimal crossfade bars based on BPM compatibility."""
+        bpm_in = fade_in_analysis.bpm
+        bpm_out = fade_out_analysis.bpm
         bpm_diff_percent = abs(1.0 - bpm_in / bpm_out) * 100
 
         # Mathematical formula for bar calculation based on BPM difference
@@ -442,14 +457,6 @@ class SmartFadesMixer:
             bars = 2
         else:
             bars = 1
-
-        self.logger.debug(
-            "BPM compatibility: fadeout=%.1f, fadein=%.1f, diff=%.1f%% -> %d bars",
-            bpm_out,
-            bpm_in,
-            bpm_diff_percent,
-            bars,
-        )
         return bars
 
     def _calculate_optimal_fade_timing(
@@ -457,7 +464,6 @@ class SmartFadesMixer:
         fade_out_analysis: SmartFadesAnalysis,
         fade_in_analysis: SmartFadesAnalysis,
         crossfade_bars: int = 4,
-        max_fallback_duration: float = 15.0,
     ) -> tuple[float, float | None, float | None]:
         """
         Calculate precise fade timing and beat positions for alignment.
@@ -522,9 +528,7 @@ class SmartFadesMixer:
 
         # Fallback: Calculate from BPM
         seconds_per_beat = 60.0 / fade_out_analysis.bpm
-        fallback_duration = min(
-            crossfade_bars * beats_per_bar * seconds_per_beat, max_fallback_duration
-        )
+        fallback_duration = crossfade_bars * beats_per_bar * seconds_per_beat
 
         self.logger.debug("BPM fallback timing: %.2fs (no beat alignment)", fallback_duration)
         return fallback_duration, None, None
@@ -538,6 +542,7 @@ class SmartFadesMixer:
         crossfade_duration: float,
         fadeout_start_pos: float | None = None,
         fadein_start_pos: float | None = None,
+        dj_style_mode: DJStyleMode = DJStyleMode.AUTO,
     ) -> tuple[list[str], str]:
         """
         Create smart fade filters with perfect timing and adaptive filtering.
@@ -548,23 +553,202 @@ class SmartFadesMixer:
         Returns:
             (filter_list, fade_in_label) - where fade_in_label is the final input label for fade_in
         """
-        filters = []
+        filters: list[str] = []
         current_fade_out_label = fade_out_input
         current_fade_in_label = fade_in_input
 
         # No tempo modification - preserve original audio quality
 
         # Step 1a: Beat alignment preprocessing
+        current_fade_out_label, current_fade_in_label, fadeout_buffer_pos = (
+            self._perform_beat_alignment(
+                filters,
+                fade_out_input,
+                fade_in_input,
+                fadeout_start_pos,
+                fadein_start_pos,
+                fade_out_analysis,
+                crossfade_duration,
+            )
+        )
+
+        # Step 2: Apply frequency filtering based on DJ style mode
+
+        # Auto-select mode based on BPM compatibility if set to auto
+        if dj_style_mode == DJStyleMode.AUTO:
+            bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
+            # Use modern for very similar BPMs, classic for different BPMs
+            dj_style_mode = (
+                DJStyleMode.MODERN if abs(bpm_ratio - 1.0) < 0.1 else DJStyleMode.CLASSIC
+            )
+
+            self.logger.debug(
+                "Auto-selected DJ mode: %s (BPM ratio: %.2f)", dj_style_mode, bpm_ratio
+            )
+
+        # Apply the selected filter style
+        if dj_style_mode == DJStyleMode.OFF:
+            # No frequency filtering, just pass through
+            filters.append(f"{current_fade_out_label}copy[fadeout_eq]")
+            filters.append(f"{current_fade_in_label}copy[fadein_eq]")
+        elif dj_style_mode == DJStyleMode.MODERN:            
+            frequency_filters = self._dj_modern(
+                fade_out_analysis,
+                fade_in_analysis,
+                current_fade_out_label,
+                current_fade_in_label,
+                crossfade_duration,
+            )
+            filters.extend(frequency_filters)
+        else:
+            frequency_filters = self._dj_classic(
+                fade_out_analysis,
+                fade_in_analysis,
+                current_fade_out_label,
+                current_fade_in_label,
+                crossfade_duration,
+                fadeout_buffer_pos,
+            )
+            filters.extend(frequency_filters)
+
+        # Step 3: Apply linear crossfade (no curves to avoid interfering with gradual EQ ramping)
+        filters.append(f"[fadeout_eq][fadein_eq]acrossfade=d={crossfade_duration}")
+
+        return filters, current_fade_in_label    
+
+    def _create_frequency_sweep_filter(
+        self,
+        input_label: str,
+        output_label: str,
+        sweep_type: str,  # 'lowpass' or 'highpass'
+        target_freq: int,
+        duration: float,
+        start_time: float = 0.0,
+        sweep_direction: str = "fade_in",  # 'fade_in' or 'fade_out'
+        poles: int = 2,
+        curve_type: str = "linear",  # 'linear', 'exponential', 'logarithmic'
+    ) -> list[str]:
+        """Generate FFmpeg filter chain for frequency sweep effect.
+
+        This creates a perceptual frequency sweep by blending between filtered
+        and unfiltered signals using time-varying volume controls.
+
+        Args:
+            input_label: Input stream label
+            output_label: Output stream label
+            sweep_type: 'lowpass' or 'highpass'
+            target_freq: Target frequency for the filter
+            duration: Sweep duration in seconds
+            start_time: When to start the sweep (seconds from stream start)
+            sweep_direction: 'fade_in' (dry→wet) or 'fade_out' (wet→dry)
+            poles: Filter order (1-4, higher = steeper slope)
+            curve_type: Volume curve shape for blending
+
+        Returns:
+            List of FFmpeg filter commands
+        """
+        # Generate unique intermediate labels
+        orig_label = f"{output_label}_orig"
+        filter_label = f"{output_label}_to{sweep_type[:2]}"
+        filtered_label = f"{output_label}_filtered"
+        orig_faded_label = f"{output_label}_orig_faded"
+        filtered_faded_label = f"{output_label}_filtered_faded"
+
+        # Generate volume expression based on curve type
+        def generate_volume_expr(start: float, dur: float, direction: str, curve: str) -> str:
+            t_expr = f"t-{start}"  # Time relative to start
+            norm_t = f"min(max({t_expr},0),{dur})/{dur}"  # Normalized 0-1
+
+            if curve == "exponential":
+                # Exponential curve for smoother transitions
+                if direction == "up":
+                    return f"'pow({norm_t},2)':eval=frame"
+                else:
+                    return f"'1-pow({norm_t},2)':eval=frame"
+            elif curve == "logarithmic":
+                # Logarithmic curve for more aggressive initial change
+                if direction == "up":
+                    return f"'sqrt({norm_t})':eval=frame"
+                else:
+                    return f"'1-sqrt({norm_t})':eval=frame"
+            elif direction == "up":
+                return f"'{norm_t}':eval=frame"
+            else:
+                return f"'1-{norm_t}':eval=frame"
+
+        # Determine volume ramp directions based on sweep direction
+        if sweep_direction == "fade_in":
+            # Fade from dry to wet (unfiltered to filtered)
+            orig_direction = "down"
+            filter_direction = "up"
+        else:  # fade_out
+            # Fade from wet to dry (filtered to unfiltered)
+            orig_direction = "up"
+            filter_direction = "down"
+
+        # Build filter chain
+        return [
+            # Split input into two paths
+            f"{input_label}asplit=2[{orig_label}][{filter_label}]",
+            # Apply frequency filter to one path
+            f"[{filter_label}]{sweep_type}=f={target_freq}:poles={poles}[{filtered_label}]",
+            # Apply time-varying volume to original path
+            (
+                f"[{orig_label}]volume="
+                f"{generate_volume_expr(start_time, duration, orig_direction, curve_type)}"
+                f"[{orig_faded_label}]"
+            ),
+            # Apply time-varying volume to filtered path
+            (
+                f"[{filtered_label}]volume="
+                f"{generate_volume_expr(start_time, duration, filter_direction, curve_type)}"
+                f"[{filtered_faded_label}]"
+            ),
+            # Mix the two paths together
+            (
+                f"[{orig_faded_label}][{filtered_faded_label}]"
+                f"amix=inputs=2:duration=longest:normalize=0[{output_label}]"
+            ),
+        ]
+
+    def _perform_beat_alignment(
+        self,
+        filters: list[str],
+        fade_out_input: str,
+        fade_in_input: str,
+        fadeout_start_pos: float | None,
+        fadein_start_pos: float | None,
+        fade_out_analysis: SmartFadesAnalysis,
+        crossfade_duration: float,
+    ) -> tuple[str, str, float | None]:
+        """
+        Perform beat alignment preprocessing and return updated labels and buffer position.
+
+        Args:
+            filters: Filter list to append alignment filters to
+            fade_out_input: Original fadeout input label
+            fade_in_input: Original fadein input label
+            fadeout_start_pos: Beat position for fadeout track (or None)
+            fadein_start_pos: Beat position for fadein track (or None)
+            fade_out_analysis: Analysis data for fadeout track
+            crossfade_duration: Duration of crossfade in seconds
+
+        Returns:
+            (current_fade_out_label, current_fade_in_label, fadeout_buffer_pos)
+        """
         fadeout_buffer_pos = None
 
         if fadeout_start_pos is not None and fadein_start_pos is not None:
-            # Translate fadeout position to buffer coordinates (fadein needs no translation)
-            fadeout_buffer_pos = self._translate_fadeout_position_to_buffer(
-                fadeout_start_pos, fade_out_analysis
-            )
+            if fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION:
+                # Buffer contains seconds [duration-MAX, duration] mapped to [0, MAX]
+                buffer_start = fade_out_analysis.duration - MAX_SMART_CROSSFADE_DURATION
+                fadeout_buffer_pos=  fadeout_start_pos - buffer_start if fadeout_start_pos >= buffer_start else None
+            else:
+                # Short track - entire track fits in buffer (direct mapping)
+                fadeout_buffer_pos = fadeout_start_pos
 
             # Check if both positions are within buffer ranges
-            if fadeout_buffer_pos is not None and fadein_start_pos <= MAX_SMART_CROSSFADE_DURATION:
+            if fadein_start_pos <= MAX_SMART_CROSSFADE_DURATION:
                 # Apply beat alignment: trim fadein track, keep fadeout intact
                 filters.append(f"{fade_out_input}anull[fadeout_aligned]")  # codespell:ignore
                 filters.append(
@@ -596,23 +780,9 @@ class SmartFadesMixer:
             # Crossfade happens at the very end
             fadeout_buffer_pos = MAX_SMART_CROSSFADE_DURATION - crossfade_duration / 2
 
-        # Step 2: Apply gentle 2-band complementary filtering with opposing ramps
-        frequency_filters = self._create_gentle_complementary_filters(
-            fade_out_analysis,
-            fade_in_analysis,
-            current_fade_out_label,
-            current_fade_in_label,
-            crossfade_duration,
-            fadeout_buffer_pos,
-        )
-        filters.extend(frequency_filters)
+        return current_fade_out_label, current_fade_in_label, fadeout_buffer_pos
 
-        # Step 3: Apply linear crossfade (no curves to avoid interfering with gradual EQ ramping)
-        filters.append(f"[fadeout_eq][fadein_eq]acrossfade=d={crossfade_duration}")
-
-        return filters, current_fade_in_label
-    
-    def _create_gentle_complementary_filters(
+    def _dj_classic(
         self,
         fade_out_analysis: SmartFadesAnalysis,
         fade_in_analysis: SmartFadesAnalysis,
@@ -633,8 +803,8 @@ class SmartFadesMixer:
         if abs(bpm_ratio - 1.0) > 0.3:
             crossover_freq = int(crossover_freq * 0.8)
 
-        # EQ ramp duration: 1.5x crossfade, minimum 8 seconds
-        eq_ramp_duration = max(crossfade_duration * 1.5, 8.0)
+        # EQ ramp duration: 1.2x crossfade
+        eq_ramp_duration = crossfade_duration * 1.2
 
         # Calculate EQ start times
         fadeout_eq_start = 0.0
@@ -650,43 +820,41 @@ class SmartFadesMixer:
             bpm_ratio,
         )
 
-        # Generate filter expressions using helper function
-        def volume_ramp(start_time: float, duration: float, direction: str = "up") -> str:
-            if direction == "up":
-                return f"'min(max(t-{start_time},0),{duration})/{duration}':eval=frame"
-            else:
-                return f"'1-min(max(t-{start_time},0),{duration})/{duration}':eval=frame"
+        # Use the new frequency sweep method for fadeout (unfiltered → high-pass)
+        fadeout_filters = self._create_frequency_sweep_filter(
+            input_label=fade_out_label,
+            output_label="fadeout_eq",
+            sweep_type="highpass",
+            target_freq=crossover_freq,
+            duration=eq_ramp_duration,
+            start_time=fadeout_eq_start,
+            sweep_direction="fade_in",  # Fade IN the highpass effect
+            poles=1,
+        )
 
-        return [
-            # Fadeout: unfiltered → high-pass filtered
-            f"{fade_out_label}asplit=2[fadeout_orig][fadeout_tohp]",
-            f"[fadeout_tohp]highpass=f={crossover_freq}:poles=1[fadeout_filtered]",
-            f"[fadeout_orig]volume={volume_ramp(fadeout_eq_start, eq_ramp_duration, 'down')}"
-            "[fadeout_orig_faded]",
-            f"[fadeout_filtered]volume={volume_ramp(fadeout_eq_start, eq_ramp_duration, 'up')}"
-            "[fadeout_filtered_faded]",
-            "[fadeout_orig_faded][fadeout_filtered_faded]amix=inputs=2:duration=longest:"
-            "normalize=0[fadeout_eq]",
-            # Fadein: low-pass filtered → unfiltered
-            f"{fade_in_label}asplit=2[fadein_orig][fadein_tolp]",
-            f"[fadein_tolp]lowpass=f={crossover_freq}:poles=1[fadein_filtered]",
-            f"[fadein_filtered]volume={volume_ramp(0, eq_ramp_duration, 'down')}"
-            "[fadein_filtered_faded]",
-            f"[fadein_orig]volume={volume_ramp(0, eq_ramp_duration, 'up')}[fadein_orig_faded]",
-            "[fadein_filtered_faded][fadein_orig_faded]amix=inputs=2:duration=longest:"
-            "normalize=0[fadein_eq]",
-        ]
+        # Use the new frequency sweep method for fadein (low-pass → unfiltered)
+        fadein_filters = self._create_frequency_sweep_filter(
+            input_label=fade_in_label,
+            output_label="fadein_eq",
+            sweep_type="lowpass",
+            target_freq=crossover_freq,
+            duration=eq_ramp_duration,
+            start_time=0,
+            sweep_direction="fade_out",  # Fade OUT the lowpass effect
+            poles=1,
+        )
 
-    def _add_lowpass_highpass_filters(
+        return fadeout_filters + fadein_filters
+
+    def _dj_modern(
         self,
         fade_out_analysis: SmartFadesAnalysis,
         fade_in_analysis: SmartFadesAnalysis,
         fade_out_label: str,
         fade_in_label: str,
         crossfade_duration: float,
-        fadeout_buffer_pos: float | None = None,
     ) -> list[str]:
-        """Create gradual complementary filters using frequency sweeps for smooth transitions."""
+        """Create DJ-style complementary filters using frequency sweeps for smooth transitions."""
         # Calculate target frequency based on average BPM (for DJ software style)
         avg_bpm = (fade_out_analysis.bpm + fade_in_analysis.bpm) / 2
         bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
@@ -698,71 +866,51 @@ class SmartFadesMixer:
         if abs(bpm_ratio - 1.0) > 0.3:
             crossover_freq = int(crossover_freq * 0.85)
 
-        # EQ ramp duration: 2.5x crossfade for more noticeable effect, minimum 8 seconds
-        eq_ramp_duration = max(crossfade_duration * 2.5, 8.0)
+        # Asymmetric EQ durations for better musical flow
+        fadeout_eq_duration = max(crossfade_duration * 2.5, 8.0)  # Extended lowpass effect
+        fadein_eq_duration = crossfade_duration * 1.0  # Quick highpass removal
 
         # Calculate when the EQ sweep should start
         # The crossfade always happens at the END of the buffer, regardless of beat alignment
-        # The fadeout_buffer_pos is only used for beat alignment, not for EQ timing
-        fadeout_eq_start = max(0, MAX_SMART_CROSSFADE_DURATION - eq_ramp_duration)
+        fadeout_eq_start = max(0, MAX_SMART_CROSSFADE_DURATION - fadeout_eq_duration)
 
         self.logger.debug(
-            "EQ: %dHz, %.1fs ramp, start=%.2fs, pos=%.2fs, BPM=%.1f r=%.2f",
+            "DJ-style EQ: %dHz, fadeout=%.1fs fadein=%.1fs, start=%.2fs, BPM=%.1f r=%.2f",
             crossover_freq,
-            eq_ramp_duration,
+            fadeout_eq_duration,
+            fadein_eq_duration,
             fadeout_eq_start,
-            fadeout_buffer_pos if fadeout_buffer_pos is not None else -1,
             avg_bpm,
             bpm_ratio,
         )
 
-        # Generate filter expressions using helper function
-        def volume_ramp(start_time: float, duration: float, direction: str = "up") -> str:
-            if direction == "up":
-                return f"'min(max(t-{start_time},0),{duration})/{duration}':eval=frame"
-            else:
-                return f"'1-min(max(t-{start_time},0),{duration})/{duration}':eval=frame"
+        # Use the new frequency sweep method for fadeout (unfiltered → low-pass)
+        fadeout_filters = self._create_frequency_sweep_filter(
+            input_label=fade_out_label,
+            output_label="fadeout_eq",
+            sweep_type="lowpass",
+            target_freq=crossover_freq,
+            duration=fadeout_eq_duration,
+            start_time=fadeout_eq_start,
+            sweep_direction="fade_in",  # Fade IN the lowpass effect
+            poles=1,
+            curve_type="exponential",  # Use exponential curve for smoother DJ-style transitions
+        )
 
-        return [
-            # Fadeout: unfiltered → low-pass filtered (swapped from high-pass)
-            f"{fade_out_label}asplit=2[fadeout_orig][fadeout_tolp]",
-            f"[fadeout_tolp]lowpass=f={crossover_freq}:poles=1[fadeout_filtered]",
-            f"[fadeout_orig]volume={volume_ramp(fadeout_eq_start, eq_ramp_duration, 'down')}"
-            "[fadeout_orig_faded]",
-            f"[fadeout_filtered]volume={volume_ramp(fadeout_eq_start, eq_ramp_duration, 'up')}"
-            "[fadeout_filtered_faded]",
-            "[fadeout_orig_faded][fadeout_filtered_faded]amix=inputs=2:duration=longest:"
-            "normalize=0[fadeout_eq]",
-            # Fadein: high-pass filtered → unfiltered (swapped from low-pass)
-            f"{fade_in_label}asplit=2[fadein_orig][fadein_tohp]",
-            f"[fadein_tohp]highpass=f={crossover_freq}:poles=1[fadein_filtered]",
-            f"[fadein_filtered]volume={volume_ramp(0, eq_ramp_duration, 'down')}"
-            "[fadein_filtered_faded]",
-            f"[fadein_orig]volume={volume_ramp(0, eq_ramp_duration, 'up')}[fadein_orig_faded]",
-            "[fadein_filtered_faded][fadein_orig_faded]amix=inputs=2:duration=longest:"
-            "normalize=0[fadein_eq]",
-        ]
+        # Use the new frequency sweep method for fadein (high-pass → unfiltered)
+        fadein_filters = self._create_frequency_sweep_filter(
+            input_label=fade_in_label,
+            output_label="fadein_eq",
+            sweep_type="highpass",
+            target_freq=crossover_freq,
+            duration=fadein_eq_duration,
+            start_time=0,
+            sweep_direction="fade_out",  # Fade OUT the highpass effect
+            poles=1,
+            curve_type="exponential",  # Use exponential curve for smoother DJ-style transitions
+        )
 
-    def _translate_fadeout_position_to_buffer(
-        self,
-        fadeout_start_pos: float,
-        fade_out_analysis: SmartFadesAnalysis,
-    ) -> float | None:
-        """
-        Translate fadeout beat position from full-track coordinates to buffer coordinates.
-
-        Buffer contains LAST MAX_SMART_CROSSFADE_DURATION seconds of fadeout track.
-        """
-        if not fade_out_analysis.duration:
-            return None
-
-        if fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION:
-            # Buffer contains seconds [duration-MAX, duration] mapped to [0, MAX]
-            buffer_start = fade_out_analysis.duration - MAX_SMART_CROSSFADE_DURATION
-            return fadeout_start_pos - buffer_start if fadeout_start_pos >= buffer_start else None
-        else:
-            # Short track - entire track fits in buffer (direct mapping)
-            return fadeout_start_pos
+        return fadeout_filters + fadein_filters
 
     # FALLBACK DEFAULT CROSSFADE
     async def default_crossfade(
