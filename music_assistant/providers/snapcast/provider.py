@@ -82,7 +82,6 @@ class SnapCastProvider(PlayerProvider):
                 str(self.config.get_value(CONF_SERVER_CONTROL_PORT))
             )
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
-        self._stream_tasks = {}
         self._ids_map = bidict({})
 
         if self._use_builtin_server:
