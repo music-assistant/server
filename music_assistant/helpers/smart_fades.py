@@ -549,12 +549,12 @@ class SmartFadesMixer:
         if dj_style_mode == DJStyleMode.AUTO:
             avg_bpm = (fade_in_analysis.bpm + fade_out_analysis.bpm) / 2
             bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
-            
+
             # Always use CLASSIC for slower tempos (hip-hop, R&B, downtempo)
-            if avg_bpm < 110:
+            if avg_bpm <= 110:
                 dj_style_mode = DJStyleMode.CLASSIC
             # Use MODERN only for similar BPMs at dance music tempos (house, techno, trance)
-            elif abs(bpm_ratio - 1.0) < 0.1:
+            elif 110 < avg_bpm <= 145 and abs(bpm_ratio - 1.0) < 0.1:
                 dj_style_mode = DJStyleMode.MODERN
             else:
                 # Default to CLASSIC for mismatched BPMs to prevent frequency clashing
@@ -565,16 +565,16 @@ class SmartFadesMixer:
             # No frequency filtering, just pass through
             filters.extend(
                 [
-                    "[fadeout_input]anull[fadeout_eq]",  # codespell:ignore anull
-                    "[fadein_input]anull[fadein_eq]",  # codespell:ignore anull
+                    "[fadeout_beatalign]anull[fadeout_eq]",  # codespell:ignore anull
+                    "[fadein_beatalign]anull[fadein_eq]",  # codespell:ignore anull
                 ]
             )
         elif dj_style_mode == DJStyleMode.MODERN:
             frequency_filters = self._dj_modern(
                 fade_out_analysis,
                 fade_in_analysis,
-                "[fadeout_input]",
-                "[fadein_input]",
+                "[fadeout_beatalign]",
+                "[fadein_beatalign]",
                 crossfade_duration,
             )
             filters.extend(frequency_filters)
@@ -582,8 +582,8 @@ class SmartFadesMixer:
             frequency_filters = self._dj_classic(
                 fade_out_analysis,
                 fade_in_analysis,
-                "[fadeout_input]",
-                "[fadein_input]",
+                "[fadeout_beatalign]",
+                "[fadein_beatalign]",
                 crossfade_duration,
                 fadeout_buffer_pos,
             )
@@ -609,22 +609,7 @@ class SmartFadesMixer:
         """Generate FFmpeg filter chain for frequency sweep effect.
 
         This creates a perceptual frequency sweep by blending between filtered
-        and unfiltered signals using time-varying volume controls.
-
-        Args:
-            input_label: Input stream label
-            output_label: Output stream label
-            sweep_type: 'lowpass' or 'highpass'
-            target_freq: Target frequency for the filter
-            duration: Sweep duration in seconds
-            start_time: When to start the sweep (seconds from stream start)
-            sweep_direction: 'fade_in' (dry→wet) or 'fade_out' (wet→dry)
-            poles: Filter order (1-4, higher = steeper slope)
-            curve_type: Volume curve shape for blending
-
-        Returns:
-            List of FFmpeg filter commands
-        """
+        and unfiltered signals using time-varying volume controls."""
         # Generate unique intermediate labels
         orig_label = f"{output_label}_orig"
         filter_label = f"{output_label}_to{sweep_type[:2]}"
@@ -696,20 +681,7 @@ class SmartFadesMixer:
         fade_out_analysis: SmartFadesAnalysis,
         crossfade_duration: float,
     ) -> tuple[float | None, list[str]]:
-        """
-        Perform beat alignment preprocessing by creating alignment filters.
-
-        Works with original FFmpeg input labels [0] and [1].
-
-        Args:
-            fadeout_start_pos: Beat position for fadeout track (or None)
-            fadein_start_pos: Beat position for fadein track (or None)
-            fade_out_analysis: Analysis data for fadeout track
-            crossfade_duration: Duration of crossfade in seconds
-
-        Returns:
-            Tuple of (fadeout_buffer_pos, alignment_filters)
-        """
+        """Perform beat alignment preprocessing by creating alignment filters."""
         fadeout_buffer_pos = None
         alignment_filters = []
 
@@ -729,24 +701,24 @@ class SmartFadesMixer:
                 # Apply beat alignment: trim fadein track, keep fadeout intact
                 alignment_filters.extend(
                     [
-                        "[0]anull[fadeout_input]",  # codespell:ignore anull
-                        f"[1]atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_input]",
+                        "[0]anull[fadeout_beatalign]",  # codespell:ignore anull
+                        f"[1]atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_beatalign]",
                     ]
                 )
             else:
                 # Beat positions outside buffer range, use standard processing
                 alignment_filters.extend(
                     [
-                        "[0]anull[fadeout_input]",  # codespell:ignore anull
-                        "[1]anull[fadein_input]",  # codespell:ignore anull
+                        "[0]anull[fadeout_beatalign]",  # codespell:ignore anull
+                        "[1]anull[fadein_beatalign]",  # codespell:ignore anull
                     ]
                 )
         else:
             # No beat alignment - pass through audio unchanged
             alignment_filters.extend(
                 [
-                    "[0]anull[fadeout_input]",  # codespell:ignore anull
-                    "[1]anull[fadein_input]",  # codespell:ignore anull
+                    "[0]anull[fadeout_beatalign]",  # codespell:ignore anull
+                    "[1]anull[fadein_beatalign]",  # codespell:ignore anull
                 ]
             )
             # Calculate approximate position where crossfade happens in buffer
