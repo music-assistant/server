@@ -137,16 +137,23 @@ class SnapCastPlayer(Player):
         assert group is not None  # for type checking
         # handle client additions
         for player_id in player_ids_to_add or []:
-            if player_id not in group.clients:
-                snapcast_id = self.provider._get_snapclient_id(player_id)
+            snapcast_id = self.provider._get_snapclient_id(player_id)
+            if snapcast_id not in group.clients:
                 await group.add_client(snapcast_id)
-                self._attr_group_members.append(player_id)
+                if player_id not in self._attr_group_members:
+                    self._attr_group_members.append(player_id)
         # handle client removals
         for player_id in player_ids_to_remove or []:
-            if player_id in group.clients:
-                snapcast_id = self.provider._get_snapclient_id(player_id)
+            snapcast_id = self.provider._get_snapclient_id(player_id)
+            if snapcast_id in group.clients:
                 await group.remove_client(snapcast_id)
-                self._attr_group_members.remove(player_id)
+                if player_id in self._attr_group_members:
+                    self._attr_group_members.remove(player_id)
+                # Set default stream and stop ungrouped players
+                removed_snapclient = self.provider._snapserver.client(snapcast_id)
+                await removed_snapclient.group.set_stream("default")
+                if removed_player := self.mass.players.get(player_id):
+                    await removed_player.stop()
         self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
