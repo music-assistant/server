@@ -379,7 +379,7 @@ class SnapCastPlayer(Player):
         2. Easily identify which stream belongs to which player, for instance to be able to
            delete a music stream even when it is not active due to an announcement.
         """
-        safe_name = create_safe_string(self.display_name, replace_space=True)
+        safe_name = create_safe_string(self.player_id, replace_space=True)
         stream_name = f"{MASS_STREAM_PREFIX}{safe_name}"
         if stream_type == SnapCastStreamType.ANNOUNCEMENT:
             stream_name += MASS_ANNOUNCEMENT_POSTFIX
