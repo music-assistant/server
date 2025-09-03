@@ -277,7 +277,7 @@ class SnapCastProvider(PlayerProvider):
         for snap_client in self._snapserver.clients:
             if ma_player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
                 assert isinstance(ma_player, SnapCastPlayer)  # for type checking
-                snap_client.set_callback(ma_player._handle_player_update)
+                ma_player._handle_player_update(snap_client)
 
     def _handle_disconnect(self, exc: Exception) -> None:
         """Handle disconnect callback from snapserver."""
