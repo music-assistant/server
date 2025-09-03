@@ -149,27 +149,6 @@ class SnapCastPlayer(Player):
                 self._attr_group_members.remove(player_id)
         self.update_state()
 
-    async def ungroup(self) -> None:
-        """Ungroup."""
-        if self.synced_to is None:
-            for mass_child_id in list(self.group_members):
-                if mass_child_id != self.player_id:
-                    if child_player := self.mass.players.get(mass_child_id):
-                        await child_player.ungroup()
-            return
-        mass_sync_master_player = self.mass.players.get(self.synced_to)
-        assert mass_sync_master_player is not None  # for type checking
-        mass_sync_master_player._attr_group_members.remove(self.player_id)
-        group = self._get_snapgroup()
-        assert group is not None  # for type checking
-        await group.remove_client(self.snap_client_id)
-        # assign default/empty stream to the player
-        await group.set_stream("default")
-        await self.stop()
-        # make sure that the player manager gets an update
-        self.update_state()
-        mass_sync_master_player.update_state()
-
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         # ruff: noqa: PLR0915
