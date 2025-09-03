@@ -119,6 +119,7 @@ class SnapCastPlayer(Player):
                 self._stream_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._stream_task
+            self._stream_task = None
 
     async def volume_mute(self, muted: bool) -> None:
         """Send MUTE command to given player."""
@@ -169,6 +170,7 @@ class SnapCastPlayer(Player):
                 self._stream_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._stream_task
+            self._stream_task = None
 
         # get stream or create new one
         stream_name = self._get_stream_name(SnapCastStreamType.MUSIC)
