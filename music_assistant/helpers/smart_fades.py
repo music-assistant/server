@@ -305,7 +305,7 @@ class SmartFadesMixer:
                 )
 
         # Use standard crossfade
-        return await self.default_crossfade(
+        return await self._default_crossfade(
             fade_in_part,
             fade_out_part,
             pcm_format,
@@ -325,24 +325,19 @@ class SmartFadesMixer:
         # Calculate optimal crossfade bars based on BPM compatibility (e.g. 2, 4, 8 or 16 bars)
         optimal_crossfade_bars = self._calculate_optimal_crossfade_bars(
             fade_out_analysis, fade_in_analysis
-        )
-
-        self.logger.info(
-            "Applying smart fade: fade_out_bpm=%.1f, fade_in_bpm=%.1f, %d bars, mode=%s",
-            fade_out_analysis.bpm,
-            fade_in_analysis.bpm,
-            optimal_crossfade_bars,
-            dj_style_mode,
-        )
+        )        
         # Calculate optimal fade duration using beat analysis
         optimal_duration, fadeout_start_pos, fadein_start_pos = self._calculate_optimal_fade_timing(
             fade_out_analysis, fade_in_analysis, optimal_crossfade_bars
         )
 
         self.logger.debug(
-            "Smart fade: %.2fs, %d bars%s",
-            optimal_duration,
+            "Smart fade: out_bpm=%.1f, in_bpm=%.1f, %d bars, crossfade duration: %.2fs, mode=%s%s",
+            fade_out_analysis.bpm,
+            fade_in_analysis.bpm,
             optimal_crossfade_bars,
+            optimal_duration,
+            dj_style_mode,
             ", beat-aligned" if fadeout_start_pos else "",
         )
 
@@ -350,17 +345,14 @@ class SmartFadesMixer:
         fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
         async with aiofiles.open(fadeout_filename, "wb") as outfile:
             await outfile.write(fade_out_part)
-
-        # Build FFmpeg command for enhanced smart fade
         args = [
-            # Generic args
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
             "error",
-            # fadeout part (as file)
+            # Input 1: fadeout part (as file)
             "-acodec",
-            pcm_format.content_type.name.lower(),
+            pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
             "-ac",
             str(pcm_format.channels),
             "-ar",
@@ -371,65 +363,56 @@ class SmartFadesMixer:
             pcm_format.content_type.value,
             "-i",
             fadeout_filename,
-            # fade_in part (stdin)
+            # Input 2: fade_in part (stdin)
             "-acodec",
             pcm_format.content_type.name.lower(),
             "-ac",
             str(pcm_format.channels),
-            "-channel_layout",
-            "mono" if pcm_format.channels == 1 else "stereo",
             "-ar",
             str(pcm_format.sample_rate),
+            "-channel_layout",
+            "mono" if pcm_format.channels == 1 else "stereo",
             "-f",
             pcm_format.content_type.value,
             "-i",
             "-",
         ]
-
         # Build enhanced filter chain with extended EQ duration
-        filter_complex, _ = self._create_enhanced_smart_fade_filters(
+        fade_filters = self._create_enhanced_smart_fade_filters(
             fade_out_analysis,
             fade_in_analysis,
-            "[0]",
-            "[1]",
             optimal_duration,
             fadeout_start_pos,
             fadein_start_pos,
             dj_style_mode,
         )
-
         args.extend(
             [
                 "-filter_complex",
-                ";".join(filter_complex),
+                ";".join(fade_filters),
+                # Output format specification - must match input codec format
                 "-acodec",
                 pcm_format.content_type.name.lower(),
                 "-ac",
                 str(pcm_format.channels),
-                "-channel_layout",
-                "mono" if pcm_format.channels == 1 else "stereo",
                 "-ar",
                 str(pcm_format.sample_rate),
+                "-channel_layout",
+                "mono" if pcm_format.channels == 1 else "stereo",
                 "-f",
                 pcm_format.content_type.value,
                 "-",
             ]
         )
 
-        # Debug log the full FFmpeg command and filter complex
-        self.logger.debug("FFmpeg command: %s", " ".join(args))
-        self.logger.debug("Filter complex: %s", ";".join(filter_complex))
+        # Debug log the full FFmpeg command
+        self.logger.debug("FFmpeg command args: %s", " ".join(args))
 
         # Execute the enhanced smart fade with full buffer
         _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
         await remove_file(fadeout_filename)
 
-        # Use full FFmpeg output directly (includes post-crossfade audio naturally)
         if raw_crossfade_output:
-            self.logger.info(
-                "Smart fade successful: duration=%.2fs, full buffer processing",
-                optimal_duration,
-            )
             return raw_crossfade_output
         else:
             stderr_msg = stderr.decode() if stderr else "(no stderr output)"
@@ -537,13 +520,11 @@ class SmartFadesMixer:
         self,
         fade_out_analysis: SmartFadesAnalysis,
         fade_in_analysis: SmartFadesAnalysis,
-        fade_out_input: str,
-        fade_in_input: str,
         crossfade_duration: float,
         fadeout_start_pos: float | None = None,
         fadein_start_pos: float | None = None,
         dj_style_mode: DJStyleMode = DJStyleMode.AUTO,
-    ) -> tuple[list[str], str]:
+    ) -> list[str]:
         """
         Create smart fade filters with perfect timing and adaptive filtering.
 
@@ -551,26 +532,18 @@ class SmartFadesMixer:
         for smooth, natural fades.
 
         Returns:
-            (filter_list, fade_in_label) - where fade_in_label is the final input label for fade_in
+            List of FFmpeg filter commands that produce final crossfaded output
         """
         filters: list[str] = []
-        current_fade_out_label = fade_out_input
-        current_fade_in_label = fade_in_input
 
-        # No tempo modification - preserve original audio quality
-
-        # Step 1a: Beat alignment preprocessing
-        current_fade_out_label, current_fade_in_label, fadeout_buffer_pos = (
-            self._perform_beat_alignment(
-                filters,
-                fade_out_input,
-                fade_in_input,
-                fadeout_start_pos,
-                fadein_start_pos,
-                fade_out_analysis,
-                crossfade_duration,
-            )
+        # Beat alignment preprocessing
+        fadeout_buffer_pos, beat_align_filters = self._perform_beat_alignment(
+            fadeout_start_pos,
+            fadein_start_pos,
+            fade_out_analysis,
+            crossfade_duration,
         )
+        filters.extend(beat_align_filters)
 
         # Step 2: Apply frequency filtering based on DJ style mode
 
@@ -582,21 +555,21 @@ class SmartFadesMixer:
                 DJStyleMode.MODERN if abs(bpm_ratio - 1.0) < 0.1 else DJStyleMode.CLASSIC
             )
 
-            self.logger.debug(
-                "Auto-selected DJ mode: %s (BPM ratio: %.2f)", dj_style_mode, bpm_ratio
-            )
-
         # Apply the selected filter style
         if dj_style_mode == DJStyleMode.OFF:
             # No frequency filtering, just pass through
-            filters.append(f"{current_fade_out_label}copy[fadeout_eq]")
-            filters.append(f"{current_fade_in_label}copy[fadein_eq]")
-        elif dj_style_mode == DJStyleMode.MODERN:            
+            filters.extend(
+                [
+                    "[fadeout_input]anull[fadeout_eq]",  # codespell:ignore anull
+                    "[fadein_input]anull[fadein_eq]",  # codespell:ignore anull
+                ]
+            )
+        elif dj_style_mode == DJStyleMode.MODERN:
             frequency_filters = self._dj_modern(
                 fade_out_analysis,
                 fade_in_analysis,
-                current_fade_out_label,
-                current_fade_in_label,
+                "[fadeout_input]",
+                "[fadein_input]",
                 crossfade_duration,
             )
             filters.extend(frequency_filters)
@@ -604,8 +577,8 @@ class SmartFadesMixer:
             frequency_filters = self._dj_classic(
                 fade_out_analysis,
                 fade_in_analysis,
-                current_fade_out_label,
-                current_fade_in_label,
+                "[fadeout_input]",
+                "[fadein_input]",
                 crossfade_duration,
                 fadeout_buffer_pos,
             )
@@ -614,7 +587,7 @@ class SmartFadesMixer:
         # Step 3: Apply linear crossfade (no curves to avoid interfering with gradual EQ ramping)
         filters.append(f"[fadeout_eq][fadein_eq]acrossfade=d={crossfade_duration}")
 
-        return filters, current_fade_in_label    
+        return filters
 
     def _create_frequency_sweep_filter(
         self,
@@ -713,74 +686,70 @@ class SmartFadesMixer:
 
     def _perform_beat_alignment(
         self,
-        filters: list[str],
-        fade_out_input: str,
-        fade_in_input: str,
         fadeout_start_pos: float | None,
         fadein_start_pos: float | None,
         fade_out_analysis: SmartFadesAnalysis,
         crossfade_duration: float,
-    ) -> tuple[str, str, float | None]:
+    ) -> tuple[float | None, list[str]]:
         """
-        Perform beat alignment preprocessing and return updated labels and buffer position.
+        Perform beat alignment preprocessing by creating alignment filters.
+
+        Works with original FFmpeg input labels [0] and [1].
 
         Args:
-            filters: Filter list to append alignment filters to
-            fade_out_input: Original fadeout input label
-            fade_in_input: Original fadein input label
             fadeout_start_pos: Beat position for fadeout track (or None)
             fadein_start_pos: Beat position for fadein track (or None)
             fade_out_analysis: Analysis data for fadeout track
             crossfade_duration: Duration of crossfade in seconds
 
         Returns:
-            (current_fade_out_label, current_fade_in_label, fadeout_buffer_pos)
+            Tuple of (fadeout_buffer_pos, alignment_filters)
         """
         fadeout_buffer_pos = None
+        alignment_filters = []
 
         if fadeout_start_pos is not None and fadein_start_pos is not None:
             if fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION:
                 # Buffer contains seconds [duration-MAX, duration] mapped to [0, MAX]
                 buffer_start = fade_out_analysis.duration - MAX_SMART_CROSSFADE_DURATION
-                fadeout_buffer_pos=  fadeout_start_pos - buffer_start if fadeout_start_pos >= buffer_start else None
+                fadeout_buffer_pos = (
+                    fadeout_start_pos - buffer_start if fadeout_start_pos >= buffer_start else None
+                )
             else:
                 # Short track - entire track fits in buffer (direct mapping)
                 fadeout_buffer_pos = fadeout_start_pos
 
             # Check if both positions are within buffer ranges
-            if fadein_start_pos <= MAX_SMART_CROSSFADE_DURATION:
+            if fadeout_buffer_pos is not None and fadein_start_pos <= MAX_SMART_CROSSFADE_DURATION:
                 # Apply beat alignment: trim fadein track, keep fadeout intact
-                filters.append(f"{fade_out_input}anull[fadeout_aligned]")  # codespell:ignore
-                filters.append(
-                    f"{fade_in_input}atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_aligned]"
-                )
-                current_fade_out_label = "[fadeout_aligned]"
-                current_fade_in_label = "[fadein_aligned]"
-
-                self.logger.debug(
-                    "Beat alignment: fadeout %.2fs->%.2fs, fadein %.2fs",
-                    fadeout_start_pos,
-                    fadeout_buffer_pos,
-                    fadein_start_pos,
+                alignment_filters.extend(
+                    [
+                        "[0]anull[fadeout_input]",  # codespell:ignore anull
+                        f"[1]atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_input]",
+                    ]
                 )
             else:
                 # Beat positions outside buffer range, use standard processing
-                filters.append(f"{fade_out_input}anull[fadeout_clean]")  # codespell:ignore
-                filters.append(f"{fade_in_input}anull[fadein_clean]")  # codespell:ignore
-                current_fade_out_label = "[fadeout_clean]"
-                current_fade_in_label = "[fadein_clean]"
+                alignment_filters.extend(
+                    [
+                        "[0]anull[fadeout_input]",  # codespell:ignore anull
+                        "[1]anull[fadein_input]",  # codespell:ignore anull
+                    ]
+                )
         else:
             # No beat alignment - pass through audio unchanged
-            filters.append(f"{fade_out_input}anull[fadeout_clean]")  # codespell:ignore
-            filters.append(f"{fade_in_input}anull[fadein_clean]")  # codespell:ignore
-            current_fade_out_label = "[fadeout_clean]"
-            current_fade_in_label = "[fadein_clean]"
+            alignment_filters.extend(
+                [
+                    "[0]anull[fadeout_input]",  # codespell:ignore anull
+                    "[1]anull[fadein_input]",  # codespell:ignore anull
+                ]
+            )
             # Calculate approximate position where crossfade happens in buffer
             # The buffer contains the last MAX_SMART_CROSSFADE_DURATION seconds
             # Crossfade happens at the very end
             fadeout_buffer_pos = MAX_SMART_CROSSFADE_DURATION - crossfade_duration / 2
 
-        return current_fade_out_label, current_fade_in_label, fadeout_buffer_pos
+        return fadeout_buffer_pos, alignment_filters
 
     def _dj_classic(
         self,
@@ -813,7 +782,7 @@ class SmartFadesMixer:
             fadeout_eq_start = max(0.0, fadeout_buffer_pos - eq_start_offset)
 
         self.logger.debug(
-            "EQ: %dHz, %.1fs ramp, BPM avg=%.1f ratio=%.2f",
+            "DJ Classic: EQ: crossover=%dHz, %.1fs ramp, BPM avg=%.1f BPM ratio=%.2f",
             crossover_freq,
             eq_ramp_duration,
             avg_bpm,
@@ -875,11 +844,10 @@ class SmartFadesMixer:
         fadeout_eq_start = max(0, MAX_SMART_CROSSFADE_DURATION - fadeout_eq_duration)
 
         self.logger.debug(
-            "DJ-style EQ: %dHz, fadeout=%.1fs fadein=%.1fs, start=%.2fs, BPM=%.1f r=%.2f",
+            "DJ Modern: EQ: crossover=%dHz, EQ fadeout duration=%.1fs EQ fadein duration=%.1fs, BPM=%.1f BPM ratio=%.2f",
             crossover_freq,
             fadeout_eq_duration,
             fadein_eq_duration,
-            fadeout_eq_start,
             avg_bpm,
             bpm_ratio,
         )
@@ -913,7 +881,7 @@ class SmartFadesMixer:
         return fadeout_filters + fadein_filters
 
     # FALLBACK DEFAULT CROSSFADE
-    async def default_crossfade(
+    async def _default_crossfade(
         self,
         fade_in_part: bytes,
         fade_out_part: bytes,
