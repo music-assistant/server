@@ -325,7 +325,7 @@ class SmartFadesMixer:
         # Calculate optimal crossfade bars based on BPM compatibility (e.g. 2, 4, 8 or 16 bars)
         optimal_crossfade_bars = self._calculate_optimal_crossfade_bars(
             fade_out_analysis, fade_in_analysis
-        )        
+        )
         # Calculate optimal fade duration using beat analysis
         optimal_duration, fadeout_start_pos, fadein_start_pos = self._calculate_optimal_fade_timing(
             fade_out_analysis, fade_in_analysis, optimal_crossfade_bars
@@ -545,15 +545,20 @@ class SmartFadesMixer:
         )
         filters.extend(beat_align_filters)
 
-        # Step 2: Apply frequency filtering based on DJ style mode
-
         # Auto-select mode based on BPM compatibility if set to auto
         if dj_style_mode == DJStyleMode.AUTO:
+            avg_bpm = (fade_in_analysis.bpm + fade_out_analysis.bpm) / 2
             bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
-            # Use modern for very similar BPMs, classic for different BPMs
-            dj_style_mode = (
-                DJStyleMode.MODERN if abs(bpm_ratio - 1.0) < 0.1 else DJStyleMode.CLASSIC
-            )
+            
+            # Always use CLASSIC for slower tempos (hip-hop, R&B, downtempo)
+            if avg_bpm < 110:
+                dj_style_mode = DJStyleMode.CLASSIC
+            # Use MODERN only for similar BPMs at dance music tempos (house, techno, trance)
+            elif abs(bpm_ratio - 1.0) < 0.1:
+                dj_style_mode = DJStyleMode.MODERN
+            else:
+                # Default to CLASSIC for mismatched BPMs to prevent frequency clashing
+                dj_style_mode = DJStyleMode.CLASSIC
 
         # Apply the selected filter style
         if dj_style_mode == DJStyleMode.OFF:
@@ -584,7 +589,7 @@ class SmartFadesMixer:
             )
             filters.extend(frequency_filters)
 
-        # Step 3: Apply linear crossfade (no curves to avoid interfering with gradual EQ ramping)
+        # Apply linear crossfade (no curves to avoid interfering with gradual EQ ramping)
         filters.append(f"[fadeout_eq][fadein_eq]acrossfade=d={crossfade_duration}")
 
         return filters
