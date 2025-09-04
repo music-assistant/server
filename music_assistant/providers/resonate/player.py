@@ -14,13 +14,14 @@ from aioresonate.server import (
     PlayerEvent,
     VolumeChangedEvent,
 )
-from aioresonate.server.group import Metadata
+from aioresonate.server.group import AudioCodec, Metadata
 from aioresonate.server.player import (
     DisconnectBehaviour,
     StreamPauseEvent,
     StreamStartEvent,
     StreamStopEvent,
 )
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ContentType,
@@ -32,6 +33,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_OUTPUT_CODEC
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
@@ -143,11 +145,22 @@ class ResonatePlayer(Player):
         queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
         assert queue_item
 
+        output_codec = cast("str", self.config.get_value(CONF_OUTPUT_CODEC, "pcm"))
+
+        # Convert string codec to AudioCodec enum
+        codec_mapping = {
+            "pcm": AudioCodec.PCM,
+            "flac": AudioCodec.FLAC,
+            "opus": AudioCodec.OPUS,
+        }
+        audio_codec = codec_mapping.get(output_codec, AudioCodec.PCM)
+
         await self.api.group.play_media(
             self.mass.streams.get_queue_flow_stream(
                 queue=queue, start_queue_item=queue_item, pcm_format=pcm_format
             ),
             ResonateAudioFormat(pcm_format.sample_rate, pcm_format.bit_depth, pcm_format.channels),
+            preferred_stream_codec=audio_codec,
         )
         self.update_state()
         await self.update_metadata()
@@ -237,6 +250,30 @@ class ResonatePlayer(Player):
 
         # Send metadata to the group
         self.api.group.set_metadata(metadata)
+
+    async def get_config_entries(self) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the player."""
+        # OPTIONAL
+        # this method is optional and should be implemented if you need player specific
+        # configuration entries. If you do not need player specific configuration entries,
+        # you can leave this method out completely to accept the default implementation.
+        # Please note that you need to call the super() method to get the default entries.
+        default_entries = await super().get_config_entries()
+
+        return [
+            *default_entries,
+            ConfigEntry.from_dict(
+                {
+                    **CONF_ENTRY_OUTPUT_CODEC.to_dict(),
+                    "default_value": "pcm",
+                    "options": [
+                        {"title": "PCM (lossless, uncompressed)", "value": "pcm"},
+                        {"title": "FLAC (lossless, compressed)", "value": "flac"},
+                        {"title": "OPUS (lossy)", "value": "opus"},
+                    ],
+                }
+            ),
+        ]
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
