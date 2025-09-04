@@ -962,6 +962,7 @@ class LocalFileSystemProvider(MusicProvider):
             track.track_number = tags.track
         track.metadata.copyright = tags.get("copyright")
         track.metadata.lyrics = tags.lyrics
+        track.metadata.grouping = tags.get("grouping")
         track.metadata.description = tags.get("comment")
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:
