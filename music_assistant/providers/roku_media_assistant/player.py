@@ -77,9 +77,7 @@ class MediaAssistantPlayer(Player):
         """Handle POWER command on the player."""
         try:
             device_info = await self.roku.update()
-
             app_running = False
-
             if device_info.app is not None:
                 app_running = device_info.app.app_id == self.provider.config.get_value(
                     CONF_ROKU_APP_ID
