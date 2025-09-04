@@ -139,7 +139,8 @@ class SmartFadesAnalyzer:
                 return None
 
             # Use tempo from librosa (more accurate than manual calculation)
-            bpm = float(tempo)
+            # Handle numpy scalar deprecation warning
+            bpm = float(tempo.item()) if hasattr(tempo, 'item') else float(tempo)
 
             # Calculate confidence based on consistency of intervals
             if len(beats_array) > 2:

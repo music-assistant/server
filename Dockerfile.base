@@ -19,7 +19,8 @@ RUN set -x \
         openssl-dev  \
         # install snapcast so the snapcast provider can run the builtin snapcast server
         snapcast \
-        # llvm-dev is needed for librosa/numba/llvmlite support
+        # build tools and llvm support needed for librosa/numba/llvmlite
+        build-base \
         llvm-dev
 
 # Get static ffmpeg builds from https://hub.docker.com/r/mwader/static-ffmpeg/
