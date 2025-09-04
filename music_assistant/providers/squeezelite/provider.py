@@ -125,10 +125,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
         self._players.clear()
         self._multi_client_streams.clear()
 
-    async def _serve_multi_client_stream(self, request: Any) -> Any:
-        """Serve the multi-client stream endpoint (stub)."""
-        raise NotImplementedError
-
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
