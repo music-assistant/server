@@ -115,6 +115,7 @@ class SmartFadesAnalyzer:
     def _librosa_beat_analysis(self, audio_array: np.ndarray) -> SmartFadesAnalysis | None:
         """Perform beat analysis using librosa.
         
+        Uses librosa.beat.beat_track() for reliable BPM and beat detection.
         This runs in a thread pool via asyncio.to_thread() for async compatibility.
         """
         try:
@@ -151,11 +152,25 @@ class SmartFadesAnalyzer:
             else:
                 confidence = 0.5  # Low confidence with few beats
 
-            # Estimate downbeats (every 4th beat, starting from first)
-            downbeats = beats_array[::4] if len(beats_array) >= 4 else beats_array[:1]
+            # Estimate downbeats using improved musical logic
+            downbeats = self._estimate_musical_downbeats(beats_array, bpm)
 
             # Store complete track analysis
             track_duration = len(audio_mono) / sample_rate
+
+            # Validation logging for mixer compatibility
+            self.logger.debug(
+                "Librosa analysis: BPM=%.1f, %d beats, %d downbeats, duration=%.1fs, confidence=%.2f",
+                bpm, len(beats_array), len(downbeats), track_duration, confidence
+            )
+            self.logger.debug(
+                "Beat positions (first 10): %s",
+                beats_array[:10].tolist() if len(beats_array) > 10 else beats_array.tolist()
+            )
+            self.logger.debug(
+                "Downbeat positions: %s",
+                downbeats.tolist()
+            )
 
             return SmartFadesAnalysis(
                 bpm=float(bpm),
@@ -168,6 +183,48 @@ class SmartFadesAnalyzer:
         except Exception as e:
             self.logger.exception("Librosa beat analysis failed: %s", e)
             return None
+
+    def _estimate_musical_downbeats(self, beats_array: np.ndarray, bpm: float) -> np.ndarray:
+        """Estimate downbeats using musical logic and beat consistency."""
+        if len(beats_array) < 4:
+            return beats_array[:1] if len(beats_array) > 0 else np.array([])
+        
+        # Calculate expected beat interval from BPM
+        expected_beat_interval = 60.0 / bpm
+        
+        # Look for the most likely starting downbeat by analyzing beat intervals
+        # In 4/4 time, downbeats should be every 4 beats
+        best_offset = 0
+        best_consistency = 0
+        
+        # Try different starting offsets (0, 1, 2, 3) to find most consistent downbeat pattern
+        for offset in range(min(4, len(beats_array))):
+            downbeat_candidates = beats_array[offset::4]
+            
+            if len(downbeat_candidates) < 2:
+                continue
+                
+            # Calculate consistency score based on interval regularity
+            intervals = np.diff(downbeat_candidates)
+            expected_downbeat_interval = 4 * expected_beat_interval
+            
+            # Score based on how close intervals are to expected 4-beat interval
+            interval_errors = np.abs(intervals - expected_downbeat_interval) / expected_downbeat_interval
+            consistency = 1.0 - np.mean(interval_errors)
+            
+            if consistency > best_consistency:
+                best_consistency = consistency
+                best_offset = int(offset)
+        
+        # Use the best offset to generate final downbeats
+        downbeats = beats_array[best_offset::4]
+        
+        self.logger.debug(
+            "Downbeat estimation: offset=%d, consistency=%.2f, %d downbeats from %d beats",
+            best_offset, best_consistency, len(downbeats), len(beats_array)
+        )
+        
+        return downbeats
 
     async def _get_audio_bytes_from_stream_details(self, streamdetails: StreamDetails) -> bytes:
         """Retrieve bytes from the audio stream."""
