@@ -16,5 +16,6 @@
       "name": "music_assistant_models",
       "depth": 2
     }
-  ]
+  ],
+  "python.defaultInterpreterPath": ".venv/bin/python" 
 }
