@@ -343,11 +343,10 @@ class MetaDataController(CoreController):
             for img in media_item.metadata.images:
                 if img.type != img_type:
                     continue
-                if img.remotely_accessible and not resolve:
+                if not img.remotely_accessible and not resolve:
+                    # ignore image if its not remotely accessible and we don't allow resolving
                     continue
-                if img.remotely_accessible and resolve:
-                    return self.get_image_url(img)
-                return img.path
+                return self.get_image_url(img, prefer_proxy=not img.remotely_accessible)
 
         # retry with track's album
         if isinstance(media_item, Track) and media_item.album:
