@@ -1113,8 +1113,8 @@ class PlayerController(CoreController):
                     raise PlayerCommandFailed("No current item to add to favorites")
                 # send the streamtitle into a global search query
                 search_artist, search_title_title = stream_title.split(" - ", 1)
-                # strip off the enhanced text added by the Radio Paradise provider
-                search_title_title = search_title_title.split("|")[0].strip()
+                # strip off any additional comments in the title (such as from Radio Paradise)
+                search_title_title = search_title_title.split(" | ")[0].strip()
                 if track := await self.mass.music.get_track_by_name(
                     search_title_title, search_artist
                 ):
