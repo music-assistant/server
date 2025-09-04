@@ -37,7 +37,7 @@ dependencies = [
   "shortuuid==1.0.13",
   "zeroconf==0.147.0",
   "uv>=0.8.0",
-  "madmom>=0.16.1",
+  "librosa>=0.10.0",
   "numpy>=1.24.0",
 ]
 description = "Music Assistant"
@@ -61,8 +61,6 @@ test = [
   "ruff==0.12.8",
 ]
 
-[tool.uv.extra-build-dependencies]
-madmom = ["Cython"]
 
 [project.scripts]
 mass = "music_assistant.__main__:main"
