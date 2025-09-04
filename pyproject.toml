@@ -37,6 +37,8 @@ dependencies = [
   "shortuuid==1.0.13",
   "zeroconf==0.147.0",
   "uv>=0.8.0",
+  "librosa>=0.10.0",
+  "numpy>=1.24.0",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}
