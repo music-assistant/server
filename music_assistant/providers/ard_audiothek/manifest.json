@@ -5,6 +5,6 @@
   "description": "ARD Audiothek Integration",
   "codeowners": ["@jfeil"],
   "requirements": ["gql[all]==4.0.0"],
-  "documentation": "Link to the documentation on the music-assistant.io helppage (may be added later).",
+  "documentation": "https://music-assistant.io/music-providers/ard-audiothek/",
   "multi_instance": true
 }
