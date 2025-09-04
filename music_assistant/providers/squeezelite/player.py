@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     MediaType,
+    PlaybackState,
     PlayerFeature,
     PlayerType,
     RepeatMode,
@@ -90,7 +91,7 @@ class SqueezelitePlayer(Player):
             PlayerFeature.GAPLESS_PLAYBACK,
         }
         self._attr_can_group_with = {provider.lookup_key}
-        self._multi_client_stream: MultiClientStream | None = None
+        self.multi_client_stream: MultiClientStream | None = None
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
 
@@ -201,7 +202,8 @@ class SqueezelitePlayer(Player):
 
         if not self.group_members:
             # Simple, single-player playback
-            await self._handle_play_url(
+            await self._handle_play_url_for_slimplayer(
+                self.client,
                 url=media.uri,
                 media=media,
                 send_flush=True,
@@ -255,7 +257,7 @@ class SqueezelitePlayer(Player):
                 output_format=master_audio_format,
             )
         # start the stream task
-        self._multi_client_stream = stream = MultiClientStream(
+        self.multi_client_stream = stream = MultiClientStream(
             audio_source=audio_source, audio_format=master_audio_format
         )
         base_url = (
@@ -268,7 +270,7 @@ class SqueezelitePlayer(Player):
                 url = f"{base_url}&child_player_id={slimplayer.player_id}"
                 stream.expected_clients += 1
                 tg.create_task(
-                    self._handle_play_url(
+                    self._handle_play_url_for_slimplayer(
                         slimplayer,
                         url=url,
                         media=media,
@@ -279,7 +281,8 @@ class SqueezelitePlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
-        await self._handle_play_url(
+        await self._handle_play_url_for_slimplayer(
+            self.client,
             url=media.uri,
             media=media,
             enqueue=True,
@@ -330,8 +333,7 @@ class SqueezelitePlayer(Player):
         # always update the state after modifying group members
         self.update_state()
 
-        stream_session = self._multi_client_stream
-        if players_added and stream_session and not stream_session.done:
+        if players_added and self.current_media and self.playback_state == PlaybackState.PLAYING:
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
             self.mass.create_task(self.play_media(self.current_media))
@@ -393,8 +395,9 @@ class SqueezelitePlayer(Player):
         else:
             self._attr_current_media = None
 
-    async def _handle_play_url(
+    async def _handle_play_url_for_slimplayer(
         self,
+        slimplayer: SlimClient,
         url: str,
         media: PlayerMedia,
         enqueue: bool = False,
@@ -415,7 +418,7 @@ class SqueezelitePlayer(Player):
         if queue := self.mass.player_queues.get(media.queue_id):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
-        await self.client.play_url(
+        await slimplayer.play_url(
             url=url,
             mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
             metadata=metadata,
@@ -433,7 +436,7 @@ class SqueezelitePlayer(Player):
         if queue and queue.repeat_mode == RepeatMode.ONE:
             self.mass.call_later(
                 0.2,
-                self.client.play_url(
+                slimplayer.play_url(
                     url=url,
                     mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
                     metadata=metadata,
@@ -481,6 +484,7 @@ class SqueezelitePlayer(Player):
                     childs_ready += 1
             if childs_total == childs_ready:
                 break
+            count += 1
 
         # all child's ready (or timeout) - start play
         async with TaskManager(self.mass) as tg:
