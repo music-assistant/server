@@ -1,20 +1,19 @@
 """Smart Fades - Object-oriented implementation with intelligent fades and adaptive filtering."""
 
-# TODO: Figure out if we can achieve shared buffer with StreamController on full current and next track for more EQ options.
+# TODO: Figure out if we can achieve shared buffer with StreamController on full
+# current and next track for more EQ options.
 # TODO: Refactor the Analyzer into a metadata controller after we have split the controllers
 # TODO: Refactor the Mixer into a stream controller after we have split the controllers
 from __future__ import annotations
 
 import asyncio
 import logging
-import multiprocessing
-import platform
 import time
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import aiofiles
-import madmom
+import librosa
 import numpy as np
 import shortuuid
 from music_assistant_models.enums import ContentType, MediaType
@@ -50,19 +49,10 @@ class DJStyleMode(StrEnum):
 class SmartFadesAnalyzer:
     """Smart fades analyzer that performs audio analysis."""
 
-    _beat_processor: madmom.features.beats.RNNBeatProcessor | None
-    _beat_tracker: madmom.features.beats.BeatTrackingProcessor | None
-    _downbeat_processor: madmom.features.downbeats.RNNDownBeatProcessor | None
-    _downbeat_tracker: madmom.features.downbeats.DBNDownBeatTrackingProcessor | None
-
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize smart fades analyzer."""
         self.mass = mass
         self.logger = logging.getLogger(__name__)
-        self._beat_processor = None
-        self._beat_tracker = None
-        self._downbeat_processor = None
-        self._downbeat_tracker = None
 
     async def analyze(
         self,
@@ -122,48 +112,62 @@ class SmartFadesAnalyzer:
             )
             return None
 
-    def _initialize_processors(self) -> None:
-        """Initialize madmom processors once for reuse across multiple analyses."""
-        if all(
-            [
-                self._beat_processor is not None,
-                self._beat_tracker is not None,
-                self._downbeat_processor is not None,
-                self._downbeat_tracker is not None,
-            ]
-        ):
-            # Already initialized
-            return
+    def _librosa_beat_analysis(self, audio_array: np.ndarray) -> SmartFadesAnalysis | None:
+        """Perform beat analysis using librosa.
+        
+        This runs in a thread pool via asyncio.to_thread() for async compatibility.
+        """
         try:
-            # Initialize beat processors
-            is_arm = platform.machine().startswith('arm') or platform.machine() == 'aarch64'
-            if is_arm:
-                # Single model for ARM devices
-                from madmom.models import BEATS_BLSTM
-                self._beat_processor = madmom.features.beats.RNNBeatProcessor(
-                    nn_files=[BEATS_BLSTM[0]]
-                )
+            # Convert stereo to mono for analysis
+            if audio_array.shape[1] == 2:
+                audio_mono = np.mean(audio_array, axis=1).astype(np.float32)
             else:
-                # Full ensemble for powerful machines
-                self._beat_processor = madmom.features.beats.RNNBeatProcessor()
-            self._beat_tracker = madmom.features.beats.BeatTrackingProcessor(fps=ANALYSIS_FPS)
+                audio_mono = audio_array[:, 0].astype(np.float32)
 
-            # Initialize downbeat processors
-            self._downbeat_processor = madmom.features.downbeats.RNNDownBeatProcessor()
+            sample_rate = ANALYSIS_PCM_FORMAT.sample_rate
 
-            # Use most cores but leave some headroom for the main app
-            num_cores = max(1, multiprocessing.cpu_count() - 2)
-            self._downbeat_tracker = madmom.features.downbeats.DBNDownBeatTrackingProcessor(
-                beats_per_bar=4, fps=ANALYSIS_FPS, num_threads=num_cores
+            # Use librosa for beat tracking (CPU-intensive operation)
+            tempo, beats_array = librosa.beat.beat_track(
+                y=audio_mono,
+                sr=sample_rate,
+                units="time"  # Return beat times in seconds
             )
+
+            if len(beats_array) < 2:
+                self.logger.warning("Insufficient beats detected: %d", len(beats_array))
+                return None
+
+            # Use tempo from librosa (more accurate than manual calculation)
+            bpm = float(tempo)
+
+            # Calculate confidence based on consistency of intervals
+            if len(beats_array) > 2:
+                intervals = np.diff(beats_array)
+                interval_std = np.std(intervals)
+                interval_mean = np.mean(intervals)
+                # Lower coefficient of variation = higher confidence
+                cv = interval_std / interval_mean if interval_mean > 0 else 1.0
+                confidence = max(0.1, 1.0 - cv)
+            else:
+                confidence = 0.5  # Low confidence with few beats
+
+            # Estimate downbeats (every 4th beat, starting from first)
+            downbeats = beats_array[::4] if len(beats_array) >= 4 else beats_array[:1]
+
+            # Store complete track analysis
+            track_duration = len(audio_mono) / sample_rate
+
+            return SmartFadesAnalysis(
+                bpm=float(bpm),
+                beats=beats_array,
+                downbeats=downbeats,
+                confidence=float(confidence),
+                duration=track_duration,
+            )
+
         except Exception as e:
-            self.logger.error("Failed to initialize madmom processors: %s", e)
-            # Reset to None on failure
-            self._beat_processor = None
-            self._beat_tracker = None
-            self._downbeat_processor = None
-            self._downbeat_tracker = None
-            raise
+            self.logger.exception("Librosa beat analysis failed: %s", e)
+            return None
 
     async def _get_audio_bytes_from_stream_details(self, streamdetails: StreamDetails) -> bytes:
         """Retrieve bytes from the audio stream."""
@@ -187,279 +191,26 @@ class SmartFadesAnalyzer:
         self,
         audio_data: bytes,
     ) -> SmartFadesAnalysis | None:
-        """Analyze track for beat tracking."""
+        """Analyze track for beat tracking using librosa."""
         try:
-            audio_array = self._prepare_audio_for_madmom(audio_data)
-            analysis = await asyncio.to_thread(self._madmom_beat_analysis, audio_array)
-            if analysis:
-                # Set duration from audio data
-                analysis.duration = len(audio_data) / ANALYSIS_PCM_FORMAT.pcm_sample_size
-            return analysis
+            # Prepare audio data in main thread (lightweight)
+            audio_array = self._prepare_audio_for_librosa(audio_data)
+            
+            # Run CPU-intensive librosa analysis in thread pool
+            return await asyncio.to_thread(self._librosa_beat_analysis, audio_array)
         except Exception as e:
             self.logger.exception("Beat tracking analysis failed: %s", e)
             return None
-        
-    async def _analyze_track_beats_multipoint_optimized(
-        self,
-        audio_data: bytes,
-    ) -> SmartFadesAnalysis | None:
-        """Analyze track using strategic multi-point sampling, reusing first/last chunks."""
 
-        audio_array = self._prepare_audio_for_madmom(audio_data)
-        track_duration = len(audio_array) / ANALYSIS_PCM_FORMAT.sample_rate
-
-        # We already need these for beat alignment
-        chunk_duration = 45  # seconds (MAX_SMART_CROSSFADE_DURATION)
-        chunk_samples = int(chunk_duration * ANALYSIS_PCM_FORMAT.sample_rate)
-
-        # Always analyze first and last chunks (we need them anyway)
-        first_chunk = audio_array[:chunk_samples]
-        last_chunk = audio_array[-chunk_samples:]
-
-        # Parallel analysis of required chunks
-        first_analysis, last_analysis = await asyncio.gather(
-            asyncio.to_thread(self._madmom_beat_analysis, first_chunk),
-            asyncio.to_thread(self._madmom_beat_analysis, last_chunk)
-        )
-
-        analyses = [first_analysis, last_analysis]
-        sample_positions = ["0-45s", "last-45s"]
-
-        # Check if we need additional samples
-        bpm_ratio = max(first_analysis.bpm, last_analysis.bpm) / min(first_analysis.bpm, last_analysis.bpm)
-        low_confidence = min(first_analysis.confidence, last_analysis.confidence) < 0.7
-        high_variance = bpm_ratio > 1.15  # More than 15% difference
-
-        if track_duration > 120 and (high_variance or low_confidence):
-            # Add strategic middle samples for longer tracks with uncertainty
-
-            # Calculate how many additional samples we need
-            # based on track length and uncertainty level
-            if track_duration < 180:  # 3 minutes
-                positions = [0.5]
-            elif track_duration < 300:  # 5 minutes
-                positions = [0.35, 0.65]
-            else:  # Longer tracks
-                positions = [0.25, 0.5, 0.75]
-
-            # Use shorter samples for middle sections (15s instead of 45s)
-            # since we just need BPM, not full beat positions
-            middle_sample_duration = 15  # seconds
-            middle_sample_size = int(middle_sample_duration * ANALYSIS_PCM_FORMAT.sample_rate)
-
-            middle_chunks = []
-            for pos in positions:
-                # Avoid overlap with first/last chunks
-                start = int(pos * len(audio_array) - middle_sample_size/2)
-
-                # Ensure we don't overlap with the 45s chunks at start/end
-                start = max(chunk_samples, start)  # Not in first 45s
-                start = min(len(audio_array) - chunk_samples - middle_sample_size, start)  # Not in last 45s
-
-                if start > chunk_samples and start + middle_sample_size < len(audio_array) - chunk_samples:
-                    middle_chunks.append(audio_array[start:start + middle_sample_size])
-                    sample_positions.append(f"{pos*100:.0f}%")
-
-            # Analyze middle samples in parallel
-            if middle_chunks:
-                middle_analyses = await asyncio.gather(
-                    *[asyncio.to_thread(self._madmom_beat_analysis, chunk) for chunk in middle_chunks]
-                )
-                analyses.extend(middle_analyses)
-
-                self.logger.debug(
-                    "Analyzing %d samples: first/last 45s + %d middle samples (15s each)",
-                    len(analyses), len(middle_analyses)
-                )
-
-        # Calculate robust BPM from all samples
-        bpms = [a.bpm for a in analyses]
-        confidences = [a.confidence for a in analyses]
-
-        self.logger.debug(
-            "BPM samples: %s",
-            ", ".join(f"{pos}={bpm:.1f}(c={conf:.2f})"
-                        for pos, bpm, conf in zip(sample_positions, bpms, confidences))
-        )
-
-        # Use median for initial BPM estimate (robust to outliers)
-        median_bpm = np.median(bpms)
-
-        # Detect half/double time issues
-        normalized_bpms = []
-        for bpm in bpms:
-            if 0.45 <= bpm/median_bpm <= 0.55:  # Likely half-time
-                normalized_bpms.append(bpm * 2)
-            elif 1.8 <= bpm/median_bpm <= 2.2:  # Likely double-time
-                normalized_bpms.append(bpm / 2)
-            else:
-                normalized_bpms.append(bpm)
-
-        # Recalculate median with normalized BPMs
-        median_bpm = np.median(normalized_bpms)
-
-        # Filter to analyses within 10% of median (same tempo)
-        valid_indices = [
-            i for i, bpm in enumerate(normalized_bpms)
-            if 0.9 <= bpm/median_bpm <= 1.1
-        ]
-
-        if valid_indices:
-            # Weighted average of valid analyses
-            valid_analyses = [analyses[i] for i in valid_indices]
-            valid_bpms = [normalized_bpms[i] for i in valid_indices]
-            weights = [a.confidence ** 2 for a in valid_analyses]
-
-            final_bpm = sum(bpm * w for bpm, w in zip(valid_bpms, weights)) / sum(weights)
-            final_conf = sum(a.confidence * w for a, w in zip(valid_analyses, weights)) / sum(weights)
-
-            self.logger.info(
-                "BPM consensus: %.1f from %d/%d samples (variance: %.1f%%)",
-                final_bpm, len(valid_indices), len(analyses),
-                (max(valid_bpms) - min(valid_bpms)) / final_bpm * 100
-            )
-        else:
-            # No consensus - use median but flag low confidence
-            final_bpm = median_bpm
-            final_conf = np.mean(confidences) * 0.5
-            self.logger.warning(
-                "No BPM consensus found, using median: %.1f (confidence reduced to %.2f)",
-                final_bpm, final_conf
-            )
-
-        # Use the already-analyzed last chunk for beat positions
-        # (no additional processing needed!)
-        offset = (len(audio_array) - chunk_samples) / ANALYSIS_PCM_FORMAT.sample_rate
-        last_analysis.beats += offset
-        last_analysis.downbeats += offset
-
-        # CONCATENATE intro and outro beats
-        # The mixer can split them based on the gap in the middle
-        all_beats = np.concatenate([first_analysis.beats, last_analysis.beats])
-        all_downbeats = np.concatenate([first_analysis.downbeats, last_analysis.downbeats])
-
-        return SmartFadesAnalysis(
-            bpm=final_bpm,  # Accurate BPM from multi-point sampling
-            beats=all_beats,  # Beat positions from last chunk
-            downbeats=all_downbeats,
-            confidence=final_conf,
-            duration=len(audio_data) / ANALYSIS_PCM_FORMAT.pcm_sample_size
-        )
-
-    def _prepare_audio_for_madmom(self, pcm_data: bytes) -> np.ndarray:
-        """Convert PCM bytes to numpy array for madmom."""
-        # Convert stereo 32-bit float PCM to mono numpy array
+    def _prepare_audio_for_librosa(self, pcm_data: bytes) -> np.ndarray:
+        """Convert PCM bytes to numpy array for librosa."""
+        # Convert 32-bit float PCM to numpy array
         audio_array = np.frombuffer(pcm_data, dtype=np.float32)
-        if len(audio_array) % 2 == 0:  # Stereo to mono
-            audio_array = audio_array.reshape(-1, 2).mean(axis=1)
+        if len(audio_array) % 2 == 0:  # Stereo
+            audio_array = audio_array.reshape(-1, 2)
+        else:  # Mono (pad to make even)
+            audio_array = np.pad(audio_array, (0, 1)).reshape(-1, 2)
         return audio_array
-
-    def _madmom_beat_analysis(self, audio_array: np.ndarray) -> SmartFadesAnalysis:
-        """Perform beat analysis using madmom."""
-        # Initialize processors if not already done
-        if self._beat_processor is None:
-            self._initialize_processors()
-
-        # Type assertions for mypy - we know these are not None after initialization
-        assert self._beat_processor is not None
-        assert self._beat_tracker is not None
-        assert self._downbeat_processor is not None
-        assert self._downbeat_tracker is not None
-
-        # RNN Beat Processing
-        start_time = time.perf_counter()
-        beat_activations = self._beat_processor.process(
-            audio_array, sample_rate=ANALYSIS_PCM_FORMAT.sample_rate
-        )
-        rnn_duration = time.perf_counter() - start_time
-        self.logger.log(VERBOSE_LOG_LEVEL, "RNNBeatProcessor.process() took %.3fs", rnn_duration)
-
-        # Beat Tracking
-        start_time = time.perf_counter()
-        beats = self._beat_tracker.process(beat_activations)
-        tracking_duration = time.perf_counter() - start_time
-        self.logger.log(
-            VERBOSE_LOG_LEVEL, "BeatTrackingProcessor.process() took %.3fs", tracking_duration
-        )
-
-        # Downbeat tracking
-        try:
-            # RNN Downbeat Processing
-            start_time = time.perf_counter()
-            downbeat_activations = self._downbeat_processor.process(
-                audio_array, sample_rate=ANALYSIS_PCM_FORMAT.sample_rate
-            )
-            rnn_downbeat_duration = time.perf_counter() - start_time
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "RNNDownBeatProcessor.process() took %.3fs",
-                rnn_downbeat_duration,
-            )
-
-            # DBN Downbeat Tracking (with threading)
-            start_time = time.perf_counter()
-            downbeat_output = self._downbeat_tracker.process(downbeat_activations)
-            dbn_downbeat_duration = time.perf_counter() - start_time
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "DBNDownBeatTrackingProcessor.process() took %.3fs",
-                dbn_downbeat_duration,
-            )
-
-            # Extract only the downbeats (beat_number == 1)
-            if len(downbeat_output) > 0 and downbeat_output.ndim == 2:
-                downbeats = downbeat_output[downbeat_output[:, 1] == 1][:, 0]
-            else:
-                # Fallback if output format is unexpected
-                downbeats = beats[::4] if len(beats) >= 4 else beats
-
-        except Exception as e:
-            self.logger.warning("Downbeat analysis failed: %s", e)
-            # Fallback: estimate downbeats every 4 beats
-            downbeats = beats[::4] if len(beats) >= 4 else beats
-
-        # BPM estimation from beats
-        if len(beats) > 1:
-            beat_intervals = np.diff(beats)
-            avg_interval = np.mean(beat_intervals)
-            raw_bpm = float(60.0 / avg_interval) if avg_interval > 0 else 120.0
-
-            # Double BPM if detected as half-time (too slow)
-            bpm = raw_bpm * 2 if raw_bpm < 80 and 90 <= raw_bpm * 2 <= 180 else raw_bpm
-
-            self.logger.debug(
-                "BPM: %d beats, interval=%.3fs, raw=%.1f, final=%.1f",
-                len(beats),
-                avg_interval,
-                raw_bpm,
-                bpm,
-            )
-        else:
-            bpm = 120.0  # Default BPM
-
-        # Confidence based on beat consistency (coefficient of variation)
-        confidence = 0.0
-        if len(beats) > 4:
-            beat_intervals = np.diff(beats)
-            if (avg_interval := np.mean(beat_intervals)) > 0:
-                confidence = float(1.0 - min(np.std(beat_intervals) / avg_interval, 1.0))
-
-        analysis = SmartFadesAnalysis(
-            bpm=bpm,
-            beats=beats,
-            downbeats=downbeats,
-            confidence=confidence,
-        )
-
-        self.logger.info(
-            "Analysis: BPM=%.1f, %d beats, %d downbeats, conf=%.2f",
-            bpm,
-            len(beats),
-            len(downbeats),
-            confidence,
-        )
-
-        return analysis
 
 
 class SmartFadesMixer:
