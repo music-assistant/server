@@ -34,7 +34,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.database_queries import (
@@ -64,7 +64,8 @@ if TYPE_CHECKING:
 CONF_EMAIL = "email"
 CONF_TOKEN_BEARER = "token"
 CONF_EXPIRY_TIME = "token_expiry"
-CONF_USERID = "login_url"
+CONF_USERID = "user_id"
+CONF_DISPLAY_NAME = "display_name"
 
 # Constants for config actions
 CONF_ACTION_AUTH = "authenticate"
@@ -155,7 +156,7 @@ async def get_config_entries(
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
-            label=f"Successfully signed in as {values.get(CONF_USERNAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",  # noqa: E501
+            label=f"Successfully signed in as {values.get(CONF_DISPLAY_NAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",  # noqa: E501
             hidden=not authenticated,
         ),
         ConfigEntry(
@@ -188,10 +189,10 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PODCAST_FINISHED,
             type=ConfigEntryType.INTEGER,
-            label="Percentage reached until podcast episode is marked as finished",
+            label="Percentage required before podcast episode is marked as fully played",
             required=False,
-            description="This setting defines the percentage of how much of a podcast "
-            "has to be left unheard until an episode is marked as finished",
+            description="This setting defines how much of a podcast must be listened to before an "
+            "episode is marked as fully played",
             default_value=95,
             value=values.get(CONF_PODCAST_FINISHED),
         ),
@@ -221,12 +222,12 @@ async def get_config_entries(
             value=values.get(CONF_EXPIRY_TIME),
         ),
         ConfigEntry(
-            key=CONF_USERNAME,
+            key=CONF_DISPLAY_NAME,
             type=ConfigEntryType.STRING,
             label="username",
             hidden=True,
             required=False,
-            value=values.get(CONF_USERNAME),
+            value=values.get(CONF_DISPLAY_NAME),
         ),
     )
 
@@ -237,10 +238,6 @@ class ARDAudiothek(MusicProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        # MANDATORY
-        # you should return a tuple of provider-level features
-        # here that your player provider supports or an empty tuple if none.
-        # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
         return {
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
@@ -268,12 +265,12 @@ class ARDAudiothek(MusicProvider):
             and _password is not None
             and (self.token is None or self.user_id is None or self.token_expire < datetime.now())
         ):
-            self.token, self.user_id, _username = await _login(
+            self.token, self.user_id, _display_name = await _login(
                 self.mass.http_session, str(_email), str(_password)
             )
             self.update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
             self.update_config_value(CONF_USERID, self.user_id, encrypted=True)
-            self.update_config_value(CONF_USERNAME, _username)
+            self.update_config_value(CONF_DISPLAY_NAME, _display_name)
             self.update_config_value(
                 CONF_EXPIRY_TIME, str((datetime.now() + timedelta(hours=1)).timestamp())
             )
@@ -360,7 +357,6 @@ class ARDAudiothek(MusicProvider):
     @property
     def is_streaming_provider(self) -> bool:
         """Search and lookup always search remote."""
-        # For streaming providers return True here but for local file based providers return False.
         return True
 
     async def search(
@@ -375,40 +371,46 @@ class ARDAudiothek(MusicProvider):
         :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
-        async with await self.get_client() as session:
-            search_shows_query.variable_values = {"query": search_query, "limit": limit}
-            search_shows = (await session.execute(search_shows_query))["search"]["shows"]["nodes"]
-
         podcasts = []
-        for element in search_shows:
-            podcasts += [
-                _parse_podcast(
-                    self.domain,
-                    self.lookup_key,
-                    self.instance_id,
-                    element,
-                    element["coreId"],
-                )
-            ]
-        async with await self.get_client() as session:
-            search_radios_query.variable_values = {
-                "filter": {"title": {"includes": search_query}},
-                "first": limit,
-            }
-            search_radios = (await session.execute(search_radios_query))["permanentLivestreams"][
-                "nodes"
-            ]
-
         radios = []
-        for element in search_radios:
-            radios += [
-                _parse_radio(
-                    self.domain,
-                    self.instance_id,
-                    element,
-                    element["coreId"],
-                )
-            ]
+
+        if MediaType.PODCAST in media_types:
+            async with await self.get_client() as session:
+                search_shows_query.variable_values = {"query": search_query, "limit": limit}
+                search_shows = (await session.execute(search_shows_query))["search"]["shows"][
+                    "nodes"
+                ]
+
+            for element in search_shows:
+                podcasts += [
+                    _parse_podcast(
+                        self.domain,
+                        self.lookup_key,
+                        self.instance_id,
+                        element,
+                        element["coreId"],
+                    )
+                ]
+
+        if MediaType.RADIO in media_types:
+            async with await self.get_client() as session:
+                search_radios_query.variable_values = {
+                    "filter": {"title": {"includesInsensitive": search_query}},
+                    "first": limit,
+                }
+                search_radios = (await session.execute(search_radios_query))[
+                    "permanentLivestreams"
+                ]["nodes"]
+
+            for element in search_radios:
+                radios += [
+                    _parse_radio(
+                        self.domain,
+                        self.instance_id,
+                        element,
+                        element["coreId"],
+                    )
+                ]
 
         return SearchResults(podcasts=podcasts, radio=radios)
 
@@ -510,6 +512,7 @@ class ARDAudiothek(MusicProvider):
                         self.instance_id,
                         episode,
                         episode_id,
+                        result["title"],
                         idx,
                         progress,
                     )
@@ -529,6 +532,7 @@ class ARDAudiothek(MusicProvider):
             self.instance_id,
             result,
             result["showId"],
+            result["show"]["title"],
             result["rowId"],
             progress,
         )
@@ -561,7 +565,7 @@ class ARDAudiothek(MusicProvider):
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(selected_stream["audioCodec"]),
             ),
-            media_type=MediaType.RADIO,
+            media_type=media_type,
             stream_type=StreamType.HTTP,
             path=fix_url(selected_stream["href"]),
             can_seek=seek,
@@ -752,6 +756,7 @@ def _parse_podcast_episode(
     instance_id: str,
     episode: dict[str, Any],
     podcast_id: str,
+    podcast_title: str,
     idx: int,
     progress: tuple[bool, int],
 ) -> PodcastEpisode:
@@ -763,7 +768,7 @@ def _parse_podcast_episode(
         podcast=ItemMapping(
             item_id=podcast_id,
             provider=lookup_key,
-            name=episode["title"],
+            name=podcast_title,
             media_type=MediaType.PODCAST,
         ),
         provider_mappings={

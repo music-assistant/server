@@ -190,6 +190,9 @@ show_episode_query = gql(
     """
 query ShowEpisode($coreId: String!) {
   itemByCoreId(coreId: $coreId) {
+    show {
+      title
+    }
     duration
     title
     episodeNumber
