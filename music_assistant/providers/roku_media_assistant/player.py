@@ -47,7 +47,6 @@ class MediaAssistantPlayer(Player):
         }
         self._attr_volume_muted = False
         self._attr_volume_level = 100
-
         self.lock = asyncio.Lock()  # Held when connecting or disconnecting the device
 
     async def setup(self) -> None:
