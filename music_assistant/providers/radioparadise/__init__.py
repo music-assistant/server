@@ -25,7 +25,6 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
-    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
