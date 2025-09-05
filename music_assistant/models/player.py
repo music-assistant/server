@@ -289,6 +289,13 @@ class Player(ABC):
 
         If there are currently no group members, this should return an empty list.
         """
+        if self.type == PlayerType.PLAYER and (
+            len(self._attr_group_members) >= 1 and self.player_id not in self._attr_group_members
+        ):
+            # always ensure the player_id is in the group_members list for players
+            return [self.player_id, *self._attr_group_members]
+        elif self._attr_group_members == [self.player_id]:
+            return []
         return self._attr_group_members
 
     @property
