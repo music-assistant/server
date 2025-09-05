@@ -1113,6 +1113,8 @@ class PlayerController(CoreController):
                     raise PlayerCommandFailed("No current item to add to favorites")
                 # send the streamtitle into a global search query
                 search_artist, search_title_title = stream_title.split(" - ", 1)
+                # strip off any additional comments in the title (such as from Radio Paradise)
+                search_title_title = search_title_title.split(" | ")[0].strip()
                 if track := await self.mass.music.get_track_by_name(
                     search_title_title, search_artist
                 ):
@@ -1163,9 +1165,6 @@ class PlayerController(CoreController):
         if not player.enabled:
             return
 
-        # register playerqueue for this player
-        self.mass.create_task(self.mass.player_queues.on_player_register(player))
-
         # register throttler for this player
         self._player_throttlers[player_id] = Throttler(1, 0.05)
 
@@ -1195,6 +1194,9 @@ class PlayerController(CoreController):
         )
         # signal event that a player was added
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+
+        # register playerqueue for this player
+        await self.mass.player_queues.on_player_register(player)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
@@ -1354,6 +1356,16 @@ class PlayerController(CoreController):
                     # - the leader has DSP enabled
                     self.mass.create_task(self.mass.players.on_player_dsp_change(player_id))
 
+        if ATTR_GROUP_MEMBERS in changed_values:
+            # Removed group members also need to be updated since they are no longer part
+            # of this group and are available for playback again
+            prev_group_members = changed_values[ATTR_GROUP_MEMBERS][0] or []
+            new_group_members = changed_values[ATTR_GROUP_MEMBERS][1] or []
+            removed_members = set(prev_group_members) - set(new_group_members)
+            for player_id in removed_members:
+                if removed_player := self.get(player_id):
+                    self.mass.loop.call_soon(removed_player.update_state, True)
+
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
@@ -1366,6 +1378,9 @@ class PlayerController(CoreController):
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
             self.mass.loop.call_soon(group_player.update_state, True)
+        # update/signal manually synced to player when child updates
+        if (synced_to := player.synced_to) and (synced_to_player := self.get(synced_to)):
+            self.mass.loop.call_soon(synced_to_player.update_state, True)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
