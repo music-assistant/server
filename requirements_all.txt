@@ -33,10 +33,10 @@ mashumaro==3.16
 music-assistant-frontend==2.15.3
 music-assistant-models==1.1.53
 mutagen==1.47.0
-orjson==3.11.2
+orjson==3.11.3
 pillow==11.3.0
 pkce==1.0.3
-plexapi==4.17.0
+plexapi==4.17.1
 podcastparser==0.6.10
 propcache>=0.2.1
 py-opensonic==7.0.2
@@ -51,7 +51,7 @@ radios==0.3.2
 setuptools>=1.0.0
 shortuuid==1.0.13
 snapcast==2.3.7
-soco==0.30.10
+soco==0.30.11
 soundcloudpy==0.1.4
 sxm==0.2.8
 unidecode==1.4.0
