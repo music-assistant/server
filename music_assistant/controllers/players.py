@@ -1163,9 +1163,6 @@ class PlayerController(CoreController):
         if not player.enabled:
             return
 
-        # register playerqueue for this player
-        self.mass.create_task(self.mass.player_queues.on_player_register(player))
-
         # register throttler for this player
         self._player_throttlers[player_id] = Throttler(1, 0.05)
 
@@ -1195,6 +1192,9 @@ class PlayerController(CoreController):
         )
         # signal event that a player was added
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+
+        # register playerqueue for this player
+        await self.mass.player_queues.on_player_register(player)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
