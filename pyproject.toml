@@ -25,7 +25,8 @@ dependencies = [
   "ifaddr==0.2.0",
   "mashumaro==3.16",
   "music-assistant-frontend==2.15.3",
-  "music-assistant-models==1.1.53",
+  #"music-assistant-models==1.1.53",
+  "git+https://github.com/music-assistant/models.git@feat/smart_fades",
   "mutagen==1.47.0",
   "orjson==3.11.1",
   "pillow==11.3.0",
@@ -37,8 +38,8 @@ dependencies = [
   "shortuuid==1.0.13",
   "zeroconf==0.147.0",
   "uv>=0.8.0",
-  "librosa>=0.11.0",
-  "numpy>=2.2.0",
+  "librosa==0.11.0",
+  "numpy==2.2.6",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}

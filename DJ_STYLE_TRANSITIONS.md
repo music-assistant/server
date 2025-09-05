@@ -73,7 +73,7 @@ The automatic mode selection is based on decades of DJ mixing experience and psy
 - Completely different groove and energy levels
 - Multi-band sweep gradually transforms the sonic character
 - Band 1 (20-200Hz): Removes hip-hop sub-bass first
-- Band 2 (200-800Hz): Transitions kick/snare region carefully  
+- Band 2 (200-800Hz): Transitions kick/snare region carefully
 - Band 3 (800-3kHz): Blends vocal/melody ranges
 - Band 4 (3k-10kHz): Manages hi-hats and presence
 - Band 5 (10k-20kHz): Air and brightness control
@@ -96,7 +96,7 @@ Range: 800-1200 Hz
 **Reasoning:**
 - **90 BPM** (hip-hop/downtempo): 800 Hz crossover
   - Lower crossover preserves warm bass characteristics
-- **120 BPM** (house): 1040 Hz crossover  
+- **120 BPM** (house): 1040 Hz crossover
   - Mid-range crossover for balanced separation
 - **140 BPM** (techno/trance): 1200 Hz crossover
   - Higher crossover to manage aggressive kick drums
@@ -105,7 +105,7 @@ This formula reflects that faster music typically has more energy in the upper b
 
 #### Modern Mode Formula
 ```
-crossover_freq = 1500 + (avg_bpm - 90) * 20  
+crossover_freq = 1500 + (avg_bpm - 90) * 20
 Range: 1500-3000 Hz
 ```
 
