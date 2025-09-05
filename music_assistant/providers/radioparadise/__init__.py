@@ -233,15 +233,14 @@ class RadioParadiseProvider(MusicProvider):
         station_icon = channel_info.get("station_icon")
         if station_icon:
             icon_url = f"{STATION_ICONS_BASE_URL}/{station_icon}"
-            images = [
+            radio.metadata.add_image(
                 MediaItemImage(
                     provider=self.lookup_key,
                     type=ImageType.THUMB,
                     path=icon_url,
                     remotely_accessible=True,
                 )
-            ]
-            radio.metadata.images = UniqueList(images)
+            )
 
         return radio
 
