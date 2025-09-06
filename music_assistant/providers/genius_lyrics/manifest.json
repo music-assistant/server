@@ -6,8 +6,7 @@
   "description": "Genius.com is a free service for finding song lyrics and annotations.",
   "codeowners": ["@robert-alfaro"],
   "requirements": ["lyricsgenius==3.6.5"],
-  "documentation": "",
+  "documentation": "https://www.music-assistant.io/metadata/",
   "multi_instance": false,
-  "allow_disable": true,
   "icon": "mdi-script-text"
 }
