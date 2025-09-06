@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import librosa
@@ -112,9 +112,11 @@ class SmartFadesAnalyzer:
             )
             return None
 
-    def _librosa_beat_analysis(self, audio_array: np.ndarray) -> SmartFadesAnalysis | None:
+    def _librosa_beat_analysis(
+        self, audio_array: np.ndarray[Any, np.dtype[np.float32]]
+    ) -> SmartFadesAnalysis | None:
         """Perform beat analysis using librosa.
-        
+
         Uses librosa.beat.beat_track() for reliable BPM and beat detection.
         This runs in a thread pool via asyncio.to_thread() for async compatibility.
         """
@@ -131,7 +133,7 @@ class SmartFadesAnalyzer:
             tempo, beats_array = librosa.beat.beat_track(
                 y=audio_mono,
                 sr=sample_rate,
-                units="time"  # Return beat times in seconds
+                units="time",  # Return beat times in seconds
             )
 
             if len(beats_array) < 2:
@@ -140,7 +142,7 @@ class SmartFadesAnalyzer:
 
             # Use tempo from librosa (more accurate than manual calculation)
             # Handle numpy scalar deprecation warning
-            bpm = float(tempo.item()) if hasattr(tempo, 'item') else float(tempo)
+            bpm = float(tempo.item()) if hasattr(tempo, "item") else float(tempo)
 
             # Calculate confidence based on consistency of intervals
             if len(beats_array) > 2:
@@ -162,16 +164,17 @@ class SmartFadesAnalyzer:
             # Validation logging for mixer compatibility
             self.logger.debug(
                 "Librosa analysis: BPM=%.1f, %d beats, %d downbeats, duration=%.1fs, confidence=%.2f",
-                bpm, len(beats_array), len(downbeats), track_duration, confidence
+                bpm,
+                len(beats_array),
+                len(downbeats),
+                track_duration,
+                confidence,
             )
             self.logger.debug(
                 "Beat positions (first 10): %s",
-                beats_array[:10].tolist() if len(beats_array) > 10 else beats_array.tolist()
+                beats_array[:10].tolist() if len(beats_array) > 10 else beats_array.tolist(),
             )
-            self.logger.debug(
-                "Downbeat positions: %s",
-                downbeats.tolist()
-            )
+            self.logger.debug("Downbeat positions: %s", downbeats.tolist())
 
             return SmartFadesAnalysis(
                 bpm=float(bpm),
@@ -185,46 +188,53 @@ class SmartFadesAnalyzer:
             self.logger.exception("Librosa beat analysis failed: %s", e)
             return None
 
-    def _estimate_musical_downbeats(self, beats_array: np.ndarray, bpm: float) -> np.ndarray:
+    def _estimate_musical_downbeats(
+        self, beats_array: np.ndarray[Any, np.dtype[np.float64]], bpm: float
+    ) -> np.ndarray[Any, np.dtype[np.float64]]:
         """Estimate downbeats using musical logic and beat consistency."""
         if len(beats_array) < 4:
             return beats_array[:1] if len(beats_array) > 0 else np.array([])
-        
+
         # Calculate expected beat interval from BPM
         expected_beat_interval = 60.0 / bpm
-        
+
         # Look for the most likely starting downbeat by analyzing beat intervals
         # In 4/4 time, downbeats should be every 4 beats
         best_offset = 0
-        best_consistency = 0
-        
+        best_consistency = 0.0
+
         # Try different starting offsets (0, 1, 2, 3) to find most consistent downbeat pattern
         for offset in range(min(4, len(beats_array))):
             downbeat_candidates = beats_array[offset::4]
-            
+
             if len(downbeat_candidates) < 2:
                 continue
-                
+
             # Calculate consistency score based on interval regularity
             intervals = np.diff(downbeat_candidates)
             expected_downbeat_interval = 4 * expected_beat_interval
-            
+
             # Score based on how close intervals are to expected 4-beat interval
-            interval_errors = np.abs(intervals - expected_downbeat_interval) / expected_downbeat_interval
+            interval_errors = (
+                np.abs(intervals - expected_downbeat_interval) / expected_downbeat_interval
+            )
             consistency = 1.0 - np.mean(interval_errors)
-            
+
             if consistency > best_consistency:
                 best_consistency = consistency
-                best_offset = int(offset)
-        
+                best_offset = offset
+
         # Use the best offset to generate final downbeats
         downbeats = beats_array[best_offset::4]
-        
+
         self.logger.debug(
             "Downbeat estimation: offset=%d, consistency=%.2f, %d downbeats from %d beats",
-            best_offset, best_consistency, len(downbeats), len(beats_array)
+            best_offset,
+            best_consistency,
+            len(downbeats),
+            len(beats_array),
         )
-        
+
         return downbeats
 
     async def _get_audio_bytes_from_stream_details(self, streamdetails: StreamDetails) -> bytes:
@@ -253,14 +263,14 @@ class SmartFadesAnalyzer:
         try:
             # Prepare audio data in main thread (lightweight)
             audio_array = self._prepare_audio_for_librosa(audio_data)
-            
+
             # Run CPU-intensive librosa analysis in thread pool
             return await asyncio.to_thread(self._librosa_beat_analysis, audio_array)
         except Exception as e:
             self.logger.exception("Beat tracking analysis failed: %s", e)
             return None
 
-    def _prepare_audio_for_librosa(self, pcm_data: bytes) -> np.ndarray:
+    def _prepare_audio_for_librosa(self, pcm_data: bytes) -> np.ndarray[Any, np.dtype[np.float32]]:
         """Convert PCM bytes to numpy array for librosa."""
         # Convert 32-bit float PCM to numpy array
         audio_array = np.frombuffer(pcm_data, dtype=np.float32)
@@ -544,25 +554,54 @@ class SmartFadesMixer:
         """
         filters: list[str] = []
 
-        # Beat alignment preprocessing
-        fadeout_buffer_pos, beat_align_filters = self._perform_beat_alignment(
+        # Check if time stretching should be applied (BPM difference < 3%)
+        bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
+        bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
+        apply_time_stretch = 0.1 < bpm_diff_percent < 3.0
+
+        # Apply time stretching FIRST to prepare the audio
+        if apply_time_stretch:
+            time_stretch_filters = self._create_time_stretch_filters(
+                fade_out_analysis.bpm,
+                fade_in_analysis.bpm,
+                crossfade_duration,
+            )
+            # Join filter strings with semicolon if multiple filters returned
+            if time_stretch_filters:
+                filters.extend(time_stretch_filters)
+            # Update label for beat alignment
+            fadeout_input_label = "[fadeout_stretched]"
+
+            self.logger.debug(
+                "Time stretch enabled: %.1f%% BPM difference, gradually adjusting %.1f -> %.1f BPM over buffer",
+                bpm_diff_percent,
+                fade_out_analysis.bpm,
+                fade_in_analysis.bpm,
+            )
+        else:
+            fadeout_input_label = "[0]"
+
+        # Beat alignment preprocessing (using time-stretched audio if applicable)
+        fadeout_buffer_pos, beat_align_filters = self._perform_beat_alignment_with_input(
             fadeout_start_pos,
             fadein_start_pos,
             fade_out_analysis,
             crossfade_duration,
+            fadeout_input_label,
         )
         filters.extend(beat_align_filters)
 
         # Auto-select mode based on BPM compatibility if set to auto
         if dj_style_mode == DJStyleMode.AUTO:
             avg_bpm = (fade_in_analysis.bpm + fade_out_analysis.bpm) / 2
-            bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
+            # Recalculate ratio in case time stretching changed effective BPM
+            effective_bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
 
             # Always use CLASSIC for slower tempos (hip-hop, R&B, downtempo)
             if avg_bpm <= 110:
                 dj_style_mode = DJStyleMode.CLASSIC
             # Use MODERN only for similar BPMs at dance music tempos (house, techno, trance)
-            elif 110 < avg_bpm <= 145 and abs(bpm_ratio - 1.0) < 0.1:
+            elif 110 < avg_bpm <= 145 and abs(effective_bpm_ratio - 1.0) < 0.1:
                 dj_style_mode = DJStyleMode.MODERN
             else:
                 # Default to CLASSIC for mismatched BPMs to prevent frequency clashing
@@ -683,14 +722,15 @@ class SmartFadesMixer:
             ),
         ]
 
-    def _perform_beat_alignment(
+    def _perform_beat_alignment_with_input(
         self,
         fadeout_start_pos: float | None,
         fadein_start_pos: float | None,
         fade_out_analysis: SmartFadesAnalysis,
         crossfade_duration: float,
+        fadeout_input_label: str = "[0]",
     ) -> tuple[float | None, list[str]]:
-        """Perform beat alignment preprocessing by creating alignment filters."""
+        """Perform beat alignment preprocessing with custom input label."""
         fadeout_buffer_pos = None
         alignment_filters = []
 
@@ -710,7 +750,7 @@ class SmartFadesMixer:
                 # Apply beat alignment: trim fadein track, keep fadeout intact
                 alignment_filters.extend(
                     [
-                        "[0]anull[fadeout_beatalign]",  # codespell:ignore anull
+                        f"{fadeout_input_label}anull[fadeout_beatalign]",  # codespell:ignore anull
                         f"[1]atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_beatalign]",
                     ]
                 )
@@ -718,7 +758,7 @@ class SmartFadesMixer:
                 # Beat positions outside buffer range, use standard processing
                 alignment_filters.extend(
                     [
-                        "[0]anull[fadeout_beatalign]",  # codespell:ignore anull
+                        f"{fadeout_input_label}anull[fadeout_beatalign]",  # codespell:ignore anull
                         "[1]anull[fadein_beatalign]",  # codespell:ignore anull
                     ]
                 )
@@ -726,7 +766,7 @@ class SmartFadesMixer:
             # No beat alignment - pass through audio unchanged
             alignment_filters.extend(
                 [
-                    "[0]anull[fadeout_beatalign]",  # codespell:ignore anull
+                    f"{fadeout_input_label}anull[fadeout_beatalign]",  # codespell:ignore anull
                     "[1]anull[fadein_beatalign]",  # codespell:ignore anull
                 ]
             )
@@ -736,6 +776,122 @@ class SmartFadesMixer:
             fadeout_buffer_pos = MAX_SMART_CROSSFADE_DURATION - crossfade_duration / 2
 
         return fadeout_buffer_pos, alignment_filters
+
+    def _perform_beat_alignment(
+        self,
+        fadeout_start_pos: float | None,
+        fadein_start_pos: float | None,
+        fade_out_analysis: SmartFadesAnalysis,
+        crossfade_duration: float,
+    ) -> tuple[float | None, list[str]]:
+        """Perform beat alignment preprocessing (backward compatibility wrapper)."""
+        return self._perform_beat_alignment_with_input(
+            fadeout_start_pos,
+            fadein_start_pos,
+            fade_out_analysis,
+            crossfade_duration,
+            "[0]",
+        )
+
+    def _create_time_stretch_filters(
+        self,
+        original_bpm: float,
+        target_bpm: float,
+        crossfade_duration: float,
+    ) -> list[str]:
+        """Create FFmpeg filters for gradual time stretching.
+
+        Uses the entire buffer duration (45s) to gradually adjust tempo from
+        original BPM to target BPM, ensuring the smoothest possible transition.
+
+        Args:
+            original_bpm: Original BPM of the outgoing track
+            target_bpm: Target BPM (incoming track's BPM)
+            crossfade_duration: Duration of the crossfade in seconds
+
+        Returns:
+            List of FFmpeg filter strings for time stretching
+        """
+        # Calculate the tempo change factor
+        # atempo accepts values between 0.5 and 2.0 (can be chained for larger changes)
+        tempo_factor = target_bpm / original_bpm
+        buffer_duration = MAX_SMART_CROSSFADE_DURATION  # 45 seconds
+
+        # For BPM differences < 3%, tempo_factor will be between 0.97 and 1.03
+        # This is well within atempo's range
+
+        # If the crossfade takes up most of the buffer, use simple linear stretch
+        if buffer_duration - crossfade_duration < 5.0:
+            self.logger.debug(
+                "Time stretch filter (linear): %.1f BPM -> %.1f BPM (factor=%.4f)",
+                original_bpm,
+                target_bpm,
+                tempo_factor,
+            )
+            return [f"[0]atempo={tempo_factor:.6f}[fadeout_stretched]"]
+
+        # Implement segmented time stretching with exponential curve
+        num_segments = 4  # Balance between smoothness and filter complexity
+        filters = []
+
+        # Split the input into segments
+        filters.append(
+            f"[0]asplit={num_segments}" + "".join(f"[seg{i}]" for i in range(num_segments))
+        )
+
+        # Process each segment with progressively more tempo adjustment
+        for i in range(num_segments):
+            # Calculate segment timing
+            segment_start = (i * buffer_duration) / num_segments
+            segment_end = ((i + 1) * buffer_duration) / num_segments
+
+            # Calculate progress through the buffer (0 to 1)
+            progress = (i + 0.5) / num_segments  # Use midpoint of segment
+
+            # Apply exponential easing curve (ease-in-out cubic)
+            # This creates minimal change at start, accelerating in middle, decelerating at end
+            if progress < 0.5:
+                # First half: ease in (slow start)
+                eased_progress = 4 * progress * progress * progress
+            else:
+                # Second half: ease out (slow finish)
+                p = 2 * progress - 2
+                eased_progress = 1 + p * p * p / 2
+
+            # Calculate tempo for this segment
+            segment_tempo = 1.0 + (tempo_factor - 1.0) * eased_progress
+
+            # Clamp to atempo's valid range (should never exceed for < 3% changes)
+            segment_tempo = max(0.5, min(2.0, segment_tempo))
+
+            # Trim segment and apply tempo adjustment
+            filters.append(
+                f"[seg{i}]atrim=start={segment_start:.3f}:end={segment_end:.3f},"
+                f"asetpts=PTS-STARTPTS,atempo={segment_tempo:.6f}[seg{i}_stretched]"
+            )
+
+            self.logger.debug(
+                "Segment %d: %.1f-%.1fs, tempo factor=%.4f (%.1f%% of change)",
+                i + 1,
+                segment_start,
+                segment_end,
+                segment_tempo,
+                eased_progress * 100,
+            )
+
+        # Concatenate all stretched segments
+        concat_inputs = "".join(f"[seg{i}_stretched]" for i in range(num_segments))
+        filters.append(f"{concat_inputs}concat=n={num_segments}:v=0:a=1[fadeout_stretched]")
+
+        self.logger.debug(
+            "Time stretch filter (segmented): %.1f BPM -> %.1f BPM (factor=%.4f) with %d segments",
+            original_bpm,
+            target_bpm,
+            tempo_factor,
+            num_segments,
+        )
+
+        return filters
 
     def _dj_classic(
         self,
@@ -876,6 +1032,9 @@ class SmartFadesMixer:
         crossfade_duration: int = 10,
     ) -> bytes:
         """Apply a standard crossfade without smart analysis."""
+        self.logger.debug(
+            "Applying standard crossfade of %ds (no beat analysis)", crossfade_duration
+        )
         crossfade_size = int(pcm_format.pcm_sample_size * crossfade_duration)
         # Pre-crossfade: outgoing track minus the crossfaded portion
         pre_crossfade = fade_out_part[:-crossfade_size]

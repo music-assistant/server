@@ -24,7 +24,6 @@ cryptography==45.0.6
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 duration-parser==1.0.1
-git+https://github.com/music-assistant/models.git@feat/smart_fades
 hass-client==1.2.0
 ibroadcastaio==0.4.0
 ifaddr==0.2.0
@@ -32,6 +31,7 @@ liblistenbrainz==0.6.0
 librosa==0.11.0
 mashumaro==3.16
 music-assistant-frontend==2.15.3
+music-assistant-models @ git+https://github.com/music-assistant/models.git@feat/smart_fades
 mutagen==1.47.0
 numpy==2.2.6
 orjson==3.11.1
