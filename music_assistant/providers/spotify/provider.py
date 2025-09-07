@@ -53,8 +53,7 @@ from .constants import (
     SUPPORTED_FEATURES,
 )
 from .helpers import get_librespot_binary
-from .parsers import parse_album, parse_artist, parse_playlist, parse_podcast, parse_track
-from .podcast_helpers import PodcastManager
+from .parsers import parse_album, parse_artist, parse_playlist, parse_podcast, parse_podcast_episode, parse_track
 from .streaming import LibrespotStreamer
 
 if TYPE_CHECKING:
@@ -80,7 +79,6 @@ class SpotifyProvider(MusicProvider):
     ) -> None:
         """Initialize the provider."""
         super().__init__(mass, manifest, config)
-        self.podcast_manager = PodcastManager(self)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -325,25 +323,87 @@ class SpotifyProvider(MusicProvider):
         playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
         return parse_playlist(playlist_obj, self)
 
-    # Podcast methods (delegate to podcast manager)
+    # Podcast methods (integrated from podcast_helpers.py)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
-        return await self.podcast_manager.get_podcast(prov_podcast_id)
+        podcast_obj = await self._get_data(f"shows/{prov_podcast_id}")
+        if not podcast_obj:
+            raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
+        return parse_podcast(podcast_obj, self)
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
-        """Get podcast episodes."""
-        async for episode in self.podcast_manager.get_podcast_episodes(prov_podcast_id):
+        """Get all podcast episodes."""
+        podcast = await self.get_podcast(prov_podcast_id)
+        episode_position = 1
+
+        async for item in self._get_all_items(
+            f"shows/{prov_podcast_id}/episodes", market="from_token"
+        ):
+            if not (item and item["id"]):
+                continue
+
+            episode = parse_podcast_episode(item, self, podcast=podcast)
+            episode.position = episode_position
+            episode_position += 1
             yield episode
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get full podcast episode details by id."""
-        return await self.podcast_manager.get_podcast_episode(prov_episode_id)
+        episode_obj = await self._get_data(
+            f"episodes/{prov_episode_id}", market="from_token"
+        )
+        if not episode_obj:
+            raise MediaNotFoundError(f"Episode not found: {prov_episode_id}")
+        return parse_podcast_episode(episode_obj, self)
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
-        """Get resume position for episode from Spotify."""
-        return await self.podcast_manager.get_resume_position(item_id, media_type)
+        """
+        Get resume position for episode from Spotify.
+
+        Returns:
+            tuple[bool, int]: (is_fully_played, position_in_milliseconds)
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            raise NotImplementedError("Resume position only supported for podcast episodes")
+
+        try:
+            # Get latest episode data from Spotify
+            episode_obj = await self._get_data(f"episodes/{item_id}", market="from_token")
+
+            if (
+                not episode_obj
+                or "resume_point" not in episode_obj
+                or not episode_obj["resume_point"]
+            ):
+                # No resume point data available, let MA use its stored position
+                raise NotImplementedError("No resume point data from Spotify")
+
+            resume_point = episode_obj["resume_point"]
+            fully_played = resume_point.get("fully_played", False)
+            position_ms = resume_point.get("resume_position_ms", 0)
+
+            # Apply played threshold logic
+            if not fully_played and episode_obj.get("duration_ms", 0) > 0:
+                completion_ratio = position_ms / episode_obj["duration_ms"]
+                if completion_ratio >= self.played_threshold:
+                    fully_played = True
+                    self.logger.debug(
+                        f"Episode {item_id} marked as played due to "
+                        f"{completion_ratio:.1%} completion"
+                    )
+
+            self.logger.debug(
+                f"Resume position from Spotify for {item_id}: "
+                f"{position_ms}ms, played: {fully_played}"
+            )
+            return fully_played, position_ms
+
+        except Exception as e:
+            self.logger.debug(f"Failed to get resume position from Spotify for {item_id}: {e}")
+            # Let MA fall back to its stored resume position
+            raise NotImplementedError("Failed to get resume position from Spotify")
 
     async def on_played(
         self,
@@ -354,9 +414,29 @@ class SpotifyProvider(MusicProvider):
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Call when an item is played in MA."""
-        await self.podcast_manager.on_played(
-            media_type, prov_item_id, fully_played, position, media_item, is_playing
+        """
+        Call when an episode is played in MA.
+
+        Note: This CANNOT sync back to Spotify as there's no API for it.
+        This is just for logging/monitoring purposes.
+        """
+        if media_type != MediaType.PODCAST_EPISODE:
+            return
+
+        if not isinstance(media_item, PodcastEpisode):
+            return
+
+        # Handle case where position might be None (e.g., when marked as played in UI)
+        safe_position = position or 0
+        if media_item.duration > 0:
+            completion_percentage = (safe_position / media_item.duration) * 100
+        else:
+            completion_percentage = 0
+
+        self.logger.debug(
+            f"Episode played in MA: {prov_item_id} "
+            f"({completion_percentage:.1f}%, fully_played: {fully_played}) "
+            f"- Cannot sync back to Spotify due to API limitations"
         )
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
@@ -647,7 +727,7 @@ class SpotifyProvider(MusicProvider):
         auth_info = kwargs.pop("auth_info", await self.login())
         headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
         async with self.mass.http_session.delete(
-            url, headers=headers, params=kwargs, json=data, ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=True
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
@@ -659,9 +739,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable(
-                    "Token expired", backoff_time=1
-                )  #  Was 0.05 but must be an int
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
@@ -674,7 +752,7 @@ class SpotifyProvider(MusicProvider):
         auth_info = kwargs.pop("auth_info", await self.login())
         headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
         async with self.mass.http_session.put(
-            url, headers=headers, params=kwargs, json=data, ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=True
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
@@ -686,9 +764,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable(
-                    "Token expired", backoff_time=1
-                )  #  Was 0.05 but must be an int
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
             # handle temporary server error
             if response.status in (502, 503):
@@ -702,7 +778,7 @@ class SpotifyProvider(MusicProvider):
         auth_info = kwargs.pop("auth_info", await self.login())
         headers = {"Authorization": f"Bearer {auth_info['access_token']}"}
         async with self.mass.http_session.post(
-            url, headers=headers, params=kwargs, json=data, ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=True
         ) as response:
             # handle spotify rate limiter
             if response.status == 429:
@@ -714,9 +790,7 @@ class SpotifyProvider(MusicProvider):
             # so it will be retried (and the token refreshed)
             if response.status == 401:
                 self._auth_info = None
-                raise ResourceTemporarilyUnavailable(
-                    "Token expired", backoff_time=1
-                )  #  Was 0.05 but must be an int
+                raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
