@@ -11,7 +11,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.enums import ContentType
-from music_assistant_models.errors import AudioError
+from music_assistant_models.errors import AudioError, FfmpegError
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -200,6 +200,7 @@ async def get_ffmpeg_stream(
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
+    raise_ffmpeg_exception: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the ffmpeg audio stream as async generator.
@@ -221,9 +222,12 @@ async def get_ffmpeg_stream(
         async for chunk in iterator:
             yield chunk
         if ffmpeg_proc.returncode not in (None, 0):
-            # dump the last 5 lines of the log in case of an unclean exit
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
-            ffmpeg_proc.logger.error(log_tail)
+            if not raise_ffmpeg_exception:
+                # dump the last 5 lines of the log in case of an unclean exit
+                ffmpeg_proc.logger.error(log_tail)
+            else:
+                raise FfmpegError(log_tail)
 
 
 def get_ffmpeg_args(  # noqa: PLR0915

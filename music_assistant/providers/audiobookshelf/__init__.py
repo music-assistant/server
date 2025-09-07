@@ -49,7 +49,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import FfmpegError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
@@ -192,7 +192,7 @@ class Audiobookshelf(MusicProvider):
     def handle_refresh_token(
         method: Callable[P, Coroutine[Any, Any, R]],
     ) -> Callable[P, Coroutine[Any, Any, R]]:
-        """Handle an expired refresh token by relogin."""
+        """Decorate a method to handle an expired refresh token by relogin."""
 
         @functools.wraps(method)
         async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -606,35 +606,62 @@ class Audiobookshelf(MusicProvider):
         streamdetails: The stream to be used
         seek_position: The seeking position in seconds
         """
-        tracks, position = self._get_track_from_position(streamdetails.data, seek_position)
-        if not tracks:
-            raise MediaNotFoundError(f"Track not found at seek position {seek_position}.")
 
-        self.logger.debug(
-            f"Skipped {len(streamdetails.data) - len(tracks)} tracks while seeking to position {seek_position}."  # noqa: E501
-        )
-        base_url = str(self.config.get_value(CONF_URL))
-        track_urls = []
-        for track in tracks:
-            stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
-            track_urls.append(stream_url)
+        async def _get_audio_stream() -> AsyncGenerator[bytes, None]:
+            tracks, position = self._get_track_from_position(streamdetails.data, seek_position)
+            if not tracks:
+                raise MediaNotFoundError(f"Track not found at seek position {seek_position}.")
 
-        async for chunk in get_multi_file_stream(
-            mass=self.mass,
-            streamdetails=StreamDetails(
-                provider=self.instance_id,
-                item_id=streamdetails.item_id,
-                audio_format=streamdetails.audio_format,
-                media_type=MediaType.AUDIOBOOK,
-                stream_type=StreamType.MULTI_FILE,
-                duration=streamdetails.duration,
-                data=track_urls,
-                can_seek=True,
-                allow_seek=True,
-            ),
-            seek_position=position,
-        ):
-            yield chunk
+            self.logger.debug(
+                f"Skipped {len(streamdetails.data) - len(tracks)} tracks"
+                " while seeking to position {seek_position}."
+            )
+            base_url = str(self.config.get_value(CONF_URL))
+            track_urls = []
+            for track in tracks:
+                stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
+                track_urls.append(stream_url)
+
+            async for chunk in get_multi_file_stream(
+                mass=self.mass,
+                streamdetails=StreamDetails(
+                    provider=self.instance_id,
+                    item_id=streamdetails.item_id,
+                    audio_format=streamdetails.audio_format,
+                    media_type=MediaType.AUDIOBOOK,
+                    stream_type=StreamType.MULTI_FILE,
+                    duration=streamdetails.duration,
+                    data=track_urls,
+                    can_seek=True,
+                    allow_seek=True,
+                ),
+                seek_position=position,
+                raise_ffmpeg_exception=True,
+            ):
+                yield chunk
+
+        # Should our token expire, we try to refresh them and continue streaming once.
+        _refreshed = False
+        while True:
+            try:
+                async for chunk in _get_audio_stream():
+                    _refreshed = False
+                    yield chunk
+                break
+            except FfmpegError as err:
+                if not _refreshed:
+                    self.logger.debug("FFMPEG raised error. Trying to refresh token.")
+                    try:
+                        await self._client.session_config.refresh()
+                    except RefreshTokenExpiredError:
+                        await self._client.session_config.authenticate(
+                            username=str(self.config.get_value(CONF_USERNAME)),
+                            password=str(self.config.get_value(CONF_PASSWORD)),
+                        )
+                    _refreshed = True
+                else:
+                    self.logger.error(err)
+                    break
 
     async def _get_stream_details_episode(self, podcast_id: str) -> StreamDetails:
         """Streamdetails of a podcast episode."""
