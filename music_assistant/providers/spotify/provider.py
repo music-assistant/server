@@ -474,16 +474,13 @@ class SpotifyProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track/episode when it will be streamed."""
-        # Use different bitrates for episodes vs tracks
-        bit_rate = 160 if media_type == MediaType.PODCAST_EPISODE else 320
-
         return StreamDetails(
             item_id=item_id,
             provider=self.lookup_key,
             media_type=media_type,
             audio_format=AudioFormat(
                 content_type=ContentType.OGG,
-                bit_rate=bit_rate,
+                bit_rate=320,
             ),
             stream_type=StreamType.CUSTOM,
             allow_seek=True,
