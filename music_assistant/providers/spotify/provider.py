@@ -53,7 +53,14 @@ from .constants import (
     SUPPORTED_FEATURES,
 )
 from .helpers import get_librespot_binary
-from .parsers import parse_album, parse_artist, parse_playlist, parse_podcast, parse_podcast_episode, parse_track
+from .parsers import (
+    parse_album,
+    parse_artist,
+    parse_playlist,
+    parse_podcast,
+    parse_podcast_episode,
+    parse_track,
+)
 from .streaming import LibrespotStreamer
 
 if TYPE_CHECKING:
@@ -351,9 +358,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get full podcast episode details by id."""
-        episode_obj = await self._get_data(
-            f"episodes/{prov_episode_id}", market="from_token"
-        )
+        episode_obj = await self._get_data(f"episodes/{prov_episode_id}", market="from_token")
         if not episode_obj:
             raise MediaNotFoundError(f"Episode not found: {prov_episode_id}")
         return parse_podcast_episode(episode_obj, self)
