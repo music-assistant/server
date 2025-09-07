@@ -21,7 +21,7 @@ jobs:
 
       - name: Get merged PR info
         id: prinfo
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const pr = await github.rest.pulls.list({
@@ -130,7 +130,7 @@ jobs:
 
       - name: Create or update backport PR with cherry-picked commits
         if: steps.checklabel.outputs.should_backport == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const pr_number = process.env.pr_number;
