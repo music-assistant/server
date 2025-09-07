@@ -1287,8 +1287,13 @@ async def get_file_stream(
 async def get_multi_file_stream(
     mass: MusicAssistant,  # noqa: ARG001
     streamdetails: StreamDetails,
+    seek_position: int = 0,
 ) -> AsyncGenerator[bytes, None]:
-    """Return audio stream for a concatenation of multiple files."""
+    """Return audio stream for a concatenation of multiple files.
+
+    Arguments:
+    seek_position: The position to seek to in seconds
+    """
     files_list: list[str] = streamdetails.data
     # concat input files
     temp_file = f"/tmp/{shortuuid.random(20)}.txt"  # noqa: S108
@@ -1306,7 +1311,16 @@ async def get_multi_file_stream(
                 bit_depth=streamdetails.audio_format.bit_depth,
                 channels=streamdetails.audio_format.channels,
             ),
-            extra_input_args=["-safe", "0", "-f", "concat", "-i", temp_file],
+            extra_input_args=[
+                "-safe",
+                "0",
+                "-f",
+                "concat",
+                "-i",
+                temp_file,
+                "-ss",
+                str(seek_position),
+            ],
         ):
             yield chunk
     finally:
