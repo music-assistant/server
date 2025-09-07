@@ -364,17 +364,14 @@ class SpotifyProvider(MusicProvider):
         return parse_podcast_episode(episode_obj, self)
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
-        """
-        Get resume position for episode from Spotify.
-
-        Returns:
-            tuple[bool, int]: (is_fully_played, position_in_milliseconds)
-        """
+        """Get resume position for episode from Spotify."""
         if media_type != MediaType.PODCAST_EPISODE:
             raise NotImplementedError("Resume position only supported for podcast episodes")
 
+        if not self.sync_played_status_enabled:
+            raise NotImplementedError("Spotify resume sync disabled in settings")
+
         try:
-            # Get latest episode data from Spotify
             episode_obj = await self._get_data(f"episodes/{item_id}", market="from_token")
 
             if (
@@ -382,7 +379,6 @@ class SpotifyProvider(MusicProvider):
                 or "resume_point" not in episode_obj
                 or not episode_obj["resume_point"]
             ):
-                # No resume point data available, let MA use its stored position
                 raise NotImplementedError("No resume point data from Spotify")
 
             resume_point = episode_obj["resume_point"]
@@ -394,20 +390,11 @@ class SpotifyProvider(MusicProvider):
                 completion_ratio = position_ms / episode_obj["duration_ms"]
                 if completion_ratio >= self.played_threshold:
                     fully_played = True
-                    self.logger.debug(
-                        f"Episode {item_id} marked as played due to "
-                        f"{completion_ratio:.1%} completion"
-                    )
 
-            self.logger.debug(
-                f"Resume position from Spotify for {item_id}: "
-                f"{position_ms}ms, played: {fully_played}"
-            )
             return fully_played, position_ms
 
         except Exception as e:
             self.logger.debug(f"Failed to get resume position from Spotify for {item_id}: {e}")
-            # Let MA fall back to its stored resume position
             raise NotImplementedError("Failed to get resume position from Spotify")
 
     async def on_played(
