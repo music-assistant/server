@@ -127,8 +127,8 @@ async def get_config_entries(
             type=ConfigEntryType.LABEL,
             label="Please provide the address of your Audiobookshelf instance. To authenticate "
             "you have two options: "
-            "a) Provide username AND password. Leave token empty. "
-            "b) Provide ONLY the token.",
+            "a) Provide username AND password. Leave the API key empty. "
+            "b) Provide ONLY an API key.",
         ),
         ConfigEntry(
             key=CONF_URL,
@@ -160,6 +160,13 @@ async def get_config_entries(
             description="Instead of using a username and password, "
             "you may provide an API token (ABS version >= 2.26). "
             "Please consult the docs.",
+        ),
+        ConfigEntry(
+            key=CONF_OLD_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="old token",
+            required=False,
+            hidden=True,
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
@@ -261,14 +268,18 @@ class Audiobookshelf(MusicProvider):
                     self.logger.warning(
                         """
 
-ABS introduced a new API key system in version 2.26 (JWT).
-You are still using a token configured with a previous version of ABS.
-Please create an API Key instead, and update your configuration accordingly.
-Please refer to the documentation of ABS, https://www.audiobookshelf.org/guides/api-keys/
+######## Audiobookshelf API key change #############################################################
+
+Audiobookshelf introduced a new API key system in version 2.26 (JWT).
+You are still using a token configured with a previous version of Audiobookshelf,
+but you are running version %s. This will stop working in a future Audiobookshelf release.
+Please create a non-expiring API Key instead, and update your configuration accordingly.
+Refer to the documentation of Audiobookshelf, https://www.audiobookshelf.org/guides/api-keys/
 and of Music Assistant https://www.music-assistant.io/music-providers/audiobookshelf/
 for more details.
 
-"""
+""",
+                        self._client.server_settings.version,
                     )
 
         self.cache_base_key = self.instance_id
