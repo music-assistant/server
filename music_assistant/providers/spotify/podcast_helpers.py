@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import MediaItemType, Podcast, PodcastEpisode
 
 from .parsers import parse_podcast, parse_podcast_episode
@@ -22,21 +23,11 @@ class PodcastManager:
         self.provider = provider
         self.logger = provider.logger
 
-    @property
-    def sync_played_status_enabled(self) -> bool:
-        """Check if played status sync is enabled."""
-        return self.provider.sync_played_status_enabled
-
-    @property
-    def played_threshold(self) -> float:
-        """Get the played threshold percentage."""
-        return self.provider.played_threshold
-
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
         podcast_obj = await self.provider._get_data(f"shows/{prov_podcast_id}")
         if not podcast_obj:
-            raise ValueError(f"No podcast data returned from API for ID: {prov_podcast_id}")
+            raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
         return parse_podcast(podcast_obj, self.provider)
 
     async def get_podcast_episodes(
@@ -96,7 +87,7 @@ class PodcastManager:
             # Apply played threshold logic
             if not fully_played and episode_obj.get("duration_ms", 0) > 0:
                 completion_ratio = position_ms / episode_obj["duration_ms"]
-                if completion_ratio >= self.played_threshold:
+                if completion_ratio >= self.provider.played_threshold:
                     fully_played = True
                     self.logger.debug(
                         f"Episode {item_id} marked as played due to "
