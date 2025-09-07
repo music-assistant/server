@@ -35,7 +35,7 @@ jobs:
             fi
           fi
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5.6.0
+        uses: actions/setup-python@v6.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install build
@@ -76,7 +76,7 @@ jobs:
           path: dist/
       - name: Publish release to PyPI
         if: ${{ github.event.release.prerelease == false }}
-        uses: pypa/gh-action-pypi-publish@v1.12.4
+        uses: pypa/gh-action-pypi-publish@v1.13.0
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
