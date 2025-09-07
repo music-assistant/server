@@ -32,16 +32,7 @@ class LibrespotStreamer:
         # Ensure librespot binary is available
         assert self.provider._librespot_bin
 
-        # Use explicit media type from streamdetails
-        if hasattr(streamdetails, "media_type") and streamdetails.media_type:
-            is_episode = streamdetails.media_type == MediaType.PODCAST_EPISODE
-        else:
-            # Fallback to bitrate detection if media_type not available
-            is_episode = streamdetails.audio_format.bit_rate == 160
-
-        media_type = "episode" if is_episode else "track"
-        bitrate = "160" if is_episode else "320"
-
+        media_type = "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
         spotify_uri = f"spotify://{media_type}:{streamdetails.item_id}"
         self.provider.logger.log(
             VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot"
@@ -54,7 +45,7 @@ class LibrespotStreamer:
             "--disable-audio-cache",
             "--passthrough",
             "--bitrate",
-            bitrate,
+            "320",
             "--backend",
             "pipe",
             "--single-track",
