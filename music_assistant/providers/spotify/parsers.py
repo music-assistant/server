@@ -141,10 +141,7 @@ def parse_track(
                 item_id=track_obj["id"],
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.OGG,
-                    bit_rate=320,
-                ),
+                audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
                 url=track_obj["external_urls"]["spotify"],
                 available=not track_obj["is_local"] and track_obj["is_playable"],
             )
