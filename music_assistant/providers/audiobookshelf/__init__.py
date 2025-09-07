@@ -126,7 +126,7 @@ async def get_config_entries(
             type=ConfigEntryType.LABEL,
             label="Please provide the address of your Audiobookshelf instance. To authenticate "
             "you have two options: "
-            "a) Provide username AND password. Leave token empty."
+            "a) Provide username AND password. Leave token empty. "
             "b) Provide ONLY the token.",
         ),
         ConfigEntry(
@@ -517,10 +517,12 @@ class Audiobookshelf(MusicProvider):
     async def _get_stream_details_audiobook(
         self, abs_audiobook: AbsLibraryItemExpandedBook
     ) -> StreamDetails:
-        """Streamdetails audiobook."""
+        """Streamdetails audiobook.
+
+        We always use a custom stream type, also for single file, such
+        that we can handle an ffmpeg error and refresh our tokens.
+        """
         tracks = abs_audiobook.media.tracks
-        token = self._client.token
-        base_url = str(self.config.get_value(CONF_URL))
         if len(tracks) == 0:
             raise MediaNotFoundError("Stream not found")
 
@@ -528,36 +530,14 @@ class Audiobookshelf(MusicProvider):
         if abs_audiobook.media.tracks[0].metadata is not None:
             content_type = ContentType.try_parse(abs_audiobook.media.tracks[0].metadata.ext)
 
-        if len(tracks) > 1:
-            self.logger.debug("Using playback for multiple file audiobook.")
-
-            return StreamDetails(
-                provider=self.instance_id,
-                item_id=abs_audiobook.id_,
-                audio_format=AudioFormat(content_type=content_type),
-                media_type=MediaType.AUDIOBOOK,
-                stream_type=StreamType.CUSTOM,
-                duration=int(abs_audiobook.media.duration),
-                data=tracks,
-                can_seek=True,
-                allow_seek=True,
-            )
-
-        self.logger.debug(
-            f'Using direct playback for audiobook "{abs_audiobook.media.metadata.title}".'
-        )
-        media_url = abs_audiobook.media.tracks[0].content_url
-        stream_url = f"{base_url}{media_url}?token={token}"
-
         return StreamDetails(
-            provider=self.lookup_key,
+            provider=self.instance_id,
             item_id=abs_audiobook.id_,
-            audio_format=AudioFormat(
-                content_type=content_type,
-            ),
+            audio_format=AudioFormat(content_type=content_type),
             media_type=MediaType.AUDIOBOOK,
-            stream_type=StreamType.HTTP,
-            path=stream_url,
+            stream_type=StreamType.CUSTOM,
+            duration=int(abs_audiobook.media.duration),
+            data=tracks,
             can_seek=True,
             allow_seek=True,
         )
@@ -664,7 +644,11 @@ class Audiobookshelf(MusicProvider):
                     break
 
     async def _get_stream_details_episode(self, podcast_id: str) -> StreamDetails:
-        """Streamdetails of a podcast episode."""
+        """Streamdetails of a podcast episode.
+
+        There are no multi-file podcasts in abs, but we use a custom
+        stream to handle possible ffmpeg errors.
+        """
         abs_podcast_id, abs_episode_id = podcast_id.split(" ")
         abs_episode = None
 
@@ -675,10 +659,6 @@ class Audiobookshelf(MusicProvider):
         if abs_episode is None:
             raise MediaNotFoundError("Stream not found")
         self.logger.debug(f'Using direct playback for podcast episode "{abs_episode.title}".')
-        token = self._client.token
-        base_url = str(self.config.get_value(CONF_URL))
-        media_url = abs_episode.audio_track.content_url
-        full_url = f"{base_url}{media_url}?token={token}"
         content_type = ContentType.UNKNOWN
         if abs_episode.audio_track.metadata is not None:
             content_type = ContentType.try_parse(abs_episode.audio_track.metadata.ext)
@@ -689,10 +669,10 @@ class Audiobookshelf(MusicProvider):
                 content_type=content_type,
             ),
             media_type=MediaType.PODCAST_EPISODE,
-            stream_type=StreamType.HTTP,
-            path=full_url,
+            stream_type=StreamType.CUSTOM,
             can_seek=True,
             allow_seek=True,
+            data=[abs_episode.audio_track],
         )
 
     @handle_refresh_token
