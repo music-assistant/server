@@ -75,9 +75,10 @@ from .constants import (
     ABS_SHELF_ID_ICONS,
     CACHE_CATEGORY_LIBRARIES,
     CACHE_KEY_LIBRARIES,
+    CONF_API_TOKEN,
     CONF_HIDE_EMPTY_PODCASTS,
+    CONF_OLD_TOKEN,
     CONF_PASSWORD,
-    CONF_TOKEN,
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
@@ -152,13 +153,13 @@ async def get_config_entries(
             description="The password to authenticate to the remote server.",
         ),
         ConfigEntry(
-            key=CONF_TOKEN,
+            key=CONF_API_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Token _instead_ of user/ password.",
+            label="API token _instead_ of user/ password. (ABS version >= 2.26)",
             required=False,
             description="Instead of using a username and password, "
-            "you may provide the user's token."
-            "\nThe token can be seen in Audiobookshelf as an admin user in Settings -> Users.",
+            "you may provide an API token (ABS version >= 2.26). "
+            "Please consult the docs.",
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
@@ -222,7 +223,8 @@ class Audiobookshelf(MusicProvider):
         base_url = str(self.config.get_value(CONF_URL))
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD))
-        token = self.config.get_value(CONF_TOKEN)
+        token_old = self.config.get_value(CONF_OLD_TOKEN)
+        token_api = self.config.get_value(CONF_API_TOKEN)
         verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
         session_config = aioabs.SessionConfiguration(
             session=self.mass.http_session,
@@ -232,8 +234,9 @@ class Audiobookshelf(MusicProvider):
             pagination_items_per_page=30,  # audible provider goes with 50 for pagination
         )
         try:
-            if token is not None:
-                session_config.token = str(token)
+            if token_api is not None or token_old is not None:
+                _token = token_api if token_api is not None else token_old
+                session_config.token = str(_token)
                 (
                     self._client,
                     self._client_socket,
@@ -245,6 +248,28 @@ class Audiobookshelf(MusicProvider):
             await self._client_socket.init_client()
         except AbsLoginError as exc:
             raise LoginFailed(f"Login to abs instance at {base_url} failed.") from exc
+
+        if token_old is not None and token_api is None:
+            # Log Message that the old token won't work
+            _version = self._client.server_settings.version.split(".")
+            if len(_version) >= 2:
+                try:
+                    major, minor = int(_version[0]), int(_version[1])
+                except ValueError:
+                    major = minor = 0
+                if major >= 2 and minor >= 26:
+                    self.logger.warning(
+                        """
+
+ABS introduced a new API key system in version 2.26 (JWT).
+You are still using a token configured with a previous version of ABS.
+Please create an API Key instead, and update your configuration accordingly.
+Please refer to the documentation of ABS, https://www.audiobookshelf.org/guides/api-keys/
+and of Music Assistant https://www.music-assistant.io/music-providers/audiobookshelf/
+for more details.
+
+"""
+                    )
 
         self.cache_base_key = self.instance_id
 
