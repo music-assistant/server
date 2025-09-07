@@ -201,10 +201,7 @@ class Audiobookshelf(MusicProvider):
                 return await method(*args, **kwargs)
             except RefreshTokenExpiredError:
                 self.logger.debug("Refresh token expired. Trying to renew.")
-                await self._client.session_config.authenticate(
-                    username=str(self.config.get_value(CONF_USERNAME)),
-                    password=str(self.config.get_value(CONF_PASSWORD)),
-                )
+                await self.reauthenticate()
                 return await method(*args, **kwargs)
 
         return wrapper
@@ -284,6 +281,10 @@ class Audiobookshelf(MusicProvider):
 
         self._client_socket.set_user_callbacks(
             on_user_item_progress_updated=self._socket_abs_user_item_progress_updated,
+        )
+
+        self._client_socket.set_refresh_token_expired_callback(
+            on_refresh_token_expired=self._socket_abs_refresh_token_expired
         )
 
         # progress guard
@@ -634,10 +635,7 @@ class Audiobookshelf(MusicProvider):
                     try:
                         await self._client.session_config.refresh()
                     except RefreshTokenExpiredError:
-                        await self._client.session_config.authenticate(
-                            username=str(self.config.get_value(CONF_USERNAME)),
-                            password=str(self.config.get_value(CONF_PASSWORD)),
-                        )
+                        await self.reauthenticate()
                     _refreshed = True
                 else:
                     self.logger.error(err)
@@ -1401,6 +1399,16 @@ class Audiobookshelf(MusicProvider):
             await self._update_playlog_book(progress)
             return
         await self._update_playlog_episode(progress)
+
+    async def _socket_abs_refresh_token_expired(self) -> None:
+        await self.reauthenticate()
+
+    async def reauthenticate(self) -> None:
+        """Reauthorize the abs session config if refresh token expired."""
+        await self._client.session_config.authenticate(
+            username=str(self.config.get_value(CONF_USERNAME)),
+            password=str(self.config.get_value(CONF_PASSWORD)),
+        )
 
     def _get_all_known_item_ids(self) -> set[str]:
         known_ids = set()
