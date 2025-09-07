@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import functools
 import itertools
+import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
@@ -14,6 +15,7 @@ from aioaudiobookshelf.client.items import LibraryItemExpandedBook as AbsLibrary
 from aioaudiobookshelf.client.items import (
     LibraryItemExpandedPodcast as AbsLibraryItemExpandedPodcast,
 )
+from aioaudiobookshelf.client.session_configuration import asyncio
 from aioaudiobookshelf.exceptions import LoginError as AbsLoginError
 from aioaudiobookshelf.exceptions import RefreshTokenExpiredError
 from aioaudiobookshelf.schema.author import AuthorExpanded
@@ -155,10 +157,10 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_API_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="API token _instead_ of user/ password. (ABS version >= 2.26)",
+            label="API key _instead_ of user/ password. (ABS version >= 2.26)",
             required=False,
             description="Instead of using a username and password, "
-            "you may provide an API token (ABS version >= 2.26). "
+            "you may provide an API key (ABS version >= 2.26). "
             "Please consult the docs.",
         ),
         ConfigEntry(
@@ -329,6 +331,10 @@ for more details.
         # update playlog information if just started
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
+
+        # safe guard reauthentication
+        self.reauthenticate_lock = asyncio.Lock()
+        self.reauthenticate_last = 0.0
 
     @handle_refresh_token
     async def unload(self, is_removed: bool = False) -> None:
@@ -1441,10 +1447,18 @@ for more details.
 
     async def reauthenticate(self) -> None:
         """Reauthorize the abs session config if refresh token expired."""
-        await self._client.session_config.authenticate(
-            username=str(self.config.get_value(CONF_USERNAME)),
-            password=str(self.config.get_value(CONF_PASSWORD)),
-        )
+        # some safe guarding should that function be called simultaneously
+        if self.reauthenticate_lock.locked() or time.time() - self.reauthenticate_last < 5:
+            while True:
+                if not self.reauthenticate_lock.locked():
+                    return
+                await asyncio.sleep(0.5)
+        async with self.reauthenticate_lock:
+            await self._client.session_config.authenticate(
+                username=str(self.config.get_value(CONF_USERNAME)),
+                password=str(self.config.get_value(CONF_PASSWORD)),
+            )
+            self.reauthenticate_last = time.time()
 
     def _get_all_known_item_ids(self) -> set[str]:
         known_ids = set()
