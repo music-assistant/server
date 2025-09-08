@@ -22,6 +22,12 @@ uv pip install -e "."
 uv pip install -e ".[test]"
 [[ -f requirements_all.txt ]] && uv pip install -r requirements_all.txt
 
-command -v pre-commit &>/dev/null && pre-commit install
+# Install pre-commit hooks if pre-commit is available
+if command -v pre-commit &>/dev/null; then
+  pre-commit install
+else
+  echo "⚠️  pre-commit is not installed. Code quality checks will not run automatically before commits."
+  echo "To install: pip install pre-commit"
+fi
 
 echo "✅ Done. Interpreter: $(python -V)."
