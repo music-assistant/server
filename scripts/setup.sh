@@ -38,4 +38,5 @@ else
   echo "To install: pip install pre-commit"
 fi
 
-echo "✅ Done. Interpreter: $(python -V)."
+echo "✅ Done. Interpreter: $(python -V). Package manager: $(uv --version)"
+echo "To activate the virtual environment, run: source $env_name/bin/activate"
