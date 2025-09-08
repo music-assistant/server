@@ -25,4 +25,3 @@ uv pip install -e ".[test]"
 command -v pre-commit &>/dev/null && pre-commit install
 
 echo "✅ Done. Interpreter: $(python -V)."
-echo "To activate the venv: source $env_name/bin/activate"
