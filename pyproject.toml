@@ -35,7 +35,7 @@ dependencies = [
   "unidecode==1.4.0",
   "xmltodict==0.14.2",
   "shortuuid==1.0.13",
-  "zeroconf==0.147.0",
+  "zeroconf==0.147.2",
   "uv>=0.8.0",
 ]
 description = "Music Assistant"

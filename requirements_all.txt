@@ -58,4 +58,4 @@ uv>=0.8.0
 websocket-client==1.8.0
 xmltodict==0.14.2
 ytmusicapi==1.10.3
-zeroconf==0.147.0
+zeroconf==0.147.2
