@@ -11,6 +11,9 @@ from aioresonate.server import (
     AudioFormat as ResonateAudioFormat,
 )
 from aioresonate.server import (
+    GroupEvent,
+    GroupState,
+    GroupStateChangedEvent,
     PlayerEvent,
     VolumeChangedEvent,
 )
@@ -47,6 +50,7 @@ class ResonatePlayer(Player):
 
     api: PlayerAPI
     unsub_event_cb: Callable[[], None]
+    unsub_group_event_cb: Callable[[], None]
 
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -56,6 +60,7 @@ class ResonatePlayer(Player):
         self.api = resonate_player
         self.api.disconnect_behaviour = DisconnectBehaviour.STOP
         self.unsub_event_cb = resonate_player.add_event_listener(self.event_cb)
+        self.unsub_group_event_cb = resonate_player.group.add_event_listener(self.group_event_cb)
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
@@ -101,6 +106,26 @@ class ResonatePlayer(Player):
             case _:
                 self.logger.error("Unknown resonate player event: %s", event)
 
+    async def group_event_cb(self, event: GroupEvent) -> None:
+        """Event callback registered to the resonate group this player belongs to."""
+        self.logger.debug("Received GroupEvent: %s", event)
+
+        match event:
+            case GroupStateChangedEvent(state=state):
+                self.logger.info("Group state changed to: %s", state)
+                match state:
+                    case GroupState.PLAYING:
+                        self._attr_playback_state = PlaybackState.PLAYING
+                        self._attr_needs_poll = True
+                    case GroupState.IDLE:
+                        self._attr_playback_state = PlaybackState.IDLE
+                        self._attr_needs_poll = False
+                        self._attr_elapsed_time = 0
+                        self._attr_elapsed_time_last_updated = time.time()
+                self.update_state()
+            case _:
+                self.logger.error("Unknown resonate group event: %s", event)
+
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
         self.api.set_volume(min(max(1, volume_level), 100))
@@ -116,9 +141,7 @@ class ResonatePlayer(Player):
     async def stop(self) -> None:
         """Stop command."""
         self.logger.info("Received STOP command on player %s", self.display_name)
-        self._attr_playback_state = PlaybackState.IDLE
         _ = self.api.group.stop()
-        self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
@@ -128,9 +151,8 @@ class ResonatePlayer(Player):
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
-        self._attr_playback_state = PlaybackState.PLAYING
         self._attr_active_source = media.queue_id
-        self._attr_needs_poll = True  # Watch for metadata changes
+        # playback_state will be set by the group state change event
 
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
@@ -279,6 +301,7 @@ class ResonatePlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
         self.unsub_event_cb()
+        self.unsub_group_event_cb()
         await self.api.disconnect()
         # Clear group members
         synced_to_id = self.synced_to
