@@ -117,6 +117,9 @@ class ResonatePlayer(Player):
 
     async def group_event_cb(self, event: GroupEvent) -> None:
         """Event callback registered to the resonate group this player belongs to."""
+        if self.synced_to is not None:
+            # Only handle group events as the leader
+            return
         self.logger.debug("Received GroupEvent: %s", event)
 
         match event:
