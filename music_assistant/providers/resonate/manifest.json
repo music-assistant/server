@@ -5,7 +5,7 @@
   "name": "Resonate",
   "description": "Resonate provider for Music Assistant.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["aioresonate==0.7.0"],
+  "requirements": ["aioresonate==0.8.0"],
   "multi_instance": false,
   "builtin": false,
   "mdns_discovery": ["_resonate._tcp.local."]
