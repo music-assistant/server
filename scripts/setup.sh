@@ -4,8 +4,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-env_name=${1:-".venv"}
-
 # Check if uv is installed
 if ! command -v uv &>/dev/null; then
     echo "❌ uv is not installed. Please install it first:"
@@ -14,21 +12,23 @@ if ! command -v uv &>/dev/null; then
     exit 1
 fi
 
+env_name=${1:-".venv"}
+
 if [ -d "$env_name" ]; then
   echo "Virtual environment '$env_name' already exists."
 else
   echo "Creating Virtual environment..."
   uv venv "$env_name"
 fi
+
 echo "Activating virtual environment..."
 source "$env_name/bin/activate"
 
 echo "Installing development dependencies..."
-python -m pip install --upgrade pip
-python -m pip install --upgrade uv
 uv pip install -e "."
 uv pip install -e ".[test]"
 [[ -f requirements_all.txt ]] && uv pip install -r requirements_all.txt
+
 
 # Install pre-commit hooks if pre-commit is available
 if command -v pre-commit &>/dev/null; then
