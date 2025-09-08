@@ -6,6 +6,14 @@ cd "$(dirname "$0")/.."
 
 env_name=${1:-".venv"}
 
+# Check if uv is installed
+if ! command -v uv &>/dev/null; then
+    echo "❌ uv is not installed. Please install it first:"
+    echo "   curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo "   or visit: https://docs.astral.sh/uv/getting-started/installation/"
+    exit 1
+fi
+
 if [ -d "$env_name" ]; then
   echo "Virtual environment '$env_name' already exists."
 else
