@@ -10,7 +10,7 @@ if [ -d "$env_name" ]; then
   echo "Virtual environment '$env_name' already exists."
 else
   echo "Creating Virtual environment..."
-  ${PYTHON:-python} -m venv .venv
+  uv venv "$env_name"
 fi
 echo "Activating virtual environment..."
 source .venv/bin/activate
