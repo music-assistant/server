@@ -1598,8 +1598,9 @@ class PlayerController(CoreController):
             return  # guard against player not being registered (yet)
         player.set_config(config)
         player.update_state()
-        assert player.active_source is not None  # for type checking
-        resume_queue: PlayerQueue | None = self.mass.player_queues.get(player.active_source)
+        resume_queue: PlayerQueue | None = (
+            self.mass.player_queues.get(player.active_source) if player.active_source else None
+        )
         if player_disabled:
             # edge case: ensure that the player is powered off if the player gets disabled
             if player.power_control != PLAYER_CONTROL_NONE:
