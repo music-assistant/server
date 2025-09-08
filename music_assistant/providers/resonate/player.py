@@ -17,9 +17,15 @@ from aioresonate.server import (
     PlayerEvent,
     VolumeChangedEvent,
 )
-from aioresonate.server.group import AudioCodec, Metadata
+from aioresonate.server.group import (
+    AudioCodec,
+    GroupMemberAddedEvent,
+    GroupMemberRemovedEvent,
+    Metadata,
+)
 from aioresonate.server.player import (
     DisconnectBehaviour,
+    PlayerGroupChangedEvent,
     StreamPauseEvent,
     StreamStartEvent,
     StreamStopEvent,
@@ -103,6 +109,9 @@ class ResonatePlayer(Player):
                 await self.mass.player_queues.pause(
                     synced_to if synced_to is not None else self.player_id
                 )
+            case PlayerGroupChangedEvent(new_group=new_group):
+                self.unsub_group_event_cb()
+                self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
             case _:
                 self.logger.error("Unknown resonate player event: %s", event)
 
@@ -123,6 +132,10 @@ class ResonatePlayer(Player):
                         self._attr_elapsed_time = 0
                         self._attr_elapsed_time_last_updated = time.time()
                 self.update_state()
+            case GroupMemberAddedEvent(player_id=_):
+                pass
+            case GroupMemberRemovedEvent(player_id=_):
+                pass
             case _:
                 self.logger.error("Unknown resonate group event: %s", event)
 
