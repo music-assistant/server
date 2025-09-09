@@ -95,7 +95,6 @@ def parse_podcast_from_feed(
         name=feed_data.get("title", "Unknown Podcast"),
         publisher=feed_data.get("author") or feed_data.get("ownerName", "Unknown"),
         provider=lookup_key,
-        # uri=feed_data.get("url"),
         provider_mappings={
             ProviderMapping(
                 item_id=str(podcast_id),
