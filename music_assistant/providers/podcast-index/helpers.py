@@ -115,7 +115,7 @@ def parse_podcast_from_feed(
         podcast.total_episodes = int(episode_count) or 0
 
     # Add image - prefer 'image' field, fallback to 'artwork'
-    image_url = feed_data.get("image") or feed_data.get("artwork", "")
+    image_url = feed_data.get("image") or feed_data.get("artwork")
     if image_url:
         podcast.metadata.images = UniqueList(
             [
