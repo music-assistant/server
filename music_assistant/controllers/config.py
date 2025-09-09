@@ -442,7 +442,7 @@ class ConfigController:
                 raise ActionUnavailable("Can not remove config for an active player!")
             # tell the player manager to remove the player if its lingering around
             # set permanent to false otherwise we end up in an infinite loop
-            self.mass.players.unregister(player_id, permanent=False)
+            await self.mass.players.unregister(player_id, permanent=False)
         # remove the actual config if all of the above passed
         self.remove(conf_key)
         # Also remove the DSP config if it exists
