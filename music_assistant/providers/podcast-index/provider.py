@@ -20,20 +20,16 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant_models.media_items import (
-    Album,
-    Artist,
-    Audiobook,
     AudioFormat,
     BrowseFolder,
-    Playlist,
+    MediaItemType,
     Podcast,
     PodcastEpisode,
-    Radio,
     SearchResults,
-    Track,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -42,9 +38,6 @@ from .constants import (
     BROWSE_MY_SUBSCRIPTIONS,
     BROWSE_RECENT,
     BROWSE_TRENDING,
-    CACHE_CATEGORIES,
-    CACHE_EPISODES,
-    CACHE_PODCASTS,
     CONF_API_KEY,
     CONF_API_SECRET,
     CONF_STORED_PODCASTS,
@@ -239,9 +232,7 @@ class PodcastIndexProvider(MusicProvider):
             if isinstance(podcast, Podcast):
                 yield podcast
 
-    async def library_add(
-        self, item: MediaItemType
-    ) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """
         Add podcast to library.
 
@@ -310,7 +301,7 @@ class PodcastIndexProvider(MusicProvider):
         self.update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
         return True
 
-    @use_cache(86400, CACHE_PODCASTS)  # Cache for 24 hours
+    @use_cache(86400)  # Cache for 24 hours
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast details."""
         try:
@@ -387,6 +378,7 @@ class PodcastIndexProvider(MusicProvider):
                 "Unexpected error getting episodes for %s: %s", prov_podcast_id, err
             )
 
+    @use_cache(43200)  # Cache for 12 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """
         Get podcast episode details using direct API lookup.
@@ -417,7 +409,7 @@ class PodcastIndexProvider(MusicProvider):
 
         raise MediaNotFoundError(f"Episode {prov_episode_id} not found")
 
-    @use_cache(7200, CACHE_EPISODES)  # Cache for 2 hours - enables pause/resume without refetching
+    @use_cache(86400)
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Get stream details for a podcast episode.
@@ -490,7 +482,9 @@ class PodcastIndexProvider(MusicProvider):
         self, endpoint: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Make authenticated request to Podcast Index API."""
-        self.logger.log(LOG_LEVEL_VERBOSE, "Making API request to %s with params: %s", endpoint, params)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL, "Making API request to %s with params: %s", endpoint, params
+        )
         return await make_api_request(self.mass, self.api_key, self.api_secret, endpoint, params)
 
     async def _get_feed_url_for_podcast(self, podcast_id: str) -> str | None:
@@ -522,7 +516,7 @@ class PodcastIndexProvider(MusicProvider):
             self.logger.warning("Unexpected error browsing subscriptions: %s", err, exc_info=True)
             return []
 
-    @use_cache(21600, CACHE_PODCASTS)  # Cache for 6 hours
+    @use_cache(7200)  # Cache for 2 hours
     async def _browse_trending(self) -> list[Podcast]:
         """Browse trending podcasts."""
         try:
@@ -535,7 +529,7 @@ class PodcastIndexProvider(MusicProvider):
             )
             return []
 
-    @use_cache(1800, CACHE_EPISODES)  # Cache for 30 minutes
+    @use_cache(14400)  # Cache for 4 hours
     async def _browse_recent_episodes(self) -> list[PodcastEpisode]:
         """Browse recent episodes."""
         try:
@@ -568,7 +562,7 @@ class PodcastIndexProvider(MusicProvider):
             self.logger.warning("Unexpected error getting recent episodes: %s", err, exc_info=True)
             return []
 
-    @use_cache(86400, CACHE_CATEGORIES)  # Cache for 24 hours
+    @use_cache(86400)  # Cache for 24 hours
     async def _browse_categories(self) -> list[BrowseFolder]:
         """Browse podcast categories."""
         try:
@@ -600,7 +594,7 @@ class PodcastIndexProvider(MusicProvider):
             self.logger.warning("Unexpected error getting categories: %s", err, exc_info=True)
             return []
 
-    @use_cache(86400, CACHE_PODCASTS)  # Cache for 24 hours
+    @use_cache(43200)  # Cache for 12 hours
     async def _browse_category_podcasts(self, category_name: str) -> list[Podcast]:
         """Browse podcasts in a specific category using search."""
         try:
