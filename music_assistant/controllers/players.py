@@ -1270,6 +1270,8 @@ class PlayerController(CoreController):
                 await group_player.set_members(
                     player_ids_to_remove=[player_id],
                 )
+        # We removed the player and can now clean up its config
+        self.delete_player_config(player_id)
 
     def delete_player_config(self, player_id: str) -> None:
         """
