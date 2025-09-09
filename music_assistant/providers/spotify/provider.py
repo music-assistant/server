@@ -681,7 +681,6 @@ class SpotifyProvider(MusicProvider):
                 url,
                 headers=headers,
                 params=kwargs,
-                ssl=True,
                 timeout=aiohttp.ClientTimeout(total=120),
             ) as response,
         ):
