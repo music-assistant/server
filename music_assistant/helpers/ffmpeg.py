@@ -11,7 +11,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.enums import ContentType
-from music_assistant_models.errors import AudioError, FfmpegError
+from music_assistant_models.errors import AudioError
 from music_assistant_models.helpers import get_global_cache_value, set_global_cache_values
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -227,7 +227,7 @@ async def get_ffmpeg_stream(
                 # dump the last 5 lines of the log in case of an unclean exit
                 ffmpeg_proc.logger.error(log_tail)
             else:
-                raise FfmpegError(log_tail)
+                raise AudioError(log_tail)
 
 
 def get_ffmpeg_args(  # noqa: PLR0915

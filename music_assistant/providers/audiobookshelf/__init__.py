@@ -51,7 +51,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import FfmpegError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
@@ -671,9 +671,9 @@ for more details.
                     _refreshed = False
                     yield chunk
                 break
-            except FfmpegError as err:
+            except AudioError as err:
                 if not _refreshed:
-                    self.logger.debug("FFMPEG raised error. Trying to refresh token.")
+                    self.logger.debug("FFmpeg raised an error. Trying to refresh token.")
                     try:
                         await self._client.session_config.refresh()
                     except RefreshTokenExpiredError:
