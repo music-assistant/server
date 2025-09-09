@@ -1242,7 +1242,7 @@ class PlayerController(CoreController):
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
-            self.mass.config.remove(f"players/{player_id}")
+            self.delete_player_config(player_id)
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     @api_command("players/remove")
