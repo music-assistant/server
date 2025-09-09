@@ -118,27 +118,19 @@ class PodcastIndexProvider(MusicProvider):
         if MediaType.PODCAST not in media_types:
             return result
 
-        try:
-            response = await self._api_request(
-                "search/byterm", params={"q": search_query, "max": limit}
+        response = await self._api_request(
+            "search/byterm", params={"q": search_query, "max": limit}
+        )
+
+        podcasts = []
+        for feed_data in response.get("feeds", []):
+            podcast = parse_podcast_from_feed(
+                feed_data, self.lookup_key, self.domain, self.instance_id
             )
+            if podcast:
+                podcasts.append(podcast)
 
-            podcasts = []
-            for feed_data in response.get("feeds", []):
-                podcast = parse_podcast_from_feed(
-                    feed_data, self.lookup_key, self.domain, self.instance_id
-                )
-                if podcast:
-                    podcasts.append(podcast)
-
-            result.podcasts = podcasts
-
-        except (MediaNotFoundError, ProviderUnavailableError):
-            # Re-raise these specific errors
-            raise
-        except Exception as err:
-            self.logger.warning("Search failed: %s", err)
-
+        result.podcasts = podcasts
         return result
 
     async def browse(self, path: str) -> Sequence[BrowseFolder | Podcast | PodcastEpisode]:
