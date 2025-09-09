@@ -490,7 +490,7 @@ class PodcastIndexProvider(MusicProvider):
         self, endpoint: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Make authenticated request to Podcast Index API."""
-        self.logger.debug("Making API request to %s with params: %s", endpoint, params)
+        self.logger.log(LOG_LEVEL_VERBOSE, "Making API request to %s with params: %s", endpoint, params)
         return await make_api_request(self.mass, self.api_key, self.api_secret, endpoint, params)
 
     async def _get_feed_url_for_podcast(self, podcast_id: str) -> str | None:
