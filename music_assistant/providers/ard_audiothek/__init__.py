@@ -18,7 +18,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError, UnplayableMediaError
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -419,7 +419,8 @@ class ARDAudiothek(MusicProvider):
         async with await self.get_client() as session:
             livestream_query.variable_values = {"coreId": prov_radio_id}
             rad = (await session.execute(livestream_query))["permanentLivestreamByCoreId"]
-
+        if not rad:
+            raise MediaNotFoundError("Radio not found.")
         return _parse_radio(
             self.domain,
             self.instance_id,
@@ -470,6 +471,8 @@ class ARDAudiothek(MusicProvider):
         async with await self.get_client() as session:
             show_query.variable_values = {"showId": prov_podcast_id}
             result = (await session.execute(show_query))["show"]
+            if not result:
+                raise MediaNotFoundError("Podcast not found.")
 
         return _parse_podcast(
             self.domain,
@@ -521,8 +524,8 @@ class ARDAudiothek(MusicProvider):
         async with await self.get_client() as session:
             show_episode_query.variable_values = {"coreId": prov_episode_id}
             result = (await session.execute(show_episode_query))["itemByCoreId"]
-        if result is None:
-            raise MediaNotFoundError("Episode not found")
+        if not result:
+            raise MediaNotFoundError("Podcast episode not found")
         progress = self._get_progress(prov_episode_id)
         return _parse_podcast_episode(
             self.domain,
@@ -548,6 +551,8 @@ class ARDAudiothek(MusicProvider):
                 seek = True
 
         streams = result["audioList"]
+        if len(streams) == 0:
+            raise MediaNotFoundError("No stream available.")
 
         def filter_func(val: dict[str, Any]) -> bool:
             if self.max_bitrate == 0:
@@ -555,6 +560,8 @@ class ARDAudiothek(MusicProvider):
             return int(val["audioBitrate"]) < self.max_bitrate
 
         filtered_streams = filter(filter_func, streams)
+        if len(list(filtered_streams)) == 0:
+            raise UnplayableMediaError("No stream exceeding the minimum bitrate available.")
         selected_stream = max(filtered_streams, key=lambda x: x["audioBitrate"])
 
         return StreamDetails(
@@ -628,6 +635,7 @@ class ARDAudiothek(MusicProvider):
 
         return publications
 
+    @use_cache(3600)
     async def get_publications_list(self, core_id: str) -> list[Radio | Podcast]:
         """Create list of available radio stations and shows for a publication service."""
         async with await self.get_client() as session:
@@ -635,6 +643,9 @@ class ARDAudiothek(MusicProvider):
             result = (await session.execute(publications_list_query))["publicationServiceByCoreId"]
 
         publications = []  # type: list[Radio | Podcast]
+
+        if not result:
+            raise MediaNotFoundError("Publication service not found.")
 
         for rad in result["permanentLivestreams"]["nodes"]:
             if not rad["coreId"]:
