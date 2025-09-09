@@ -161,7 +161,7 @@ class PlayerController(CoreController):
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
-        :param provider_filter [str]: Optional filter by provider ID.
+        :param provider_filter [str]: Optional filter by provider lookup key.
 
         :return: List of Player objects.
         """
@@ -170,7 +170,7 @@ class PlayerController(CoreController):
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
-            and (provider_filter is None or player.provider.instance_id == provider_filter)
+            and (provider_filter is None or player.provider.lookup_key == provider_filter)
         ]
 
     @api_command("players/all")
@@ -185,7 +185,7 @@ class PlayerController(CoreController):
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
-        :param provider_filter [str]: Optional filter by provider ID.
+        :param provider_filter [str]: Optional filter by provider lookup key.
 
         :return: List of PlayerState objects.
         """
