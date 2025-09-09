@@ -39,7 +39,7 @@ plexapi==4.17.1
 podcastparser==0.6.10
 propcache>=0.2.1
 py-opensonic==7.0.2
-pyblu==2.0.4
+pyblu==2.0.5
 PyChromecast==14.0.7
 pycryptodome==3.23.0
 pylast==5.5.0
