@@ -304,7 +304,7 @@ class ConfigController:
             for player in list(self.mass.players):
                 if player.provider.instance_id != instance_id:
                     continue
-                self.mass.players.remove(player.player_id, cleanup_config=True)
+                await self.mass.players.remove(player.player_id, cleanup_config=True)
             # cleanup remaining player configs
             for player_conf in list(self.get(CONF_PLAYERS, {}).values()):
                 if player_conf["provider"] == instance_id:
@@ -984,7 +984,7 @@ class ConfigController:
                 for player in self.mass.players.all(return_unavailable=True, return_disabled=True):
                     if player.provider.instance_id != instance_id:
                         continue
-                    self.mass.players.remove(player.player_id, cleanup_config=False)
+                    await self.mass.players.remove(player.player_id, cleanup_config=False)
         return config
 
     async def _add_provider_config(
