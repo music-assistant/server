@@ -414,17 +414,10 @@ class SmartFadesMixer:
         dj_style_mode: DJStyleMode = DJStyleMode.AUTO,
     ) -> list[str]:
         """Create smart fade filters with perfect timing and adaptive filtering."""
-        crossfade_duration, fadeout_start_pos, fadein_start_pos = self._calculate_optimal_fade_timing(
-            fade_out_analysis, fade_in_analysis
-        )
-
-        self.logger.debug(
-            "Smart fade: out_bpm=%.1f, in_bpm=%.1f, crossfade duration: %.2fs, mode=%s%s",
-            fade_out_analysis.bpm,
-            fade_in_analysis.bpm,
-            crossfade_duration,
-            dj_style_mode,
-            ", beat-aligned" if fadeout_start_pos else "",
+        # Calculate optimal crossfade bars and beat positions
+        crossfade_bars = self._calculate_optimal_crossfade_bars(fade_out_analysis, fade_in_analysis)
+        fadeout_start_pos, fadein_start_pos = self._calculate_optimal_fade_timing(
+            fade_out_analysis, fade_in_analysis, crossfade_bars
         )
 
         filters: list[str] = []
@@ -432,18 +425,33 @@ class SmartFadesMixer:
         time_stretch_filters, tempo_factor = self._create_time_stretch_filters(
             fade_out_analysis=fade_out_analysis,
             fade_in_analysis=fade_in_analysis,
-            crossfade_duration=crossfade_duration
+            crossfade_bars=crossfade_bars
         )
         filters.extend(time_stretch_filters)
 
-        beat_align_filters = self._perform_beat_alignment(
-            fadeout_start_pos,
-            fadein_start_pos,
-            fade_out_analysis,
-            "[fadeout_stretched]",
-            tempo_factor,
+        beat_align_filters = self._perform_beat_alignment(            
+            fadein_start_pos=fadein_start_pos,
+            fadeout_input_label="[fadeout_stretched]",
+            fadein_input_label="[1]"
         )
         filters.extend(beat_align_filters)
+
+        actual_crossfade_duration = self._calculate_crossfade_duration(
+            crossfade_bars=crossfade_bars,
+            fadeout_start_pos=fadeout_start_pos,
+            fade_out_analysis=fade_out_analysis,
+            tempo_factor=tempo_factor,
+        )
+
+        self.logger.debug(
+            "Smart fade: out_bpm=%.1f, in_bpm=%.1f, %d bars, crossfade duration: %.2fs, dj_mode=%s%s",
+            fade_out_analysis.bpm,
+            fade_in_analysis.bpm,
+            crossfade_bars,
+            actual_crossfade_duration,
+            dj_style_mode,
+            ", beat-aligned" if fadeout_start_pos else "",
+        )
 
         if dj_style_mode == DJStyleMode.AUTO:
             dj_style_mode = self._determine_dj_style_mode(fade_out_analysis, fade_in_analysis)
@@ -462,7 +470,7 @@ class SmartFadesMixer:
                 fade_in_analysis=fade_in_analysis,
                 fade_out_label="[fadeout_beatalign]",
                 fade_in_label="[fadein_beatalign]",
-                crossfade_duration=crossfade_duration,
+                crossfade_duration=actual_crossfade_duration,
             )
             filters.extend(frequency_filters)
         else:
@@ -471,14 +479,45 @@ class SmartFadesMixer:
                 fade_in_analysis=fade_in_analysis,
                 fade_out_label="[fadeout_beatalign]",
                 fade_in_label="[fadein_beatalign]",
-                crossfade_duration=crossfade_duration,
+                crossfade_duration=actual_crossfade_duration,
             )
             filters.extend(frequency_filters)
 
-        # Apply linear crossfade (no curves to avoid interfering with gradual EQ ramping)
-        filters.append(f"[fadeout_eq][fadein_eq]acrossfade=d={crossfade_duration}")
+        # Apply linear crossfade for now since we use EQ sweeps for smoothness
+        filters.append(f"[fadeout_eq][fadein_eq]acrossfade=d={actual_crossfade_duration}")
 
         return filters
+
+    def _calculate_crossfade_duration(
+        self,
+        crossfade_bars: int,
+        fadeout_start_pos: float | None,
+        fade_out_analysis: SmartFadesAnalysis,
+        tempo_factor: float,
+    ) -> float:
+        """Calculate final crossfade duration with tempo adjustments."""
+        if fadeout_start_pos is not None:
+            # Calculate crossfade duration as: track_duration - fadeout_start_pos
+            # This ensures perfect downbeat alignment, since we trim the incoming track on its first downbeat            
+            # Adjust for time stretching, taking into account short songs
+            if fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION:
+                buffer_start = fade_out_analysis.duration - MAX_SMART_CROSSFADE_DURATION
+                fadeout_buffer_pos = (fadeout_start_pos - buffer_start) / tempo_factor
+            else:
+                fadeout_buffer_pos = fadeout_start_pos / tempo_factor
+            
+            # Crossfade duration is equal to the remaining buffer time after fadeout start
+            actual_duration = MAX_SMART_CROSSFADE_DURATION - fadeout_buffer_pos
+            
+            return actual_duration
+        else:
+            # Fallback: Calculate from BPM and crossfade bars
+            beats_per_bar = 4
+            seconds_per_beat = 60.0 / fade_out_analysis.bpm
+            fallback_duration = crossfade_bars * beats_per_bar * seconds_per_beat
+            fallback_duration = min(fallback_duration, MAX_SMART_CROSSFADE_DURATION)
+            
+            return fallback_duration
 
     def _calculate_optimal_crossfade_bars(
         self, fade_out_analysis: SmartFadesAnalysis, fade_in_analysis: SmartFadesAnalysis
@@ -505,77 +544,66 @@ class SmartFadesMixer:
         self,
         fade_out_analysis: SmartFadesAnalysis,
         fade_in_analysis: SmartFadesAnalysis,
-    ) -> tuple[float, float | None, float | None]:
+        crossfade_bars: int,
+    ) -> tuple[float | None, float | None]:
         """
-        Calculate precise fade timing and beat positions for alignment.
+        Calculate beat positions for alignment.
 
         Returns:
-            (crossfade_duration, fadeout_start_pos, fadein_start_pos)
+            (fadeout_start_pos, fadein_start_pos)
             where positions are in seconds from audio start, or None if no beat alignment
         """
-        # Calculate optimal crossfade bars based on BPM compatibility (e.g. 2, 4, 8 or 16 bars)
-        crossfade_bars = self._calculate_optimal_crossfade_bars(fade_out_analysis, fade_in_analysis)
         beats_per_bar = 4
 
-        # Helper function to calculate duration from beat arrays
-        def calculate_beat_duration(
+        # Helper function to calculate beat positions from beat arrays
+        def calculate_beat_positions(
             fade_out_beats: Any, fade_in_beats: Any, num_beats: int
-        ) -> tuple[float, float, float] | None:
-            """Calculate average duration and start positions from beat arrays."""
+        ) -> tuple[float, float] | None:
+            """Calculate start positions from beat arrays."""
             if len(fade_out_beats) < num_beats or len(fade_in_beats) < num_beats:
                 return None
-            # For single beat/bar, we can't calculate duration from beats
+            # For single beat/bar, we can't calculate positions from beats
             if num_beats == 1:
                 return None
 
             fade_out_slice = fade_out_beats[-num_beats:]
             fade_in_slice = fade_in_beats[:num_beats]
 
-            fade_out_duration = fade_out_slice[-1] - fade_out_slice[0]
-            fade_in_duration = fade_in_slice[-1] - fade_in_slice[0]
+            fadeout_start_pos = fade_out_slice[0]
+            fadein_start_pos = fade_in_slice[0]
 
-            # Calculate average and apply maximum limit
-            optimal_duration = (fade_out_duration + fade_in_duration) / 2
-            smart_duration = min(optimal_duration, MAX_SMART_CROSSFADE_DURATION)
-
-            return smart_duration, fade_out_slice[0], fade_in_slice[0]
+            return fadeout_start_pos, fadein_start_pos
 
         # Try downbeats first for most musical timing
-        downbeat_duration = calculate_beat_duration(
+        downbeat_positions = calculate_beat_positions(
             fade_out_analysis.downbeats, fade_in_analysis.downbeats, crossfade_bars
         )
-        if downbeat_duration:
-            duration, fadeout_start, fadein_start = downbeat_duration
+        if downbeat_positions:
+            fadeout_start, fadein_start = downbeat_positions
             self.logger.debug(
-                "Timing from downbeats: %.2fs, fadeout=%.2fs, fadein=%.2fs",
-                duration,
+                "Timing from downbeats: fadeout=%.2fs, fadein=%.2fs",
                 fadeout_start,
                 fadein_start,
             )
-            return duration, fadeout_start, fadein_start
+            return fadeout_start, fadein_start
 
         # Try regular beats if downbeats insufficient
         required_beats = crossfade_bars * beats_per_bar
-        beat_duration = calculate_beat_duration(
+        beat_positions = calculate_beat_positions(
             fade_out_analysis.beats, fade_in_analysis.beats, required_beats
         )
-        if beat_duration:
-            duration, fadeout_start, fadein_start = beat_duration
+        if beat_positions:
+            fadeout_start, fadein_start = beat_positions
             self.logger.debug(
-                "Timing from beats: %.2fs, fadeout=%.2fs, fadein=%.2fs",
-                duration,
+                "Timing from beats: fadeout=%.2fs, fadein=%.2fs",
                 fadeout_start,
                 fadein_start,
             )
-            return duration, fadeout_start, fadein_start
+            return fadeout_start, fadein_start
 
-        # Fallback: Calculate from BPM
-        seconds_per_beat = 60.0 / fade_out_analysis.bpm
-        fallback_duration = crossfade_bars * beats_per_bar * seconds_per_beat
-        fallback_duration = min(fallback_duration, MAX_SMART_CROSSFADE_DURATION)
-
-        self.logger.debug("BPM fallback timing: %.2fs (no beat alignment)", fallback_duration)
-        return fallback_duration, None, None
+        # Fallback: No beat alignment possible
+        self.logger.debug("No beat alignment possible (insufficient beats)")
+        return None, None
 
     def _create_frequency_sweep_filter(
         self,
@@ -660,67 +688,29 @@ class SmartFadesMixer:
 
     def _perform_beat_alignment(
         self,
-        fadeout_start_pos: float | None,
         fadein_start_pos: float | None,
-        fade_out_analysis: SmartFadesAnalysis,
         fadeout_input_label: str = "[0]",
-        tempo_factor: float = 1.0,
+        fadein_input_label: str = "[1]",
     ) -> list[str]:
         """Perform beat alignment preprocessing with custom input label."""
         # Early return if beat positions are not available
-        if fadeout_start_pos is None or fadein_start_pos is None:
+        if fadein_start_pos is None:
             return [
                 f"{fadeout_input_label}anull[fadeout_beatalign]",  # codespell:ignore anull
-                "[1]anull[fadein_beatalign]",  # codespell:ignore anull
+                f"{fadein_input_label}anull[fadein_beatalign]",  # codespell:ignore anull
             ]
         
-        # Check if fadeout position is within the buffer range
-        fadeout_in_buffer = False
-        if fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION:
-            # Buffer contains seconds [duration-MAX, duration]
-            buffer_start = fade_out_analysis.duration - MAX_SMART_CROSSFADE_DURATION
-            fadeout_in_buffer = fadeout_start_pos >= buffer_start
-        else:
-            # Short track - entire track fits in buffer
-            fadeout_in_buffer = True
-
-        # Early return if positions are not valid for beat alignment
-        if not fadeout_in_buffer or fadein_start_pos > MAX_SMART_CROSSFADE_DURATION:
-            return [
-                f"{fadeout_input_label}anull[fadeout_beatalign]",  # codespell:ignore anull
-                "[1]anull[fadein_beatalign]",  # codespell:ignore anull
-            ]
-        
-        # Debug logging for time stretch adjustment (for troubleshooting)
-        # if tempo_factor != 1.0:
-        #     if fade_out_analysis.duration > MAX_SMART_CROSSFADE_DURATION:
-        #         buffer_start = fade_out_analysis.duration - MAX_SMART_CROSSFADE_DURATION
-        #         original_buffer_pos = fadeout_start_pos - buffer_start
-        #     else:
-        #         original_buffer_pos = fadeout_start_pos
-        #     adjusted_buffer_pos = original_buffer_pos / tempo_factor
-        #     self.logger.debug(
-        #         "Beat alignment with time stretch: buffer pos %.2fs -> %.2fs (factor=%.4f)",
-        #         original_buffer_pos,
-        #         adjusted_buffer_pos,
-        #         tempo_factor,
-        #     )
-        
-        # Apply beat alignment: trim fadein track to start at downbeat
-        # Adjust fadein position for tempo stretching - when fadeout is stretched,
-        # we need to align with the new stretched timing
-        adjusted_fadein_pos = fadein_start_pos * tempo_factor
-        
+        # Apply beat alignment: trim fadein track to start at downbeat of the incoming track
         return [
             f"{fadeout_input_label}anull[fadeout_beatalign]",  # codespell:ignore anull
-            f"[1]atrim=start={adjusted_fadein_pos},asetpts=PTS-STARTPTS[fadein_beatalign]",
+            f"{fadein_input_label}atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_beatalign]",
         ]
 
     def _create_time_stretch_filters(
         self,
         fade_out_analysis: SmartFadesAnalysis,
         fade_in_analysis: SmartFadesAnalysis,
-        crossfade_duration: float,
+        crossfade_bars: int,
     ) -> tuple[list[str], float]:
         """Create FFmpeg filters for gradual time stretching.
 
@@ -731,7 +721,7 @@ class SmartFadesMixer:
         Args:
             fade_out_analysis: Analysis data for the outgoing track
             fade_in_analysis: Analysis data for the incoming track
-            crossfade_duration: Duration of the crossfade in seconds
+            crossfade_bars: Number of bars for the crossfade
 
         Returns:
             Tuple of (FFmpeg filter strings, tempo factor for position adjustment)
@@ -759,11 +749,16 @@ class SmartFadesMixer:
         tempo_factor = bpm_ratio
         buffer_duration = MAX_SMART_CROSSFADE_DURATION  # 45 seconds
 
+        # Calculate expected crossfade duration from bars for comparison
+        beats_per_bar = 4
+        seconds_per_beat = 60.0 / original_bpm
+        expected_crossfade_duration = crossfade_bars * beats_per_bar * seconds_per_beat
+
         # For BPM differences < 3%, tempo_factor will be between 0.97 and 1.03
         # This is well within atempo's range
 
         # If the crossfade takes up most of the buffer, use simple linear stretch
-        if buffer_duration - crossfade_duration < 5.0:
+        if buffer_duration - expected_crossfade_duration < 5.0:
             self.logger.debug(
                 "Time stretch filter (linear): %.1f BPM -> %.1f BPM (factor=%.4f)",
                 original_bpm,
@@ -936,7 +931,7 @@ class SmartFadesMixer:
             crossover_freq = int(crossover_freq * 0.85)
 
         # Asymmetric EQ durations for better musical flow
-        fadeout_eq_duration = max(crossfade_duration * 2.5, 8.0)  # Extended lowpass effect
+        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), MAX_SMART_CROSSFADE_DURATION)  # Extended lowpass effect
         fadein_eq_duration = crossfade_duration # Quick highpass removal
 
         # Calculate when the EQ sweep should start
