@@ -62,10 +62,6 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         self.on_unload_callbacks = [
             await self.hass_prov.hass.subscribe_entities(self._on_entity_state_update, player_ids)
         ]
-        # remove any leftover players (after reconfigure of players)
-        for player in self.players:
-            if player.player_id not in player_ids:
-                await self.mass.players.unregister(player.player_id)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
