@@ -117,15 +117,13 @@ def parse_podcast_from_feed(
     # Add image - prefer 'image' field, fallback to 'artwork'
     image_url = feed_data.get("image") or feed_data.get("artwork")
     if image_url:
-        podcast.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=image_url,
-                    provider=lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
+        podcast.metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=image_url,
+                provider=lookup_key,
+                remotely_accessible=True,
+            )
         )
 
     # Add categories as genres - categories is a dict {id: name}
@@ -208,15 +206,13 @@ def parse_episode_from_data(
 
     image_url = episode_data.get("image") or episode_data.get("feedImage")
     if image_url:
-        episode.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=image_url,
-                    provider=lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
+        episode.metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=image_url,
+                provider=lookup_key,
+                remotely_accessible=True,
+            )
         )
 
     return episode
