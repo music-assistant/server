@@ -326,7 +326,6 @@ class SpotifyProvider(MusicProvider):
         playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
         return parse_playlist(playlist_obj, self)
 
-    # Podcast methods (integrated from podcast_helpers.py)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
         podcast_obj = await self._get_data(f"shows/{prov_podcast_id}")
