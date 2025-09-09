@@ -34,8 +34,7 @@ uv pip install -e ".[test]"
 if command -v pre-commit &>/dev/null; then
   pre-commit install
 else
-  echo "⚠️  pre-commit is not installed. Code quality checks will not run automatically before commits."
-  echo "To install: pip install pre-commit"
+  echo "⚠️  pre-commit not available. Install with: uv pip install pre-commit"
 fi
 
 echo "✅ Done. Interpreter: $(python -V). Package manager: $(uv --version)"
