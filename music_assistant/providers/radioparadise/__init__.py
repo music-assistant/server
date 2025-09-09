@@ -25,7 +25,6 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
-    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -42,6 +41,11 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+# Base URL for station icons
+STATION_ICONS_BASE_URL = (
+    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/main/docs/assets/icons"
+)
+
 # Radio Paradise channel configurations with hardcoded channels
 RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
     "0": {
@@ -50,6 +54,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "stream_url": "https://stream.radioparadise.com/flac",
         "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing",
+        "station_icon": "radioparadise-logo-main.png",
     },
     "1": {
         "name": "Radio Paradise - Mellow Mix",
@@ -57,6 +62,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "stream_url": "https://stream.radioparadise.com/mellow-flac",
         "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=1",
+        "station_icon": "radioparadise-logo-mellow.png",
     },
     "2": {
         "name": "Radio Paradise - Rock Mix",
@@ -64,6 +70,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "stream_url": "https://stream.radioparadise.com/rock-flac",
         "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=2",
+        "station_icon": "radioparadise-logo-rock.png",
     },
     "3": {
         "name": "Radio Paradise - Global",
@@ -71,6 +78,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "stream_url": "https://stream.radioparadise.com/global-flac",
         "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=3",
+        "station_icon": "radioparadise-logo-global.png",
     },
     "4": {
         "name": "Radio Paradise - Beyond",
@@ -78,6 +86,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "stream_url": "https://stream.radioparadise.com/beyond-flac",
         "content_type": ContentType.FLAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=4",
+        "station_icon": "radioparadise-logo-beyond.png",
     },
     "5": {
         "name": "Radio Paradise - Serenity",
@@ -85,6 +94,7 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "stream_url": "https://stream.radioparadise.com/serenity",
         "content_type": ContentType.AAC,
         "api_url": "https://api.radioparadise.com/api/now_playing?chan=5",
+        "station_icon": "radioparadise-logo-serenity.png",
     },
 }
 
@@ -136,27 +146,7 @@ class RadioParadiseProvider(MusicProvider):
         if prov_radio_id not in RADIO_PARADISE_CHANNELS:
             raise MediaNotFoundError("Station not found")
 
-        # Start with basic radio object
-        radio = self._parse_radio(prov_radio_id)
-
-        # Enhance with current metadata (API call only when specifically requested)
-        metadata = await self._get_channel_metadata(prov_radio_id)
-        if metadata and metadata.get("current"):
-            current_song = metadata["current"]
-            cover_path = current_song.get("cover")
-            if cover_path:
-                cover_url = f"https://img.radioparadise.com/{cover_path}"
-                images = [
-                    MediaItemImage(
-                        provider=self.lookup_key,
-                        type=ImageType.THUMB,
-                        path=cover_url,
-                        remotely_accessible=True,
-                    )
-                ]
-                radio.metadata.images = UniqueList(images)
-
-        return radio
+        return self._parse_radio(prov_radio_id)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
@@ -224,7 +214,7 @@ class RadioParadiseProvider(MusicProvider):
         """Create a Radio object from cached channel information."""
         channel_info = RADIO_PARADISE_CHANNELS.get(channel_id, {})
 
-        return Radio(
+        radio = Radio(
             provider=self.lookup_key,
             item_id=channel_id,
             name=channel_info.get("name", "Unknown Radio"),
@@ -237,6 +227,21 @@ class RadioParadiseProvider(MusicProvider):
                 )
             },
         )
+
+        # Add static station icon
+        station_icon = channel_info.get("station_icon")
+        if station_icon:
+            icon_url = f"{STATION_ICONS_BASE_URL}/{station_icon}"
+            radio.metadata.add_image(
+                MediaItemImage(
+                    provider=self.lookup_key,
+                    type=ImageType.THUMB,
+                    path=icon_url,
+                    remotely_accessible=True,
+                )
+            )
+
+        return radio
 
     async def _get_channel_metadata(self, channel_id: str) -> dict[str, Any] | None:
         """Get current track and upcoming tracks from Radio Paradise's block API.
@@ -386,7 +391,7 @@ class RadioParadiseProvider(MusicProvider):
                         # Create StreamMetadata object with full track info
                         stream_metadata = self._build_stream_metadata(current_song, metadata)
 
-                        self.logger.info(
+                        self.logger.debug(
                             f"Updating stream metadata for {item_id}: "
                             f"{stream_metadata.artist} - {stream_metadata.title}"
                         )

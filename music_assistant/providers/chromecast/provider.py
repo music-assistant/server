@@ -133,12 +133,17 @@ class ChromecastProvider(PlayerProvider):
                 self.mass.aiozc.zeroconf,
             )
             # create and register the new ChromeCastPlayer
-            castplayer = ChromecastPlayer(
-                self, player_id, cast_info=cast_info, chromecast=chromecast
-            )
             asyncio.run_coroutine_threadsafe(
-                self.mass.players.register_or_update(castplayer), loop=self.mass.loop
+                self._create_and_register_player(player_id, cast_info, chromecast),
+                loop=self.mass.loop,
             )
+
+    async def _create_and_register_player(
+        self, player_id: str, cast_info: ChromecastInfo, chromecast: pychromecast.Chromecast
+    ) -> None:
+        """Create and register a new ChromecastPlayer."""
+        castplayer = ChromecastPlayer(self, player_id, cast_info=cast_info, chromecast=chromecast)
+        await self.mass.players.register_or_update(castplayer)
 
     def _on_chromecast_removed(self, uuid: str, service: object, cast_info: object) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""
