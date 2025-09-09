@@ -429,19 +429,25 @@ class SmartFadesMixer:
         )
         filters.extend(time_stretch_filters)
 
+        initial_crossfade_duration = self._calculate_crossfade_duration(
+            crossfade_bars=crossfade_bars,
+            fadeout_start_pos=fadeout_start_pos,
+            fadein_start_pos=fadein_start_pos,
+            fade_out_analysis=fade_out_analysis,
+            tempo_factor=tempo_factor,
+        )
+
         beat_align_filters = self._perform_beat_alignment(            
             fadein_start_pos=fadein_start_pos,
+            crossfade_duration=initial_crossfade_duration,
+            fade_in_analysis=fade_in_analysis,
             fadeout_input_label="[fadeout_stretched]",
             fadein_input_label="[1]"
         )
         filters.extend(beat_align_filters)
 
-        actual_crossfade_duration = self._calculate_crossfade_duration(
-            crossfade_bars=crossfade_bars,
-            fadeout_start_pos=fadeout_start_pos,
-            fade_out_analysis=fade_out_analysis,
-            tempo_factor=tempo_factor,
-        )
+        # Use the initial crossfade duration (phantom logic is in beat alignment now)
+        actual_crossfade_duration = initial_crossfade_duration
 
         self.logger.debug(
             "Smart fade: out_bpm=%.1f, in_bpm=%.1f, %d bars, crossfade duration: %.2fs, dj_mode=%s%s",
@@ -492,10 +498,11 @@ class SmartFadesMixer:
         self,
         crossfade_bars: int,
         fadeout_start_pos: float | None,
+        fadein_start_pos: float | None,
         fade_out_analysis: SmartFadesAnalysis,
         tempo_factor: float,
     ) -> float:
-        """Calculate final crossfade duration with tempo adjustments."""
+        """Calculate final crossfade duration with tempo adjustments and buffer constraints."""
         if fadeout_start_pos is not None:
             # Calculate crossfade duration as: track_duration - fadeout_start_pos
             # This ensures perfect downbeat alignment, since we trim the incoming track on its first downbeat            
@@ -506,8 +513,23 @@ class SmartFadesMixer:
             else:
                 fadeout_buffer_pos = fadeout_start_pos / tempo_factor
             
-            # Crossfade duration is equal to the remaining buffer time after fadeout start
-            actual_duration = MAX_SMART_CROSSFADE_DURATION - fadeout_buffer_pos
+            # Crossfade duration from fadeout constraint
+            fadeout_duration = MAX_SMART_CROSSFADE_DURATION - fadeout_buffer_pos
+            
+            # Also consider fadein buffer constraint if available
+            if fadein_start_pos is not None:
+                fadein_duration = MAX_SMART_CROSSFADE_DURATION - fadein_start_pos
+                actual_duration = min(fadeout_duration, fadein_duration)
+                
+                if actual_duration < fadeout_duration:
+                    self.logger.debug(
+                        "Crossfade limited by fadein buffer: %.2fs -> %.2fs (fadein trim %.2fs)",
+                        fadeout_duration,
+                        actual_duration,
+                        fadein_start_pos,
+                    )
+            else:
+                actual_duration = fadeout_duration
             
             return actual_duration
         else:
@@ -559,7 +581,7 @@ class SmartFadesMixer:
         def calculate_beat_positions(
             fade_out_beats: Any, fade_in_beats: Any, num_beats: int
         ) -> tuple[float, float] | None:
-            """Calculate start positions from beat arrays."""
+            """Calculate start positions from beat arrays with phantom downbeat support."""
             if len(fade_out_beats) < num_beats or len(fade_in_beats) < num_beats:
                 return None
             # For single beat/bar, we can't calculate positions from beats
@@ -567,11 +589,13 @@ class SmartFadesMixer:
                 return None
 
             fade_out_slice = fade_out_beats[-num_beats:]
+            
+            # For fadein, find the earliest downbeat that fits in buffer
             fade_in_slice = fade_in_beats[:num_beats]
+            fadein_start_pos = fade_in_slice[0]
+            
 
             fadeout_start_pos = fade_out_slice[0]
-            fadein_start_pos = fade_in_slice[0]
-
             return fadeout_start_pos, fadein_start_pos
 
         # Try downbeats first for most musical timing
@@ -689,10 +713,12 @@ class SmartFadesMixer:
     def _perform_beat_alignment(
         self,
         fadein_start_pos: float | None,
+        crossfade_duration: float,
+        fade_in_analysis: SmartFadesAnalysis,
         fadeout_input_label: str = "[0]",
         fadein_input_label: str = "[1]",
     ) -> list[str]:
-        """Perform beat alignment preprocessing with custom input label."""
+        """Perform beat alignment preprocessing with phantom downbeat support."""
         # Early return if beat positions are not available
         if fadein_start_pos is None:
             return [
@@ -700,10 +726,36 @@ class SmartFadesMixer:
                 f"{fadein_input_label}anull[fadein_beatalign]",  # codespell:ignore anull
             ]
         
-        # Apply beat alignment: trim fadein track to start at downbeat of the incoming track
+        # Check if we need phantom downbeats due to insufficient buffer for crossfade
+        remaining_buffer = MAX_SMART_CROSSFADE_DURATION - fadein_start_pos
+        actual_fadein_pos = fadein_start_pos
+        
+        if remaining_buffer < crossfade_duration and len(fade_in_analysis.downbeats) >= 2:
+            # Calculate average downbeat interval
+            avg_interval = float(np.mean(np.diff(fade_in_analysis.downbeats)))
+            
+            # Find earliest phantom downbeat that provides enough buffer space
+            needed_buffer = crossfade_duration + 1.0  # Add 1s safety margin
+            if fadein_start_pos > needed_buffer:
+                steps_back = int((fadein_start_pos - needed_buffer) / avg_interval) + 1
+                phantom_pos = fadein_start_pos - (steps_back * avg_interval)
+                
+                # Ensure phantom downbeat is not negative
+                if phantom_pos >= 0:
+                    actual_fadein_pos = phantom_pos
+                    self.logger.debug(
+                        "Using phantom downbeat: original=%.2fs -> phantom=%.2fs (need %.1fs buffer, had %.1fs, steps back=%d)",
+                        fadein_start_pos,
+                        phantom_pos,
+                        crossfade_duration,
+                        remaining_buffer,
+                        steps_back,
+                    )
+        
+        # Apply beat alignment: trim fadein track to start at (possibly phantom) downbeat
         return [
             f"{fadeout_input_label}anull[fadeout_beatalign]",  # codespell:ignore anull
-            f"{fadein_input_label}atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_beatalign]",
+            f"{fadein_input_label}atrim=start={actual_fadein_pos},asetpts=PTS-STARTPTS[fadein_beatalign]",
         ]
 
     def _create_time_stretch_filters(
