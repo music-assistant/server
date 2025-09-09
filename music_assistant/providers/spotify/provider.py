@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -64,8 +64,6 @@ from .parsers import (
 from .streaming import LibrespotStreamer
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -174,44 +172,44 @@ class SpotifyProvider(MusicProvider):
                 "search", q=search_query, type=searchtype, limit=page_limit, offset=offset
             )
             if "artists" in api_result:
-                new_artists = [
+                artists = [
                     parse_artist(item, self)
                     for item in api_result["artists"]["items"]
                     if (item and item["id"] and item["name"])
                 ]
-                searchresult.artists = [*searchresult.artists, *new_artists]
+                searchresult.artists = [*searchresult.artists, *artists]
                 items_received += len(api_result["artists"]["items"])
             if "albums" in api_result:
-                new_albums = [
+                albums = [
                     parse_album(item, self)
                     for item in api_result["albums"]["items"]
                     if (item and item["id"])
                 ]
-                searchresult.albums = [*searchresult.albums, *new_albums]
+                searchresult.albums = [*searchresult.albums, *albums]
                 items_received += len(api_result["albums"]["items"])
             if "tracks" in api_result:
-                new_tracks = [
+                tracks = [
                     parse_track(item, self)
                     for item in api_result["tracks"]["items"]
                     if (item and item["id"])
                 ]
-                searchresult.tracks = [*searchresult.tracks, *new_tracks]
+                searchresult.tracks = [*searchresult.tracks, *tracks]
                 items_received += len(api_result["tracks"]["items"])
             if "playlists" in api_result:
-                new_playlists = [
+                playlists = [
                     parse_playlist(item, self)
                     for item in api_result["playlists"]["items"]
                     if (item and item["id"])
                 ]
-                searchresult.playlists = [*searchresult.playlists, *new_playlists]
+                searchresult.playlists = [*searchresult.playlists, *playlists]
                 items_received += len(api_result["playlists"]["items"])
             if "shows" in api_result:
-                new_podcasts = [
+                podcasts = [
                     parse_podcast(item, self)
                     for item in api_result["shows"]["items"]
                     if (item and item["id"])
                 ]
-                searchresult.podcasts = [*searchresult.podcasts, *new_podcasts]
+                searchresult.podcasts = [*searchresult.podcasts, *podcasts]
                 items_received += len(api_result["shows"]["items"])
             offset += page_limit
             if offset >= limit:
@@ -366,16 +364,15 @@ class SpotifyProvider(MusicProvider):
         if not self.sync_played_status_enabled:
             raise NotImplementedError("Spotify resume sync disabled in settings")
 
+        episode_obj = await self._get_data(f"episodes/{item_id}", market="from_token")
+
+        if not episode_obj:
+            raise NotImplementedError("No episode data from Spotify")
+
+        if "resume_point" not in episode_obj or not episode_obj["resume_point"]:
+            raise NotImplementedError("No resume point data from Spotify")
+
         try:
-            episode_obj = await self._get_data(f"episodes/{item_id}", market="from_token")
-
-            if (
-                not episode_obj
-                or "resume_point" not in episode_obj
-                or not episode_obj["resume_point"]
-            ):
-                raise NotImplementedError("No resume point data from Spotify")
-
             resume_point = episode_obj["resume_point"]
             fully_played = resume_point.get("fully_played", False)
             position_ms = resume_point.get("resume_position_ms", 0)
@@ -387,10 +384,9 @@ class SpotifyProvider(MusicProvider):
                     fully_played = True
 
             return fully_played, position_ms
-
-        except Exception as e:
-            self.logger.debug(f"Failed to get resume position from Spotify for {item_id}: {e}")
-            raise NotImplementedError("Failed to get resume position from Spotify")
+        except (KeyError, TypeError, AttributeError) as e:
+            self.logger.debug(f"Invalid resume point data structure for {item_id}: {e}")
+            raise NotImplementedError("Invalid resume point data from Spotify")
 
     async def on_played(
         self,
@@ -599,7 +595,7 @@ class SpotifyProvider(MusicProvider):
                     await asyncio.sleep(2)
                     continue
                 # if we reached this point, the token has been successfully refreshed
-                auth_info = await response.json()
+                auth_info: dict[str, Any] = await response.json()
                 auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
                 self.logger.debug("Successfully refreshed access token")
                 break
@@ -644,7 +640,7 @@ class SpotifyProvider(MusicProvider):
             self._sp_user = userinfo = await self._get_data("me", auth_info=auth_info)
             self.mass.metadata.set_default_preferred_language(userinfo["country"])
             self.logger.info("Successfully logged in to Spotify as %s", userinfo["display_name"])
-        return cast("dict[str, Any]", auth_info)
+        return auth_info
 
     async def _get_all_items(
         self, endpoint: str, key: str = "items", **kwargs: Any
@@ -704,7 +700,8 @@ class SpotifyProvider(MusicProvider):
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             response.raise_for_status()
-            return cast("dict[str, Any]", await response.json(loads=json_loads))
+            result: dict[str, Any] = await response.json(loads=json_loads)
+            return result
 
     @throttle_with_retries
     async def _delete_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
@@ -781,7 +778,8 @@ class SpotifyProvider(MusicProvider):
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
-            return cast("dict[str, Any]", await response.json(loads=json_loads))
+            result: dict[str, Any] = await response.json(loads=json_loads)
+            return result
 
     def _fix_create_playlist_api_bug(self, playlist_obj: dict[str, Any]) -> None:
         """Fix spotify API bug where incorrect owner id is returned from Create Playlist."""
