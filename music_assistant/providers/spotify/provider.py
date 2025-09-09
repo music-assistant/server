@@ -130,10 +130,6 @@ class SpotifyProvider(MusicProvider):
             # Spotify has killed the similar tracks api for developers
             # https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api
             base.add(ProviderFeature.SIMILAR_TRACKS)
-
-        # Always include podcast features
-        # base.update(PODCAST_FEATURES)
-
         return base
 
     @property
