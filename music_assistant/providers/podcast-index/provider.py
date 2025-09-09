@@ -240,7 +240,7 @@ class PodcastIndexProvider(MusicProvider):
                 yield podcast
 
     async def library_add(
-        self, item: Artist | Album | Track | Radio | Playlist | Audiobook | Podcast | PodcastEpisode
+        self, item: MediaItemType
     ) -> bool:
         """
         Add podcast to library.
