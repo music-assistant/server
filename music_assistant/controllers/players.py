@@ -161,7 +161,7 @@ class PlayerController(CoreController):
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
-        :param provider_filter [str]: Optional filter by provider ID.
+        :param provider_filter [str]: Optional filter by provider lookup key.
 
         :return: List of Player objects.
         """
@@ -170,7 +170,7 @@ class PlayerController(CoreController):
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
-            and (provider_filter is None or player.provider.instance_id == provider_filter)
+            and (provider_filter is None or player.provider.lookup_key == provider_filter)
         ]
 
     @api_command("players/all")
@@ -185,7 +185,7 @@ class PlayerController(CoreController):
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
-        :param provider_filter [str]: Optional filter by provider ID.
+        :param provider_filter [str]: Optional filter by provider lookup key.
 
         :return: List of PlayerState objects.
         """
@@ -1242,7 +1242,7 @@ class PlayerController(CoreController):
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
-            self.mass.config.remove(f"players/{player_id}")
+            self.delete_player_config(player_id)
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     @api_command("players/remove")
@@ -1254,11 +1254,8 @@ class PlayerController(CoreController):
         """
         player = self.get(player_id)
         if player is None:
-            # we simply permanently delete the player by wiping its config
-            conf_key = f"{CONF_PLAYERS}/{player_id}"
-            dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
-            for key in (conf_key, dsp_conf_key):
-                self.mass.config.remove(key)
+            # we simply permanently delete the player config since it is not registered
+            self.delete_player_config(player_id)
             return
         if player.type == PlayerType.GROUP:
             # Handle group player removal
@@ -1273,6 +1270,20 @@ class PlayerController(CoreController):
                 await group_player.set_members(
                     player_ids_to_remove=[player_id],
                 )
+        # We removed the player and can now clean up its config
+        self.delete_player_config(player_id)
+
+    def delete_player_config(self, player_id: str) -> None:
+        """
+        Permanently delete a player's configuration.
+
+        Should only be called for players that are not registered by the player controller.
+        """
+        # we simply permanently delete the player by wiping its config
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
+        for key in (conf_key, dsp_conf_key):
+            self.mass.config.remove(key)
 
     def signal_player_state_update(
         self,
