@@ -6,7 +6,6 @@ import base64
 import logging
 import os
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import aiofiles
@@ -65,36 +64,6 @@ BASE_KEYS = ("enabled", "name", "available", "default_name", "provider", "type")
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
 rename = wrap(os.rename)
-
-
-def validate_announcement_chime_url(url: str) -> None:
-    """Validate announcement chime URL format."""
-    if not url or not url.strip():
-        return  # Empty URL is valid (uses default)
-
-    url = url.strip()
-
-    try:
-        parsed = urlparse(url)
-
-        # Check URL scheme
-        if parsed.scheme not in ("http", "https"):
-            raise InvalidDataError("URL must use http:// or https:// protocol")
-
-        # Check if hostname exists
-        if not parsed.netloc:
-            raise InvalidDataError("URL must include a valid hostname")
-
-        # Check for audio file extension
-        path_lower = parsed.path.lower()
-        audio_extensions = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
-        if not any(path_lower.endswith(ext) for ext in audio_extensions):
-            raise InvalidDataError(
-                f"URL must point to an audio file ({', '.join(audio_extensions)})"
-            )
-
-    except Exception as e:
-        raise InvalidDataError(f"Invalid URL format: {e!s}") from e
 
 
 class ConfigController:
@@ -731,11 +700,6 @@ class ConfigController:
         values: dict[str, ConfigValueType],
     ) -> CoreConfig:
         """Save CoreController Config values."""
-        # Add validation for streams announcement_chime_url
-        if domain == "streams" and "announcement_chime_url" in values:
-            url = str(values["announcement_chime_url"] or "")
-            validate_announcement_chime_url(url)
-
         config = await self.get_core_config(domain)
         changed_keys = config.update(values)
         # validate the new config
