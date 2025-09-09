@@ -137,9 +137,10 @@ async def get_config_entries(
             key=CONF_SYNC_PLAYED_STATUS,
             type=ConfigEntryType.BOOLEAN,
             label="Sync Played Status from Spotify",
-            description="Automatically sync episode played status from Spotify to Music Assistant. "
-            "Episodes marked as played in Spotify will be marked as played in MA. "
-            "Only enable this if you use both the Spotify app, and Music Assistant "
+            description="Always overwrite episode played status from Spotify to Music Assistant. "
+            "Episodes marked as played in Spotify will be marked as played in MA, and the play "
+            "state in Music Assistant will always be overwritten /n/n"
+            "Only enable this if you (primarily) use the Spotify app, next to Music Assistant "
             "for podcast playback.",
             default_value=False,
             value=values.get(CONF_SYNC_PLAYED_STATUS, True) if values else True,
