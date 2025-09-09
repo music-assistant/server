@@ -979,12 +979,7 @@ class ConfigController:
                 if dep_prov.manifest.depends_on == config.domain:
                     await self.mass.unload_provider(dep_prov.instance_id)
             await self.mass.unload_provider(config.instance_id)
-            if config.type == ProviderType.PLAYER:
-                # cleanup entries in player manager
-                for player in self.mass.players.all(return_unavailable=True, return_disabled=True):
-                    if player.provider.instance_id != instance_id:
-                        continue
-                    await self.mass.players.remove(player.player_id, cleanup_config=False)
+            # For player providers, unload_provider should have removed all its players by now
         return config
 
     async def _add_provider_config(
