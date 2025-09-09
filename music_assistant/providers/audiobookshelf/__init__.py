@@ -58,6 +58,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.audio import get_multi_file_stream
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
@@ -83,6 +84,7 @@ from .constants import (
 from .helpers import LibrariesHelper, LibraryHelper, ProgressGuard
 
 if TYPE_CHECKING:
+    from aioaudiobookshelf.schema.audio import AudioTrack as AbsAudioTrack
     from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
     from aioaudiobookshelf.schema.media_progress import MediaProgress
     from aioaudiobookshelf.schema.user import User
@@ -491,19 +493,16 @@ class Audiobookshelf(MusicProvider):
 
         if len(tracks) > 1:
             self.logger.debug("Using playback for multiple file audiobook.")
-            multiple_files: list[str] = []
-            for track in tracks:
-                stream_url = f"{base_url}{track.content_url}?token={token}"
-                multiple_files.append(stream_url)
 
             return StreamDetails(
                 provider=self.instance_id,
                 item_id=abs_audiobook.id_,
                 audio_format=AudioFormat(content_type=content_type),
                 media_type=MediaType.AUDIOBOOK,
-                stream_type=StreamType.MULTI_FILE,
+                stream_type=StreamType.CUSTOM,
                 duration=int(abs_audiobook.media.duration),
-                data=multiple_files,
+                data=tracks,
+                can_seek=True,
                 allow_seek=True,
             )
 
@@ -525,6 +524,80 @@ class Audiobookshelf(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    def _get_track_from_position(
+        self, tracks: list[AbsAudioTrack], seek_position: int
+    ) -> tuple[list[AbsAudioTrack] | None, int]:
+        """Get the remaining tracks list from a timestamp.
+
+        Arguments:
+        tracks: The list of Audiobookshelf tracks
+        seek_position: The seeking position in seconds of the tracklist
+
+        Returns:
+            In a tuple, A list of audiobookshelf tracks, starting with the one at the requested seek
+        position and the position in seconds to seek to in the first track.
+            A tuple of None and 0 if the track wasn't found
+        """
+        for i, track in enumerate(tracks):
+            offset = int(track.start_offset)
+            duration = int(track.duration)
+            if offset + duration < seek_position:
+                continue
+
+            position = int(seek_position) - offset
+
+            # Seeking in some tracks is inaccurate, making the seek to a chapter land on the end of
+            # the previous track. If we're within 2 second of the end, skip the current track
+            if position + 2 >= duration:
+                self.logger.debug(
+                    f"Skipping {track.title} due to seek position being at the end: {position}"
+                )
+                continue
+
+            position = max(position, 0)
+
+            return tracks[i:], position
+        return None, 0
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Retrieve the audio track at the requested position.
+
+        Arguments:
+        streamdetails: The stream to be used
+        seek_position: The seeking position in seconds
+        """
+        tracks, position = self._get_track_from_position(streamdetails.data, seek_position)
+        if not tracks:
+            raise MediaNotFoundError(f"Track not found at seek position {seek_position}.")
+
+        self.logger.debug(
+            f"Skipped {len(streamdetails.data) - len(tracks)} tracks while seeking to position {seek_position}."  # noqa: E501
+        )
+        base_url = str(self.config.get_value(CONF_URL))
+        track_urls = []
+        for track in tracks:
+            stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
+            track_urls.append(stream_url)
+
+        async for chunk in get_multi_file_stream(
+            mass=self.mass,
+            streamdetails=StreamDetails(
+                provider=self.instance_id,
+                item_id=streamdetails.item_id,
+                audio_format=streamdetails.audio_format,
+                media_type=MediaType.AUDIOBOOK,
+                stream_type=StreamType.MULTI_FILE,
+                duration=streamdetails.duration,
+                data=track_urls,
+                can_seek=True,
+                allow_seek=True,
+            ),
+            seek_position=position,
+        ):
+            yield chunk
 
     async def _get_stream_details_episode(self, podcast_id: str) -> StreamDetails:
         """Streamdetails of a podcast episode."""
