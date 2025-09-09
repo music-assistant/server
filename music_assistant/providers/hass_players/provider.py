@@ -65,7 +65,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         # remove any leftover players (after reconfigure of players)
         for player in self.players:
             if player.player_id not in player_ids:
-                self.mass.players.remove(player.player_id)
+                await self.mass.players.unregister(player.player_id)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
