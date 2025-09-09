@@ -300,11 +300,11 @@ class ConfigController:
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)
         if existing["type"] == "player":
-            # cleanup entries in player manager
+            # all players should already be removed by now through unload_provider
             for player in list(self.mass.players):
                 if player.provider.instance_id != instance_id:
                     continue
-                await self.mass.players.remove(player.player_id, cleanup_config=True)
+                self.mass.players.delete_player_config(player.player_id)
             # cleanup remaining player configs
             for player_conf in list(self.get(CONF_PLAYERS, {}).values()):
                 if player_conf["provider"] == instance_id:
