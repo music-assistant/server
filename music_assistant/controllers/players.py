@@ -161,7 +161,7 @@ class PlayerController(CoreController):
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
-        :param provider_filter [str]: Optional filter by provider ID.
+        :param provider_filter [str]: Optional filter by provider lookup key.
 
         :return: List of Player objects.
         """
@@ -170,7 +170,7 @@ class PlayerController(CoreController):
             for player in self._players.values()
             if (player.available or return_unavailable)
             and (player.enabled or return_disabled)
-            and (provider_filter is None or player.provider.instance_id == provider_filter)
+            and (provider_filter is None or player.provider.lookup_key == provider_filter)
         ]
 
     @api_command("players/all")
@@ -185,7 +185,7 @@ class PlayerController(CoreController):
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
-        :param provider_filter [str]: Optional filter by provider ID.
+        :param provider_filter [str]: Optional filter by provider lookup key.
 
         :return: List of PlayerState objects.
         """
@@ -1113,6 +1113,8 @@ class PlayerController(CoreController):
                     raise PlayerCommandFailed("No current item to add to favorites")
                 # send the streamtitle into a global search query
                 search_artist, search_title_title = stream_title.split(" - ", 1)
+                # strip off any additional comments in the title (such as from Radio Paradise)
+                search_title_title = search_title_title.split(" | ")[0].strip()
                 if track := await self.mass.music.get_track_by_name(
                     search_title_title, search_artist
                 ):
@@ -1163,9 +1165,6 @@ class PlayerController(CoreController):
         if not player.enabled:
             return
 
-        # register playerqueue for this player
-        self.mass.create_task(self.mass.player_queues.on_player_register(player))
-
         # register throttler for this player
         self._player_throttlers[player_id] = Throttler(1, 0.05)
 
@@ -1195,6 +1194,9 @@ class PlayerController(CoreController):
         )
         # signal event that a player was added
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+
+        # register playerqueue for this player
+        await self.mass.player_queues.on_player_register(player)
 
     async def register_or_update(self, player: Player) -> None:
         """Register a new player on the controller or update existing one."""
@@ -1240,7 +1242,7 @@ class PlayerController(CoreController):
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
         if permanent:
-            self.mass.config.remove(f"players/{player_id}")
+            self.delete_player_config(player_id)
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     @api_command("players/remove")
@@ -1252,11 +1254,8 @@ class PlayerController(CoreController):
         """
         player = self.get(player_id)
         if player is None:
-            # we simply permanently delete the player by wiping its config
-            conf_key = f"{CONF_PLAYERS}/{player_id}"
-            dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
-            for key in (conf_key, dsp_conf_key):
-                self.mass.config.remove(key)
+            # we simply permanently delete the player config since it is not registered
+            self.delete_player_config(player_id)
             return
         if player.type == PlayerType.GROUP:
             # Handle group player removal
@@ -1271,6 +1270,20 @@ class PlayerController(CoreController):
                 await group_player.set_members(
                     player_ids_to_remove=[player_id],
                 )
+        # We removed the player and can now clean up its config
+        self.delete_player_config(player_id)
+
+    def delete_player_config(self, player_id: str) -> None:
+        """
+        Permanently delete a player's configuration.
+
+        Should only be called for players that are not registered by the player controller.
+        """
+        # we simply permanently delete the player by wiping its config
+        conf_key = f"{CONF_PLAYERS}/{player_id}"
+        dsp_conf_key = f"{CONF_PLAYER_DSP}/{player_id}"
+        for key in (conf_key, dsp_conf_key):
+            self.mass.config.remove(key)
 
     def signal_player_state_update(
         self,
@@ -1354,6 +1367,16 @@ class PlayerController(CoreController):
                     # - the leader has DSP enabled
                     self.mass.create_task(self.mass.players.on_player_dsp_change(player_id))
 
+        if ATTR_GROUP_MEMBERS in changed_values:
+            # Removed group members also need to be updated since they are no longer part
+            # of this group and are available for playback again
+            prev_group_members = changed_values[ATTR_GROUP_MEMBERS][0] or []
+            new_group_members = changed_values[ATTR_GROUP_MEMBERS][1] or []
+            removed_members = set(prev_group_members) - set(new_group_members)
+            for player_id in removed_members:
+                if removed_player := self.get(player_id):
+                    self.mass.loop.call_soon(removed_player.update_state, True)
+
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
@@ -1366,6 +1389,9 @@ class PlayerController(CoreController):
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
             self.mass.loop.call_soon(group_player.update_state, True)
+        # update/signal manually synced to player when child updates
+        if (synced_to := player.synced_to) and (synced_to_player := self.get(synced_to)):
+            self.mass.loop.call_soon(synced_to_player.update_state, True)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
@@ -1583,8 +1609,9 @@ class PlayerController(CoreController):
             return  # guard against player not being registered (yet)
         player.set_config(config)
         player.update_state()
-        assert player.active_source is not None  # for type checking
-        resume_queue: PlayerQueue | None = self.mass.player_queues.get(player.active_source)
+        resume_queue: PlayerQueue | None = (
+            self.mass.player_queues.get(player.active_source) if player.active_source else None
+        )
         if player_disabled:
             # edge case: ensure that the player is powered off if the player gets disabled
             if player.power_control != PLAYER_CONTROL_NONE:

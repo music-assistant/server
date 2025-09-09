@@ -33,12 +33,16 @@ class BluesoundDiscoveryInfo(TypedDict):
 class BluesoundPlayerProvider(PlayerProvider):
     """Bluos compatible player provider, providing support for bluesound speakers."""
 
-    bluos_players: dict[str, BluesoundPlayer] = {}
+    player_map: dict[(str, str), str] = {}
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        return {ProviderFeature.SYNC_PLAYERS}
+        return {
+            ProviderFeature.SYNC_PLAYERS,
+            ProviderFeature.CREATE_GROUP_PLAYER,
+            ProviderFeature.REMOVE_GROUP_PLAYER,
+        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -47,20 +51,13 @@ class BluesoundPlayerProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback for BluOS."""
+        if state_change == ServiceStateChange.Removed:
+            # Wait for connection to fail, same as sonos.
+            return
         name = name.split(".", 1)[0]
         assert info is not None
         player_id = info.decoded_properties["mac"]
         assert player_id is not None
-
-        # Handle removed player
-        if state_change == ServiceStateChange.Removed:
-            # Check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get(player_id):
-                # The player has become unavailable
-                self.logger.debug("Player offline: %s", mass_player.display_name)
-                mass_player._attr_available = False
-                mass_player.update_state()
-            return
 
         ip_address = get_primary_ip_address_from_zeroconf(info)
         port = get_port_from_zeroconf(info)
@@ -69,20 +66,17 @@ class BluesoundPlayerProvider(PlayerProvider):
         assert port is not None
 
         # Handle update of existing player
-        if bluos_player := self.bluos_players.get(player_id):
-            ip_changed = False
+        if bluos_player := self.mass.players.get(player_id):
             # Check if the IP address has changed
             if ip_address and ip_address != bluos_player.ip_address:
                 self.logger.debug(
                     "IP address for player %s updated to %s", bluos_player.name, ip_address
                 )
-                ip_changed = True  # Always recreate the player on ip changes
-
-            # Mark player as available if it was previously unavailable
-            if not bluos_player.available and not ip_changed:
+            else:
+                # IP address not changed
                 self.logger.debug("Player back online: %s", bluos_player.name)
                 bluos_player._attr_available = True
-                bluos_player.update_state()
+                await bluos_player.update_attributes()
                 return
 
         # New player discovered
@@ -99,7 +93,7 @@ class BluesoundPlayerProvider(PlayerProvider):
 
         # Create BluOS player
         bluos_player = BluesoundPlayer(self, player_id, discovery_info, name, ip_address, port)
-        self.bluos_players[player_id] = bluos_player
+        self.player_map[(ip_address, port)] = player_id
 
         # Register with Music Assistant
         await bluos_player.setup()
