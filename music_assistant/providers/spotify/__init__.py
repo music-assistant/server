@@ -154,6 +154,7 @@ async def get_config_entries(
             default_value=90,
             value=values.get(CONF_PLAYED_THRESHOLD, 90) if values else 90,
             range=(1, 100),
+            depends_on= CONF_SYNC_PLAYED_STATUS,
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH,
