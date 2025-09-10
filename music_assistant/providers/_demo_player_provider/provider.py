@@ -41,7 +41,11 @@ class DemoPlayerprovider(PlayerProvider):
         # you should return a set of provider-level (optional) features
         # here that your player provider supports or an empty set if none.
         # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
-        return {ProviderFeature.SYNC_PLAYERS}
+        return {
+            ProviderFeature.SYNC_PLAYERS,
+            ProviderFeature.CREATE_GROUP_PLAYER,
+            ProviderFeature.REMOVE_GROUP_PLAYER,
+        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
