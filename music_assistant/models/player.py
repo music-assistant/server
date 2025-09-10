@@ -1332,7 +1332,10 @@ class SyncGroupPlayer(GroupPlayer):
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
         self._attr_active_source = player_id
-        self._attr_group_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        # Copy the list so not every added player becomes a static member
+        self._attr_group_members = list(
+            cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        )
         self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
         self._set_attributes()
 
@@ -1460,8 +1463,8 @@ class SyncGroupPlayer(GroupPlayer):
 
         if not powered:
             # reset the original group members when powered off
-            self._attr_group_members = cast(
-                "list[str]", self.config.get_value(CONF_GROUP_MEMBERS, [])
+            self._attr_group_members = list(
+                cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
             )
 
     async def volume_set(self, volume_level: int) -> None:
