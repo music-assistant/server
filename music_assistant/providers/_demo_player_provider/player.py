@@ -31,6 +31,14 @@ class DemoPlayer(Player):
         }
         self._set_attributes()
 
+    async def on_registered(self) -> None:
+        """Complete the initialization once the player was registered."""
+        # OPTIONAL
+        # This method is optional and should be implemented if you need to handle
+        # any initialization logic after the player was registered with the Player controller.
+        # This is called after the player is registered and self.config was loaded.
+        # You don't need to call update_state() here.
+
     @property
     def needs_poll(self) -> bool:
         """Return if the player needs to be polled for state updates."""
