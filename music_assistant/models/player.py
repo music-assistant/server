@@ -1342,12 +1342,16 @@ class SyncGroupPlayer(GroupPlayer):
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
         self._attr_active_source = player_id
+        self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
+        self._set_attributes()
+
+    async def on_registered(self) -> None:
+        """Complete the initialization once the player was registered."""
+        # Config is only available after the player was registered
         # Copy the list so not every added player becomes a static member
         self._attr_group_members = list(
             cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         )
-        self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
-        self._set_attributes()
 
     def _set_attributes(self) -> None:
         """Set player attributes."""
