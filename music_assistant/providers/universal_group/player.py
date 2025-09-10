@@ -60,6 +60,8 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_group_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         self._attr_device_info = DeviceInfo(model="Universal Group", manufacturer=provider.name)
         self._attr_supported_features = {*BASE_FEATURES}
+        self._attr_needs_poll = True
+        self._attr_poll_interval = 30
         # register dynamic route for the ugp stream
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
