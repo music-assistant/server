@@ -177,9 +177,9 @@ class ResonatePlayer(Player):
             channels=2,
         )
 
-        queue = self.mass.player_queues.get(self.player_id)
-        assert queue
         assert media.queue_id
+        queue = self.mass.player_queues.get(media.queue_id)
+        assert queue
         queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
         assert queue_item
 
