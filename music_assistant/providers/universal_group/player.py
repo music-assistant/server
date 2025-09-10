@@ -133,6 +133,7 @@ class UniversalGroupPlayer(GroupPlayer):
         # abort the stream session
         if self.stream and not self.stream.done:
             await self.stream.stop()
+            self.stream = None
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
