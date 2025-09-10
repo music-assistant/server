@@ -330,7 +330,6 @@ class UniversalGroupPlayer(GroupPlayer):
     async def poll(self) -> None:
         """Poll player for state updates."""
         self._set_attributes()
-        self.update_state()
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
