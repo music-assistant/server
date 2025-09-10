@@ -137,7 +137,6 @@ class UniversalGroupPlayer(GroupPlayer):
         # optimistically set the group state
         prev_power = self._attr_powered
         self._attr_powered = powered
-        self.update_state()
 
         if powered:
             # handle TURN_ON of the group player by turning on all members
@@ -183,6 +182,7 @@ class UniversalGroupPlayer(GroupPlayer):
             self._attr_group_members = cast(
                 "list[str]", self.config.get_value(CONF_GROUP_MEMBERS, [])
             )
+        self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
