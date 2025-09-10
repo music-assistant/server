@@ -1262,6 +1262,17 @@ class GroupPlayer(Player):
 
     _attr_type: PlayerType = PlayerType.GROUP
 
+    @cached_property
+    def synced_to(self) -> str | None:
+        """
+        Return the id of the player this player is synced to (sync leader).
+
+        If this player is not synced to another player (or is the sync leader itself),
+        this should return None.
+        """
+        # default implementation: groups can't be synced
+        return None
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         # Return all base config entries for a group player.
