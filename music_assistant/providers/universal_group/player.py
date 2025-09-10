@@ -134,6 +134,7 @@ class UniversalGroupPlayer(GroupPlayer):
         if self.stream and not self.stream.done:
             await self.stream.stop()
             self.stream = None
+        self._set_attributes()
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
