@@ -352,7 +352,6 @@ class UniversalGroupPlayer(GroupPlayer):
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
         # grab current media and state from one of the active players
         for child_player in self.mass.players.iter_group_members(self, active_only=True):
-            self._attr_available = True
             self._attr_playback_state = child_player.playback_state
             if child_player.elapsed_time:
                 self._attr_elapsed_time = child_player.elapsed_time
@@ -360,7 +359,6 @@ class UniversalGroupPlayer(GroupPlayer):
             break
         else:
             self._attr_playback_state = PlaybackState.IDLE
-            self._attr_available = False
         self.update_state()
 
     async def _serve_ugp_stream(self, request: web.Request) -> web.StreamResponse:
