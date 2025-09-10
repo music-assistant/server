@@ -577,6 +577,16 @@ class Player(ABC):
             ),
         ]
 
+    async def on_registered(self) -> None:
+        """
+        Handle logic when the player is registered and config is set.
+
+        Override this method in your player implementation if you need
+        to perform any additional setup logic after the player is registered and
+        the self.config was loaded.
+        """
+        return
+
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         for callback in self._on_unload_callbacks:

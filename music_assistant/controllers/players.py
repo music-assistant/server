@@ -1184,6 +1184,8 @@ class PlayerController(CoreController):
         # ensure we fetch and set the latest/full config for the player
         player_config = await self.mass.config.get_player_config(player_id)
         player.set_config(player_config)
+        # call on_registered hook after the player is registered and config is set
+        await player.on_registered()
         # always call update to fix special attributes like display name, group volume etc.
         player.update_state()
 

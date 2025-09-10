@@ -80,7 +80,7 @@ class UniversalGroupPlayer(GroupPlayer):
         }
         self._set_attributes()
 
-    def on_registered(self) -> None:
+    async def on_registered(self) -> None:
         """Complete the initialization once the player was registered."""
         # Config entries are only fully available after the player was registered
         self._attr_group_members = list(
