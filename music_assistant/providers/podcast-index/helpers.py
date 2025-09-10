@@ -100,7 +100,7 @@ def parse_podcast_from_feed(
                 item_id=str(podcast_id),
                 provider_domain=domain,
                 provider_instance=instance_id,
-                url= feed_url, 
+                url= feed_url,
             )
         },
     )
