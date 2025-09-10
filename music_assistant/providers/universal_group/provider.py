@@ -67,4 +67,5 @@ class UniversalGroupProvider(PlayerProvider):
         """Register a universal group player."""
         group = UniversalGroupPlayer(self, player_id)
         await self.mass.players.register_or_update(group)
+        group.on_registered()
         return group
