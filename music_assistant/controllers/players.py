@@ -1394,6 +1394,11 @@ class PlayerController(CoreController):
         # update/signal manually synced to player when child updates
         if (synced_to := player.synced_to) and (synced_to_player := self.get(synced_to)):
             self.mass.loop.call_soon(synced_to_player.update_state, True)
+        # update/signal active groups when a group member updates
+        if (active_group := player.active_group) and (
+            active_group_player := self.get(active_group)
+        ):
+            self.mass.loop.call_soon(active_group_player.update_state, True)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
