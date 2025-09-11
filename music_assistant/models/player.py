@@ -643,6 +643,7 @@ class Player(ABC):
 
         If this player is not synced to another player (or is the sync leader itself),
         this should return None.
+        If it is part of a (permanent) group, this should also return None.
         """
         # default implementation: feel free to override
         for player in self.mass.players.all():
@@ -650,7 +651,7 @@ class Player(ABC):
                 # skip self
                 continue
             if player.type == PlayerType.PLAYER and self.player_id in player.group_members:
-                # this player is a member of the group of the other player
+                # this player is synced to another player, but not part of a (permanent) group
                 return player.player_id
         return None
 

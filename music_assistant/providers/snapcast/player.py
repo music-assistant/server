@@ -65,6 +65,7 @@ class SnapCastPlayer(Player):
 
         If this player is not synced to another player (or is the sync leader itself),
         this should return None.
+        If it is part of a (permanent) group, this should also return None.
         """
         snap_group = self._get_snapgroup()
         assert snap_group is not None  # for type checking
