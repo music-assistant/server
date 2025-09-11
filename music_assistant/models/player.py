@@ -649,7 +649,7 @@ class Player(ABC):
             if player.player_id == self.player_id:
                 # skip self
                 continue
-            if self.player_id in player.group_members:
+            if player.type == PlayerType.PLAYER and self.player_id in player.group_members:
                 # this player is a member of the group of the other player
                 return player.player_id
         return None
