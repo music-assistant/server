@@ -1406,7 +1406,9 @@ class SyncGroupPlayer(GroupPlayer):
                 description="Select all players you want to be part of this group",
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=[
-                    ConfigValueOption(x.display_name, x.player_id) for x in self.provider.players
+                    ConfigValueOption(x.display_name, x.player_id)
+                    for x in self.provider.players
+                    if x.type != PlayerType.GROUP
                 ],
             ),
             ConfigEntry(
