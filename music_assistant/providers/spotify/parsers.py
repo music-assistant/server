@@ -210,8 +210,13 @@ def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> P
     return playlist
 
 
-def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Podcast:
+def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Podcast | None:
     """Parse spotify podcast (show) object to generic layout."""
+    # Filter out audiobooks - they have different characteristics
+    description = podcast_obj.get("description", "")
+    if description.startswith("Author(s):") and "Narrator(s):" in description:
+        return None
+
     podcast = Podcast(
         item_id=podcast_obj["id"],
         provider=provider.lookup_key,

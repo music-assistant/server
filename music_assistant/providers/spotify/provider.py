@@ -37,6 +37,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import check_output
@@ -209,7 +210,9 @@ class SpotifyProvider(MusicProvider):
                     for item in api_result["shows"]["items"]
                     if (item and item["id"])
                 ]
-                searchresult.podcasts = [*searchresult.podcasts, *podcasts]
+                # Filter out None values (audiobooks)
+                valid_podcasts = [p for p in podcasts if p is not None]
+                searchresult.podcasts = [*searchresult.podcasts, *valid_podcasts]
                 items_received += len(api_result["shows"]["items"])
             offset += page_limit
             if offset >= limit:
@@ -252,7 +255,9 @@ class SpotifyProvider(MusicProvider):
         """Retrieve library podcasts from spotify."""
         async for item in self._get_all_items("me/shows"):
             if item["show"] and item["show"]["id"]:
-                yield parse_podcast(item["show"], self)
+                podcast = parse_podcast(item["show"], self)
+                if podcast:  # Only yield if parse_podcast didn't return None
+                    yield podcast
 
     def _get_liked_songs_playlist_id(self) -> str:
         return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
@@ -324,12 +329,19 @@ class SpotifyProvider(MusicProvider):
         playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
         return parse_playlist(playlist_obj, self)
 
+    @use_cache(86400)  # 24 hours
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
         podcast_obj = await self._get_data(f"shows/{prov_podcast_id}")
         if not podcast_obj:
             raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
-        return parse_podcast(podcast_obj, self)
+
+        podcast = parse_podcast(podcast_obj, self)
+        if not podcast:
+            # This means it's an audiobook, not a podcast
+            raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
+
+        return podcast
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str
@@ -349,6 +361,7 @@ class SpotifyProvider(MusicProvider):
             episode_position += 1
             yield episode
 
+    @use_cache(86400)  # 24 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get full podcast episode details by id."""
         episode_obj = await self._get_data(f"episodes/{prov_episode_id}", market="from_token")
