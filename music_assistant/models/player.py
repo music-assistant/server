@@ -1490,7 +1490,7 @@ class SyncGroupPlayer(GroupPlayer):
                     await asyncio.sleep(1)
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await self.mass.players.cmd_power(member.player_id, True)
-        elif not prev_power:
+        elif prev_power:
             # handle TURN_OFF of the group player by ungrouping and turning off all members
             if (sync_leader := self.sync_leader) and sync_leader.group_members:
                 # dissolve the temporary syncgroup from the sync leader
