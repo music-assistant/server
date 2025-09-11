@@ -1265,12 +1265,7 @@ class GroupPlayer(Player):
 
     @cached_property
     def synced_to(self) -> str | None:
-        """
-        Return the id of the player this player is synced to (sync leader).
-
-        If this player is not synced to another player (or is the sync leader itself),
-        this should return None.
-        """
+        """Return the id of the player this player is synced to (sync leader)."""
         # default implementation: groups can't be synced
         return None
 
