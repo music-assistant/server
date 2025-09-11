@@ -1373,12 +1373,32 @@ class SyncGroupPlayer(GroupPlayer):
         self._set_attributes()  # uses self.config
 
     @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features of the player."""
+        if leader := self.sync_leader:
+            # Ensure basic features like power are always supported
+            return leader.supported_features.union(self._attr_supported_features)
+        return self._attr_supported_features
+
+    @property
     def playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
         if self.power_state:
             return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
         else:
             return PlaybackState.IDLE
+
+    @cached_property
+    def flow_mode(self) -> bool:
+        """
+        Return if the player needs flow mode.
+
+        Will by default be set to True if the player does not support PlayerFeature.ENQUEUE
+        or has a flow mode config entry set to True.
+        """
+        if leader := self.sync_leader:
+            return leader.flow_mode
+        return False
 
     @property
     def elapsed_time(self) -> float | None:
