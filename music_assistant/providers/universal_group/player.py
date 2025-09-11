@@ -15,6 +15,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerFeature,
+    PlayerType,
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
@@ -33,7 +34,7 @@ from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, GroupPlayer, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
 
-from .constants import CONF_ENTRY_SAMPLE_RATES_UGP, CONFIG_ENTRY_UGP_NOTE, UGP_PREFIX
+from .constants import CONF_ENTRY_SAMPLE_RATES_UGP, CONFIG_ENTRY_UGP_NOTE
 from .ugp_stream import UGPStream
 
 if TYPE_CHECKING:
@@ -110,7 +111,7 @@ class UniversalGroupPlayer(GroupPlayer):
                 options=[
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in self.mass.players.all(True, False)
-                    if not x.player_id.startswith(UGP_PREFIX)
+                    if x.type != PlayerType.GROUP
                 ],
             ),
             ConfigEntry(
