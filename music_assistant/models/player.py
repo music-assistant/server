@@ -1395,6 +1395,19 @@ class SyncGroupPlayer(GroupPlayer):
         """Return when the elapsed time was last updated."""
         return self.sync_leader.elapsed_time_last_updated if self.sync_leader else None
 
+    @property
+    def can_group_with(self) -> set[str]:
+        """
+        Return the id's of players this player can group with.
+
+        This should return set of player_id's this player can group/sync with
+        or just the provider's instance_id if all players can group with each other.
+        """
+        if self.is_dynamic and (leader := self.sync_leader):
+            return leader.can_group_with
+        else:
+            return set()
+
     def _set_attributes(self) -> None:
         """Set player attributes."""
         player_features = {
