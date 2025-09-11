@@ -1364,6 +1364,26 @@ class SyncGroupPlayer(GroupPlayer):
             cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         )
 
+    @property
+    def playback_state(self) -> PlaybackState:
+        """Return the current playback state of the player."""
+        return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
+
+    @property
+    def elapsed_time(self) -> float | None:
+        """Return the elapsed time in (fractional) seconds of the current track (if any)."""
+        return self.sync_leader.elapsed_time if self.sync_leader else None
+
+    @elapsed_time.setter
+    def elapsed_time(self, value: float | None) -> None:
+        """Set the elapsed time on the player."""
+        raise NotImplementedError("elapsed_time is read-only on a SyncGroup player")
+
+    @property
+    def elapsed_time_last_updated(self) -> float | None:
+        """Return when the elapsed time was last updated."""
+        return self.sync_leader.elapsed_time_last_updated if self.sync_leader else None
+
     def _set_attributes(self) -> None:
         """Set player attributes."""
         player_features = {
