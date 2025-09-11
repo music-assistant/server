@@ -1363,7 +1363,10 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
-        return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
+        if self.power_state:
+            return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
+        else:
+            return PlaybackState.IDLE
 
     @property
     def elapsed_time(self) -> float | None:
