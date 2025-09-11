@@ -1342,6 +1342,8 @@ class SyncGroupPlayer(GroupPlayer):
     """Helper class for a (provider specific) SyncGroup player."""
 
     _attr_type: PlayerType = PlayerType.GROUP
+    _leader_active_source: str | None = None
+    _leader_current_media: PlayerMedia | None = None
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -1503,6 +1505,8 @@ class SyncGroupPlayer(GroupPlayer):
                     await asyncio.sleep(1)
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await self.mass.players.cmd_power(member.player_id, True)
+            # Backup the queue to restore later once the group is powered off
+            self._save_leader_queue()
         elif prev_power:
             # handle TURN_OFF of the group player by ungrouping and turning off all members
             if (sync_leader := self.sync_leader) and sync_leader.group_members:
@@ -1510,6 +1514,10 @@ class SyncGroupPlayer(GroupPlayer):
                 sync_childs = [x for x in sync_leader.group_members if x != sync_leader.player_id]
                 if sync_childs:
                     await sync_leader.set_members(player_ids_to_remove=sync_childs)
+            if sync_leader := self.sync_leader:
+                # Restore the leaders queue since it is no longer part of this group
+                self._restore_leader_queue()
+                sync_leader.update_state()
             # turn off all group members
             for member in self.mass.players.iter_group_members(
                 self, only_powered=True, active_only=True
@@ -1522,6 +1530,21 @@ class SyncGroupPlayer(GroupPlayer):
             self._attr_group_members = list(
                 cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
             )
+
+    def _save_leader_queue(self) -> None:
+        if leader := self.sync_leader:
+            self._leader_active_source = leader.active_source
+            self._leader_current_media = leader.current_media
+        else:
+            self._leader_active_source = None
+            self._leader_current_media = None
+
+    def _restore_leader_queue(self) -> None:
+        if leader := self.sync_leader:
+            leader.active_source = self._leader_active_source
+            leader.current_media = self._leader_current_media
+        self._leader_active_source = None
+        self._leader_current_media = None
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
