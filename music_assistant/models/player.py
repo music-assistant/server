@@ -1523,6 +1523,9 @@ class SyncGroupPlayer(GroupPlayer):
         # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:
             await sync_leader.play_media(media)
+            self._attr_current_media = media
+            self._attr_active_source = media.queue_id
+            self.update_state()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
