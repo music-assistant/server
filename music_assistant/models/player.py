@@ -318,6 +318,11 @@ class Player(ABC):
         """
         return self._attr_active_source
 
+    @active_source.setter
+    def active_source(self, value: str | None) -> None:
+        """Set the active source of the player."""
+        self._attr_active_source = value
+
     @property
     def source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
@@ -327,6 +332,11 @@ class Player(ABC):
     def current_media(self) -> PlayerMedia | None:
         """Return the current media being played by the player."""
         return self._attr_current_media
+
+    @current_media.setter
+    def current_media(self, value: PlayerMedia | None) -> None:
+        """Set the current media being played by the player."""
+        self._attr_current_media = value
 
     @property
     def needs_poll(self) -> bool:

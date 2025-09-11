@@ -856,8 +856,8 @@ class PlayerController(CoreController):
             if player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(player_id)
                 await asyncio.sleep(0.5)  # small delay to allow stop to process
-            player._attr_active_source = None
-            player._attr_current_media = None
+            player.active_source = None
+            player.current_media = None
         # check if source is a pluginsource
         # in that case the source id is the instance_id of the plugin provider
         if plugin_prov := self.mass.get_provider(source):
@@ -1826,8 +1826,8 @@ class PlayerController(CoreController):
             for volume_player_id, prev_volume in prev_volumes.items():
                 tg.create_task(self.cmd_volume_set(volume_player_id, prev_volume))
         await asyncio.sleep(0.2)
-        player._attr_current_media = prev_media
-        player._attr_active_source = prev_source
+        player.current_media = prev_media
+        player.active_source = prev_source
         # either power off the player or resume playing
         if not prev_power and player.power_control != PLAYER_CONTROL_NONE:
             await self.cmd_power(player.player_id, False)
