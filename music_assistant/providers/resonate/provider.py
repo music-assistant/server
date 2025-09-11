@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING
 
 from aioresonate.server import PlayerAddedEvent, PlayerRemovedEvent, ResonateEvent, ResonateServer
 from music_assistant_models.enums import ProviderFeature
@@ -60,7 +60,6 @@ class ResonateProvider(PlayerProvider):
                 self.logger.error("Unknown resonate event: %s", event)
 
     @property
-    @override
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
         return {
@@ -69,7 +68,6 @@ class ResonateProvider(PlayerProvider):
             ProviderFeature.REMOVE_GROUP_PLAYER,
         }
 
-    @override
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
@@ -77,7 +75,6 @@ class ResonateProvider(PlayerProvider):
         # /resonate on the default port
         await self.server_api.start_server(port=8927)
 
-    @override
     async def unload(self, is_removed: bool = False) -> None:
         """
         Handle unload/close of the provider.
@@ -95,7 +92,6 @@ class ResonateProvider(PlayerProvider):
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
 
-    @override
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
