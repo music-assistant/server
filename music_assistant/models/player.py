@@ -1697,6 +1697,11 @@ class SyncGroupPlayer(GroupPlayer):
             await self._form_syncgroup()
         elif self.sync_leader and (player_ids_to_add or player_ids_to_remove):
             # if the group still has the same leader, we need to (re)sync the members
+            # Handle collisions for newly added players
+            for player_id in final_players_to_add:
+                if player := self.mass.players.get(player_id):
+                    await self._handle_member_collisions(player)
+
             await self.sync_leader.set_members(
                 player_ids_to_add=final_players_to_add,
                 player_ids_to_remove=final_players_to_remove,
@@ -1717,6 +1722,9 @@ class SyncGroupPlayer(GroupPlayer):
         self.update_state()
         members_to_sync: list[str] = []
         for member in self.mass.players.iter_group_members(self, active_only=False):
+            # Handle collisions before attempting to sync
+            await self._handle_member_collisions(member)
+
             if member.synced_to and member.synced_to != self.sync_leader.player_id:
                 # ungroup first
                 await self.mass.players.cmd_ungroup(member.player_id)
