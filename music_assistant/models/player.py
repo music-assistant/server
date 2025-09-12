@@ -1427,6 +1427,8 @@ class SyncGroupPlayer(GroupPlayer):
         """
         if self.is_dynamic and (leader := self.sync_leader):
             return leader.can_group_with
+        elif self.is_dynamic:
+            return {self.provider.lookup_key}
         else:
             return set()
 
