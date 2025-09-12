@@ -863,6 +863,25 @@ class Player(ABC):
 
     @property
     @final
+    def active_groups(self) -> list[str]:
+        """
+        Return the player ids of all playergroups that are currently active for this player.
+
+        This will return the ids of the groupplayers if any groups are active.
+        If no groups are currently active, this will return an empty list.
+        """
+        active_groups = []
+        for player in self.mass.players.all(return_unavailable=False, return_disabled=False):
+            if player.type != PlayerType.GROUP:
+                continue
+            if not (player.powered or player.playback_state == PlaybackState.PLAYING):
+                continue
+            if self.player_id in player.group_members:
+                active_groups.append(player.player_id)
+        return active_groups
+
+    @property
+    @final
     def active_group(self) -> str | None:
         """
         Return the player id of the (first) playergroup that is currently active for this player.
@@ -870,14 +889,8 @@ class Player(ABC):
         This will return the id of the groupplayer if a group is active.
         If no group is currently active, this will return None.
         """
-        for player in self.mass.players.all(return_unavailable=False, return_disabled=False):
-            if player.type != PlayerType.GROUP:
-                continue
-            if not (player.powered or player.playback_state == PlaybackState.PLAYING):
-                continue
-            if self.player_id in player.group_members:
-                return player.player_id
-        return None
+        active_groups = self.active_groups
+        return active_groups[0] if active_groups else None
 
     @cached_property
     @final
