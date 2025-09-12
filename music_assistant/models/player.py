@@ -1530,16 +1530,15 @@ class SyncGroupPlayer(GroupPlayer):
                     # collision: child player is part of multiple groups
                     # and another group already active !
                     # solve this by trying to leave the group first
-                    if (
-                        other_group := self.mass.players.get(member.active_group)
-                    ) and PlayerFeature.SET_MEMBERS in other_group.supported_features:
-                        await other_group.set_members(player_ids_to_remove=[member.player_id])
-                    else:
-                        # if the other group does not support SET_MEMBERS,
-                        # we need to power it off to leave the group
-                        await self.mass.players.cmd_power(member.active_group, False)
-                        await asyncio.sleep(1)
-                    await asyncio.sleep(1)
+                    if other_group := self.mass.players.get(member.active_group):
+                        try:
+                            other_group.check_feature(PlayerFeature.SET_MEMBERS)
+                            await other_group.set_members(player_ids_to_remove=[member.player_id])
+                        except UnsupportedFeaturedException:
+                            # if the other group does not support SET_MEMBERS or it is a static
+                            # member, we need to power it off to leave the group
+                            await self.mass.players.cmd_power(member.active_group, False)
+                            await asyncio.sleep(1)
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await self.mass.players.cmd_power(member.player_id, True)
             # Backup the queue to restore later once the group is powered off
