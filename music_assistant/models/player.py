@@ -1466,9 +1466,9 @@ class SyncGroupPlayer(GroupPlayer):
                 key="dynamic_members",
                 type=ConfigEntryType.BOOLEAN,
                 label="Enable dynamic members",
-                description="Allow (un)joining members dynamically, so the group more or less"
+                description="Allow (un)joining members dynamically, so the group more or less "
                 "behaves the same like manually syncing players together, "
-                "with the main difference being that the groupplayer will hold the queue.",
+                "with the main difference being that the group player will hold the queue.",
                 default_value=False,
                 required=False,
             ),
@@ -1560,9 +1560,9 @@ class SyncGroupPlayer(GroupPlayer):
             # handle TURN_OFF of the group player by ungrouping and turning off all members
             if (sync_leader := self.sync_leader) and sync_leader.group_members:
                 # dissolve the temporary syncgroup from the sync leader
-                sync_childs = [x for x in sync_leader.group_members if x != sync_leader.player_id]
-                if sync_childs:
-                    await sync_leader.set_members(player_ids_to_remove=sync_childs)
+                sync_children = [x for x in sync_leader.group_members if x != sync_leader.player_id]
+                if sync_children:
+                    await sync_leader.set_members(player_ids_to_remove=sync_children)
             if sync_leader := self.sync_leader:
                 # Restore the leaders queue since it is no longer part of this group
                 self._restore_leader_queue()
@@ -1667,9 +1667,9 @@ class SyncGroupPlayer(GroupPlayer):
             await self.stop()
             # restore the former leaders queue and ungroup it
             self._restore_leader_queue()
-            sync_childs = [x for x in prev_leader.group_members if x != prev_leader.player_id]
-            if sync_childs:
-                await prev_leader.set_members(player_ids_to_remove=sync_childs)
+            sync_children = [x for x in prev_leader.group_members if x != prev_leader.player_id]
+            if sync_children:
+                await prev_leader.set_members(player_ids_to_remove=sync_children)
             self.sync_leader = None
         elif (prev_leader := self.sync_leader) and prev_leader != next_leader:
             # Edge case: we had changed the leader
@@ -1677,9 +1677,9 @@ class SyncGroupPlayer(GroupPlayer):
             leader_media = self.sync_leader.current_media
             # restore the former leaders queue and ungroup it
             self._restore_leader_queue()
-            sync_childs = [x for x in prev_leader.group_members if x != prev_leader.player_id]
-            if sync_childs:
-                await prev_leader.set_members(player_ids_to_remove=sync_childs)
+            sync_children = [x for x in prev_leader.group_members if x != prev_leader.player_id]
+            if sync_children:
+                await prev_leader.set_members(player_ids_to_remove=sync_children)
             # Save the newly selected leader
             self.sync_leader = next_leader
             self._backup_leader_queue()
@@ -1708,7 +1708,7 @@ class SyncGroupPlayer(GroupPlayer):
             )
 
     async def _form_syncgroup(self) -> None:
-        """Form syncgroup by sync all (possible) members."""
+        """Form syncgroup by syncing all (possible) members."""
         if self.sync_leader is None:
             # This is an empty group, leader will be selected once a member is added
             self._attr_group_members = []
@@ -1749,7 +1749,7 @@ class SyncGroupPlayer(GroupPlayer):
         for prefer_sync_leader in (True, False):
             for child_player in self.mass.players.iter_group_members(self):
                 if prefer_sync_leader and child_player.synced_to:
-                    # prefer the first player that already has sync childs
+                    # prefer the first player that already has sync children
                     continue
                 if child_player.active_group not in (
                     None,
