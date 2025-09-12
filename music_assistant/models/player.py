@@ -1526,8 +1526,9 @@ class SyncGroupPlayer(GroupPlayer):
             member.synced_to is not None
             and member.synced_to != self.sync_leader
             and (synced_to_player := self.mass.players.get(member.synced_to))
+            and member.player_id in synced_to_player.group_members
         ):
-            # collision: child player is synced to another player
+            # collision: child player is synced to another player and still in that group
             # ungroup it first
             await synced_to_player.set_members(player_ids_to_remove=[member.player_id])
 
@@ -1597,17 +1598,14 @@ class SyncGroupPlayer(GroupPlayer):
             self._restore_leader_queue()
             sync_leader.update_state()
 
-    async def _handle_leader_transition(
-        self, new_leader: Player | None, should_restart_playback: bool = False
-    ) -> None:
+    async def _handle_leader_transition(self, new_leader: Player | None) -> None:
         """Handle transition from current leader to new leader."""
         prev_leader = self.sync_leader
-        current_media = None
+        was_playing = False
 
         if prev_leader:
-            # Save current media for potential restart
-            if should_restart_playback and self.playback_state == PlaybackState.PLAYING:
-                current_media = prev_leader.current_media
+            # Save current media and playback state for potential restart
+            was_playing = self.playback_state == PlaybackState.PLAYING
             # Stop current playback and dissolve existing group
             await self.stop()
             await self._dissolve_syncgroup()
@@ -1621,8 +1619,8 @@ class SyncGroupPlayer(GroupPlayer):
             await self._form_syncgroup()
 
             # Restart playback if requested and we have media to play
-            if should_restart_playback and current_media:
-                await new_leader.play_media(current_media)
+            if was_playing and self.current_media is not None:
+                await new_leader.play_media(self.current_media)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -1695,11 +1693,8 @@ class SyncGroupPlayer(GroupPlayer):
         if prev_leader and next_leader is None:
             # Edge case: we no longer have any members in the group (and thus no leader)
             await self._handle_leader_transition(None)
-        elif prev_leader and prev_leader != next_leader:
-            # Edge case: we had changed the leader - need to restart playback
-            await self._handle_leader_transition(next_leader, should_restart_playback=True)
         elif prev_leader != next_leader:
-            # Edge case: we had no leader, but now we do
+            # Edge case: we had changed the leader (or just got one)
             await self._handle_leader_transition(next_leader)
         elif self.sync_leader and (player_ids_to_add or player_ids_to_remove):
             # if the group still has the same leader, we need to (re)sync the members
