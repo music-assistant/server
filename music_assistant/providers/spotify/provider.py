@@ -138,7 +138,7 @@ class SpotifyProvider(MusicProvider):
             return str(self._sp_user["display_name"])
         return None
 
-# pylint: disable=too-many-statements
+    # ruff: noqa: PLR0915
     async def search(
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 5
     ) -> SearchResults:
