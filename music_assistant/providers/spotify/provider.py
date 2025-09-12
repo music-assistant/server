@@ -142,7 +142,7 @@ class SpotifyProvider(MusicProvider):
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
-
+    
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
@@ -205,14 +205,16 @@ class SpotifyProvider(MusicProvider):
                 searchresult.playlists = [*searchresult.playlists, *playlists]
                 items_received += len(api_result["playlists"]["items"])
             if "shows" in api_result:
-                podcasts = [
-                    parse_podcast(item, self)
-                    for item in api_result["shows"]["items"]
-                    if (item and item["id"])
-                ]
-                # Filter out None values (audiobooks)
-                valid_podcasts = [p for p in podcasts if p is not None]
-                searchresult.podcasts = [*searchresult.podcasts, *valid_podcasts]
+                podcasts = []
+                for item in api_result["shows"]["items"]:
+                    if not (item and item["id"]):
+                        continue
+                    # Filter out audiobooks - they have a distinctive description format
+                    description = item.get("description", "")
+                    if description.startswith("Author(s):") and "Narrator(s):" in description:
+                        continue
+                    podcasts.append(parse_podcast(item, self))
+                searchresult.podcasts = [*searchresult.podcasts, *podcasts]
                 items_received += len(api_result["shows"]["items"])
             offset += page_limit
             if offset >= limit:
@@ -255,9 +257,12 @@ class SpotifyProvider(MusicProvider):
         """Retrieve library podcasts from spotify."""
         async for item in self._get_all_items("me/shows"):
             if item["show"] and item["show"]["id"]:
-                podcast = parse_podcast(item["show"], self)
-                if podcast:  # Only yield if parse_podcast didn't return None
-                    yield podcast
+                show_obj = item["show"]
+                # Filter out audiobooks - they have a distinctive description format
+                description = show_obj.get("description", "")
+                if description.startswith("Author(s):") and "Narrator(s):" in description:
+                    continue
+                yield parse_podcast(show_obj, self)
 
     def _get_liked_songs_playlist_id(self) -> str:
         return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
@@ -335,13 +340,7 @@ class SpotifyProvider(MusicProvider):
         podcast_obj = await self._get_data(f"shows/{prov_podcast_id}")
         if not podcast_obj:
             raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
-
-        podcast = parse_podcast(podcast_obj, self)
-        if not podcast:
-            # This means it's an audiobook, not a podcast
-            raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
-
-        return podcast
+        return parse_podcast(podcast_obj, self)
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str
@@ -806,3 +805,4 @@ class SpotifyProvider(MusicProvider):
             self.logger.warning(
                 "FIXME: Spotify have fixed their Create Playlist API, this fix can be removed."
             )
+
