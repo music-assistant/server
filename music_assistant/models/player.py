@@ -1539,6 +1539,14 @@ class SyncGroupPlayer(GroupPlayer):
                             # member, we need to power it off to leave the group
                             await self.mass.players.cmd_power(member.active_group, False)
                             await asyncio.sleep(1)
+                elif (
+                    member.synced_to is not None
+                    and member.synced_to != self.sync_leader
+                    and (synced_to_player := self.mass.players.get(member.synced_to))
+                ):
+                    # collision: child player is synced to another player
+                    # ungroup it first
+                    await synced_to_player.set_members(player_ids_to_remove=[member.player_id])
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await self.mass.players.cmd_power(member.player_id, True)
             # Backup the queue to restore later once the group is powered off
