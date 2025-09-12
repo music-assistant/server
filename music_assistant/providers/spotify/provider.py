@@ -212,8 +212,10 @@ class SpotifyProvider(MusicProvider):
                         continue
                     # Filter out audiobooks - they have a distinctive description format
                     description = item.get("description", "")
-                    if description.startswith("Author(s):")
-                        and "Narrator(s):" in description:
+                    if (
+                        description.startswith("Author(s):")
+                        and "Narrator(s):" in description
+                    ):
                         continue
                     podcasts.append(parse_podcast(item, self))
                 searchresult.podcasts = [*searchresult.podcasts, *podcasts]
