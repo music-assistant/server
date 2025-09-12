@@ -959,6 +959,42 @@ class PlayerController(CoreController):
             ):
                 continue  # already synced to this target
 
+            # Check if player is already part of another group and try to automatically ungroup it
+            # first. If that fails, power off the group
+            if child_player.active_group and child_player.active_group != target_player:
+                if (
+                    other_group := self.get(child_player.active_group)
+                ) and PlayerFeature.SET_MEMBERS in other_group.supported_features:
+                    self.logger.warning(
+                        "Player %s is already part of another group (%s), "
+                        "removing from that group first",
+                        child_player.name,
+                        child_player.active_group,
+                    )
+                    try:
+                        await other_group.set_members(player_ids_to_remove=[child_player.player_id])
+                    except UnsupportedFeaturedException as err:
+                        self.logger.warning(
+                            "Failed to remove player %s from group %s: %s, powering it off instead",
+                            child_player.name,
+                            child_player.active_group,
+                            err,
+                        )
+                        await self.cmd_power(child_player.active_group, False)
+                else:
+                    self.logger.warning(
+                        "Player %s is already part of another group (%s), powering it off first",
+                        child_player.name,
+                        child_player.active_group,
+                    )
+                    await self.cmd_power(child_player.active_group, False)
+            elif child_player.synced_to and child_player.synced_to != target_player:
+                self.logger.warning(
+                    "Player %s is already synced to another player, ungrouping first",
+                    child_player.name,
+                )
+                await self.cmd_ungroup(child_player.player_id)
+
             # power on the player if needed
             if not child_player.powered and child_player.power_control != PLAYER_CONTROL_NONE:
                 await self.cmd_power(child_player.player_id, True, skip_update=True)
