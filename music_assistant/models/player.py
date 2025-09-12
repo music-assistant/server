@@ -1597,6 +1597,8 @@ class SyncGroupPlayer(GroupPlayer):
             self._attr_current_media = media
             self._attr_active_source = media.queue_id
             self.update_state()
+        else:
+            raise RuntimeError("an empty group cannot play media, consider adding members first")
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
