@@ -1647,7 +1647,17 @@ class SyncGroupPlayer(GroupPlayer):
             # The syncing will be done once powered on
             return
         next_leader = self._select_sync_leader()
-        if (prev_leader := self.sync_leader) and prev_leader != next_leader:
+        if (prev_leader := self.sync_leader) and next_leader is None:
+            # Edge case: we no longer have any members in the group (and thus no leader)
+            # Stop this group first
+            await self.stop()
+            # restore the former leaders queue and ungroup it
+            self._restore_leader_queue()
+            sync_childs = [x for x in prev_leader.group_members if x != prev_leader.player_id]
+            if sync_childs:
+                await prev_leader.set_members(player_ids_to_remove=sync_childs)
+            self.sync_leader = None
+        elif (prev_leader := self.sync_leader) and prev_leader != next_leader:
             # Edge case: we had changed the leader
             # restore the former leaders queue and ungroup it
             self._restore_leader_queue()
