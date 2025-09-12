@@ -1518,7 +1518,7 @@ class SyncGroupPlayer(GroupPlayer):
                 except UnsupportedFeaturedException:
                     # if the other group does not support SET_MEMBERS or it is a static
                     # member, we need to power it off to leave the group
-                    await self.mass.players.cmd_power(member.active_group, False)
+                    await other_group.power(False)
                     await asyncio.sleep(1)
         elif (
             member.synced_to is not None
@@ -1550,7 +1550,7 @@ class SyncGroupPlayer(GroupPlayer):
             ):
                 await self._handle_member_collisions(member)
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, True)
+                    await member.power(True)
             # Backup the queue to restore later once the group is powered off
             self._backup_leader_queue()
             # And setup the sync group by adding all members to the selected leader
@@ -1571,7 +1571,7 @@ class SyncGroupPlayer(GroupPlayer):
                 self, only_powered=True, active_only=True
             ):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, False)
+                    await member.power(False)
 
         if not powered:
             # reset the original group members when powered off
@@ -1726,7 +1726,7 @@ class SyncGroupPlayer(GroupPlayer):
 
             if member.synced_to and member.synced_to != self.sync_leader.player_id:
                 # ungroup first
-                await self.mass.players.cmd_ungroup(member.player_id)
+                await member.ungroup()
             if member.player_id == self.sync_leader.player_id:
                 # skip sync leader
                 continue
