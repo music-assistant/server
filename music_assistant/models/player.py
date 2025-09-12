@@ -1514,7 +1514,6 @@ class SyncGroupPlayer(GroupPlayer):
 
         if powered:
             self.sync_leader = self._select_sync_leader()
-            await self._form_syncgroup()
 
         # optimistically set the group state
         prev_power = self._attr_powered
@@ -1551,6 +1550,8 @@ class SyncGroupPlayer(GroupPlayer):
                     await self.mass.players.cmd_power(member.player_id, True)
             # Backup the queue to restore later once the group is powered off
             self._backup_leader_queue()
+            # And setup the sync group by adding all members to the selected leader
+            await self._form_syncgroup()
         elif prev_power:
             # handle TURN_OFF of the group player by ungrouping and turning off all members
             if (sync_leader := self.sync_leader) and sync_leader.group_members:
