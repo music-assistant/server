@@ -1659,6 +1659,8 @@ class SyncGroupPlayer(GroupPlayer):
             self.sync_leader = None
         elif (prev_leader := self.sync_leader) and prev_leader != next_leader:
             # Edge case: we had changed the leader
+            await self.sync_leader.stop()
+            leader_media = self.sync_leader.current_media
             # restore the former leaders queue and ungroup it
             self._restore_leader_queue()
             sync_childs = [x for x in prev_leader.group_members if x != prev_leader.player_id]
@@ -1667,8 +1669,13 @@ class SyncGroupPlayer(GroupPlayer):
             # Save the newly selected leader
             self.sync_leader = next_leader
             self._save_leader_queue()
-            # And reform the group with all members
+            # Reform the group with all members
             await self._form_syncgroup()
+            # And restart playback
+            if self.playback_state == PlaybackState.PLAYING and leader_media:
+                # continue playing where the previous leader left off
+                assert self.sync_leader  # this is never None due to the previous if
+                await self.sync_leader.play_media(leader_media)
         elif prev_leader != next_leader:
             # Edge case: we had no leader, but now we do
             self.sync_leader = next_leader
