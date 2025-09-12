@@ -1522,11 +1522,12 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def _handle_member_collisions(self, member: Player) -> None:
         """Handle collisions when adding a member to the sync group."""
-        if member.active_group is not None and member.active_group != self.player_id:
-            # collision: child player is part of multiple groups
-            # and another group already active !
+        for group in member.active_groups:
+            if group == self.player_id:
+                continue
+            # collision: child player is part another group that is already active !
             # solve this by trying to leave the group first
-            if other_group := self.mass.players.get(member.active_group):
+            if other_group := self.mass.players.get(group):
                 try:
                     other_group.check_feature(PlayerFeature.SET_MEMBERS)
                     await other_group.set_members(player_ids_to_remove=[member.player_id])
@@ -1534,7 +1535,9 @@ class SyncGroupPlayer(GroupPlayer):
                     # if the other group does not support SET_MEMBERS or it is a static
                     # member, we need to power it off to leave the group
                     await other_group.power(False)
-        elif (
+                # Wait a bit so the state can settle
+                await asyncio.sleep(1)
+        if (
             member.synced_to is not None
             and member.synced_to != self.sync_leader
             and (synced_to_player := self.mass.players.get(member.synced_to))
