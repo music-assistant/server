@@ -1344,7 +1344,7 @@ class SyncGroupPlayer(GroupPlayer):
     _attr_type: PlayerType = PlayerType.GROUP
     _leader_backup_active_source: str | None = None
     _leader_backup_current_media: PlayerMedia | None = None
-    sync_leader: Player | None
+    sync_leader: Player | None = None
     """The active sync leader player for this syncgroup."""
 
     @cached_property
@@ -1364,7 +1364,6 @@ class SyncGroupPlayer(GroupPlayer):
         self._attr_powered = False  # group players are always powered off by default
         self._attr_active_source = player_id
         self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
-        self.sync_leader = None
 
     async def on_registered(self) -> None:
         """Complete the initialization once the player was registered."""
