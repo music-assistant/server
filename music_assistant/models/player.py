@@ -1535,15 +1535,14 @@ class SyncGroupPlayer(GroupPlayer):
         if not powered and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             await self.stop()
 
-        if powered:
-            self.sync_leader = self._select_sync_leader()
-
         # optimistically set the group state
         prev_power = self._attr_powered
         self._attr_powered = powered
         self.update_state()
 
         if powered:
+            # Select sync leader and handle turn on
+            new_leader = self._select_sync_leader()
             # handle TURN_ON of the group player by turning on all members
             for member in self.mass.players.iter_group_members(
                 self, only_powered=False, active_only=False
@@ -1551,21 +1550,11 @@ class SyncGroupPlayer(GroupPlayer):
                 await self._handle_member_collisions(member)
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await member.power(True)
-            # Backup the queue to restore later once the group is powered off
-            self._backup_leader_queue()
-            # And setup the sync group by adding all members to the selected leader
-            await self._form_syncgroup()
+            # Set up the sync group with the new leader
+            await self._handle_leader_transition(new_leader)
         elif prev_power:
-            # handle TURN_OFF of the group player by ungrouping and turning off all members
-            if (sync_leader := self.sync_leader) and sync_leader.group_members:
-                # dissolve the temporary syncgroup from the sync leader
-                sync_children = [x for x in sync_leader.group_members if x != sync_leader.player_id]
-                if sync_children:
-                    await sync_leader.set_members(player_ids_to_remove=sync_children)
-            if sync_leader := self.sync_leader:
-                # Restore the leaders queue since it is no longer part of this group
-                self._restore_leader_queue()
-                sync_leader.update_state()
+            # handle TURN_OFF of the group player by dissolving group and turning off all members
+            await self._dissolve_syncgroup()
             # turn off all group members
             for member in self.mass.players.iter_group_members(
                 self, only_powered=True, active_only=True
@@ -1574,10 +1563,11 @@ class SyncGroupPlayer(GroupPlayer):
                     await member.power(False)
 
         if not powered:
-            # reset the original group members when powered off
+            # reset the original group members when powered off and clear leader
             self._attr_group_members = list(
                 cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
             )
+            self.sync_leader = None
 
     def _backup_leader_queue(self) -> None:
         if leader := self.sync_leader:
@@ -1593,6 +1583,44 @@ class SyncGroupPlayer(GroupPlayer):
             leader.current_media = self._leader_backup_current_media
         self._leader_backup_active_source = None
         self._leader_backup_current_media = None
+
+    async def _dissolve_syncgroup(self) -> None:
+        """Dissolve the current syncgroup by ungrouping all members and restoring leader queue."""
+        if sync_leader := self.sync_leader:
+            # dissolve the temporary syncgroup from the sync leader
+            sync_children = [x for x in sync_leader.group_members if x != sync_leader.player_id]
+            if sync_children:
+                await sync_leader.set_members(player_ids_to_remove=sync_children)
+            # Restore the leaders queue since it is no longer part of this group
+            self._restore_leader_queue()
+            sync_leader.update_state()
+
+    async def _handle_leader_transition(
+        self, new_leader: Player | None, should_restart_playback: bool = False
+    ) -> None:
+        """Handle transition from current leader to new leader."""
+        prev_leader = self.sync_leader
+        current_media = None
+
+        if prev_leader:
+            # Save current media for potential restart
+            if should_restart_playback and self.playback_state == PlaybackState.PLAYING:
+                current_media = prev_leader.current_media
+            # Stop current playback and dissolve existing group
+            await self.stop()
+            await self._dissolve_syncgroup()
+
+        # Set new leader
+        self.sync_leader = new_leader
+
+        if new_leader:
+            # Backup new leader's queue and form syncgroup
+            self._backup_leader_queue()
+            await self._form_syncgroup()
+
+            # Restart playback if requested and we have media to play
+            if should_restart_playback and current_media:
+                await new_leader.play_media(current_media)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -1660,40 +1688,17 @@ class SyncGroupPlayer(GroupPlayer):
             # The syncing will be done once powered on
             return
         next_leader = self._select_sync_leader()
-        if (prev_leader := self.sync_leader) and next_leader is None:
+        prev_leader = self.sync_leader
+
+        if prev_leader and next_leader is None:
             # Edge case: we no longer have any members in the group (and thus no leader)
-            # Stop this group first
-            await self.stop()
-            # restore the former leaders queue and ungroup it
-            self._restore_leader_queue()
-            sync_children = [x for x in prev_leader.group_members if x != prev_leader.player_id]
-            if sync_children:
-                await prev_leader.set_members(player_ids_to_remove=sync_children)
-            self.sync_leader = None
-        elif (prev_leader := self.sync_leader) and prev_leader != next_leader:
-            # Edge case: we had changed the leader
-            await self.sync_leader.stop()
-            leader_media = self.sync_leader.current_media
-            # restore the former leaders queue and ungroup it
-            self._restore_leader_queue()
-            sync_children = [x for x in prev_leader.group_members if x != prev_leader.player_id]
-            if sync_children:
-                await prev_leader.set_members(player_ids_to_remove=sync_children)
-            # Save the newly selected leader
-            self.sync_leader = next_leader
-            self._backup_leader_queue()
-            # Reform the group with all members
-            await self._form_syncgroup()
-            # And restart playback
-            if self.playback_state == PlaybackState.PLAYING and leader_media:
-                # continue playing where the previous leader left off
-                assert self.sync_leader  # this is never None due to the previous if
-                await self.sync_leader.play_media(leader_media)
+            await self._handle_leader_transition(None)
+        elif prev_leader and prev_leader != next_leader:
+            # Edge case: we had changed the leader - need to restart playback
+            await self._handle_leader_transition(next_leader, should_restart_playback=True)
         elif prev_leader != next_leader:
             # Edge case: we had no leader, but now we do
-            self.sync_leader = next_leader
-            self._backup_leader_queue()
-            await self._form_syncgroup()
+            await self._handle_leader_transition(next_leader)
         elif self.sync_leader and (player_ids_to_add or player_ids_to_remove):
             # if the group still has the same leader, we need to (re)sync the members
             # Handle collisions for newly added players
