@@ -1342,8 +1342,8 @@ class SyncGroupPlayer(GroupPlayer):
     """Helper class for a (provider specific) SyncGroup player."""
 
     _attr_type: PlayerType = PlayerType.GROUP
-    _leader_active_source: str | None = None
-    _leader_current_media: PlayerMedia | None = None
+    _leader_backup_active_source: str | None = None
+    _leader_backup_current_media: PlayerMedia | None = None
     sync_leader: Player | None
     """The active sync leader player for this syncgroup."""
 
@@ -1543,7 +1543,7 @@ class SyncGroupPlayer(GroupPlayer):
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await self.mass.players.cmd_power(member.player_id, True)
             # Backup the queue to restore later once the group is powered off
-            self._save_leader_queue()
+            self._backup_leader_queue()
         elif prev_power:
             # handle TURN_OFF of the group player by ungrouping and turning off all members
             if (sync_leader := self.sync_leader) and sync_leader.group_members:
@@ -1568,20 +1568,20 @@ class SyncGroupPlayer(GroupPlayer):
                 cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
             )
 
-    def _save_leader_queue(self) -> None:
+    def _backup_leader_queue(self) -> None:
         if leader := self.sync_leader:
-            self._leader_active_source = leader.active_source
-            self._leader_current_media = leader.current_media
+            self._leader_backup_active_source = leader.active_source
+            self._leader_backup_current_media = leader.current_media
         else:
-            self._leader_active_source = None
-            self._leader_current_media = None
+            self._leader_backup_active_source = None
+            self._leader_backup_current_media = None
 
     def _restore_leader_queue(self) -> None:
         if leader := self.sync_leader:
-            leader.active_source = self._leader_active_source
-            leader.current_media = self._leader_current_media
-        self._leader_active_source = None
-        self._leader_current_media = None
+            leader.active_source = self._leader_backup_active_source
+            leader.current_media = self._leader_backup_current_media
+        self._leader_backup_active_source = None
+        self._leader_backup_current_media = None
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -1670,7 +1670,7 @@ class SyncGroupPlayer(GroupPlayer):
                 await prev_leader.set_members(player_ids_to_remove=sync_childs)
             # Save the newly selected leader
             self.sync_leader = next_leader
-            self._save_leader_queue()
+            self._backup_leader_queue()
             # Reform the group with all members
             await self._form_syncgroup()
             # And restart playback
@@ -1681,7 +1681,7 @@ class SyncGroupPlayer(GroupPlayer):
         elif prev_leader != next_leader:
             # Edge case: we had no leader, but now we do
             self.sync_leader = next_leader
-            self._save_leader_queue()
+            self._backup_leader_queue()
             await self._form_syncgroup()
         elif self.sync_leader and (player_ids_to_add or player_ids_to_remove):
             # if the group still has the same leader, we need to (re)sync the members
