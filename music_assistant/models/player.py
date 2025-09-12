@@ -1344,6 +1344,8 @@ class SyncGroupPlayer(GroupPlayer):
     _attr_type: PlayerType = PlayerType.GROUP
     _leader_active_source: str | None = None
     _leader_current_media: PlayerMedia | None = None
+    sync_leader: Player | None
+    """The active sync leader player for this syncgroup."""
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -1362,6 +1364,7 @@ class SyncGroupPlayer(GroupPlayer):
         self._attr_powered = False  # group players are always powered off by default
         self._attr_active_source = player_id
         self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
+        self.sync_leader = None
 
     async def on_registered(self) -> None:
         """Complete the initialization once the player was registered."""
@@ -1510,6 +1513,7 @@ class SyncGroupPlayer(GroupPlayer):
             await self.stop()
 
         if powered:
+            self.sync_leader = self._select_sync_leader()
             await self._form_syncgroup()
 
         # optimistically set the group state
@@ -1638,53 +1642,71 @@ class SyncGroupPlayer(GroupPlayer):
             self._attr_group_members.remove(player_id)
             final_players_to_remove.append(player_id)
         self.update_state()
-        if self.powered and (player_ids_to_add or player_ids_to_remove):
-            # if the group is powered on, we need to (re)sync the members
-            sync_leader = await self._select_sync_leader()
-            await sync_leader.set_members(
+        if not self.powered:
+            # Don't need to do anything else if the group is powered off
+            # The syncing will be done once powered on
+            return
+        next_leader = self._select_sync_leader()
+        if (prev_leader := self.sync_leader) and prev_leader != next_leader:
+            # Edge case: we had changed the leader
+            # restore the former leaders queue and ungroup it
+            self._restore_leader_queue()
+            sync_childs = [x for x in prev_leader.group_members if x != prev_leader.player_id]
+            if sync_childs:
+                await prev_leader.set_members(player_ids_to_remove=sync_childs)
+            # Save the newly selected leader
+            self.sync_leader = next_leader
+            self._save_leader_queue()
+            # And reform the group with all members
+            await self._form_syncgroup()
+        elif prev_leader != next_leader:
+            # Edge case: we had no leader, but now we do
+            self.sync_leader = next_leader
+            self._save_leader_queue()
+            await self._form_syncgroup()
+        elif self.sync_leader and (player_ids_to_add or player_ids_to_remove):
+            # if the group still has the same leader, we need to (re)sync the members
+            await self.sync_leader.set_members(
                 player_ids_to_add=final_players_to_add,
                 player_ids_to_remove=final_players_to_remove,
             )
 
-    @property
-    def sync_leader(self) -> Player | None:
-        """Get the active sync leader player for the syncgroup."""
-        for child_player in self.mass.players.iter_group_members(
-            self, only_powered=False, only_playing=False, active_only=False
-        ):
-            # the syncleader is just the first player in the group
-            return child_player
-        return None
-
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by sync all (possible) members."""
-        sync_leader = await self._select_sync_leader()
+        if self.sync_leader is None:
+            # This is an empty group, leader will be selected once a member is added
+            self._attr_group_members = []
+            self.update_state()
+            return
         # ensure the sync leader is first in the list
         self._attr_group_members = [
-            sync_leader.player_id,
-            *[x for x in self._attr_group_members if x != sync_leader.player_id],
+            self.sync_leader.player_id,
+            *[x for x in self._attr_group_members if x != self.sync_leader.player_id],
         ]
         self.update_state()
         members_to_sync: list[str] = []
         for member in self.mass.players.iter_group_members(self, active_only=False):
-            if member.synced_to and member.synced_to != sync_leader.player_id:
+            if member.synced_to and member.synced_to != self.sync_leader.player_id:
                 # ungroup first
                 await self.mass.players.cmd_ungroup(member.player_id)
-            if member.player_id == sync_leader.player_id:
+            if member.player_id == self.sync_leader.player_id:
                 # skip sync leader
                 continue
             if (
-                member.synced_to == sync_leader.player_id
-                and member.player_id in sync_leader.group_members
+                member.synced_to == self.sync_leader.player_id
+                and member.player_id in self.sync_leader.group_members
             ):
                 # already synced
                 continue
             members_to_sync.append(member.player_id)
         if members_to_sync:
-            await sync_leader.set_members(members_to_sync)
+            await self.sync_leader.set_members(members_to_sync)
 
-    async def _select_sync_leader(self) -> Player:
+    def _select_sync_leader(self) -> Player | None:
         """Select the active sync leader player for a syncgroup."""
+        if self.sync_leader and self.sync_leader.player_id in self.group_members:
+            # Don't change the sync leader if we already have one
+            return self.sync_leader
         for prefer_sync_leader in (True, False):
             for child_player in self.mass.players.iter_group_members(self):
                 if prefer_sync_leader and child_player.synced_to:
@@ -1699,7 +1721,7 @@ class SyncGroupPlayer(GroupPlayer):
                     # but guard it just in case bad things happen
                     continue
                 return child_player
-        raise RuntimeError("No players available to form syncgroup")
+        return None
 
 
 __all__ = [
