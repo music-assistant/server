@@ -1521,7 +1521,6 @@ class SyncGroupPlayer(GroupPlayer):
                     # if the other group does not support SET_MEMBERS or it is a static
                     # member, we need to power it off to leave the group
                     await other_group.power(False)
-                    await asyncio.sleep(1)
         elif (
             member.synced_to is not None
             and member.synced_to != self.sync_leader
@@ -1531,6 +1530,8 @@ class SyncGroupPlayer(GroupPlayer):
             # collision: child player is synced to another player and still in that group
             # ungroup it first
             await synced_to_player.set_members(player_ids_to_remove=[member.player_id])
+        # State updates for removed/related members don't happen immediately
+        await asyncio.sleep(1)
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
@@ -1594,6 +1595,8 @@ class SyncGroupPlayer(GroupPlayer):
             sync_children = [x for x in sync_leader.group_members if x != sync_leader.player_id]
             if sync_children:
                 await sync_leader.set_members(player_ids_to_remove=sync_children)
+                # State updates for removed members don't happen immediately
+                await asyncio.sleep(1)
             # Restore the leaders queue since it is no longer part of this group
             self._restore_leader_queue()
             sync_leader.update_state()
