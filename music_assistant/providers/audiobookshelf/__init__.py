@@ -1,6 +1,4 @@
 """Audiobookshelf (abs) provider for Music Assistant."""
-# pyright does not understand the decorator, but mypy runs just fine
-# pyright: reportIncompatibleMethodOverride=false
 
 from __future__ import annotations
 
@@ -226,7 +224,6 @@ class Audiobookshelf(MusicProvider):
             ProviderFeature.RECOMMENDATIONS,
         }
 
-    @handle_refresh_token
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
         base_url = str(self.config.get_value(CONF_URL))
@@ -574,7 +571,7 @@ for more details.
             content_type = ContentType.try_parse(abs_audiobook.media.tracks[0].metadata.ext)
 
         return StreamDetails(
-            provider=self.instance_id,
+            provider=self.lookup_key,
             item_id=abs_audiobook.id_,
             audio_format=AudioFormat(content_type=content_type),
             media_type=MediaType.AUDIOBOOK,
@@ -648,7 +645,7 @@ for more details.
             async for chunk in get_multi_file_stream(
                 mass=self.mass,
                 streamdetails=StreamDetails(
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     item_id=streamdetails.item_id,
                     audio_format=streamdetails.audio_format,
                     media_type=MediaType.AUDIOBOOK,
