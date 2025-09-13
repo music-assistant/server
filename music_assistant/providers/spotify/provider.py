@@ -212,10 +212,7 @@ class SpotifyProvider(MusicProvider):
                         continue
                     # Filter out audiobooks - they have a distinctive description format
                     description = item.get("description", "")
-                    if (
-                        description.startswith("Author(s):")
-                        and "Narrator(s):" in description
-                    ):
+                    if description.startswith("Author(s):") and "Narrator(s):" in description:
                         continue
                     podcasts.append(parse_podcast(item, self))
                 searchresult.podcasts = [*searchresult.podcasts, *podcasts]
@@ -264,10 +261,7 @@ class SpotifyProvider(MusicProvider):
                 show_obj = item["show"]
                 # Filter out audiobooks - they have a distinctive description format
                 description = show_obj.get("description", "")
-                if (
-                    description.startswith("Author(s):")
-                    and "Narrator(s):" in description
-                ):
+                if description.startswith("Author(s):") and "Narrator(s):" in description:
                     continue
                 yield parse_podcast(show_obj, self)
 
@@ -812,4 +806,3 @@ class SpotifyProvider(MusicProvider):
             self.logger.warning(
                 "FIXME: Spotify have fixed their Create Playlist API, this fix can be removed."
             )
-
