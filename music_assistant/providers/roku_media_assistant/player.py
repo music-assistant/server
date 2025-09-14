@@ -178,23 +178,25 @@ class MediaAssistantPlayer(Player):
                 "t": "a",
                 "albumName": media.album if media.album is not None else "",
                 "songName": media.title,
-                "artistName": "Music Assistant Radio"
-                if media.media_type == MediaType.RADIO
-                else media.artist
-                if media.artist is not None
-                else "Flow Mode"
-                if self.flow_mode
-                else "Music Assistant",
-                "albumArt": ""
-                if self.flow_mode
-                else media.image_url
-                if media.image_url is not None
-                else "",
+                "artistName": (
+                    "Music Assistant Radio"
+                    if media.media_type == MediaType.RADIO
+                    else media.artist
+                    if media.artist is not None
+                    else ("Flow Mode" if self.flow_mode else "Music Assistant")
+                ),
+                "albumArt": (
+                    "" if self.flow_mode else media.image_url if media.image_url is not None else ""
+                ),
                 "songFormat": "flac",
                 "duration": "" if media.duration is None else media.duration,
-                "isLive": "true"
-                if media.media_type == MediaType.RADIO or media.duration is None or self.flow_mode
-                else "",
+                "isLive": (
+                    "true"
+                    if media.media_type == MediaType.RADIO
+                    or media.duration is None
+                    or self.flow_mode
+                    else ""
+                ),
             }
 
             if app_running:
