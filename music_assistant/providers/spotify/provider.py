@@ -383,15 +383,17 @@ class SpotifyProvider(MusicProvider):
             podcast = await self.mass.music.podcasts.get_provider_item(
                 prov_podcast_id, self.instance_id
             )
-        except Exception as err:
-            self.logger.debug("Could not get podcast from MA context: %s", err)
+        except MediaNotFoundError:
+            self.logger.debug("Podcast %s not found in Music Assistant library", prov_podcast_id)
 
         # If we don't have the podcast from MA context, get it via the API
         if not podcast:
             try:
                 podcast = await self.get_podcast(prov_podcast_id)  # This is cached
-            except Exception as err:
-                self.logger.warning("Could not get podcast for %s: %s", prov_podcast_id, err)
+            except MediaNotFoundError:
+                self.logger.warning(
+                    "Podcast with ID %s is no longer available on Spotify", prov_podcast_id
+                )
 
         # Get cached episode data - this is where the performance improvement happens
         episodes_data = await self._get_podcast_episodes_data(prov_podcast_id)
