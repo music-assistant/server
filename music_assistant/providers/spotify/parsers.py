@@ -33,22 +33,31 @@ def parse_images(
     if not images_list:
         return UniqueList([])
 
+    # Filter out generic images if requested (for artists)
+    filtered_images = []
     for img in images_list:
         img_url = img["url"]
-        # Skip generic placeholder images for artists if requested
         if exclude_generic and "2a96cbd8b46e442fc41c2b86b821562f" in img_url:
             continue
-        return UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=img_url,
-                    provider=lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
-        )
-    return UniqueList([])
+        filtered_images.append(img)
+
+    if not filtered_images:
+        return UniqueList([])
+
+    # Spotify orders images from largest to smallest (640x640, 300x300, 64x64)
+    # Select the largest (highest quality) image - the first one
+    best_image = filtered_images[0]
+
+    return UniqueList(
+        [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=best_image["url"],
+                provider=lookup_key,
+                remotely_accessible=True,
+            )
+        ]
+    )
 
 
 def parse_artist(artist_obj: dict[str, Any], provider: SpotifyProvider) -> Artist:

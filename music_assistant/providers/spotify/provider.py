@@ -343,22 +343,63 @@ class SpotifyProvider(MusicProvider):
             raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
         return parse_podcast(podcast_obj, self)
 
+    @use_cache(43200)  # 12 hours - balances freshness with performance
+    async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
+        """Get raw episode data from Spotify API (cached).
+
+        Args:
+            prov_podcast_id: Spotify podcast ID
+
+        Returns:
+            List of episode data dictionaries
+        """
+        episodes_data: list[dict[str, Any]] = []
+
+        try:
+            async for item in self._get_all_items(
+                f"shows/{prov_podcast_id}/episodes", market="from_token"
+            ):
+                if item and item.get("id"):
+                    episodes_data.append(item)
+        except MediaNotFoundError:
+            self.logger.warning("Podcast %s not found", prov_podcast_id)
+            return []
+        except ResourceTemporarilyUnavailable as err:
+            self.logger.warning(
+                "Temporary error fetching episodes for %s: %s", prov_podcast_id, err
+            )
+            raise
+
+        return episodes_data
+
     async def get_podcast_episodes(
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all podcast episodes."""
-        podcast = await self.get_podcast(prov_podcast_id)
-        episode_position = 1
+        # Get podcast object for context if available - this should be cached from previous calls
+        podcast: Podcast | None = None
 
-        async for item in self._get_all_items(
-            f"shows/{prov_podcast_id}/episodes", market="from_token"
-        ):
-            if not (item and item["id"]):
-                continue
+        try:
+            podcast = await self.mass.music.podcasts.get_provider_item(
+                prov_podcast_id, self.instance_id
+            )
+        except Exception as err:
+            self.logger.debug("Could not get podcast from MA context: %s", err)
 
-            episode = parse_podcast_episode(item, self, podcast=podcast)
-            episode.position = episode_position
-            episode_position += 1
+        # If we don't have the podcast from MA context, get it via the API
+        if not podcast:
+            try:
+                podcast = await self.get_podcast(prov_podcast_id)  # This is cached
+            except Exception as err:
+                self.logger.warning("Could not get podcast for %s: %s", prov_podcast_id, err)
+
+        # Get cached episode data - this is where the performance improvement happens
+        episodes_data = await self._get_podcast_episodes_data(prov_podcast_id)
+
+        # Parse and yield episodes with position
+        for idx, episode_data in enumerate(episodes_data):
+            episode = parse_podcast_episode(episode_data, self, podcast)
+            episode.position = idx + 1
             yield episode
 
     @use_cache(86400)  # 24 hours
