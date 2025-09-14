@@ -199,6 +199,22 @@ class MediaAssistantPlayer(Player):
                 ),
             }
 
+            if queue := self.mass.player_queues.get_active_queue(self.player_id):
+                if queue.active:
+                    current_duration = 0
+
+                    if queue.current_item is not None and queue.current_item.media_item is not None:
+                        current_duration = cast("int", queue.current_item.media_item.duration)
+
+                    f_media.update(
+                        {
+                            "timeOffset": ""
+                            if media.duration is None
+                            else (current_duration - media.duration),
+                            "duration": "" if media.duration is None else current_duration,
+                        }
+                    )
+
             if app_running:
                 await self.roku_input(f_media)
             else:
