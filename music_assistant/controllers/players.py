@@ -1413,7 +1413,7 @@ class PlayerController(CoreController):
             removed_members = set(prev_group_members) - set(new_group_members)
             for player_id in removed_members:
                 if removed_player := self.get(player_id):
-                    self.mass.loop.call_soon(removed_player.update_state, True)
+                    removed_player.update_state(True)
 
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
@@ -1423,18 +1423,18 @@ class PlayerController(CoreController):
 
         # update/signal group player(s) child's when group updates
         for child_player in self.iter_group_members(player, exclude_self=True):
-            self.mass.loop.call_soon(child_player.update_state, True)
+            child_player.update_state(True)
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
-            self.mass.loop.call_soon(group_player.update_state, True)
+            group_player.update_state(True)
         # update/signal manually synced to player when child updates
         if (synced_to := player.synced_to) and (synced_to_player := self.get(synced_to)):
-            self.mass.loop.call_soon(synced_to_player.update_state, True)
+            synced_to_player.update_state(True)
         # update/signal active groups when a group member updates
         if (active_group := player.active_group) and (
             active_group_player := self.get(active_group)
         ):
-            self.mass.loop.call_soon(active_group_player.update_state, True)
+            active_group_player.update_state(True)
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
