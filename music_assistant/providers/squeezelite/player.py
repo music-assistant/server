@@ -233,18 +233,18 @@ class SqueezelitePlayer(Player):
                 # because this could have been a group
                 player_id=media.custom_data["player_id"],
             )
-        elif media.queue_id.startswith("ugp_"):
+        elif media.source_id.startswith("ugp_"):
             # special case: UGP stream
-            ugp_player: UniversalGroupPlayer = self.mass.players.get(media.queue_id)
+            ugp_player: UniversalGroupPlayer = self.mass.players.get(media.source_id)
             ugp_stream = ugp_player.stream
             # Filter is later applied in MultiClientStream
             audio_source = ugp_stream.get_stream(master_audio_format, filter_params=None)
-        elif media.queue_id and media.queue_item_id:
+        elif media.source_id and media.queue_item_id:
             # regular queue stream request
             audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=self.mass.player_queues.get(media.queue_id),
+                queue=self.mass.player_queues.get(media.source_id),
                 start_queue_item=self.mass.player_queues.get_item(
-                    media.queue_id, media.queue_item_id
+                    media.source_id, media.queue_item_id
                 ),
                 pcm_format=master_audio_format,
             )
@@ -412,10 +412,10 @@ class SqueezelitePlayer(Player):
             "artist": media.artist,
             "image_url": media.image_url,
             "duration": media.duration,
-            "queue_id": media.queue_id,
+            "queue_id": media.source_id,
             "queue_item_id": media.queue_item_id,
         }
-        if queue := self.mass.player_queues.get(media.queue_id):
+        if queue := self.mass.player_queues.get(media.source_id):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
         await slimplayer.play_url(

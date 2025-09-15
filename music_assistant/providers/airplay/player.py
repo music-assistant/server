@@ -211,7 +211,7 @@ class AirPlayPlayer(Player):
 
         # set the active source for the player to the media queue
         # this accounts for syncgroups and linked players (e.g. sonos)
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
         self._attr_current_media = media
 
         # select audio source
@@ -235,19 +235,21 @@ class AirPlayPlayer(Player):
                 # because this could have been a group
                 player_id=media.custom_data["player_id"],
             )
-        elif media.queue_id and media.queue_id.startswith(UGP_PREFIX):
+        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
             # special case: UGP stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.queue_id))
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
             input_format = ugp_stream.base_pcm_format
             audio_source = ugp_stream.subscribe_raw()
-        elif media.queue_id and media.queue_item_id:
+        elif media.source_id and media.queue_item_id:
             # regular queue (flow) stream request
             input_format = AIRPLAY_FLOW_PCM_FORMAT
-            queue = self.mass.player_queues.get(media.queue_id)
+            queue = self.mass.player_queues.get(media.source_id)
             assert queue
-            start_queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+            start_queue_item = self.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
             assert start_queue_item
             audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=queue,

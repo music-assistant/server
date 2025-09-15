@@ -174,7 +174,7 @@ class SnapCastPlayer(Player):
 
         # get stream or create new one
         stream_name = self._get_stream_name(SnapCastStreamType.MUSIC)
-        stream = await self._get_or_create_stream(stream_name, media.queue_id or self.player_id)
+        stream = await self._get_or_create_stream(stream_name, media.source_id or self.player_id)
 
         # if no announcement is playing we activate the stream now, otherwise it
         # will be activated by play_announcement when the announcement is over.
@@ -184,7 +184,7 @@ class SnapCastPlayer(Player):
             await snap_group.set_stream(stream.identifier)
 
         self._attr_current_media = media
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
 
         # select audio source
         if media.media_type == MediaType.PLUGIN_SOURCE:
@@ -196,18 +196,20 @@ class SnapCastPlayer(Player):
                 output_format=DEFAULT_SNAPCAST_FORMAT,
                 player_id=self.player_id,
             )
-        elif media.queue_id and media.queue_id.startswith(UGP_PREFIX):
+        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
             # special case: UGP stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.queue_id))
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
             input_format = ugp_stream.base_pcm_format
             audio_source = ugp_stream.subscribe_raw()
-        elif media.queue_id and media.queue_item_id:
+        elif media.source_id and media.queue_item_id:
             # regular queue (flow) stream request
             input_format = DEFAULT_SNAPCAST_PCM_FORMAT
-            queue = self.mass.player_queues.get(media.queue_id)
-            start_queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+            queue = self.mass.player_queues.get(media.source_id)
+            start_queue_item = self.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
             assert queue is not None  # for type checking
             assert start_queue_item is not None  # for type checking
             audio_source = self.mass.streams.get_queue_flow_stream(

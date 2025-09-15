@@ -209,13 +209,13 @@ class UniversalGroupPlayer(GroupPlayer):
                 output_format=UGP_FORMAT,
                 player_id=media.custom_data["player_id"],
             )
-        elif media.queue_id and media.queue_item_id:
+        elif media.source_id and media.queue_item_id:
             # regular queue stream request
-            queue = self.mass.player_queues.get(media.queue_id)
-            queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+            queue = self.mass.player_queues.get(media.source_id)
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             if not queue or not queue_item:
                 # this should not happen, but guard just in case
-                raise RuntimeError(f"Invalid queue(item): {media.queue_id}, {media.queue_item_id}")
+                raise RuntimeError(f"Invalid queue(item): {media.source_id}, {media.queue_item_id}")
             audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=queue,
                 start_queue_item=queue_item,
@@ -254,7 +254,7 @@ class UniversalGroupPlayer(GroupPlayer):
                             uri=f"{base_url}?player_id={member.player_id}",
                             media_type=MediaType.FLOW_STREAM,
                             title=self.display_name,
-                            queue_id=self.player_id,
+                            source_id=self.player_id,
                         )
                     )
                 )
@@ -291,7 +291,7 @@ class UniversalGroupPlayer(GroupPlayer):
                         uri=f"{base_url}?player_id={player_id}",
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
-                        queue_id=child_player.player_id,
+                        source_id=child_player.player_id,
                     ),
                 )
         # handle removals

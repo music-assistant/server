@@ -1014,7 +1014,7 @@ class Player(ABC):
         album: str | None = None,
         image_url: str | None = None,
         duration: int | None = None,
-        queue_id: str | None = None,
+        source_id: str | None = None,
         queue_item_id: str | None = None,
         custom_data: dict[str, Any] | None = None,
         clear_all: bool = False,
@@ -1042,8 +1042,8 @@ class Player(ABC):
             self._attr_current_media.image_url = image_url
         if duration:
             self._attr_current_media.duration = duration
-        if queue_id:
-            self._attr_current_media.queue_id = queue_id
+        if source_id:
+            self._attr_current_media.source_id = source_id
         if queue_item_id:
             self._attr_current_media.queue_item_id = queue_item_id
         if custom_data:
