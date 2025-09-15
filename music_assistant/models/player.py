@@ -1354,8 +1354,6 @@ class SyncGroupPlayer(GroupPlayer):
     """Helper class for a (provider specific) SyncGroup player."""
 
     _attr_type: PlayerType = PlayerType.GROUP
-    _leader_backup_active_source: str | None = None
-    _leader_backup_current_media: PlayerMedia | None = None
     sync_leader: Player | None = None
     """The active sync leader player for this syncgroup."""
 
@@ -1577,21 +1575,6 @@ class SyncGroupPlayer(GroupPlayer):
             )
             self.sync_leader = None
 
-    def _backup_leader_queue(self) -> None:
-        if leader := self.sync_leader:
-            self._leader_backup_active_source = leader.active_source
-            self._leader_backup_current_media = leader.current_media
-        else:
-            self._leader_backup_active_source = None
-            self._leader_backup_current_media = None
-
-    def _restore_leader_queue(self) -> None:
-        if leader := self.sync_leader:
-            leader.active_source = self._leader_backup_active_source
-            leader.current_media = self._leader_backup_current_media
-        self._leader_backup_active_source = None
-        self._leader_backup_current_media = None
-
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members and restoring leader queue."""
         if sync_leader := self.sync_leader:
@@ -1599,8 +1582,9 @@ class SyncGroupPlayer(GroupPlayer):
             sync_children = [x for x in sync_leader.group_members if x != sync_leader.player_id]
             if sync_children:
                 await sync_leader.set_members(player_ids_to_remove=sync_children)
-            # Restore the leaders queue since it is no longer part of this group
-            self._restore_leader_queue()
+            # Reset the leaders queue since it is no longer part of this group
+            sync_leader.active_source = None
+            sync_leader.current_media = None
             sync_leader.update_state()
 
     async def _handle_leader_transition(self, new_leader: Player | None) -> None:
@@ -1619,8 +1603,7 @@ class SyncGroupPlayer(GroupPlayer):
         self.sync_leader = new_leader
 
         if new_leader:
-            # Backup new leader's queue and form syncgroup
-            self._backup_leader_queue()
+            # form a syncgroup with the new leader
             await self._form_syncgroup()
 
             # Restart playback if requested and we have media to play
