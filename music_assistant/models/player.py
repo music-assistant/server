@@ -1622,7 +1622,7 @@ class SyncGroupPlayer(GroupPlayer):
         if sync_leader := self.sync_leader:
             await sync_leader.play_media(media)
             self._attr_current_media = media
-            self._attr_active_source = media.queue_id
+            self._attr_active_source = media.source_id
             self.update_state()
         else:
             raise RuntimeError("an empty group cannot play media, consider adding members first")

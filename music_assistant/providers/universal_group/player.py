@@ -252,7 +252,7 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time() - 1
         self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
         self.update_state()
 
         # forward to downstream play_media commands
