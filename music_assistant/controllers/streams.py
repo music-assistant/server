@@ -14,7 +14,7 @@ import os
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -72,7 +72,6 @@ from music_assistant.helpers.util import (
     get_free_space_percentage,
     get_ip_addresses,
     select_free_port,
-    try_parse_bool,
 )
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -110,6 +109,14 @@ class CrossfadeData:
     session_id: str | None = None
 
 
+class AnnounceData(TypedDict):
+    """Announcement data."""
+
+    announcement_url: str
+    pre_announce: bool
+    pre_announce_url: str
+
+
 class StreamsController(CoreController):
     """Webserver Controller to stream audio to players."""
 
@@ -127,7 +134,7 @@ class StreamsController(CoreController):
             "streaming audio to players on the local network."
         )
         self.manifest.icon = "cast-audio"
-        self.announcements: dict[str, str] = {}
+        self.announcements: dict[str, AnnounceData] = {}
         # prefer /tmp/.audio as audio cache dir
         self._audio_cache_dir = os.path.join("/tmp/.audio")  # noqa: S108
         self.allow_cache_default = "auto"
@@ -626,13 +633,11 @@ class StreamsController(CoreController):
         player = self.mass.player_queues.get(player_id)
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
-        if player_id not in self.announcements:
+        if not (announce_data := self.announcements.get(player_id)):
             raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
-        announcement_url = self.announcements[player_id]
-        use_pre_announce = try_parse_bool(request.query.get("pre_announce"))
 
         # work out output format/details
-        fmt = request.match_info.get("fmt", announcement_url.rsplit(".")[-1])
+        fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
         http_profile_value = await self.mass.config.get_player_config_value(
@@ -644,9 +649,10 @@ class StreamsController(CoreController):
             # just send it over completely at once so we have a fixed content length
             data = b""
             async for chunk in self.get_announcement_stream(
-                announcement_url=announcement_url,
+                announcement_url=announce_data["announcement_url"],
                 output_format=audio_format,
-                use_pre_announce=use_pre_announce,
+                pre_announce=announce_data["pre_announce"],
+                pre_announce_url=announce_data["pre_announce_url"],
             ):
                 data += chunk
             return web.Response(
@@ -673,13 +679,14 @@ class StreamsController(CoreController):
         # all checks passed, start streaming!
         self.logger.debug(
             "Start serving audio stream for Announcement %s to %s",
-            announcement_url,
+            announce_data["announcement_url"],
             player.display_name,
         )
         async for chunk in self.get_announcement_stream(
-            announcement_url=announcement_url,
+            announcement_url=announce_data["announcement_url"],
             output_format=audio_format,
-            use_pre_announce=use_pre_announce,
+            pre_announce=announce_data["pre_announce"],
+            pre_announce_url=announce_data["pre_announce_url"],
         ):
             try:
                 await resp.write(chunk)
@@ -688,7 +695,7 @@ class StreamsController(CoreController):
 
         self.logger.debug(
             "Finished serving audio stream for Announcement %s to %s",
-            announcement_url,
+            announce_data["announcement_url"],
             player.display_name,
         )
 
@@ -768,16 +775,15 @@ class StreamsController(CoreController):
     def get_announcement_url(
         self,
         player_id: str,
-        announcement_url: str,
-        use_pre_announce: bool = False,
+        announce_data: AnnounceData,
         content_type: ContentType = ContentType.MP3,
     ) -> str:
         """Get the url for the special announcement stream."""
-        self.announcements[player_id] = announcement_url
+        self.announcements[player_id] = announce_data
         # use stream server to host announcement on local network
         # this ensures playback on all players, including ones that do not
         # like https hosts and it also offers the pre-announce 'bell'
-        return f"{self.base_url}/announcement/{player_id}.{content_type.value}?pre_announce={use_pre_announce}"  # noqa: E501
+        return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
     async def get_queue_flow_stream(
         self,
@@ -939,27 +945,17 @@ class StreamsController(CoreController):
         total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
-    def _get_announcement_chime_url(self) -> str:
-        """Get announcement chime URL - custom or default."""
-        custom_url = self.mass.config.get_raw_core_config_value(
-            self.domain, "announcement_chime_url", ""
-        )
-        if custom_url and custom_url.strip():
-            return custom_url.strip()
-
-        # Fall back to built-in chime
-        return ANNOUNCE_ALERT_FILE
-
     async def get_announcement_stream(
         self,
         announcement_url: str,
         output_format: AudioFormat,
-        use_pre_announce: bool = False,
+        pre_announce: bool | str = False,
+        pre_announce_url: str = ANNOUNCE_ALERT_FILE,
     ) -> AsyncGenerator[bytes, None]:
         """Get the special announcement stream."""
         filter_params = ["loudnorm=I=-10:LRA=11:TP=-2"]
 
-        if use_pre_announce:
+        if pre_announce:
             # Note: TTS URLs might take a while to load cause the actual data are often generated
             # asynchronously by the TTS provider. If we ask ffmpeg to mix the pre-announce, it will
             # wait until it reads the TTS data, so the whole stream will be delayed. It is much
@@ -972,10 +968,9 @@ class StreamsController(CoreController):
             # Finally, if the output_format is non-PCM, raw concatenation can be problematic.
             # So far players seem to tolerate this, but it might break some player in the future.
 
-            chime_url = self._get_announcement_chime_url()
             async for chunk in get_ffmpeg_stream(
-                audio_input=chime_url,
-                input_format=AudioFormat(content_type=ContentType.try_parse(chime_url)),
+                audio_input=pre_announce_url,
+                input_format=AudioFormat(content_type=ContentType.try_parse(pre_announce_url)),
                 output_format=output_format,
                 filter_params=filter_params,
             ):

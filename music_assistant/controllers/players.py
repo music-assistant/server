@@ -47,6 +47,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
+    ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
@@ -61,14 +62,16 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
-    CONF_TTS_PRE_ANNOUNCE,
+    CONF_PRE_ANNOUNCE_CHIME_URL,
 )
+from music_assistant.controllers.streams import AnnounceData
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
-from music_assistant.helpers.util import TaskManager
+from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
@@ -753,14 +756,29 @@ class PlayerController(CoreController):
         self,
         player_id: str,
         url: str,
-        use_pre_announce: bool | None = None,
+        pre_announce: bool | str | None = None,
         volume_level: int | None = None,
+        pre_announce_url: str | None = None,
     ) -> None:
-        """Handle playback of an announcement (url) on given player."""
+        """
+        Handle playback of an announcement (url) on given player.
+
+        - player_id: player_id of the player to handle the command.
+        - url: URL of the announcement to play.
+        - pre_announce: optional bool if pre-announce should be used.
+        - volume_level: optional volume level to set for the announcement.
+        - pre_announce_url: optional custom URL to use for the pre-announce chime.
+        """
         player = self.get(player_id, True)
         assert player is not None  # for type checking
         if not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
+        if (
+            pre_announce
+            and pre_announce_url
+            and not validate_announcement_chime_url(pre_announce_url)
+        ):
+            raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
         # prevent multiple announcements at the same time to the same player with a lock
         if player_id not in self._announce_locks:
             self._announce_locks[player_id] = lock = asyncio.Lock()
@@ -775,11 +793,23 @@ class PlayerController(CoreController):
                     PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features
                 )
                 # determine pre-announce from (group)player config
-                if use_pre_announce is None and "tts" in url:
-                    use_pre_announce = await self.mass.config.get_player_config_value(
+                if pre_announce is None and "tts" in url:
+                    conf_pre_announce = self.mass.config.get_raw_player_config_value(
                         player_id,
-                        CONF_TTS_PRE_ANNOUNCE,
+                        CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
+                        CONF_ENTRY_TTS_PRE_ANNOUNCE.default_value,
                     )
+                    pre_announce = cast("bool", conf_pre_announce)
+                if pre_announce_url is None:
+                    if conf_pre_announce_url := self.mass.config.get_raw_player_config_value(
+                        player_id,
+                        CONF_PRE_ANNOUNCE_CHIME_URL,
+                    ):
+                        # player default custom chime url
+                        pre_announce_url = cast("str", conf_pre_announce_url)
+                    else:
+                        # use global default chime url
+                        pre_announce_url = ANNOUNCE_ALERT_FILE
                 # if player type is group with all members supporting announcements,
                 # we forward the request to each individual player
                 if player.type == PlayerType.GROUP and (
@@ -795,24 +825,30 @@ class PlayerController(CoreController):
                                 self.play_announcement(
                                     group_member,
                                     url=url,
-                                    use_pre_announce=use_pre_announce,
+                                    pre_announce=pre_announce,
                                     volume_level=volume_level,
+                                    pre_announce_url=pre_announce_url,
                                 )
                             )
                     return
                 self.logger.info(
                     "Playback announcement to player %s (with pre-announce: %s): %s",
                     player.display_name,
-                    use_pre_announce,
+                    pre_announce,
                     url,
                 )
                 # create a PlayerMedia object for the announcement so
                 # we can send a regular play-media call downstream
+                announce_data = AnnounceData(
+                    announcement_url=url,
+                    pre_announce=pre_announce,
+                    pre_announce_url=pre_announce_url,
+                )
                 announcement = PlayerMedia(
-                    uri=self.mass.streams.get_announcement_url(player_id, url, use_pre_announce),
+                    uri=self.mass.streams.get_announcement_url(player_id, url, announce_data),
                     media_type=MediaType.ANNOUNCEMENT,
                     title="Announcement",
-                    custom_data={"url": url, "use_pre_announce": use_pre_announce},
+                    custom_data=announce_data,
                 )
                 # handle native announce support
                 if native_announce_support:

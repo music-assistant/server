@@ -209,9 +209,10 @@ class UniversalGroupPlayer(GroupPlayer):
         if media.media_type == MediaType.ANNOUNCEMENT and media.custom_data:
             # special case: stream announcement
             audio_source = self.mass.streams.get_announcement_stream(
-                media.custom_data["url"],
+                media.custom_data["announcement_url"],
                 output_format=UGP_FORMAT,
-                use_pre_announce=media.custom_data["use_pre_announce"],
+                pre_announce=media.custom_data["pre_announce"],
+                pre_announce_url=media.custom_data["pre_announce_url"],
             )
         elif media.media_type == MediaType.PLUGIN_SOURCE and media.custom_data:
             # special case: plugin source stream

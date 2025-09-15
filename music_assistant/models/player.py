@@ -79,6 +79,7 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_OUTPUT_CODEC,
     CONF_POWER_CONTROL,
+    CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_SAMPLE_RATES,
     CONF_VOLUME_CONTROL,
 )
@@ -91,7 +92,7 @@ if TYPE_CHECKING:
     from .player_provider import PlayerProvider
 
 CONF_ENTRY_PRE_ANNOUNCE_CUSTOM_CHIME_URL = ConfigEntry(
-    key="pre_announcement_chime_url",
+    key=CONF_PRE_ANNOUNCE_CHIME_URL,
     type=ConfigEntryType.STRING,
     label="Custom (pre)announcement chime URL",
     description="URL to a custom audio file to play before announcements.\n"

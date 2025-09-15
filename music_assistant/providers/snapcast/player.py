@@ -288,9 +288,10 @@ class SnapCastPlayer(Player):
         input_format = DEFAULT_SNAPCAST_FORMAT
         assert announcement.custom_data is not None  # for type checking
         audio_source = self.mass.streams.get_announcement_stream(
-            announcement.custom_data["url"],
+            announcement.custom_data["announcement_url"],
             output_format=DEFAULT_SNAPCAST_FORMAT,
-            use_pre_announce=announcement.custom_data["use_pre_announce"],
+            pre_announce=announcement.custom_data["pre_announce"],
+            pre_announce_url=announcement.custom_data["pre_announce_url"],
         )
 
         # stream the audio, wait for it to finish (play_announcement should return after the

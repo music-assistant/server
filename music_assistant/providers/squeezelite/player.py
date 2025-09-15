@@ -220,9 +220,10 @@ class SqueezelitePlayer(Player):
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             audio_source = self.mass.streams.get_announcement_stream(
-                media.custom_data["url"],
+                media.custom_data["announcement_url"],
                 output_format=master_audio_format,
-                use_pre_announce=media.custom_data["use_pre_announce"],
+                pre_announce=media.custom_data["pre_announce"],
+                pre_announce_url=media.custom_data["pre_announce_url"],
             )
         elif media.media_type == MediaType.PLUGIN_SOURCE:
             # special case: plugin source stream
