@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,31 +36,33 @@ def get_arguments() -> argparse.Namespace:
     """Arguments handling."""
     parser = argparse.ArgumentParser(description="MusicAssistant")
 
+    # determine default data directory
     if os.path.isdir(old_data_dir := os.path.join(os.path.expanduser("~"), ".musicassistant")):
-        data_dir = old_data_dir
-        cache_dir = os.path.join(data_dir, ".cache")
+        # prefer (existing) legacy directory
+        default_data_dir = old_data_dir
     else:
-        data_dir = os.path.join(
+        default_data_dir = os.path.join(
             os.getenv("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")),
             "music-assistant",
         )
-        cache_dir = os.path.join(
-            os.getenv("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")),
-            "music-assistant",
-        )
+
+    default_cache_dir = os.path.join(
+        os.getenv("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")),
+        "music-assistant",
+    )
 
     parser.add_argument(
         "--data-dir",
         "-c",
         "--config",
         metavar="path_to_data_dir",
-        default=data_dir,
+        default=default_data_dir,
         help="Directory that contains MusicAssistant persistent data",
     )
     parser.add_argument(
         "--cache-dir",
         metavar="path_to_cache_dir",
-        default=cache_dir,
+        default=default_cache_dir,
         help="Directory that contains MusicAssistant cache data",
     )
     parser.add_argument(
@@ -194,7 +197,14 @@ def main() -> None:
     data_dir = args.data_dir
     cache_dir = args.cache_dir
 
+    # move legacy cache directory
+    old_cache_dir = os.path.join(data_dir, ".cache")
+    if os.path.isdir(old_cache_dir) and old_cache_dir != cache_dir:
+        with suppress(OSError):
+            shutil.move(old_cache_dir, cache_dir)
+
     os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
 
     # TEMP: override options though hass config file
     hass_options_file = os.path.join(data_dir, "options.json")

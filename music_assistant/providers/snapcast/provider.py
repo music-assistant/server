@@ -50,7 +50,13 @@ class SnapCastProvider(PlayerProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        return {ProviderFeature.SYNC_PLAYERS, ProviderFeature.REMOVE_PLAYER}
+        return {
+            ProviderFeature.SYNC_PLAYERS,
+            ProviderFeature.REMOVE_PLAYER,
+            # support sync groups by reporting create/remove player group support
+            ProviderFeature.CREATE_GROUP_PLAYER,
+            ProviderFeature.REMOVE_GROUP_PLAYER,
+        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -76,7 +82,6 @@ class SnapCastProvider(PlayerProvider):
                 str(self.config.get_value(CONF_SERVER_CONTROL_PORT))
             )
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
-        self._stream_tasks = {}
         self._ids_map = bidict({})
 
         if self._use_builtin_server:
@@ -271,7 +276,7 @@ class SnapCastProvider(PlayerProvider):
         for snap_client in self._snapserver.clients:
             if ma_player := self.mass.players.get(self._get_ma_id(snap_client.identifier)):
                 assert isinstance(ma_player, SnapCastPlayer)  # for type checking
-                snap_client.set_callback(ma_player._handle_player_update)
+                ma_player._handle_player_update(snap_client)
 
     def _handle_disconnect(self, exc: Exception) -> None:
         """Handle disconnect callback from snapserver."""

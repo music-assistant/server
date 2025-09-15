@@ -65,6 +65,7 @@ class SnapCastPlayer(Player):
 
         If this player is not synced to another player (or is the sync leader itself),
         this should return None.
+        If it is part of a (permanent) group, this should also return None.
         """
         snap_group = self._get_snapgroup()
         assert snap_group is not None  # for type checking
@@ -119,6 +120,7 @@ class SnapCastPlayer(Player):
                 self._stream_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._stream_task
+            self._stream_task = None
 
     async def volume_mute(self, muted: bool) -> None:
         """Send MUTE command to given player."""
@@ -137,38 +139,24 @@ class SnapCastPlayer(Player):
         assert group is not None  # for type checking
         # handle client additions
         for player_id in player_ids_to_add or []:
-            if player_id not in group.clients:
-                snapcast_id = self.provider._get_snapclient_id(player_id)
+            snapcast_id = self.provider._get_snapclient_id(player_id)
+            if snapcast_id not in group.clients:
                 await group.add_client(snapcast_id)
-                self._attr_group_members.append(player_id)
+                if player_id not in self._attr_group_members:
+                    self._attr_group_members.append(player_id)
         # handle client removals
         for player_id in player_ids_to_remove or []:
-            if player_id in group.clients:
-                snapcast_id = self.provider._get_snapclient_id(player_id)
+            snapcast_id = self.provider._get_snapclient_id(player_id)
+            if snapcast_id in group.clients:
                 await group.remove_client(snapcast_id)
-                self._attr_group_members.remove(player_id)
+                if player_id in self._attr_group_members:
+                    self._attr_group_members.remove(player_id)
+                # Set default stream and stop ungrouped players
+                removed_snapclient = self.provider._snapserver.client(snapcast_id)
+                await removed_snapclient.group.set_stream("default")
+                if removed_player := self.mass.players.get(player_id):
+                    await removed_player.stop()
         self.update_state()
-
-    async def ungroup(self) -> None:
-        """Ungroup."""
-        if self.synced_to is None:
-            for mass_child_id in list(self.group_members):
-                if mass_child_id != self.player_id:
-                    if child_player := self.mass.players.get(mass_child_id):
-                        await child_player.ungroup()
-            return
-        mass_sync_master_player = self.mass.players.get(self.synced_to)
-        assert mass_sync_master_player is not None  # for type checking
-        mass_sync_master_player._attr_group_members.remove(self.player_id)
-        group = self._get_snapgroup()
-        assert group is not None  # for type checking
-        await group.remove_client(self.snap_client_id)
-        # assign default/empty stream to the player
-        await group.set_stream("default")
-        await self.stop()
-        # make sure that the player manager gets an update
-        self.update_state()
-        mass_sync_master_player.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -183,10 +171,11 @@ class SnapCastPlayer(Player):
                 self._stream_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._stream_task
+            self._stream_task = None
 
         # get stream or create new one
         stream_name = self._get_stream_name(SnapCastStreamType.MUSIC)
-        stream = await self._get_or_create_stream(stream_name, media.queue_id or self.player_id)
+        stream = await self._get_or_create_stream(stream_name, media.source_id or self.player_id)
 
         # if no announcement is playing we activate the stream now, otherwise it
         # will be activated by play_announcement when the announcement is over.
@@ -196,7 +185,7 @@ class SnapCastPlayer(Player):
             await snap_group.set_stream(stream.identifier)
 
         self._attr_current_media = media
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
 
         # select audio source
         if media.media_type == MediaType.PLUGIN_SOURCE:
@@ -208,18 +197,20 @@ class SnapCastPlayer(Player):
                 output_format=DEFAULT_SNAPCAST_FORMAT,
                 player_id=self.player_id,
             )
-        elif media.queue_id and media.queue_id.startswith(UGP_PREFIX):
+        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
             # special case: UGP stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.queue_id))
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
             input_format = ugp_stream.base_pcm_format
             audio_source = ugp_stream.subscribe_raw()
-        elif media.queue_id and media.queue_item_id:
+        elif media.source_id and media.queue_item_id:
             # regular queue (flow) stream request
             input_format = DEFAULT_SNAPCAST_PCM_FORMAT
-            queue = self.mass.player_queues.get(media.queue_id)
-            start_queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+            queue = self.mass.player_queues.get(media.source_id)
+            start_queue_item = self.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
             assert queue is not None  # for type checking
             assert start_queue_item is not None  # for type checking
             audio_source = self.mass.streams.get_queue_flow_stream(
@@ -391,7 +382,7 @@ class SnapCastPlayer(Player):
         2. Easily identify which stream belongs to which player, for instance to be able to
            delete a music stream even when it is not active due to an announcement.
         """
-        safe_name = create_safe_string(self.display_name, replace_space=True)
+        safe_name = create_safe_string(self.player_id, replace_space=True)
         stream_name = f"{MASS_STREAM_PREFIX}{safe_name}"
         if stream_type == SnapCastStreamType.ANNOUNCEMENT:
             stream_name += MASS_ANNOUNCEMENT_POSTFIX

@@ -5,7 +5,7 @@
   "name": "Plex Media Server Library",
   "description": "Support for the Plex streaming provider in Music Assistant.",
   "codeowners": ["@micha91"],
-  "requirements": ["plexapi==4.17.0"],
+  "requirements": ["plexapi==4.17.1"],
   "documentation": "https://music-assistant.io/music-providers/plex/",
   "multi_instance": true
 }

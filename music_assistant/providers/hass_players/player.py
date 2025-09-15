@@ -186,7 +186,7 @@ class HomeAssistantPlayer(Player):
             )
         except FailedCommand as exc:
             # some HA players do not support STOP
-            if "does not support this service" not in str(exc):
+            if "does not support" not in str(exc):
                 raise
             if PlayerFeature.PAUSE in self.supported_features:
                 await self.pause()
@@ -256,7 +256,7 @@ class HomeAssistantPlayer(Player):
 
         # Optimistically update state
         self._attr_current_media = media
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING
