@@ -176,7 +176,7 @@ class MediaAssistantPlayer(Player):
             f_media = {
                 "u": media.uri,
                 "t": "a",
-                "albumName": media.album if media.album is not None else "",
+                "albumName": media.album or "",
                 "songName": media.title,
                 "artistName": (
                     "Music Assistant Radio"
@@ -186,10 +186,10 @@ class MediaAssistantPlayer(Player):
                     else ("Flow Mode" if self.flow_mode else "Music Assistant")
                 ),
                 "albumArt": (
-                    "" if self.flow_mode else media.image_url if media.image_url is not None else ""
+                    "" if self.flow_mode else media.image_url or ""
                 ),
                 "songFormat": "flac",
-                "duration": "" if media.duration is None else media.duration,
+                "duration": media.duration or "",
                 "isLive": (
                     "true"
                     if media.media_type == MediaType.RADIO
