@@ -1396,9 +1396,6 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
-        if leader := self.sync_leader:
-            # Ensure basic features like power are always supported
-            return leader.supported_features.union(self._attr_supported_features)
         return self._attr_supported_features
 
     @property
