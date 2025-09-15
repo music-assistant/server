@@ -250,19 +250,6 @@ class StreamsController(CoreController):
                 category="advanced",
                 required=True,
             ),
-            ConfigEntry(
-                key="announcement_chime_url",
-                type=ConfigEntryType.STRING,
-                default_value="",
-                label="Custom announcement chime URL",
-                description="URL to a custom audio file to play before announcements.\n"
-                "Leave empty to use the default chime.\n"
-                "Supports http:// and https:// URLs pointing to "
-                "audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\n"
-                "Example: http://homeassistant.local:8123/local/audio/custom_chime.mp3",
-                category="advanced",
-                required=False,
-            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:

@@ -82,11 +82,29 @@ from music_assistant.constants import (
     CONF_SAMPLE_RATES,
     CONF_VOLUME_CONTROL,
 )
-from music_assistant.helpers.util import get_changed_dataclass_values
+from music_assistant.helpers.util import (
+    get_changed_dataclass_values,
+    validate_announcement_chime_url,
+)
 
 if TYPE_CHECKING:
     from .player_provider import PlayerProvider
 
+CONF_ENTRY_PRE_ANNOUNCE_CUSTOM_CHIME_URL = ConfigEntry(
+    key="pre_announcement_chime_url",
+    type=ConfigEntryType.STRING,
+    label="Custom (pre)announcement chime URL",
+    description="URL to a custom audio file to play before announcements.\n"
+    "Leave empty to use the default chime.\n"
+    "Supports http:// and https:// URLs pointing to "
+    "audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\n"
+    "Example: http://homeassistant.local:8123/local/audio/custom_chime.mp3",
+    category="advanced",
+    required=False,
+    depends_on=CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
+    depends_on_value=True,
+    validate=lambda val: validate_announcement_chime_url(cast("str", val)),
+)
 
 BASE_CONFIG_ENTRIES = [
     # config entries that are valid for all player types
@@ -98,6 +116,7 @@ BASE_CONFIG_ENTRIES = [
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_PRE_ANNOUNCE_CUSTOM_CHIME_URL,
     CONF_ENTRY_HTTP_PROFILE,
 ]
 
