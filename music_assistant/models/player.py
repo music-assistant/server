@@ -1514,7 +1514,8 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def _handle_member_collisions(self, member: Player) -> None:
         """Handle collisions when adding a member to the sync group."""
-        for group in member.active_groups:
+        active_groups = member.active_groups
+        for group in active_groups:
             if group == self.player_id:
                 continue
             # collision: child player is part another group that is already active !
