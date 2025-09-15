@@ -1528,7 +1528,7 @@ class SyncGroupPlayer(GroupPlayer):
                     # member, we need to power it off to leave the group
                     await other_group.power(False)
                 # Wait a bit so the state can settle
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.1)
         if (
             member.synced_to is not None
             and member.synced_to != self.sync_leader
@@ -1539,7 +1539,7 @@ class SyncGroupPlayer(GroupPlayer):
             # ungroup it first
             await synced_to_player.set_members(player_ids_to_remove=[member.player_id])
         # State updates for removed/related members don't happen immediately
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.1)
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
@@ -1604,7 +1604,7 @@ class SyncGroupPlayer(GroupPlayer):
             if sync_children:
                 await sync_leader.set_members(player_ids_to_remove=sync_children)
                 # State updates for removed members don't happen immediately
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.1)
             # Restore the leaders queue since it is no longer part of this group
             self._restore_leader_queue()
             sync_leader.update_state()
