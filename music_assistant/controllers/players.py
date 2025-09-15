@@ -1434,7 +1434,7 @@ class PlayerController(CoreController):
         if (active_group := player.active_group) and (
             active_group_player := self.get(active_group)
         ):
-            active_group_player.update_state(True)
+            active_group_player.update_state()
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
