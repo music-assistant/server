@@ -99,7 +99,7 @@ CONF_ENTRY_PRE_ANNOUNCE_CUSTOM_CHIME_URL = ConfigEntry(
     "Supports http:// and https:// URLs pointing to "
     "audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\n"
     "Example: http://homeassistant.local:8123/local/audio/custom_chime.mp3",
-    category="advanced",
+    category="announcements",
     required=False,
     depends_on=CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
     depends_on_value=True,
