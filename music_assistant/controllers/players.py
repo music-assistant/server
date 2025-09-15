@@ -1413,7 +1413,7 @@ class PlayerController(CoreController):
             removed_members = set(prev_group_members) - set(new_group_members)
             for player_id in removed_members:
                 if removed_player := self.get(player_id):
-                    removed_player.update_state(True)
+                    removed_player.update_state()
 
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
