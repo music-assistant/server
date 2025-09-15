@@ -113,6 +113,7 @@ class SonosPlayer(Player):
 
         If this player is not synced to another player (or is the sync leader itself),
         this should return None.
+        If it is part of a (permanent) group, this should also return None.
         """
         if self.client.player.is_coordinator:
             return None

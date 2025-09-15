@@ -856,8 +856,8 @@ class PlayerController(CoreController):
             if player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(player_id)
                 await asyncio.sleep(0.5)  # small delay to allow stop to process
-            player._attr_active_source = None
-            player._attr_current_media = None
+            player.active_source = None
+            player.current_media = None
         # check if source is a pluginsource
         # in that case the source id is the instance_id of the plugin provider
         if plugin_prov := self.mass.get_provider(source):
@@ -958,6 +958,42 @@ class PlayerController(CoreController):
                 and child_player_id in parent_player.group_members
             ):
                 continue  # already synced to this target
+
+            # Check if player is already part of another group and try to automatically ungroup it
+            # first. If that fails, power off the group
+            if child_player.active_group and child_player.active_group != target_player:
+                if (
+                    other_group := self.get(child_player.active_group)
+                ) and PlayerFeature.SET_MEMBERS in other_group.supported_features:
+                    self.logger.warning(
+                        "Player %s is already part of another group (%s), "
+                        "removing from that group first",
+                        child_player.name,
+                        child_player.active_group,
+                    )
+                    try:
+                        await other_group.set_members(player_ids_to_remove=[child_player.player_id])
+                    except UnsupportedFeaturedException as err:
+                        self.logger.warning(
+                            "Failed to remove player %s from group %s: %s, powering it off instead",
+                            child_player.name,
+                            child_player.active_group,
+                            err,
+                        )
+                        await self.cmd_power(child_player.active_group, False)
+                else:
+                    self.logger.warning(
+                        "Player %s is already part of another group (%s), powering it off first",
+                        child_player.name,
+                        child_player.active_group,
+                    )
+                    await self.cmd_power(child_player.active_group, False)
+            elif child_player.synced_to and child_player.synced_to != target_player:
+                self.logger.warning(
+                    "Player %s is already synced to another player, ungrouping first",
+                    child_player.name,
+                )
+                await self.cmd_ungroup(child_player.player_id)
 
             # power on the player if needed
             if not child_player.powered and child_player.power_control != PLAYER_CONTROL_NONE:
@@ -1184,6 +1220,8 @@ class PlayerController(CoreController):
         # ensure we fetch and set the latest/full config for the player
         player_config = await self.mass.config.get_player_config(player_id)
         player.set_config(player_config)
+        # call on_registered hook after the player is registered and config is set
+        await player.on_registered()
         # always call update to fix special attributes like display name, group volume etc.
         player.update_state()
 
@@ -1375,7 +1413,7 @@ class PlayerController(CoreController):
             removed_members = set(prev_group_members) - set(new_group_members)
             for player_id in removed_members:
                 if removed_player := self.get(player_id):
-                    self.mass.loop.call_soon(removed_player.update_state, True)
+                    removed_player.update_state()
 
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
@@ -1385,13 +1423,18 @@ class PlayerController(CoreController):
 
         # update/signal group player(s) child's when group updates
         for child_player in self.iter_group_members(player, exclude_self=True):
-            self.mass.loop.call_soon(child_player.update_state, True)
+            child_player.update_state()
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
-            self.mass.loop.call_soon(group_player.update_state, True)
+            group_player.update_state()
         # update/signal manually synced to player when child updates
         if (synced_to := player.synced_to) and (synced_to_player := self.get(synced_to)):
-            self.mass.loop.call_soon(synced_to_player.update_state, True)
+            synced_to_player.update_state()
+        # update/signal active groups when a group member updates
+        if (active_group := player.active_group) and (
+            active_group_player := self.get(active_group)
+        ):
+            active_group_player.update_state()
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
@@ -1819,8 +1862,8 @@ class PlayerController(CoreController):
             for volume_player_id, prev_volume in prev_volumes.items():
                 tg.create_task(self.cmd_volume_set(volume_player_id, prev_volume))
         await asyncio.sleep(0.2)
-        player._attr_current_media = prev_media
-        player._attr_active_source = prev_source
+        player.current_media = prev_media
+        player.active_source = prev_source
         # either power off the player or resume playing
         if not prev_power and player.power_control != PLAYER_CONTROL_NONE:
             await self.cmd_power(player.player_id, False)

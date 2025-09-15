@@ -15,6 +15,7 @@ from music_assistant_models.enums import (
     MediaType,
     PlaybackState,
     PlayerFeature,
+    PlayerType,
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
@@ -33,7 +34,7 @@ from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, GroupPlayer, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
 
-from .constants import CONF_ENTRY_SAMPLE_RATES_UGP, CONFIG_ENTRY_UGP_NOTE, UGP_PREFIX
+from .constants import CONF_ENTRY_SAMPLE_RATES_UGP, CONFIG_ENTRY_UGP_NOTE
 from .ugp_stream import UGPStream
 
 if TYPE_CHECKING:
@@ -57,9 +58,10 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
         self._attr_active_source = player_id
-        self._attr_group_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         self._attr_device_info = DeviceInfo(model="Universal Group", manufacturer=provider.name)
         self._attr_supported_features = {*BASE_FEATURES}
+        self._attr_needs_poll = True
+        self._attr_poll_interval = 30
         # register dynamic route for the ugp stream
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
@@ -78,6 +80,13 @@ class UniversalGroupPlayer(GroupPlayer):
             if x.lookup_key != self.provider.lookup_key
         }
         self._set_attributes()
+
+    async def on_registered(self) -> None:
+        """Complete the initialization once the player was registered."""
+        # Config entries are only fully available after the player was registered
+        self._attr_group_members = list(
+            cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        )
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -102,7 +111,7 @@ class UniversalGroupPlayer(GroupPlayer):
                 options=[
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in self.mass.players.all(True, False)
-                    if not x.player_id.startswith(UGP_PREFIX)
+                    if x.type != PlayerType.GROUP
                 ],
             ),
             ConfigEntry(
@@ -125,6 +134,8 @@ class UniversalGroupPlayer(GroupPlayer):
         # abort the stream session
         if self.stream and not self.stream.done:
             await self.stream.stop()
+            self.stream = None
+        self._set_attributes()
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
@@ -135,7 +146,6 @@ class UniversalGroupPlayer(GroupPlayer):
         # optimistically set the group state
         prev_power = self._attr_powered
         self._attr_powered = powered
-        self.update_state()
 
         if powered:
             # handle TURN_ON of the group player by turning on all members
@@ -181,6 +191,7 @@ class UniversalGroupPlayer(GroupPlayer):
             self._attr_group_members = cast(
                 "list[str]", self.config.get_value(CONF_GROUP_MEMBERS, [])
             )
+        self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -241,6 +252,7 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time() - 1
         self._attr_playback_state = PlaybackState.PLAYING
+        self._attr_active_source = media.queue_id
         self.update_state()
 
         # forward to downstream play_media commands
@@ -322,7 +334,6 @@ class UniversalGroupPlayer(GroupPlayer):
     async def poll(self) -> None:
         """Poll player for state updates."""
         self._set_attributes()
-        self.update_state()
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
@@ -342,7 +353,6 @@ class UniversalGroupPlayer(GroupPlayer):
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
         # grab current media and state from one of the active players
         for child_player in self.mass.players.iter_group_members(self, active_only=True):
-            self._attr_available = True
             self._attr_playback_state = child_player.playback_state
             if child_player.elapsed_time:
                 self._attr_elapsed_time = child_player.elapsed_time
@@ -350,7 +360,6 @@ class UniversalGroupPlayer(GroupPlayer):
             break
         else:
             self._attr_playback_state = PlaybackState.IDLE
-            self._attr_available = False
         self.update_state()
 
     async def _serve_ugp_stream(self, request: web.Request) -> web.StreamResponse:
