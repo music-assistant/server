@@ -1429,7 +1429,7 @@ class PlayerController(CoreController):
             group_player.update_state()
         # update/signal manually synced to player when child updates
         if (synced_to := player.synced_to) and (synced_to_player := self.get(synced_to)):
-            synced_to_player.update_state(True)
+            synced_to_player.update_state()
         # update/signal active groups when a group member updates
         if (active_group := player.active_group) and (
             active_group_player := self.get(active_group)
