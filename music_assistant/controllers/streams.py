@@ -14,7 +14,7 @@ import os
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -82,6 +82,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
 
 
@@ -122,9 +123,9 @@ class StreamsController(CoreController):
 
     domain: str = "streams"
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize instance."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self._server = Webserver(self.logger, enable_dynamic_routes=True)
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
