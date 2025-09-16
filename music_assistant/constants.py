@@ -77,6 +77,7 @@ CONF_ANNOUNCE_VOLUME_STRATEGY: Final[str] = "announce_volume_strategy"
 CONF_ANNOUNCE_VOLUME: Final[str] = "announce_volume"
 CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
 CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
+CONF_PRE_ANNOUNCE_CHIME_URL: Final[str] = "pre_announcement_chime_url"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
@@ -479,6 +480,8 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
 CONF_ENTRY_ANNOUNCE_VOLUME_MAX_HIDDEN = ConfigEntry.from_dict(
     {**CONF_ENTRY_ANNOUNCE_VOLUME_MAX.to_dict(), "hidden": True}
 )
+
+
 HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES = (
     CONF_ENTRY_ANNOUNCE_VOLUME_HIDDEN,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN_HIDDEN,

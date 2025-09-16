@@ -407,25 +407,25 @@ class SonosPlayer(Player):
         if media.media_type in (
             MediaType.PLUGIN_SOURCE,
             MediaType.FLOW_STREAM,
-        ) or media.queue_id.startswith(UGP_PREFIX):
+        ) or media.source_id.startswith(UGP_PREFIX):
             # flow stream or plugin source playback
             # always use the legacy (UPNP) playback method for this
             await self._play_media_legacy(media)
             _update_state()
             return
 
-        if media.queue_id:
+        if media.source_id and media.queue_item_id:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
-            mass_queue = self.mass.player_queues.get(media.queue_id)
+            mass_queue = self.mass.player_queues.get(media.source_id)
             await self.client.player.group.play_cloud_queue(
                 cloud_queue_url,
-                http_authorization=media.queue_id,
+                http_authorization=media.source_id,
                 item_id=media.queue_item_id,
                 queue_version=str(int(mass_queue.items_last_updated)),
             )
-            self.mass.call_later(5, self.sync_play_modes, media.queue_id)
+            self.mass.call_later(5, self.sync_play_modes, media.source_id)
             _update_state()
             return
 
@@ -673,7 +673,7 @@ class SonosPlayer(Player):
                 image_url=track_image_url,
             )
             if active_service == MusicService.MUSIC_ASSISTANT:
-                current_media.queue_id = self._attr_active_source
+                current_media.source_id = self._attr_active_source
                 current_media.queue_item_id = current_item["id"]
         # radio stream info
         if container and container.get("name") and active_group.playback_metadata.get("streamInfo"):
@@ -831,7 +831,7 @@ class SonosPlayer(Player):
         player_id = self.player_id
         if (
             airplay_player.playback_state == PlaybackState.PLAYING
-            and airplay_player.active_source == media.queue_id
+            and airplay_player.active_source == media.source_id
         ):
             # if the airplay player is already playing,
             # the stream will be reused so no need to do the whole grouping thing below

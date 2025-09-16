@@ -209,9 +209,10 @@ class UniversalGroupPlayer(GroupPlayer):
         if media.media_type == MediaType.ANNOUNCEMENT and media.custom_data:
             # special case: stream announcement
             audio_source = self.mass.streams.get_announcement_stream(
-                media.custom_data["url"],
+                media.custom_data["announcement_url"],
                 output_format=UGP_FORMAT,
-                use_pre_announce=media.custom_data["use_pre_announce"],
+                pre_announce=media.custom_data["pre_announce"],
+                pre_announce_url=media.custom_data["pre_announce_url"],
             )
         elif media.media_type == MediaType.PLUGIN_SOURCE and media.custom_data:
             # special case: plugin source stream
@@ -220,13 +221,13 @@ class UniversalGroupPlayer(GroupPlayer):
                 output_format=UGP_FORMAT,
                 player_id=media.custom_data["player_id"],
             )
-        elif media.queue_id and media.queue_item_id:
+        elif media.source_id and media.queue_item_id:
             # regular queue stream request
-            queue = self.mass.player_queues.get(media.queue_id)
-            queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+            queue = self.mass.player_queues.get(media.source_id)
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             if not queue or not queue_item:
                 # this should not happen, but guard just in case
-                raise RuntimeError(f"Invalid queue(item): {media.queue_id}, {media.queue_item_id}")
+                raise RuntimeError(f"Invalid queue(item): {media.source_id}, {media.queue_item_id}")
             audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=queue,
                 start_queue_item=queue_item,
@@ -252,7 +253,7 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time() - 1
         self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
         self.update_state()
 
         # forward to downstream play_media commands
@@ -266,7 +267,7 @@ class UniversalGroupPlayer(GroupPlayer):
                             uri=f"{base_url}?player_id={member.player_id}",
                             media_type=MediaType.FLOW_STREAM,
                             title=self.display_name,
-                            queue_id=self.player_id,
+                            source_id=self.player_id,
                         )
                     )
                 )
@@ -303,7 +304,7 @@ class UniversalGroupPlayer(GroupPlayer):
                         uri=f"{base_url}?player_id={player_id}",
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
-                        queue_id=child_player.player_id,
+                        source_id=child_player.player_id,
                     ),
                 )
         # handle removals

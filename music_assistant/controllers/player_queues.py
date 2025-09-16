@@ -1283,7 +1283,7 @@ class PlayerQueuesController(CoreController):
             title="Music Assistant" if flow_mode else queue_item.name,
             image_url=MASS_LOGO_ONLINE,
             duration=duration,
-            queue_id=queue_item.queue_id,
+            source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
         )
         if not flow_mode and queue_item.media_item:
@@ -1940,7 +1940,7 @@ class PlayerQueuesController(CoreController):
         if not player.current_media:
             return None
         # prefer queue_id and queue_item_id within the current media
-        if player.current_media.queue_id == queue_id and player.current_media.queue_item_id:
+        if player.current_media.source_id == queue_id and player.current_media.queue_item_id:
             return player.current_media.queue_item_id
         # special case for sonos players
         if (
