@@ -632,6 +632,7 @@ def percentage(part: float, whole: float) -> int:
     """Calculate percentage."""
     return int(100 * float(part) / float(whole))
 
+
 def validate_announcement_chime_url(url: str) -> bool:
     """Validate announcement chime URL format."""
     if not url or not url.strip():
@@ -649,13 +650,11 @@ def validate_announcement_chime_url(url: str) -> bool:
         path_lower = parsed.path.lower()
         audio_extensions = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
 
-        for ext in audio_extensions:
-            if path_lower.endswith(ext):
-                return True
-        return False
+        return any(path_lower.endswith(ext) for ext in audio_extensions)
 
     except Exception:
         return False
+
 
 class TaskManager:
     """
