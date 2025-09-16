@@ -16,6 +16,7 @@ async def get_librespot_binary() -> str:
             returncode, output = await check_output(librespot_path, "--version")
             if returncode == 0 and b"librespot" in output:
                 return librespot_path
+            return None
         except OSError:
             return None
 

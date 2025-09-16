@@ -5,7 +5,7 @@
   "name": "Audiobookshelf",
   "description": "Audiobookshelf (audiobookshelf.org) as audiobook and podcast provider",
   "codeowners": ["@fmunkes"],
-  "requirements": ["aioaudiobookshelf==0.1.7"],
+  "requirements": ["aioaudiobookshelf==0.1.8"],
   "documentation": "https://music-assistant.io/music-providers/audiobookshelf",
   "multi_instance": true
 }

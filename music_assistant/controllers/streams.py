@@ -14,7 +14,7 @@ import os
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -72,7 +72,6 @@ from music_assistant.helpers.util import (
     get_free_space_percentage,
     get_ip_addresses,
     select_free_port,
-    try_parse_bool,
 )
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -83,6 +82,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
+    from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
 
 
@@ -110,14 +110,22 @@ class CrossfadeData:
     session_id: str | None = None
 
 
+class AnnounceData(TypedDict):
+    """Announcement data."""
+
+    announcement_url: str
+    pre_announce: bool
+    pre_announce_url: str
+
+
 class StreamsController(CoreController):
     """Webserver Controller to stream audio to players."""
 
     domain: str = "streams"
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize instance."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self._server = Webserver(self.logger, enable_dynamic_routes=True)
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
@@ -127,7 +135,7 @@ class StreamsController(CoreController):
             "streaming audio to players on the local network."
         )
         self.manifest.icon = "cast-audio"
-        self.announcements: dict[str, str] = {}
+        self.announcements: dict[str, AnnounceData] = {}
         # prefer /tmp/.audio as audio cache dir
         self._audio_cache_dir = os.path.join("/tmp/.audio")  # noqa: S108
         self.allow_cache_default = "auto"
@@ -446,7 +454,7 @@ class StreamsController(CoreController):
             # crossfade is not supported on this player due to missing gapless playback
             self.logger.warning(
                 "Crossfade disabled: Player %s does not support gapless playback",
-                queue_player.display_name,
+                queue_player.display_name if queue_player else "Unknown Player",
             )
             crossfade = False
 
@@ -545,9 +553,10 @@ class StreamsController(CoreController):
             reason="OK",
             headers=headers,
         )
-        http_profile: str = await self.mass.config.get_player_config_value(
+        http_profile_value = await self.mass.config.get_player_config_value(
             queue_id, CONF_HTTP_PROFILE
         )
+        http_profile = str(http_profile_value) if http_profile_value is not None else "default"
         if http_profile == "forced_content_length":
             # just set an insane high content length to make sure the player keeps playing
             resp.content_length = get_chunksize(output_format, 12 * 3600)
@@ -625,26 +634,26 @@ class StreamsController(CoreController):
         player = self.mass.player_queues.get(player_id)
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
-        if player_id not in self.announcements:
+        if not (announce_data := self.announcements.get(player_id)):
             raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
-        announcement_url = self.announcements[player_id]
-        use_pre_announce = try_parse_bool(request.query.get("pre_announce"))
 
         # work out output format/details
-        fmt = request.match_info.get("fmt", announcement_url.rsplit(".")[-1])
+        fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        http_profile: str = await self.mass.config.get_player_config_value(
+        http_profile_value = await self.mass.config.get_player_config_value(
             player_id, CONF_HTTP_PROFILE
         )
+        http_profile = str(http_profile_value) if http_profile_value is not None else "default"
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
             data = b""
             async for chunk in self.get_announcement_stream(
-                announcement_url=announcement_url,
+                announcement_url=announce_data["announcement_url"],
                 output_format=audio_format,
-                use_pre_announce=use_pre_announce,
+                pre_announce=announce_data["pre_announce"],
+                pre_announce_url=announce_data["pre_announce_url"],
             ):
                 data += chunk
             return web.Response(
@@ -671,13 +680,14 @@ class StreamsController(CoreController):
         # all checks passed, start streaming!
         self.logger.debug(
             "Start serving audio stream for Announcement %s to %s",
-            announcement_url,
+            announce_data["announcement_url"],
             player.display_name,
         )
         async for chunk in self.get_announcement_stream(
-            announcement_url=announcement_url,
+            announcement_url=announce_data["announcement_url"],
             output_format=audio_format,
-            use_pre_announce=use_pre_announce,
+            pre_announce=announce_data["pre_announce"],
+            pre_announce_url=announce_data["pre_announce_url"],
         ):
             try:
                 await resp.write(chunk)
@@ -686,7 +696,7 @@ class StreamsController(CoreController):
 
         self.logger.debug(
             "Finished serving audio stream for Announcement %s to %s",
-            announcement_url,
+            announce_data["announcement_url"],
             player.display_name,
         )
 
@@ -708,8 +718,12 @@ class StreamsController(CoreController):
         output_format = await self.get_output_format(
             output_format_str=request.match_info["fmt"],
             player=player,
-            content_sample_rate=plugin_source.audio_format.sample_rate,
-            content_bit_depth=plugin_source.audio_format.bit_depth,
+            content_sample_rate=plugin_source.audio_format.sample_rate
+            if plugin_source.audio_format
+            else 44100,
+            content_bit_depth=plugin_source.audio_format.bit_depth
+            if plugin_source.audio_format
+            else 16,
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
@@ -724,9 +738,10 @@ class StreamsController(CoreController):
             headers=headers,
         )
         resp.content_type = f"audio/{output_format.output_format_str}"
-        http_profile: str = await self.mass.config.get_player_config_value(
+        http_profile_value = await self.mass.config.get_player_config_value(
             player_id, CONF_HTTP_PROFILE
         )
+        http_profile = str(http_profile_value) if http_profile_value is not None else "default"
         if http_profile == "forced_content_length":
             # guess content length based on duration
             resp.content_length = get_chunksize(output_format, 12 * 3600)
@@ -761,16 +776,15 @@ class StreamsController(CoreController):
     def get_announcement_url(
         self,
         player_id: str,
-        announcement_url: str,
-        use_pre_announce: bool = False,
+        announce_data: AnnounceData,
         content_type: ContentType = ContentType.MP3,
     ) -> str:
         """Get the url for the special announcement stream."""
-        self.announcements[player_id] = announcement_url
+        self.announcements[player_id] = announce_data
         # use stream server to host announcement on local network
         # this ensures playback on all players, including ones that do not
         # like https hosts and it also offers the pre-announce 'bell'
-        return f"{self.base_url}/announcement/{player_id}.{content_type.value}?pre_announce={use_pre_announce}"  # noqa: E501
+        return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
     async def get_queue_flow_stream(
         self,
@@ -936,12 +950,13 @@ class StreamsController(CoreController):
         self,
         announcement_url: str,
         output_format: AudioFormat,
-        use_pre_announce: bool = False,
+        pre_announce: bool | str = False,
+        pre_announce_url: str = ANNOUNCE_ALERT_FILE,
     ) -> AsyncGenerator[bytes, None]:
         """Get the special announcement stream."""
         filter_params = ["loudnorm=I=-10:LRA=11:TP=-2"]
 
-        if use_pre_announce:
+        if pre_announce:
             # Note: TTS URLs might take a while to load cause the actual data are often generated
             # asynchronously by the TTS provider. If we ask ffmpeg to mix the pre-announce, it will
             # wait until it reads the TTS data, so the whole stream will be delayed. It is much
@@ -955,8 +970,8 @@ class StreamsController(CoreController):
             # So far players seem to tolerate this, but it might break some player in the future.
 
             async for chunk in get_ffmpeg_stream(
-                audio_input=ANNOUNCE_ALERT_FILE,
-                input_format=AudioFormat(content_type=ContentType.try_parse(ANNOUNCE_ALERT_FILE)),
+                audio_input=pre_announce_url,
+                input_format=AudioFormat(content_type=ContentType.try_parse(pre_announce_url)),
                 output_format=output_format,
                 filter_params=filter_params,
             ):
@@ -1091,6 +1106,9 @@ class StreamsController(CoreController):
     ) -> AsyncGenerator[bytes, None]:
         """Get the audio stream for a single queue item with crossfade to the next item."""
         queue = self.mass.player_queues.get(queue_item.queue_id)
+        if not queue:
+            raise RuntimeError(f"Queue {queue_item.queue_id} not found")
+
         streamdetails = queue_item.streamdetails
         assert streamdetails
         crossfade_duration = self.mass.config.get_raw_player_config_value(
@@ -1101,7 +1119,7 @@ class StreamsController(CoreController):
 
         self.logger.debug(
             "Start Streaming queue track: %s (%s) for queue %s - crossfade: %s",
-            queue_item.streamdetails.uri,
+            queue_item.streamdetails.uri if queue_item.streamdetails else "Unknown URI",
             queue_item.name,
             queue.display_name,
             f"{crossfade_duration} seconds",
@@ -1285,7 +1303,7 @@ class StreamsController(CoreController):
         if cache_enabled == "disabled":
             max_cache_size = 0.001
 
-        def _clean_old_files(foldersize: float):
+        def _clean_old_files(foldersize: float) -> None:
             files: list[os.DirEntry] = [x for x in os.scandir(self._audio_cache_dir) if x.is_file()]
             files.sort(key=lambda x: x.stat().st_atime)
             for _file in files:

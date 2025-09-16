@@ -4,6 +4,6 @@
   "name": "Alexa",
   "description": "Support Echo devices as players in Music Assistant.",
   "codeowners": ["@alams154"],
-  "requirements": ["alexapy==1.29.5"],
+  "requirements": ["alexapy==1.29.8"],
   "documentation": "https://www.music-assistant.io/player-support/alexa/"
 }

@@ -53,7 +53,6 @@ from music_assistant_models.media_items import (
     media_from_dict,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -70,6 +69,7 @@ from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_det
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1283,7 +1283,7 @@ class PlayerQueuesController(CoreController):
             title="Music Assistant" if flow_mode else queue_item.name,
             image_url=MASS_LOGO_ONLINE,
             duration=duration,
-            queue_id=queue_item.queue_id,
+            source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
         )
         if not flow_mode and queue_item.media_item:
@@ -1940,7 +1940,7 @@ class PlayerQueuesController(CoreController):
         if not player.current_media:
             return None
         # prefer queue_id and queue_item_id within the current media
-        if player.current_media.queue_id == queue_id and player.current_media.queue_item_id:
+        if player.current_media.source_id == queue_id and player.current_media.queue_item_id:
             return player.current_media.queue_item_id
         # special case for sonos players
         if (

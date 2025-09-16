@@ -9,6 +9,9 @@ CONF_CLIENT_ID = "client_id"
 CONF_ACTION_AUTH = "auth"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_ACTION_CLEAR_AUTH = "clear_auth"
+CONF_ENABLE_PODCASTS = "enable_podcasts"
+CONF_SYNC_PLAYED_STATUS = "sync_played_status"
+CONF_PLAYED_THRESHOLD = "played_threshold"
 
 # OAuth Settings
 SCOPE = [
@@ -56,4 +59,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }

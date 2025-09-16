@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import AudioError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -28,10 +29,15 @@ class LibrespotStreamer:
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        spotify_uri = f"spotify://track:{streamdetails.item_id}"
+        # Ensure librespot binary is available
+        assert self.provider._librespot_bin
+
+        media_type = "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
+        spotify_uri = f"spotify://{media_type}:{streamdetails.item_id}"
         self.provider.logger.log(
             VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot"
         )
+
         args = [
             self.provider._librespot_bin,
             "--cache",
@@ -65,10 +71,10 @@ class LibrespotStreamer:
                 try:
                     chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=10 * attempt)
                     if not chunk:
-                        raise AudioError
+                        raise AudioError(f"No audio data received from librespot for {spotify_uri}")
                     yield chunk
                 except (TimeoutError, AudioError):
-                    err_mesg = "No audio received from librespot within timeout"
+                    err_mesg = f"No audio received from librespot within timeout for {spotify_uri}"
                     if attempt == 2:
                         raise AudioError(err_mesg)
                     self.provider.logger.warning("%s - will retry once", err_mesg)
