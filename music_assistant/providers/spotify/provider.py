@@ -19,11 +19,13 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     AudioFormat,
     MediaItemImage,
     MediaItemType,
@@ -35,6 +37,7 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
+from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
@@ -47,9 +50,11 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     CONF_CLIENT_ID,
+    CONF_ENABLE_AUDIOBOOKS,
     CONF_PLAYED_THRESHOLD,
     CONF_REFRESH_TOKEN,
-    CONF_SYNC_PLAYED_STATUS,
+    CONF_SYNC_AUDIOBOOK_PROGRESS,
+    CONF_SYNC_PODCAST_PROGRESS,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
     SUPPORTED_FEATURES,
 )
@@ -57,6 +62,7 @@ from .helpers import get_librespot_binary
 from .parsers import (
     parse_album,
     parse_artist,
+    parse_audiobook,
     parse_playlist,
     parse_podcast,
     parse_podcast_episode,
@@ -101,9 +107,19 @@ class SpotifyProvider(MusicProvider):
         await self.login()
 
     @property
+    def audiobooks_enabled(self) -> bool:
+        """Check if audiobook support is enabled."""
+        return bool(self.config.get_value(CONF_ENABLE_AUDIOBOOKS, False))
+
+    @property
+    def audiobook_progress_sync_enabled(self) -> bool:
+        """Check if audiobook progress sync is enabled."""
+        return bool(self.config.get_value(CONF_SYNC_AUDIOBOOK_PROGRESS, False))
+
+    @property
     def sync_played_status_enabled(self) -> bool:
         """Check if played status sync is enabled."""
-        value = self.config.get_value(CONF_SYNC_PLAYED_STATUS, True)
+        value = self.config.get_value(CONF_SYNC_PODCAST_PROGRESS, True)
         return bool(value) if value is not None else True
 
     @property
@@ -129,6 +145,12 @@ class SpotifyProvider(MusicProvider):
             # Spotify has killed the similar tracks api for developers
             # https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api
             base.add(ProviderFeature.SIMILAR_TRACKS)
+
+        # Add audiobook features if enabled
+        if self.audiobooks_enabled:
+            base.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
+            base.add(ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT)
+
         return base
 
     @property
@@ -162,6 +184,8 @@ class SpotifyProvider(MusicProvider):
             searchtypes.append("playlist")
         if MediaType.PODCAST in media_types:
             searchtypes.append("show")
+        if MediaType.AUDIOBOOK in media_types and self.audiobooks_enabled:
+            searchtypes.append("audiobook")
         if not searchtypes:
             return searchresult
         searchtype = ",".join(searchtypes)
@@ -217,6 +241,14 @@ class SpotifyProvider(MusicProvider):
                     podcasts.append(parse_podcast(item, self))
                 searchresult.podcasts = [*searchresult.podcasts, *podcasts]
                 items_received += len(api_result["shows"]["items"])
+            if "audiobooks" in api_result and self.audiobooks_enabled:
+                audiobooks = [
+                    parse_audiobook(item, self)
+                    for item in api_result["audiobooks"]["items"]
+                    if (item and item["id"])
+                ]
+                searchresult.audiobooks = [*searchresult.audiobooks, *audiobooks]
+                items_received += len(api_result["audiobooks"]["items"])
             offset += page_limit
             if offset >= limit:
                 break
@@ -265,6 +297,44 @@ class SpotifyProvider(MusicProvider):
                     continue
                 yield parse_podcast(show_obj, self)
 
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+        """Retrieve library audiobooks from spotify."""
+        if not self.audiobooks_enabled:
+            self.logger.error("DEBUG: audiobooks not enabled, returning early")
+            return
+        self.logger.error("DEBUG: get_library_audiobooks called - starting sync")
+        async for item in self._get_all_items("me/audiobooks"):
+            if item and item["id"]:
+                # Parse the basic audiobook
+                audiobook = parse_audiobook(item, self)
+
+                # ADD CHAPTER LOGIC HERE (like Audible does)
+                try:
+                    chapters_data = await self._get_audiobook_chapters_data(audiobook.item_id)
+                    if chapters_data:
+                        chapters = []
+                        total_duration_ms = 0
+
+                        for idx, chapter in enumerate(chapters_data):
+                            duration_ms = chapter.get("duration_ms", 0)
+                            chapter_obj = MediaItemChapter(
+                                position=idx + 1,
+                                name=chapter.get("name", f"Chapter {idx + 1}"),
+                                start=total_duration_ms,
+                                end=total_duration_ms + duration_ms,
+                            )
+                            chapters.append(chapter_obj)
+                            total_duration_ms += duration_ms
+
+                        audiobook.metadata.chapters = chapters
+                        audiobook.duration = total_duration_ms // 1000
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to get chapters for audiobook {audiobook.item_id}: {e}"
+                    )
+
+                yield audiobook
+
     def _get_liked_songs_playlist_id(self) -> str:
         return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
 
@@ -299,7 +369,7 @@ class SpotifyProvider(MusicProvider):
         if liked_songs.metadata.images is None:
             liked_songs.metadata.images = UniqueList([image])
         else:
-            liked_songs.metadata.images.append(image)
+            liked_songs.metadata.add_image(image)
 
         liked_songs.cache_checksum = str(time.time())
 
@@ -343,6 +413,87 @@ class SpotifyProvider(MusicProvider):
             raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
         return parse_podcast(podcast_obj, self)
 
+    @use_cache(86400)  # 24 hours
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get full audiobook details by id."""
+        if not self.audiobooks_enabled:
+            raise MediaNotFoundError("Audiobook support is disabled")
+
+        audiobook_obj = await self._get_data(f"audiobooks/{prov_audiobook_id}")
+        if not audiobook_obj:
+            raise MediaNotFoundError(f"Audiobook not found: {prov_audiobook_id}")
+
+        # Parse basic audiobook without chapters
+        audiobook = parse_audiobook(audiobook_obj, self)
+
+        # Add chapters from Spotify API data
+        try:
+            chapters_data = await self._get_audiobook_chapters_data(prov_audiobook_id)
+            if chapters_data:
+                chapters = []
+                total_duration_ms = 0
+
+                for idx, chapter in enumerate(chapters_data):
+                    duration_ms = chapter.get("duration_ms", 0)
+                    start_seconds = total_duration_ms // 1000
+                    end_seconds = (total_duration_ms + duration_ms) // 1000
+
+                    chapter_obj = MediaItemChapter(
+                        position=idx + 1,
+                        name=chapter.get("name", f"Chapter {idx + 1}"),
+                        start=start_seconds,
+                        end=end_seconds,
+                    )
+                    chapters.append(chapter_obj)
+                    total_duration_ms += duration_ms
+
+                audiobook.metadata.chapters = chapters
+                audiobook.duration = total_duration_ms // 1000
+
+        except (MediaNotFoundError, ResourceTemporarilyUnavailable, ProviderUnavailableError) as e:
+            self.logger.warning(f"Failed to get chapters for audiobook {prov_audiobook_id}: {e}")
+
+        # Set resume position - use max of MA internal position and Spotify position
+        ma_resume_position = 0
+        spotify_resume_position = 0
+
+        # Try to get MA's internal resume position from existing library item
+        try:
+            existing_item = await self.mass.music.audiobooks.get_library_item_by_prov_id(
+                prov_audiobook_id, self.instance_id
+            )
+            if existing_item and existing_item.resume_position_ms:
+                ma_resume_position = existing_item.resume_position_ms
+        except MediaNotFoundError:
+            # No existing item - this is expected for new audiobooks
+            self.logger.debug(f"No existing library item for audiobook {prov_audiobook_id}")
+        except ResourceTemporarilyUnavailable as e:
+            # Database or other temporary error
+            self.logger.debug(
+                "Temporary error retrieving existing resume position "
+                f"for audiobook {prov_audiobook_id}: {e}"
+            )
+
+        # Try to get Spotify's resume position if sync is enabled
+        if self.audiobook_progress_sync_enabled:
+            try:
+                _, spotify_resume_position = await self.get_resume_position(
+                    prov_audiobook_id, MediaType.AUDIOBOOK
+                )
+            except NotImplementedError:
+                # Spotify resume position not available
+                spotify_resume_position = 0
+            except Exception as e:
+                self.logger.debug(
+                    f"Could not get Spotify resume position for {prov_audiobook_id}: {e}"
+                )
+                spotify_resume_position = 0
+
+        # Use the greater of the two positions to ensure no progress is lost
+        audiobook.resume_position_ms = max(ma_resume_position, spotify_resume_position)
+
+        return audiobook
+
     @use_cache(43200)  # 12 hours - balances freshness with performance
     async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
         """Get raw episode data from Spotify API (cached).
@@ -371,6 +522,35 @@ class SpotifyProvider(MusicProvider):
             raise
 
         return episodes_data
+
+    @use_cache(7200)  # 2 hours - shorter cache for resume point data
+    async def _get_audiobook_chapters_data(self, prov_audiobook_id: str) -> list[dict[str, Any]]:
+        """Get raw chapter data from Spotify API (cached).
+
+        Args:
+            prov_audiobook_id: Spotify audiobook ID
+
+        Returns:
+            List of chapter data dictionaries
+        """
+        chapters_data: list[dict[str, Any]] = []
+
+        try:
+            async for item in self._get_all_items(
+                f"audiobooks/{prov_audiobook_id}/chapters", market="from_token"
+            ):
+                if item and item.get("id"):
+                    chapters_data.append(item)
+        except MediaNotFoundError:
+            self.logger.warning("Audiobook %s not found", prov_audiobook_id)
+            return []
+        except ResourceTemporarilyUnavailable as err:
+            self.logger.warning(
+                "Temporary error fetching chapters for %s: %s", prov_audiobook_id, err
+            )
+            raise
+
+        return chapters_data
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str
@@ -413,36 +593,95 @@ class SpotifyProvider(MusicProvider):
         return parse_podcast_episode(episode_obj, self)
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
-        """Get resume position for episode from Spotify."""
-        if media_type != MediaType.PODCAST_EPISODE:
-            raise NotImplementedError("Resume position only supported for podcast episodes")
+        """Get resume position for episode/audiobook from Spotify."""
+        if media_type == MediaType.PODCAST_EPISODE:
+            if not self.sync_played_status_enabled:
+                raise NotImplementedError("Spotify resume sync disabled in settings")
 
-        if not self.sync_played_status_enabled:
-            raise NotImplementedError("Spotify resume sync disabled in settings")
+            try:
+                episode_obj = await self._get_data(f"episodes/{item_id}", market="from_token")
+            except MediaNotFoundError:
+                raise NotImplementedError("Episode not found on Spotify")
+            except (ResourceTemporarilyUnavailable, aiohttp.ClientError) as e:
+                self.logger.debug(f"Error fetching episode {item_id}: {e}")
+                raise NotImplementedError("Unable to fetch episode data from Spotify")
 
-        episode_obj = await self._get_data(f"episodes/{item_id}", market="from_token")
+            if not episode_obj:
+                raise NotImplementedError("No episode data from Spotify")
 
-        if not episode_obj:
-            raise NotImplementedError("No episode data from Spotify")
+            if "resume_point" not in episode_obj or not episode_obj["resume_point"]:
+                raise NotImplementedError("No resume point data from Spotify")
 
-        if "resume_point" not in episode_obj or not episode_obj["resume_point"]:
-            raise NotImplementedError("No resume point data from Spotify")
+            try:
+                resume_point = episode_obj["resume_point"]
+                fully_played = resume_point.get("fully_played", False)
+                position_ms = resume_point.get("resume_position_ms", 0)
 
-        try:
-            resume_point = episode_obj["resume_point"]
-            fully_played = resume_point.get("fully_played", False)
-            position_ms = resume_point.get("resume_position_ms", 0)
+                # Apply played threshold logic
+                if not fully_played and episode_obj.get("duration_ms", 0) > 0:
+                    completion_ratio = position_ms / episode_obj["duration_ms"]
+                    if completion_ratio >= self.played_threshold:
+                        fully_played = True
 
-            # Apply played threshold logic
-            if not fully_played and episode_obj.get("duration_ms", 0) > 0:
-                completion_ratio = position_ms / episode_obj["duration_ms"]
-                if completion_ratio >= self.played_threshold:
-                    fully_played = True
+                return fully_played, position_ms
+            except (KeyError, TypeError, AttributeError) as e:
+                self.logger.debug(f"Invalid resume point data structure for {item_id}: {e}")
+                raise NotImplementedError("Invalid resume point data from Spotify")
 
-            return fully_played, position_ms
-        except (KeyError, TypeError, AttributeError) as e:
-            self.logger.debug(f"Invalid resume point data structure for {item_id}: {e}")
-            raise NotImplementedError("Invalid resume point data from Spotify")
+        elif media_type == MediaType.AUDIOBOOK:
+            if not self.audiobooks_enabled:
+                raise NotImplementedError("Audiobook support is disabled")
+
+            if not self.audiobook_progress_sync_enabled:
+                raise NotImplementedError("Spotify audiobook resume sync disabled in settings")
+
+            try:
+                # Get chapters data to find current position
+                chapters_data = await self._get_audiobook_chapters_data(item_id)
+                if not chapters_data:
+                    raise NotImplementedError("No chapters data available")
+
+                total_position_ms = 0
+                fully_played = True
+                found_current_chapter = False
+
+                # Calculate total position by summing completed chapters + current chapter progress
+                for chapter in chapters_data:
+                    resume_point = chapter.get("resume_point", {})
+                    chapter_fully_played = resume_point.get("fully_played", False)
+                    chapter_position_ms = resume_point.get("resume_position_ms", 0)
+
+                    if chapter_fully_played:
+                        # Add full chapter duration to total
+                        total_position_ms += chapter.get("duration_ms", 0)
+                    elif chapter_position_ms > 0 and not found_current_chapter:
+                        # This is the current chapter - add partial progress
+                        total_position_ms += chapter_position_ms
+                        fully_played = False
+                        found_current_chapter = True
+
+                        # Apply played threshold logic for current chapter
+                        if chapter.get("duration_ms", 0) > 0:
+                            completion_ratio = chapter_position_ms / chapter["duration_ms"]
+                            if completion_ratio >= self.played_threshold:
+                                # Consider this chapter as played
+                                total_position_ms = (
+                                    total_position_ms - chapter_position_ms + chapter["duration_ms"]
+                                )
+                        break
+                    else:
+                        # Not played, not current - audiobook is not fully played
+                        fully_played = False
+                        break
+
+                return fully_played, total_position_ms
+
+            except (MediaNotFoundError, ResourceTemporarilyUnavailable, aiohttp.ClientError) as e:
+                self.logger.debug(f"Failed to get audiobook resume position for {item_id}: {e}")
+                raise NotImplementedError("Unable to get audiobook resume position from Spotify")
+
+        else:
+            raise NotImplementedError(f"Resume position not supported for {media_type}")
 
     async def on_played(
         self,
@@ -454,29 +693,51 @@ class SpotifyProvider(MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """
-        Call when an episode is played in MA.
+        Call when an episode/audiobook is played in MA.
 
-        Note: This CANNOT sync back to Spotify as there's no API for it.
-        This is just for logging/monitoring purposes.
+        MA automatically handles internal position tracking - this method is for
+        provider-specific actions like syncing to external services.
         """
-        if media_type != MediaType.PODCAST_EPISODE:
-            return
+        if media_type == MediaType.PODCAST_EPISODE:
+            if not isinstance(media_item, PodcastEpisode):
+                return
 
-        if not isinstance(media_item, PodcastEpisode):
-            return
+            # Log the playback for monitoring/debugging
+            safe_position = position or 0
+            if media_item.duration > 0:
+                completion_percentage = (safe_position / media_item.duration) * 100
+            else:
+                completion_percentage = 0
 
-        # Handle case where position might be None (e.g., when marked as played in UI)
-        safe_position = position or 0
-        if media_item.duration > 0:
-            completion_percentage = (safe_position / media_item.duration) * 100
-        else:
-            completion_percentage = 0
+            self.logger.debug(
+                f"Episode played: {prov_item_id} at {safe_position}s "
+                f"({completion_percentage:.1f}%, fully_played: {fully_played})"
+            )
 
-        self.logger.debug(
-            f"Episode played in MA: {prov_item_id} "
-            f"({completion_percentage:.1f}%, fully_played: {fully_played}) "
-            f"- Cannot sync back to Spotify due to API limitations"
-        )
+            # Note: No API exists to sync playback position back to Spotify for episodes
+            # MA handles all internal position tracking automatically
+
+        elif media_type == MediaType.AUDIOBOOK:
+            if not isinstance(media_item, Audiobook):
+                return
+
+            # Log the playback for monitoring/debugging
+            safe_position = position or 0
+            if media_item.duration > 0:
+                completion_percentage = (safe_position / media_item.duration) * 100
+            else:
+                completion_percentage = 0
+
+            self.logger.debug(
+                f"Audiobook played: {prov_item_id} at {safe_position}s "
+                f"({completion_percentage:.1f}%, fully_played: {fully_played})"
+            )
+
+            # Note: No API exists to sync playback position back to Spotify for audiobooks
+            # MA handles all internal position tracking automatically
+
+            # The resume position will be automatically updated by MA's internal tracking
+            # and will be retrieved via get_audiobook() which combines MA + Spotify positions
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
@@ -539,6 +800,57 @@ class SpotifyProvider(MusicProvider):
             await self._put_data(f"playlists/{item.item_id}/followers", data={"public": False})
         elif item.media_type == MediaType.PODCAST:
             await self._put_data("me/shows", ids=item.item_id)
+        elif item.media_type == MediaType.AUDIOBOOK and self.audiobooks_enabled:
+            # For audiobooks, we need special handling to ensure chapter metadata is included
+            self.logger.info(f"Adding audiobook {item.item_id} to library with chapter metadata")
+
+            # First add to Spotify library
+            await self._put_data("me/audiobooks", ids=item.item_id)
+
+            # Then get the full audiobook metadata with chapters by calling our get_audiobook method
+            try:
+                full_audiobook = await self.get_audiobook(item.item_id)
+
+                # Debug: Check what type we got back
+                self.logger.info(f"DEBUG: get_audiobook returned type: {type(full_audiobook)}")
+
+                if hasattr(full_audiobook, "metadata") and hasattr(
+                    full_audiobook.metadata, "chapters"
+                ):
+                    chapter_count = len(full_audiobook.metadata.chapters or [])
+                    self.logger.info(f"Retrieved audiobook with {chapter_count} chapters")
+                else:
+                    self.logger.warning(
+                        f"Audiobook {item.item_id} missing metadata or chapters attribute"
+                    )
+
+                # Update the audiobook in MA's database with the full metadata including chapters
+                # This ensures when the user plays it from library, it has chapter information
+                await self.mass.music.audiobooks.add_item_to_library(full_audiobook)
+                self.logger.info(
+                    f"Updated audiobook {item.item_id} in MA database with chapter metadata"
+                )
+
+            except MediaNotFoundError as e:
+                self.logger.warning(
+                    f"Audiobook {item.item_id} not found when fetching chapter metadata: {e}"
+                )
+            except ResourceTemporarilyUnavailable as e:
+                self.logger.warning(
+                    "Spotify temporarily unavailable when "
+                    f"fetching audiobook {item.item_id} metadata: {e}"
+                )
+            except ProviderUnavailableError as e:
+                self.logger.warning(
+                    f"Provider unavailable when fetching audiobook {item.item_id} metadata: {e}"
+                )
+            except Exception as e:
+                # Catch any other unexpected errors
+                self.logger.warning(
+                    f"Unexpected error fetching audiobook {item.item_id} metadata: {e}"
+                )
+                self.logger.debug(f"Full error details: {e}", exc_info=True)
+
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -553,6 +865,8 @@ class SpotifyProvider(MusicProvider):
             await self._delete_data(f"playlists/{prov_item_id}/followers")
         elif media_type == MediaType.PODCAST:
             await self._delete_data("me/shows", ids=prov_item_id)
+        elif media_type == MediaType.AUDIOBOOK and self.audiobooks_enabled:
+            await self._delete_data("me/audiobooks", ids=prov_item_id)
         return True
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
@@ -592,7 +906,35 @@ class SpotifyProvider(MusicProvider):
         return [parse_track(item, self) for item in items["tracks"] if (item and item["id"])]
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Return the content details for the given track/episode when it will be streamed."""
+        """Return content details for the given track/episode/audiobook when it will be streamed."""
+        if media_type == MediaType.AUDIOBOOK and self.audiobooks_enabled:
+            # Get chapters data
+            chapters_data = await self._get_audiobook_chapters_data(item_id)
+
+            # Calculate total duration from all chapters in SECONDS
+            total_duration_seconds = (
+                sum(chapter.get("duration_ms", 0) for chapter in chapters_data) // 1000
+            )
+
+            self.logger.debug(
+                f"get_stream_details total_duration: {total_duration_seconds}s "
+                f"({total_duration_seconds / 3600:.1f}h)"
+            )
+
+            return StreamDetails(
+                item_id=item_id,
+                provider=self.lookup_key,
+                media_type=MediaType.AUDIOBOOK,
+                audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
+                stream_type=StreamType.CUSTOM,
+                allow_seek=True,
+                can_seek=True,
+                duration=total_duration_seconds,  # Duration in seconds
+                # Store chapter info for the streamer
+                data={"chapters": chapters_data},
+            )
+
+        # For all other media types (tracks, podcast episodes)
         return StreamDetails(
             item_id=item_id,
             provider=self.lookup_key,
@@ -609,9 +951,86 @@ class SpotifyProvider(MusicProvider):
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        async for chunk in self.streamer.get_audio_stream(streamdetails, seek_position):
-            yield chunk
+        """Stream audiobook as continuous audio with chapter transitions."""
+        if streamdetails.media_type != MediaType.AUDIOBOOK:
+            # Normal track/episode streaming
+            async for chunk in self.streamer.get_audio_stream(streamdetails, seek_position):
+                yield chunk
+            return
+
+        # Audiobook streaming: handle chapter transitions seamlessly
+        chapters_data = streamdetails.data.get("chapters", [])
+
+        # Find which chapter to start from based on seek_position
+        current_chapter_idx, chapter_start_time_seconds = self._find_chapter_for_position(
+            chapters_data, seek_position
+        )
+
+        # Stream chapters sequentially starting from the target chapter
+        for chapter_idx in range(current_chapter_idx, len(chapters_data)):
+            chapter = chapters_data[chapter_idx]
+            chapter_id = chapter["id"]
+
+            # Calculate seek position within this chapter
+            if chapter_idx == current_chapter_idx:
+                chapter_seek_seconds = seek_position - chapter_start_time_seconds
+            else:
+                chapter_seek_seconds = 0
+
+            self.logger.debug(
+                f"Streaming chapter {chapter_idx + 1}/{len(chapters_data)}: {chapter_id}"
+            )
+
+            # Stream this chapter
+            chapter_stream_details = StreamDetails(
+                item_id=chapter_id,
+                provider=streamdetails.provider,
+                media_type=MediaType.PODCAST_EPISODE,  # Chapters stream like episodes
+                audio_format=streamdetails.audio_format,
+                stream_type=streamdetails.stream_type,
+                allow_seek=streamdetails.allow_seek,
+                can_seek=streamdetails.can_seek,
+            )
+
+            async for chunk in self.streamer.get_audio_stream(
+                chapter_stream_details, chapter_seek_seconds
+            ):
+                yield chunk
+
+    def _find_chapter_for_position(
+        self, chapters_data: list[dict[str, Any]], seek_position_seconds: int
+    ) -> tuple[int, int]:
+        """Find which chapter contains the seek position.
+
+        Args:
+            chapters_data: List of chapter dictionaries from Spotify API
+            seek_position_seconds: Seek position in seconds
+
+        Returns:
+            Tuple of (chapter_index, chapter_start_time_seconds)
+        """
+        # Convert seek position to milliseconds for comparison with chapter data
+        seek_position_ms = seek_position_seconds * 1000
+        current_position_ms = 0
+
+        for idx, chapter in enumerate(chapters_data):
+            chapter_duration_ms = chapter.get("duration_ms", 0)
+            chapter_end_ms = current_position_ms + chapter_duration_ms
+
+            # If seek position falls within this chapter
+            if current_position_ms <= seek_position_ms < chapter_end_ms:
+                # Return chapter index and start time in seconds
+                return idx, current_position_ms // 1000
+
+            current_position_ms = chapter_end_ms
+
+        # If seek position is beyond the end, return the last chapter
+        if chapters_data:
+            last_chapter_start_ms = current_position_ms - chapters_data[-1].get("duration_ms", 0)
+            return len(chapters_data) - 1, last_chapter_start_ms // 1000
+
+        # Fallback if no chapters
+        return 0, 0
 
     @lock
     async def login(self, force_refresh: bool = False) -> dict[str, Any]:

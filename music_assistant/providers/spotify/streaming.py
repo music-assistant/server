@@ -29,14 +29,46 @@ class LibrespotStreamer:
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        # Ensure librespot binary is available
-        assert self.provider._librespot_bin
-
-        media_type = "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
+        # Use "episode" for podcast episodes AND audiobook chapters
+        # Use "track" for everything else (mainly tracks)
+        media_type = (
+            "episode"
+            if streamdetails.media_type in (MediaType.PODCAST_EPISODE, MediaType.AUDIOBOOK)
+            else "track"
+        )
         spotify_uri = f"spotify://{media_type}:{streamdetails.item_id}"
+
         self.provider.logger.log(
             VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot"
         )
+
+        async for chunk in self._stream_spotify_uri(spotify_uri, seek_position):
+            yield chunk
+
+    async def get_audio_stream_by_uri(
+        self, spotify_uri: str, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item using a direct Spotify URI."""
+        # Convert the URI format for librespot (replace : with /)
+        librespot_uri = spotify_uri.replace(":", "//", 1).replace(":", "/")
+
+        self.provider.logger.log(
+            VERBOSE_LOG_LEVEL, f"Start streaming {librespot_uri} using librespot"
+        )
+
+        async for chunk in self._stream_spotify_uri(librespot_uri, seek_position):
+            yield chunk
+
+    async def _stream_spotify_uri(
+        self, spotify_uri: str, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream a Spotify URI using librespot.
+
+        This internal method handles the entire process, from authentication to playback.
+        """
+        # Validate that librespot binary is available
+        if not self.provider._librespot_bin:
+            raise AudioError("Librespot binary not available")
 
         args = [
             self.provider._librespot_bin,
@@ -71,10 +103,10 @@ class LibrespotStreamer:
                 try:
                     chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=10 * attempt)
                     if not chunk:
-                        raise AudioError(f"No audio data received from librespot for {spotify_uri}")
+                        raise AudioError("No audio data received from librespot")
                     yield chunk
                 except (TimeoutError, AudioError):
-                    err_mesg = f"No audio received from librespot within timeout for {spotify_uri}"
+                    err_mesg = "No audio received from librespot within timeout"
                     if attempt == 2:
                         raise AudioError(err_mesg)
                     self.provider.logger.warning("%s - will retry once", err_mesg)

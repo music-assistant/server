@@ -18,9 +18,11 @@ from .constants import (
     CONF_ACTION_AUTH,
     CONF_ACTION_CLEAR_AUTH,
     CONF_CLIENT_ID,
+    CONF_ENABLE_AUDIOBOOKS,
     CONF_PLAYED_THRESHOLD,
     CONF_REFRESH_TOKEN,
-    CONF_SYNC_PLAYED_STATUS,
+    CONF_SYNC_AUDIOBOOK_PROGRESS,
+    CONF_SYNC_PODCAST_PROGRESS,
     SCOPE,
 )
 from .provider import SpotifyProvider
@@ -134,7 +136,16 @@ async def get_config_entries(
             hidden=not auth_required,
         ),
         ConfigEntry(
-            key=CONF_SYNC_PLAYED_STATUS,
+            key=CONF_ENABLE_AUDIOBOOKS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable Audiobook Support",
+            description="Enable support for Spotify audiobooks. Note that audiobook availability "
+            "varies by country. Check availability at: "
+            "https://support.spotify.com/us/authors/article/audiobooks-availability/",
+            default_value=False,
+        ),
+        ConfigEntry(
+            key=CONF_SYNC_PODCAST_PROGRESS,
             type=ConfigEntryType.BOOLEAN,
             label="Sync Played Status from Spotify",
             description="Automatically sync episode played status from Spotify to Music Assistant. "
@@ -142,7 +153,18 @@ async def get_config_entries(
             "Only enable this if you use both the Spotify app and Music Assistant "
             "for podcast playback.",
             default_value=False,
-            value=values.get(CONF_SYNC_PLAYED_STATUS, True) if values else True,
+            value=values.get(CONF_SYNC_PODCAST_PROGRESS, False) if values else False,
+        ),
+        ConfigEntry(
+            key=CONF_SYNC_AUDIOBOOK_PROGRESS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Sync Audiobook Progress from Spotify",
+            description="Automatically sync audiobook progress from Spotify to Music Assistant. "
+            "Progress from Spotify app will sync to MA when audiobooks are accessed. "
+            "Only enable this if you use both the Spotify app and Music Assistant "
+            "for audiobook playback.",
+            default_value=False,
+            value=values.get(CONF_SYNC_AUDIOBOOK_PROGRESS, False) if values else False,
         ),
         ConfigEntry(
             key=CONF_PLAYED_THRESHOLD,
