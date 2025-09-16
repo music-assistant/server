@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,
+    instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -48,8 +48,6 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # ruff: noqa: ARG001
-
     if action == CONF_ACTION_AUTH:
         # spotify PKCE auth flow
         # https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
@@ -128,8 +126,8 @@ async def get_config_entries(
             description="By default, a generic client ID is used which is (heavy) rate limited. "
             "To speedup performance, it is advised that you create your own Spotify Developer "
             "account and use that client ID here, but this comes at the cost of some features "
-            "due to Spotify policies. For example Radio mode/recommendations and featured playlists"
-            "will not work with a custom client ID. \n\n"
+            "due to Spotify policies. For example, Radio mode/recommendations and featured "
+            "playlists will not work with a custom client ID. \n\n"
             f"Use {CALLBACK_REDIRECT_URL} as callback URL.",
             required=False,
             value=values.get(CONF_CLIENT_ID) if values else None,

@@ -21,6 +21,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
+    UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -300,39 +301,13 @@ class SpotifyProvider(MusicProvider):
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
         """Retrieve library audiobooks from spotify."""
         if not self.audiobooks_enabled:
-            self.logger.error("DEBUG: audiobooks not enabled, returning early")
             return
-        self.logger.error("DEBUG: get_library_audiobooks called - starting sync")
         async for item in self._get_all_items("me/audiobooks"):
             if item and item["id"]:
                 # Parse the basic audiobook
                 audiobook = parse_audiobook(item, self)
-
-                # ADD CHAPTER LOGIC HERE (like Audible does)
-                try:
-                    chapters_data = await self._get_audiobook_chapters_data(audiobook.item_id)
-                    if chapters_data:
-                        chapters = []
-                        total_duration_ms = 0
-
-                        for idx, chapter in enumerate(chapters_data):
-                            duration_ms = chapter.get("duration_ms", 0)
-                            chapter_obj = MediaItemChapter(
-                                position=idx + 1,
-                                name=chapter.get("name", f"Chapter {idx + 1}"),
-                                start=total_duration_ms,
-                                end=total_duration_ms + duration_ms,
-                            )
-                            chapters.append(chapter_obj)
-                            total_duration_ms += duration_ms
-
-                        audiobook.metadata.chapters = chapters
-                        audiobook.duration = total_duration_ms // 1000
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to get chapters for audiobook {audiobook.item_id}: {e}"
-                    )
-
+                # Add chapters from Spotify API data
+                await self._add_audiobook_chapters(audiobook)
                 yield audiobook
 
     def _get_liked_songs_playlist_id(self) -> str:
@@ -417,7 +392,7 @@ class SpotifyProvider(MusicProvider):
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         if not self.audiobooks_enabled:
-            raise MediaNotFoundError("Audiobook support is disabled")
+            raise UnsupportedFeaturedException("Audiobook support is disabled")
 
         audiobook_obj = await self._get_data(f"audiobooks/{prov_audiobook_id}")
         if not audiobook_obj:
@@ -427,31 +402,7 @@ class SpotifyProvider(MusicProvider):
         audiobook = parse_audiobook(audiobook_obj, self)
 
         # Add chapters from Spotify API data
-        try:
-            chapters_data = await self._get_audiobook_chapters_data(prov_audiobook_id)
-            if chapters_data:
-                chapters = []
-                total_duration_ms = 0
-
-                for idx, chapter in enumerate(chapters_data):
-                    duration_ms = chapter.get("duration_ms", 0)
-                    start_seconds = total_duration_ms // 1000
-                    end_seconds = (total_duration_ms + duration_ms) // 1000
-
-                    chapter_obj = MediaItemChapter(
-                        position=idx + 1,
-                        name=chapter.get("name", f"Chapter {idx + 1}"),
-                        start=start_seconds,
-                        end=end_seconds,
-                    )
-                    chapters.append(chapter_obj)
-                    total_duration_ms += duration_ms
-
-                audiobook.metadata.chapters = chapters
-                audiobook.duration = total_duration_ms // 1000
-
-        except (MediaNotFoundError, ResourceTemporarilyUnavailable, ProviderUnavailableError) as e:
-            self.logger.warning(f"Failed to get chapters for audiobook {prov_audiobook_id}: {e}")
+        await self._add_audiobook_chapters(audiobook)
 
         # Set resume position - use max of MA internal position and Spotify position
         ma_resume_position = 0
@@ -493,6 +444,30 @@ class SpotifyProvider(MusicProvider):
         audiobook.resume_position_ms = max(ma_resume_position, spotify_resume_position)
 
         return audiobook
+
+    async def _add_audiobook_chapters(self, audiobook: Audiobook) -> None:
+        """Add chapter metadata to an audiobook from Spotify API data."""
+        try:
+            chapters_data = await self._get_audiobook_chapters_data(audiobook.item_id)
+            if chapters_data:
+                chapters = []
+                total_duration_ms = 0
+
+                for idx, chapter in enumerate(chapters_data):
+                    duration_ms = chapter.get("duration_ms", 0)
+                    chapter_obj = MediaItemChapter(
+                        position=idx + 1,
+                        name=chapter.get("name", f"Chapter {idx + 1}"),
+                        start=total_duration_ms,
+                        end=total_duration_ms + duration_ms,
+                    )
+                    chapters.append(chapter_obj)
+                    total_duration_ms += duration_ms
+
+                audiobook.metadata.chapters = chapters
+                audiobook.duration = total_duration_ms // 1000
+        except (MediaNotFoundError, ResourceTemporarilyUnavailable, ProviderUnavailableError) as e:
+            self.logger.warning(f"Failed to get chapters for audiobook {audiobook.item_id}: {e}")
 
     @use_cache(43200)  # 12 hours - balances freshness with performance
     async def _get_podcast_episodes_data(self, prov_podcast_id: str) -> list[dict[str, Any]]:
@@ -811,7 +786,9 @@ class SpotifyProvider(MusicProvider):
             try:
                 full_audiobook = await self.get_audiobook(item.item_id)
 
-                # Debug: Check what type we got back
+                # DEBUG: Check what we got back from get_audiobook
+                self.logger.warning(f"DEBUG: Full audiobook duration: {full_audiobook.duration}s")
+                self.logger.warning(f"DEBUG: Full audiobook type: {type(full_audiobook)}")
                 self.logger.info(f"DEBUG: get_audiobook returned type: {type(full_audiobook)}")
 
                 if hasattr(full_audiobook, "metadata") and hasattr(
@@ -830,6 +807,21 @@ class SpotifyProvider(MusicProvider):
                 self.logger.info(
                     f"Updated audiobook {item.item_id} in MA database with chapter metadata"
                 )
+
+                # DEBUG: Verify what got stored by fetching it back
+                try:
+                    stored_audiobook = await self.mass.music.audiobooks.get_library_item_by_prov_id(
+                        item.item_id, self.instance_id
+                    )
+                    self.logger.warning(
+                        f"DEBUG: Stored audiobook duration: {stored_audiobook.duration}s"
+                    )
+                    self.logger.warning(
+                        f"DEBUG: Stored audiobook resume_position_ms: "
+                        f"{stored_audiobook.resume_position_ms}"
+                    )
+                except Exception as e:
+                    self.logger.warning(f"DEBUG: Could not fetch stored audiobook: {e}")
 
             except MediaNotFoundError as e:
                 self.logger.warning(
@@ -850,7 +842,6 @@ class SpotifyProvider(MusicProvider):
                     f"Unexpected error fetching audiobook {item.item_id} metadata: {e}"
                 )
                 self.logger.debug(f"Full error details: {e}", exc_info=True)
-
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -914,11 +905,6 @@ class SpotifyProvider(MusicProvider):
             # Calculate total duration from all chapters in SECONDS
             total_duration_seconds = (
                 sum(chapter.get("duration_ms", 0) for chapter in chapters_data) // 1000
-            )
-
-            self.logger.debug(
-                f"get_stream_details total_duration: {total_duration_seconds}s "
-                f"({total_duration_seconds / 3600:.1f}h)"
             )
 
             return StreamDetails(
