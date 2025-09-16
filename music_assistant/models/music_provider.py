@@ -872,6 +872,7 @@ class MusicProvider(Provider):
         return cur_db_ids
 
     async def _sync_library_tracks(self, import_as_favorite: bool) -> set[int]:
+        """Sync Library Tracks to Music Assistant library."""
         self.logger.debug("Start sync of Tracks to Music Assistant library.")
         cur_db_ids: set[int] = set()
         async for prov_item in self.get_library_tracks():
