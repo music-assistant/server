@@ -213,7 +213,15 @@ class MusicController(CoreController):
                     continue
                 if not provider.library_supported(media_type):
                     continue
-                self._start_provider_sync(provider, media_type)
+                # handle mediatype specific sync config
+                conf_key = f"library_import_{media_type}s"
+                sync_conf = self.mass.config.get_raw_provider_config_value(
+                    provider.instance_id, conf_key, "import_only"
+                )
+                if sync_conf == "no_import":
+                    continue
+                import_as_favorite = sync_conf == "import_as_favorite"
+                self._start_provider_sync(provider, media_type, import_as_favorite)
 
     @api_command("music/synctasks")
     def get_running_sync_tasks(self) -> list[SyncTask]:
@@ -1295,7 +1303,9 @@ class MusicController(CoreController):
             )
             return []
 
-    def _start_provider_sync(self, provider: MusicProvider, media_type: MediaType) -> None:
+    def _start_provider_sync(
+        self, provider: MusicProvider, media_type: MediaType, import_as_favorite: bool
+    ) -> None:
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
         for sync_task in self.in_progress_syncs:
@@ -1312,12 +1322,7 @@ class MusicController(CoreController):
             # Wrap the provider sync into a lock to prevent
             # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
-                await provider.sync_library(media_type)
-            # precache playlist tracks
-            if media_type == MediaType.PLAYLIST:
-                for playlist in await self.playlists.library_items(provider=provider.instance_id):
-                    async for _ in self.playlists.tracks(playlist.item_id, playlist.provider):
-                        pass
+                await provider.sync_library(media_type, import_as_favorite)
 
         # we keep track of running sync tasks
         task = self.mass.create_task(run_sync())

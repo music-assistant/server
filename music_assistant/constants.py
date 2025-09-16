@@ -634,6 +634,82 @@ CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
     multi_value=True,
 )
 
+library_options = [
+    ConfigValueOption("Import into the library", "import_only"),
+    ConfigValueOption("Import into the library, and mark as favorite", "import_as_favorite"),
+    ConfigValueOption("Do not import into the library", "no_import"),
+]
+CONF_ENTRY_LIBRARY_IMPORT_ARTISTS = ConfigEntry(
+    key="library_import_artists",
+    type=ConfigEntryType.STRING,
+    label="Import Artists from this provider into Music Assistant",
+    description="Whether to import (favourite/library) artists from this "
+    "provider into the Music Assistant Library.",
+    options=library_options,
+    default_value="import_only",
+    category="library",
+)
+CONF_ENTRY_LIBRARY_IMPORT_ALBUMS = ConfigEntry(
+    key="library_import_albums",
+    type=ConfigEntryType.STRING,
+    label="Import Albums from this provider into Music Assistant",
+    description="Whether to import (favourite/library) albums from this "
+    "provider into the Music Assistant Library.",
+    options=library_options,
+    default_value="import_only",
+    category="library",
+)
+CONF_ENTRY_LIBRARY_IMPORT_TRACKS = ConfigEntry(
+    key="library_import_tracks",
+    type=ConfigEntryType.STRING,
+    label="Import Tracks from this provider into Music Assistant",
+    description="Whether to import (favourite/library) tracks from this "
+    "provider into the Music Assistant Library.",
+    options=library_options,
+    default_value="import_only",
+    category="library",
+)
+CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS = ConfigEntry(
+    key="library_import_playlists",
+    type=ConfigEntryType.STRING,
+    label="Import Playlists from this provider into Music Assistant",
+    description="Whether to import (favourite/library) playlists from this "
+    "provider into the Music Assistant Library.",
+    options=library_options,
+    default_value="import_only",
+    category="library",
+)
+CONF_ENTRY_LIBRARY_IMPORT_PODCASTS = ConfigEntry(
+    key="library_import_podcasts",
+    type=ConfigEntryType.STRING,
+    label="Import Podcasts from this provider into Music Assistant",
+    description="Whether to import (favourite/library) podcasts from this "
+    "provider into the Music Assistant Library.",
+    options=library_options,
+    default_value="import_only",
+    category="library",
+)
+CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS = ConfigEntry(
+    key="library_import_audiobooks",
+    type=ConfigEntryType.STRING,
+    label="Import Audiobooks from this provider into Music Assistant",
+    description="Whether to import (favourite/library) audiobooks from this "
+    "provider into the Music Assistant Library.",
+    options=library_options,
+    default_value="import_only",
+    category="library",
+)
+CONF_ENTRY_LIBRARY_IMPORT_RADIOS = ConfigEntry(
+    key="library_import_radios",
+    type=ConfigEntryType.STRING,
+    label="Import Radios from this provider into Music Assistant",
+    description="Whether to import (favourite/library) radios from this "
+    "provider into the Music Assistant Library.",
+    options=library_options,
+    default_value="import_only",
+    category="library",
+)
+
 
 def create_sample_rates_config_entry(
     supported_sample_rates: list[int] | None = None,

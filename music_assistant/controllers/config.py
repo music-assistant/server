@@ -22,7 +22,7 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.dsp import DSPConfig, DSPConfigPreset, ToneControlFilter
-from music_assistant_models.enums import EventType, ProviderType
+from music_assistant_models.enums import EventType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     ActionUnavailable,
     InvalidDataError,
@@ -35,6 +35,12 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_BASS,
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_PRESETS,
@@ -231,7 +237,7 @@ class ConfigController:
         instance_id: str | None = None,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    ) -> list[ConfigEntry]:
         """
         Return Config entries to setup/configure a provider.
 
@@ -241,9 +247,9 @@ class ConfigController:
         values: the (intermediate) raw values for config entries sent with the action.
         """
         # lookup provider manifest and module
-        for prov in self.mass.get_provider_manifests():
-            if prov.domain == provider_domain:
-                prov_mod = await load_provider_module(provider_domain, prov.requirements)
+        for manifest in self.mass.get_provider_manifests():
+            if manifest.domain == provider_domain:
+                prov_mod = await load_provider_module(provider_domain, manifest.requirements)
                 break
         else:
             msg = f"Unknown provider domain: {provider_domain}"
@@ -251,12 +257,32 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
 
-        return (
-            await prov_mod.get_config_entries(
+        extra_entries: list[ConfigEntry] = []
+        if (
+            manifest.type == ProviderType.MUSIC
+            and instance_id
+            and (provider := self.mass.get_provider(instance_id))
+        ):
+            if provider.supports_feature(ProviderFeature.LIBRARY_ARTISTS):
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ARTISTS)
+            if provider.supports_feature(ProviderFeature.LIBRARY_ALBUMS):
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUMS)
+            if provider.supports_feature(ProviderFeature.LIBRARY_TRACKS):
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_TRACKS)
+            if provider.supports_feature(ProviderFeature.LIBRARY_PLAYLISTS):
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS)
+            if provider.supports_feature(ProviderFeature.LIBRARY_AUDIOBOOKS):
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS)
+            if provider.supports_feature(ProviderFeature.LIBRARY_PODCASTS):
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PODCASTS)
+
+        return [
+            *DEFAULT_PROVIDER_CONFIG_ENTRIES,
+            *extra_entries,
+            *await prov_mod.get_config_entries(
                 self.mass, instance_id=instance_id, action=action, values=values
-            )
-            + DEFAULT_PROVIDER_CONFIG_ENTRIES
-        )
+            ),
+        ]
 
     @api_command("config/providers/save")
     async def save_provider_config(

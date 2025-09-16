@@ -182,10 +182,7 @@ class LocalFileSystemProvider(MusicProvider):
         if self.media_content_type == "podcasts":
             return {ProviderFeature.LIBRARY_PODCASTS, *base_features}
         music_features = {
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
             ProviderFeature.LIBRARY_TRACKS,
-            # for now, only support playlists for music files and not for podcasts or audiobooks
             ProviderFeature.LIBRARY_PLAYLISTS,
             *base_features,
         }
@@ -310,7 +307,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
         return items
 
-    async def sync_library(self, media_type: MediaType) -> None:
+    async def sync_library(self, media_type: MediaType, import_as_favorite: bool) -> None:
         """Run library sync for this provider."""
         assert self.mass.music.database
         start_time = time.time()
@@ -362,7 +359,7 @@ class LocalFileSystemProvider(MusicProvider):
             try:
                 for item in listdir(self.base_path):
                     prev_checksum = file_checksums.get(item.relative_path)
-                    if self._process_item(item, prev_checksum):
+                    if self._process_item(item, prev_checksum, import_as_favorite):
                         cur_filenames.add(item.relative_path)
             finally:
                 self.sync_running = False
@@ -382,7 +379,9 @@ class LocalFileSystemProvider(MusicProvider):
         # process orphaned albums and artists
         await self._process_orphaned_albums_and_artists()
 
-    def _process_item(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
+    def _process_item(
+        self, item: FileSystemItem, prev_checksum: str | None, import_as_favorite: bool
+    ) -> bool:
         """Process a single item. NOT async friendly."""
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
@@ -412,6 +411,7 @@ class LocalFileSystemProvider(MusicProvider):
                     # add/update track to db
                     # note that filesystem items are always overwriting existing info
                     # when they are detected as changed
+                    track.favorite = import_as_favorite
                     await self.mass.music.tracks.add_item_to_library(
                         track, overwrite_existing=prev_checksum is not None
                     )
@@ -431,6 +431,7 @@ class LocalFileSystemProvider(MusicProvider):
                     # add/update audiobook to db
                     # note that filesystem items are always overwriting existing info
                     # when they are detected as changed
+                    audiobook.favorite = import_as_favorite
                     await self.mass.music.audiobooks.add_item_to_library(
                         audiobook, overwrite_existing=prev_checksum is not None
                     )
@@ -448,6 +449,7 @@ class LocalFileSystemProvider(MusicProvider):
                     # add/update episode to db
                     # note that filesystem items are always overwriting existing info
                     # when they are detected as changed
+                    episode.favorite = import_as_favorite
                     await self.mass.music.podcasts.add_item_to_library(
                         episode.podcast, overwrite_existing=prev_checksum is not None
                     )
@@ -462,6 +464,7 @@ class LocalFileSystemProvider(MusicProvider):
                     playlist = await self.get_playlist(item.relative_path)
                     # add/update] playlist to db
                     playlist.cache_checksum = item.checksum
+                    playlist.favorite = import_as_favorite
                     await self.mass.music.playlists.add_item_to_library(
                         playlist,
                         overwrite_existing=prev_checksum is not None,
