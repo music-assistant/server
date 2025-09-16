@@ -559,8 +559,8 @@ class ARDAudiothek(MusicProvider):
                 return True
             return int(val["audioBitrate"]) < self.max_bitrate
 
-        filtered_streams = filter(filter_func, streams)
-        if len(list(filtered_streams)) == 0:
+        filtered_streams = list(filter(filter_func, streams))
+        if len(filtered_streams) == 0:
             raise UnplayableMediaError("No stream exceeding the minimum bitrate available.")
         selected_stream = max(filtered_streams, key=lambda x: x["audioBitrate"])
 
