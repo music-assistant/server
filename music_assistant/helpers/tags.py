@@ -334,9 +334,9 @@ class AudioTags:
                 if album_type.value in tag.lower():
                     return album_type
 
-    # No valid tag found, try inference from album title
-    album_title = self.tags.get("album", "")
-    return infer_album_type(album_title, "")
+        # No valid tag found, try inference from album title
+        album_title = self.tags.get("album", "")
+        return infer_album_type(album_title, "")
 
     @property
     def isrc(self) -> tuple[str, ...]:
