@@ -314,27 +314,30 @@ class AudioTags:
         """Return albumtype tag if present."""
         if self.tags.get("compilation", "") == "1":
             return AlbumType.COMPILATION
+
         tag = (
             self.tags.get("musicbrainzalbumtype")
             or self.tags.get("albumtype")
             or self.tags.get("releasetype")
         )
-        if tag is None:
-            return AlbumType.UNKNOWN
-        # the album type tag is messy within id3 and may even contain multiple types
-        # try to parse one in order of preference
-        for album_type in (
-            AlbumType.LIVE,
-            AlbumType.SOUNDTRACK,
-            AlbumType.COMPILATION,
-            AlbumType.EP,
-            AlbumType.SINGLE,
-            AlbumType.ALBUM,
-        ):
-            if album_type.value in tag.lower():
-                return album_type
 
-        return AlbumType.UNKNOWN
+        if tag is not None:
+            # try to parse one in order of preference
+            for album_type in (
+                AlbumType.LIVE,
+                AlbumType.SOUNDTRACK,
+                AlbumType.COMPILATION,
+                AlbumType.EP,
+                AlbumType.SINGLE,
+                AlbumType.ALBUM,
+            ):
+                if album_type.value in tag.lower():
+                    return album_type
+
+    # No valid tag found, try inference from album title
+    album_title = self.tags.get("album", "")
+    inferred_type = infer_album_type(album_title, "")
+    return inferred_type
 
     @property
     def isrc(self) -> tuple[str, ...]:
