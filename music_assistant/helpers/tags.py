@@ -20,7 +20,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import try_parse_int
+from music_assistant.helpers.util import infer_album_type, try_parse_int
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 
@@ -336,8 +336,7 @@ class AudioTags:
 
     # No valid tag found, try inference from album title
     album_title = self.tags.get("album", "")
-    inferred_type = infer_album_type(album_title, "")
-    return inferred_type
+    return infer_album_type(album_title, "")
 
     @property
     def isrc(self) -> tuple[str, ...]:
