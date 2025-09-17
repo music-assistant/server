@@ -324,6 +324,8 @@ class AudioTags:
         # the album type tag is messy within id3 and may even contain multiple types
         # try to parse one in order of preference
         for album_type in (
+            AlbumType.LIVE,
+            AlbumType.SOUNDTRACK,
             AlbumType.COMPILATION,
             AlbumType.EP,
             AlbumType.SINGLE,
