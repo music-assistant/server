@@ -76,6 +76,10 @@ from .constants import (
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PATH,
     IMAGE_EXTENSIONS,
@@ -132,19 +136,18 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    if instance_id is None or values is None:
-        return (
-            CONF_ENTRY_CONTENT_TYPE,
-            CONF_ENTRY_PATH,
-            CONF_ENTRY_MISSING_ALBUM_ARTIST,
-            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-        )
-    return (
+    base_entries = [
         CONF_ENTRY_PATH,
-        CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
         CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-    )
+        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+        CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
+    ]
+    if instance_id is None or values is None:
+        return (CONF_ENTRY_CONTENT_TYPE, *base_entries)
+    return (CONF_ENTRY_CONTENT_TYPE_READ_ONLY, *base_entries)
 
 
 class LocalFileSystemProvider(MusicProvider):
@@ -893,6 +896,7 @@ class LocalFileSystemProvider(MusicProvider):
                         bit_rate=tags.bit_rate,
                     ),
                     details=file_item.checksum,
+                    in_library=True,
                 )
             },
             disc_number=tags.disc or 0,
@@ -1046,6 +1050,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=artist_path,
+                    in_library=True,
                 )
             },
         )
@@ -1125,6 +1130,7 @@ class LocalFileSystemProvider(MusicProvider):
                         bit_rate=tags.bit_rate,
                     ),
                     details=file_item.checksum,
+                    in_library=True,
                 )
             },
         )
@@ -1223,6 +1229,7 @@ class LocalFileSystemProvider(MusicProvider):
                         bit_rate=tags.bit_rate,
                     ),
                     details=file_item.checksum,
+                    in_library=True,
                 )
             },
             position=tags.track or 0,
@@ -1410,6 +1417,7 @@ class LocalFileSystemProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=album_dir,
+                    in_library=True,
                 )
             },
         )

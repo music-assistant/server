@@ -452,7 +452,7 @@ class TracksController(MediaControllerBase[Track]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, item.provider_mappings)
+        await self.set_provider_mappings(db_id, item.provider_mappings)
         # set track artist(s)
         await self._set_track_artists(db_id, item.artists)
         # handle track album
@@ -498,7 +498,7 @@ class TracksController(MediaControllerBase[Track]):
             if overwrite
             else {*cur_item.provider_mappings, *update.provider_mappings}
         )
-        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set track artist(s)
         artists = update.artists if overwrite else cur_item.artists + update.artists
         await self._set_track_artists(db_id, artists, overwrite=overwrite)

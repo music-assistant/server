@@ -207,7 +207,7 @@ class AlbumsController(MediaControllerBase[Album]):
         return await self.mass.music.database.get_count_from_query(sql_query, query_params)
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
-        """Delete record from the database."""
+        """Delete item from the library(database)."""
         db_id = int(item_id)  # ensure integer
         # recursively also remove album tracks
         for db_track in await self.get_library_album_tracks(db_id):
@@ -331,7 +331,7 @@ class AlbumsController(MediaControllerBase[Album]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, item.provider_mappings)
+        await self.set_provider_mappings(db_id, item.provider_mappings)
         # set track artist(s)
         await self._set_album_artists(db_id, item.artists)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
@@ -374,7 +374,7 @@ class AlbumsController(MediaControllerBase[Album]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set album artist(s)
         artists = update.artists if overwrite else cur_item.artists + update.artists
         await self._set_album_artists(db_id, artists, overwrite=overwrite)

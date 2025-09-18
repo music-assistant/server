@@ -174,7 +174,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, item.provider_mappings)
+        await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         return db_id
 
@@ -211,7 +211,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_podcast_episodes(

@@ -34,7 +34,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PASSWORD
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+    CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
+    CONF_PASSWORD,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.database_queries import (
@@ -227,6 +231,9 @@ async def get_config_entries(
             required=False,
             value=values.get(CONF_DISPLAY_NAME),
         ),
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
+        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
     )
 
 

@@ -87,7 +87,7 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 18
+DB_SCHEMA_VERSION: Final[int] = 19
 
 
 class MusicController(CoreController):
@@ -630,10 +630,8 @@ class MusicController(CoreController):
         if isinstance(item, str):
             item = await self.get_item_by_uri(item)
         # ensure item is added to streaming provider library
-        if (
-            (provider := self.mass.get_provider(item.provider))
-            and provider.is_streaming_provider
-            and provider.library_edit_supported(item.media_type)
+        if (provider := self.mass.get_provider(item.provider)) and provider.library_edit_supported(
+            item.media_type
         ):
             await provider.library_add(item)
         # make sure we have a full library item
@@ -1659,6 +1657,17 @@ class MusicController(CoreController):
             ):
                 await self.database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
 
+        if prev_version <= 18:
+            # add in_library column to provider_mappings table
+            await self.database.execute(
+                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN in_library BOOLEAN DEFAULT 0;"
+            )
+            # migrate existing entries in provider_mappings which are filesystem
+            await self.database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE provider_domain in ('filesystem_local', 'filesystem_smb');"
+            )
+
         # save changes
         await self.database.commit()
 
@@ -1852,6 +1861,7 @@ class MusicController(CoreController):
             [provider_instance] TEXT NOT NULL,
             [provider_item_id] TEXT NOT NULL,
             [available] BOOLEAN DEFAULT 1,
+            [in_library] BOOLEAN DEFAULT 0,
             [url] text,
             [audio_format] json,
             [details] TEXT,
@@ -1963,6 +1973,11 @@ class MusicController(CoreController):
             "CREATE INDEX IF NOT EXISTS "
             f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_domain_idx "
             f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_domain);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS "
+            f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_instance_library_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,in_library);"
         )
 
         # indexes on track_artists table

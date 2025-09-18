@@ -41,7 +41,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
         """Initialize the provider."""
         super().__init__(mass, manifest, config)
         self.slimproto: SlimServer | None = None
-        self._players: dict[str, SqueezelitePlayer] = {}
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -120,10 +119,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
                 self.logger.warning("Error stopping SlimProto server during cleanup: %s", err)
             finally:
                 self.slimproto = None
-
-        # Clear any associated state that might have been created
-        self._players.clear()
-        self._multi_client_streams.clear()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""

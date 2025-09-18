@@ -19,6 +19,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 
+from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audible.audible_helper import (
     AudibleHelper,
@@ -209,6 +210,8 @@ async def get_config_entries(
             required=True,
             value=cast("str | None", values.get(CONF_AUTH_FILE)),
         ),
+        # Add standardized config entry to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
     )
 
 

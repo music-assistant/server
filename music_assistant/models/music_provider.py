@@ -683,32 +683,41 @@ class MusicProvider(Provider):
             for db_id in prev_library_items:
                 if db_id not in cur_db_ids:
                     try:
-                        item = await controller.get_library_item(db_id)
+                        library_item = await controller.get_library_item(db_id)
                     except MediaNotFoundError:
                         # edge case: the item is already removed
                         continue
+                    # check if we have other provider-mappings (marked as in-library)
                     remaining_providers = {
-                        x.provider_domain
-                        for x in item.provider_mappings
-                        if x.provider_domain != self.domain
+                        x.provider_instance
+                        for x in library_item.provider_mappings
+                        if x.provider_instance != self.instance_id and x.in_library
                     }
                     if remaining_providers:
-                        continue
-                    # this item is removed from the provider's library
-                    # and we have no other providers attached to it
-                    # it is safe to remove it from the MA library too
-                    # note that we do not remove item's recursively on purpose
-                    try:
-                        await controller.remove_item_from_library(db_id, recursive=False)
-                    except MusicAssistantError as err:
-                        # this is probably because the item still has dependents
-                        self.logger.warning(
-                            "Error removing item %s from library: %s", db_id, str(err)
+                        # if we have other remaining providers, update the provider mappings
+                        for prov_map in library_item.provider_mappings:
+                            if prov_map.provider_instance == self.instance_id:
+                                prov_map.in_library = False
+                        await controller.set_provider_mappings(
+                            db_id, library_item.provider_mappings
                         )
-                        # just un-favorite the item if we can't remove it
-                        await controller.set_favorite(db_id, False)
+                    else:
+                        # this item is removed from the provider's library
+                        # and we have no other providers attached to it
+                        # it is safe to remove it from the MA library too
+                        # note that we do not remove item's recursively on purpose
+                        try:
+                            await controller.remove_item_from_library(db_id, recursive=False)
+                        except MusicAssistantError as err:
+                            # this is probably because the item still has dependents
+                            self.logger.warning(
+                                "Error removing item %s from library: %s", db_id, str(err)
+                            )
+                            # just un-favorite the item if we can't remove it
+                            if library_item.favorite:
+                                await controller.set_favorite(db_id, False)
                     await asyncio.sleep(0)  # yield to eventloop
-
+        # store current list of id's in cache so we can track changes
         await self.mass.cache.set(
             media_type.value,
             list(cur_db_ids),
@@ -738,7 +747,11 @@ class MusicProvider(Provider):
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.artists.set_favorite(library_item.item_id, True)
-
+                elif not self._check_provider_mappings(library_item, prov_item, True):
+                    # existing library item but provider mapping doesn't match
+                    library_item = await self.mass.music.artists.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
@@ -771,6 +784,11 @@ class MusicProvider(Provider):
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.albums.set_favorite(library_item.item_id, True)
+                elif not self._check_provider_mappings(library_item, prov_item, True):
+                    # existing library item but provider mapping doesn't match
+                    library_item = await self.mass.music.albums.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
 
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
@@ -804,6 +822,11 @@ class MusicProvider(Provider):
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.audiobooks.set_favorite(library_item.item_id, True)
+                elif not self._check_provider_mappings(library_item, prov_item, True):
+                    # existing library item but provider mapping doesn't match
+                    library_item = await self.mass.music.audiobooks.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
 
                 # check if resume_position_ms or fully_played changed
                 if (
@@ -855,6 +878,11 @@ class MusicProvider(Provider):
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.playlists.set_favorite(library_item.item_id, True)
+                elif not self._check_provider_mappings(library_item, prov_item, True):
+                    # existing library item but provider mapping doesn't match
+                    library_item = await self.mass.music.playlists.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
                 # precache playlist tracks
@@ -901,6 +929,11 @@ class MusicProvider(Provider):
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.tracks.set_favorite(library_item.item_id, True)
+                elif not self._check_provider_mappings(library_item, prov_item, True):
+                    # existing library item but provider mapping doesn't match
+                    library_item = await self.mass.music.tracks.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
             except MusicAssistantError as err:
@@ -933,6 +966,11 @@ class MusicProvider(Provider):
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.podcasts.set_favorite(library_item.item_id, True)
+                elif not self._check_provider_mappings(library_item, prov_item, True):
+                    # existing library item but provider mapping doesn't match
+                    library_item = await self.mass.music.podcasts.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
 
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
@@ -972,6 +1010,11 @@ class MusicProvider(Provider):
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.radio.set_favorite(library_item.item_id, True)
+                elif not self._check_provider_mappings(library_item, prov_item, True):
+                    # existing library item but provider mapping doesn't match
+                    library_item = await self.mass.music.radio.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
 
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
@@ -1039,3 +1082,27 @@ class MusicProvider(Provider):
         if media_type == MediaType.PODCAST:
             return self.get_library_podcasts()
         raise NotImplementedError
+
+    def _check_provider_mappings(
+        self, library_item: MediaItemType, provider_item: MediaItemType, in_library: bool
+    ) -> bool:
+        """Check if provider mapping(s) are consistent between library and provider items."""
+        for provider_mapping in provider_item.provider_mappings:
+            if provider_mapping.item_id != provider_item.item_id:
+                raise MusicAssistantError("Inconsistent provider mapping item_id's found")
+            if provider_mapping.provider_instance != self.instance_id:
+                raise MusicAssistantError("Inconsistent provider mapping instance_id's found")
+            provider_mapping.in_library = in_library
+            library_mapping = next(
+                (
+                    x
+                    for x in library_item.provider_mappings
+                    if x.provider_instance == provider_mapping.provider_instance
+                    and x.item_id == provider_mapping.item_id
+                ),
+                None,
+            )
+            if not library_mapping:
+                return False
+            return provider_mapping.in_library == library_mapping.in_library
+        return False
