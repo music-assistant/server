@@ -16,6 +16,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -78,6 +79,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -146,6 +148,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -208,6 +211,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -334,6 +338,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -454,6 +459,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -529,6 +535,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://demo.org/image.jpg',
@@ -603,6 +610,7 @@
       'description': 'Empty biography',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://demo.org/image.jpg',
@@ -683,6 +691,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://demo.org/image.jpg',
@@ -757,6 +766,7 @@
       'description': 'Empty biography',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://demo.org/image.jpg',
@@ -833,6 +843,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'ar-100000002',
@@ -897,6 +908,7 @@
       'description': 'Empty biography',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'ar-100000002',
@@ -969,6 +981,7 @@
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1005,6 +1018,7 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'explicit': None,
         'genres': None,
+        'grouping': None,
         'images': list([
           dict({
             'path': 'pd-5',
@@ -1100,6 +1114,7 @@
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1136,6 +1151,7 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'explicit': None,
         'genres': None,
+        'grouping': None,
         'images': list([
           dict({
             'path': 'pd-5',
@@ -1231,6 +1247,7 @@
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1267,6 +1284,7 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'explicit': None,
         'genres': None,
+        'grouping': None,
         'images': list([
           dict({
             'path': 'pd-5',
@@ -1362,6 +1380,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-2250',
@@ -1427,6 +1446,7 @@
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1493,6 +1513,7 @@
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1576,6 +1597,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -1641,6 +1663,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -1773,6 +1796,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -1838,6 +1862,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -1917,6 +1942,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -1982,6 +2008,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -2114,6 +2141,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -2179,6 +2207,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -2313,6 +2342,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -2500,6 +2530,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,

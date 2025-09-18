@@ -183,7 +183,7 @@ class BluesoundPlayer(Player):
 
         # Optimistically update state
         self._attr_current_media = media
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
@@ -438,6 +438,7 @@ class BluesoundPlayer(Player):
 
         If this player is not synced to another player (or is the sync leader itself),
         this should return None.
+        If it is part of a (permanent) group, this should also return None.
         """
         if self.sync_status.leader:
             leader = self.sync_status.leader

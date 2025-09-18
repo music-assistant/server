@@ -47,6 +47,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
 from music_assistant.constants import (
+    ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
@@ -61,14 +62,16 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
-    CONF_TTS_PRE_ANNOUNCE,
+    CONF_PRE_ANNOUNCE_CHIME_URL,
 )
+from music_assistant.controllers.streams import AnnounceData
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
-from music_assistant.helpers.util import TaskManager
+from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
@@ -753,14 +756,29 @@ class PlayerController(CoreController):
         self,
         player_id: str,
         url: str,
-        use_pre_announce: bool | None = None,
+        pre_announce: bool | str | None = None,
         volume_level: int | None = None,
+        pre_announce_url: str | None = None,
     ) -> None:
-        """Handle playback of an announcement (url) on given player."""
+        """
+        Handle playback of an announcement (url) on given player.
+
+        - player_id: player_id of the player to handle the command.
+        - url: URL of the announcement to play.
+        - pre_announce: optional bool if pre-announce should be used.
+        - volume_level: optional volume level to set for the announcement.
+        - pre_announce_url: optional custom URL to use for the pre-announce chime.
+        """
         player = self.get(player_id, True)
         assert player is not None  # for type checking
         if not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
+        if (
+            pre_announce
+            and pre_announce_url
+            and not validate_announcement_chime_url(pre_announce_url)
+        ):
+            raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
         # prevent multiple announcements at the same time to the same player with a lock
         if player_id not in self._announce_locks:
             self._announce_locks[player_id] = lock = asyncio.Lock()
@@ -775,11 +793,23 @@ class PlayerController(CoreController):
                     PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features
                 )
                 # determine pre-announce from (group)player config
-                if use_pre_announce is None and "tts" in url:
-                    use_pre_announce = await self.mass.config.get_player_config_value(
+                if pre_announce is None and "tts" in url:
+                    conf_pre_announce = self.mass.config.get_raw_player_config_value(
                         player_id,
-                        CONF_TTS_PRE_ANNOUNCE,
+                        CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
+                        CONF_ENTRY_TTS_PRE_ANNOUNCE.default_value,
                     )
+                    pre_announce = cast("bool", conf_pre_announce)
+                if pre_announce_url is None:
+                    if conf_pre_announce_url := self.mass.config.get_raw_player_config_value(
+                        player_id,
+                        CONF_PRE_ANNOUNCE_CHIME_URL,
+                    ):
+                        # player default custom chime url
+                        pre_announce_url = cast("str", conf_pre_announce_url)
+                    else:
+                        # use global default chime url
+                        pre_announce_url = ANNOUNCE_ALERT_FILE
                 # if player type is group with all members supporting announcements,
                 # we forward the request to each individual player
                 if player.type == PlayerType.GROUP and (
@@ -795,24 +825,30 @@ class PlayerController(CoreController):
                                 self.play_announcement(
                                     group_member,
                                     url=url,
-                                    use_pre_announce=use_pre_announce,
+                                    pre_announce=pre_announce,
                                     volume_level=volume_level,
+                                    pre_announce_url=pre_announce_url,
                                 )
                             )
                     return
                 self.logger.info(
                     "Playback announcement to player %s (with pre-announce: %s): %s",
                     player.display_name,
-                    use_pre_announce,
+                    pre_announce,
                     url,
                 )
                 # create a PlayerMedia object for the announcement so
                 # we can send a regular play-media call downstream
+                announce_data = AnnounceData(
+                    announcement_url=url,
+                    pre_announce=pre_announce,
+                    pre_announce_url=pre_announce_url,
+                )
                 announcement = PlayerMedia(
-                    uri=self.mass.streams.get_announcement_url(player_id, url, use_pre_announce),
+                    uri=self.mass.streams.get_announcement_url(player_id, url, announce_data),
                     media_type=MediaType.ANNOUNCEMENT,
                     title="Announcement",
-                    custom_data={"url": url, "use_pre_announce": use_pre_announce},
+                    custom_data=announce_data,
                 )
                 # handle native announce support
                 if native_announce_support:
@@ -856,8 +892,8 @@ class PlayerController(CoreController):
             if player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(player_id)
                 await asyncio.sleep(0.5)  # small delay to allow stop to process
-            player._attr_active_source = None
-            player._attr_current_media = None
+            player.active_source = None
+            player.current_media = None
         # check if source is a pluginsource
         # in that case the source id is the instance_id of the plugin provider
         if plugin_prov := self.mass.get_provider(source):
@@ -958,6 +994,42 @@ class PlayerController(CoreController):
                 and child_player_id in parent_player.group_members
             ):
                 continue  # already synced to this target
+
+            # Check if player is already part of another group and try to automatically ungroup it
+            # first. If that fails, power off the group
+            if child_player.active_group and child_player.active_group != target_player:
+                if (
+                    other_group := self.get(child_player.active_group)
+                ) and PlayerFeature.SET_MEMBERS in other_group.supported_features:
+                    self.logger.warning(
+                        "Player %s is already part of another group (%s), "
+                        "removing from that group first",
+                        child_player.name,
+                        child_player.active_group,
+                    )
+                    try:
+                        await other_group.set_members(player_ids_to_remove=[child_player.player_id])
+                    except UnsupportedFeaturedException as err:
+                        self.logger.warning(
+                            "Failed to remove player %s from group %s: %s, powering it off instead",
+                            child_player.name,
+                            child_player.active_group,
+                            err,
+                        )
+                        await self.cmd_power(child_player.active_group, False)
+                else:
+                    self.logger.warning(
+                        "Player %s is already part of another group (%s), powering it off first",
+                        child_player.name,
+                        child_player.active_group,
+                    )
+                    await self.cmd_power(child_player.active_group, False)
+            elif child_player.synced_to and child_player.synced_to != target_player:
+                self.logger.warning(
+                    "Player %s is already synced to another player, ungrouping first",
+                    child_player.name,
+                )
+                await self.cmd_ungroup(child_player.player_id)
 
             # power on the player if needed
             if not child_player.powered and child_player.power_control != PLAYER_CONTROL_NONE:
@@ -1184,6 +1256,8 @@ class PlayerController(CoreController):
         # ensure we fetch and set the latest/full config for the player
         player_config = await self.mass.config.get_player_config(player_id)
         player.set_config(player_config)
+        # call on_registered hook after the player is registered and config is set
+        await player.on_registered()
         # always call update to fix special attributes like display name, group volume etc.
         player.update_state()
 
@@ -1375,7 +1449,7 @@ class PlayerController(CoreController):
             removed_members = set(prev_group_members) - set(new_group_members)
             for player_id in removed_members:
                 if removed_player := self.get(player_id):
-                    self.mass.loop.call_soon(removed_player.update_state, True)
+                    removed_player.update_state()
 
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
@@ -1385,13 +1459,18 @@ class PlayerController(CoreController):
 
         # update/signal group player(s) child's when group updates
         for child_player in self.iter_group_members(player, exclude_self=True):
-            self.mass.loop.call_soon(child_player.update_state, True)
+            child_player.update_state()
         # update/signal group player(s) when child updates
         for group_player in self._get_player_groups(player, powered_only=False):
-            self.mass.loop.call_soon(group_player.update_state, True)
+            group_player.update_state()
         # update/signal manually synced to player when child updates
         if (synced_to := player.synced_to) and (synced_to_player := self.get(synced_to)):
-            self.mass.loop.call_soon(synced_to_player.update_state, True)
+            synced_to_player.update_state()
+        # update/signal active groups when a group member updates
+        if (active_group := player.active_group) and (
+            active_group_player := self.get(active_group)
+        ):
+            active_group_player.update_state()
 
     async def register_player_control(self, player_control: PlayerControl) -> None:
         """Register a new PlayerControl on the controller."""
@@ -1819,8 +1898,8 @@ class PlayerController(CoreController):
             for volume_player_id, prev_volume in prev_volumes.items():
                 tg.create_task(self.cmd_volume_set(volume_player_id, prev_volume))
         await asyncio.sleep(0.2)
-        player._attr_current_media = prev_media
-        player._attr_active_source = prev_source
+        player.current_media = prev_media
+        player.active_source = prev_source
         # either power off the player or resume playing
         if not prev_power and player.power_control != PLAYER_CONTROL_NONE:
             await self.cmd_power(player.player_id, False)

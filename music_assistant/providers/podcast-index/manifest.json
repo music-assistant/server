@@ -1,0 +1,10 @@
+{
+  "domain": "podcast-index",
+  "name": "Podcast Index",
+  "description": "The Podcast Index is here to preserve, protect and extend the open, independent podcasting ecosystem",
+  "documentation": "https://music-assistant.io/music-providers/podcast-index/",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@ozgav",
+  "multi_instance": false
+}
