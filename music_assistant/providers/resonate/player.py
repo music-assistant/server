@@ -171,7 +171,7 @@ class ResonatePlayer(Player):
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
         # playback_state will be set by the group state change event
 
         pcm_format = AudioFormat(
@@ -190,19 +190,21 @@ class ResonatePlayer(Player):
                 output_format=pcm_format,
                 player_id=self.player_id,
             )
-        elif media.queue_id and media.queue_id.startswith(UGP_PREFIX):
+        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
             # special case: UGP stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.queue_id))
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
             pcm_format.bit_depth = ugp_stream.base_pcm_format.bit_depth
             pcm_format.bit_rate = ugp_stream.base_pcm_format.bit_rate
             pcm_format.channels = ugp_stream.base_pcm_format.channels
             audio_source = ugp_stream.subscribe_raw()
-        elif media.queue_id and media.queue_item_id:
+        elif media.source_id and media.queue_item_id:
             # regular queue (flow) stream request
-            queue = self.mass.player_queues.get(media.queue_id)
-            start_queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+            queue = self.mass.player_queues.get(media.source_id)
+            start_queue_item = self.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
             assert queue is not None  # for type checking
             assert start_queue_item is not None  # for type checking
             audio_source = self.mass.streams.get_queue_flow_stream(
