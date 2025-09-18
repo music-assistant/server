@@ -441,7 +441,7 @@ class AudioTags:
             if stream.get("codec_type") == "video":
                 continue
             for key, value in stream.get("tags", {}).items():
-                alt_key = key.lower().replace(" ", "").replace("_", "").replace("-", "")
+                alt_key = key.lower().replace(" ", "").replace("_", "").replace("-", "").replace("/", "")
                 if alt_key in tags:
                     continue
                 tags[alt_key] = value
