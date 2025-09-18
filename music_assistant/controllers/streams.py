@@ -44,6 +44,7 @@ from music_assistant.constants import (
     CONF_OUTPUT_CODEC,
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
+    CONF_SMART_FADES_DJ_MODE,
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -69,6 +70,7 @@ from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stre
 from music_assistant.helpers.smart_fades import (
     MAX_SMART_CROSSFADE_DURATION,
     SmartFadesAnalysis,
+    SmartFadesDJStyleMode,
     SmartFadesMixer,
     SmartFadesMode,
 )
@@ -449,15 +451,11 @@ class StreamsController(CoreController):
             channels=2,
         )
 
-        deprecated_crossfade = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_DEPRECATED_CROSSFADE, False
-        )
-        smart_fades_mode = (
-            await self.mass.config.get_player_config_value(queue.queue_id, CONF_SMART_FADES_MODE)
-            or SmartFadesMode.DISABLED
-        )
-        if smart_fades_mode == SmartFadesMode.DISABLED and deprecated_crossfade:
-            smart_fades_mode = SmartFadesMode.DEFAULT_CROSSFADE
+        (
+            smart_fades_mode,
+            default_crossfade_duration,
+            dj_style_mode,
+        ) = await self._get_smart_fades_config_values(queue.queue_id)
 
         if (
             smart_fades_mode != SmartFadesMode.DISABLED
@@ -479,6 +477,8 @@ class StreamsController(CoreController):
                 pcm_format=pcm_format,
                 session_id=session_id,
                 smart_fades_mode=smart_fades_mode,
+                dj_style=dj_style_mode,
+                default_crossfade_duration=default_crossfade_duration,
             )
         else:
             audio_input = self.get_queue_item_stream(
@@ -814,21 +814,11 @@ class StreamsController(CoreController):
         pcm_sample_size = int(
             pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels
         )
-        deprecated_crossfade = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_DEPRECATED_CROSSFADE, False
-        )
-        smart_fades_mode = (
-            await self.mass.config.get_player_config_value(queue.queue_id, CONF_SMART_FADES_MODE)
-            or SmartFadesMode.DISABLED
-        )
-        if smart_fades_mode == SmartFadesMode.DISABLED and deprecated_crossfade:
-            smart_fades_mode = SmartFadesMode.DEFAULT_CROSSFADE
-        if start_queue_item.media_type != MediaType.TRACK:
-            # we only support crossfade for tracks, not for radio items
-            smart_fades_mode = SmartFadesMode.DISABLED
-        default_crossfade_duration = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_CROSSFADE_DURATION, 10
-        )
+        (
+            smart_fades_mode,
+            default_crossfade_duration,
+            dj_style_mode,
+        ) = await self._get_smart_fades_config_values(queue.queue_id)
         self.logger.info(
             "Start Queue Flow stream for Queue %s - %s: %s",
             smart_fades_mode,
@@ -866,8 +856,6 @@ class StreamsController(CoreController):
             # append to play log so the queue controller can work out which track is playing
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
             queue.flow_mode_stream_log.append(play_log_entry)
-
-            # Use max smart crossfade duration to ensure sufficient audio bytes for optimal transitions
             crossfade_size = int(pcm_format.pcm_sample_size * MAX_SMART_CROSSFADE_DURATION)
             bytes_written = 0
             buffer = b""
@@ -904,6 +892,8 @@ class StreamsController(CoreController):
                         fade_out_analysis=last_fadeout_analysis,
                         pcm_format=pcm_format,
                         fallback_crossfade_duration=default_crossfade_duration,
+                        mode=smart_fades_mode,
+                        dj_style_mode=dj_style_mode,
                     )
 
                     # send crossfade_part (as one big chunk)
@@ -1135,14 +1125,13 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         session_id: str | None = None,
         smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
+        dj_style_mode: SmartFadesDJStyleMode = SmartFadesDJStyleMode.AUTO,
+        default_crossfade_duration: int = 10,
     ) -> AsyncGenerator[bytes, None]:
         """Get the audio stream for a single queue item with crossfade to the next item."""
         queue = self.mass.player_queues.get(queue_item.queue_id)
         streamdetails = queue_item.streamdetails
         assert streamdetails
-        crossfade_duration = self.mass.config.get_raw_player_config_value(
-            queue_item.queue_id, CONF_CROSSFADE_DURATION, 10
-        )
         self._crossfade_data.setdefault(queue.queue_id, CrossfadeData())
         crossfade_data = self._crossfade_data[queue.queue_id]
 
@@ -1151,7 +1140,7 @@ class StreamsController(CoreController):
             queue_item.streamdetails.uri,
             queue_item.name,
             queue.display_name,
-            f"{crossfade_duration} seconds",
+            f"{default_crossfade_duration} seconds",
         )
 
         if crossfade_data.session_id != session_id:
@@ -1161,8 +1150,6 @@ class StreamsController(CoreController):
 
         buffer = b""
         bytes_written = 0
-        # buffer size needs to be big enough to include the crossfade part
-        # We need to keep the crossfade size based on the MAX_SMART_CROSSFADE_DURATION in case we can Smart Fade
         crossfade_size = int(pcm_format.pcm_sample_size * MAX_SMART_CROSSFADE_DURATION)
 
         async for chunk in self.get_queue_item_stream(queue_item, pcm_format):
@@ -1186,19 +1173,13 @@ class StreamsController(CoreController):
                     fade_in_analysis=queue_item.streamdetails.smart_fades,
                     fade_out_analysis=crossfade_data.smart_fades_analysis,
                     pcm_format=pcm_format,
-                    fallback_crossfade_duration=crossfade_duration,
-                    smart_fades_mode=smart_fades_mode,
+                    fallback_crossfade_duration=default_crossfade_duration,
+                    mode=smart_fades_mode,
+                    dj_style_mode=dj_style_mode,
                 )
                 # send crossfade_part (as one big chunk)
                 bytes_written += len(crossfade_part)
                 yield crossfade_part
-
-                self.logger.debug(
-                    "Smart crossfade completed: crossfade_bytes=%d, bytes_written=%d, buffer_remaining=%d",
-                    len(crossfade_part),
-                    bytes_written,
-                    len(buffer) if buffer else 0,
-                )
 
                 # also write the leftover bytes from the crossfade action
                 if remaining_bytes:
@@ -1412,3 +1393,23 @@ class StreamsController(CoreController):
             return 0
         # all checks passed, crossfade is enabled/allowed
         return True
+
+    async def _get_smart_fades_config_values(
+        self, player_id: int
+    ) -> tuple[SmartFadesMode, int, SmartFadesDJStyleMode]:
+        """Get the smart fades config for a player."""
+        deprecated_crossfade = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_DEPRECATED_CROSSFADE, False
+        )
+        smart_fades_mode = await self.mass.config.get_player_config_value(
+            player_id, CONF_SMART_FADES_MODE
+        )
+        if smart_fades_mode == SmartFadesMode.DISABLED and deprecated_crossfade:
+            smart_fades_mode = SmartFadesMode.DEFAULT_CROSSFADE
+        crossfade_duration = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_CROSSFADE_DURATION, 10
+        )
+        smart_fades_dj_style_mode = await self.mass.config.get_player_config_value(
+            player_id, CONF_SMART_FADES_DJ_MODE
+        )
+        return smart_fades_mode, crossfade_duration, smart_fades_dj_style_mode

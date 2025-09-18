@@ -316,7 +316,8 @@ CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     ],
     default_value="disabled",
     description="Select the crossfade mode to use when transitioning between tracks.\n\n"
-    "- 'Smart Fades': Uses beat matching and DJ-like EQ filters to create smooth transitions between tracks.\n\n"
+    "- 'Smart Fades': Uses beat matching and DJ-like EQ filters to create smooth transitions"
+    " between tracks.\n\n"
     "- 'Default Crossfade': Regular crossfade that crossfades the last/first x-seconds of a track.",
     category="smart_fades",
 )
@@ -334,11 +335,12 @@ CONF_ENTRY_SMART_FADES_DJ_MODE = ConfigEntry(
         ConfigValueOption("Disabled", "disabled"),
     ],
     description="Configure the EQ filter mode that gets applied during Smart Fade transitions:\n\n"
-    "- 'Auto': Will automatically select the best mode based on BPM compatibility of the tracks (default).\n"
+    "- 'Auto': Will automatically select the best mode based on BPM compatibility of the tracks "
+    "(default).\n"
     "- 'Classic': Traditional high-pass/low-pass complementary filters.\n"
     "- 'Modern': Swapped low-pass/high-pass filters (club style).\n"
     "- 'Off': No frequency filtering, volume crossfade only.",
-    depends_on=CONF_ENTRY_SMART_FADES_MODE,
+    depends_on=CONF_SMART_FADES_MODE,
     depends_on_value="smart_fades",
     category="smart_fades",
 )
@@ -349,8 +351,9 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     range=(1, 15),
     default_value=8,
     label="Fallback crossfade duration",
-    description="Duration in seconds of the fallback crossfade between tracks in case Smart Fade Mode = 'Defaul Crossfade' or when a Smart Fade fails",
-    depends_on=CONF_ENTRY_SMART_FADES_MODE,
+    description="Duration in seconds of the fallback crossfade between tracks in case"
+    " Smart Fade Mode = 'Defaul Crossfade' or when a Smart Fade fails",
+    depends_on=CONF_SMART_FADES_MODE,
     category="smart_fades",
 )
 
