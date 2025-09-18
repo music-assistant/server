@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "ard_audiothek",
+  "name": "ARD Audiothek",
+  "description": "ARD Audiothek Integration",
+  "codeowners": ["@jfeil"],
+  "requirements": ["gql[all]==4.0.0"],
+  "documentation": "https://music-assistant.io/music-providers/ard-audiothek/",
+  "multi_instance": true
+}

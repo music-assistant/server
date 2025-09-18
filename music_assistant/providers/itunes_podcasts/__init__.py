@@ -177,6 +177,10 @@ class ITunesPodcastsProvider(MusicProvider):
         podcast_list: list[Podcast] = []
         for result in results:
             if result.feed_url is None or result.track_name is None:
+                self.logger.info(
+                    "The podcast '%s' does not have a feed url. Please see the docs for more info.",
+                    result.track_name,
+                )
                 continue
             podcast = Podcast(
                 name=result.track_name,

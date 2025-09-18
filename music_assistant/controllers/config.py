@@ -300,11 +300,11 @@ class ConfigController:
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)
         if existing["type"] == "player":
-            # cleanup entries in player manager
+            # all players should already be removed by now through unload_provider
             for player in list(self.mass.players):
                 if player.provider.instance_id != instance_id:
                     continue
-                self.mass.players.remove(player.player_id, cleanup_config=True)
+                self.mass.players.delete_player_config(player.player_id)
             # cleanup remaining player configs
             for player_conf in list(self.get(CONF_PLAYERS, {}).values()):
                 if player_conf["provider"] == instance_id:
@@ -442,7 +442,7 @@ class ConfigController:
                 raise ActionUnavailable("Can not remove config for an active player!")
             # tell the player manager to remove the player if its lingering around
             # set permanent to false otherwise we end up in an infinite loop
-            self.mass.players.unregister(player_id, permanent=False)
+            await self.mass.players.unregister(player_id, permanent=False)
         # remove the actual config if all of the above passed
         self.remove(conf_key)
         # Also remove the DSP config if it exists
@@ -979,12 +979,7 @@ class ConfigController:
                 if dep_prov.manifest.depends_on == config.domain:
                     await self.mass.unload_provider(dep_prov.instance_id)
             await self.mass.unload_provider(config.instance_id)
-            if config.type == ProviderType.PLAYER:
-                # cleanup entries in player manager
-                for player in self.mass.players.all(return_unavailable=True, return_disabled=True):
-                    if player.provider.instance_id != instance_id:
-                        continue
-                    self.mass.players.remove(player.player_id, cleanup_config=False)
+            # For player providers, unload_provider should have removed all its players by now
         return config
 
     async def _add_provider_config(

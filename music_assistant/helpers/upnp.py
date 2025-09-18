@@ -149,7 +149,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
 
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">'
-        f'<item id="{media.queue_item_id or xmlescape(media.uri)}" restricted="true" parentID="{media.queue_id or ""}">'
+        f'<item id="{media.queue_item_id or xmlescape(media.uri)}" restricted="true" parentID="{media.source_id or ""}">'
         f"<dc:title>{escape_metadata(media.title or media.uri)}</dc:title>"
         f"<dc:creator>{escape_metadata(media.artist or '')}</dc:creator>"
         f"<upnp:album>{escape_metadata(media.album or '')}</upnp:album>"

@@ -39,6 +39,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/70b7288088b42d318f75dbcc41fd0091/Images/Primary?api_key=ACCESS_TOKEN',
@@ -130,6 +131,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/32ed6a0091733dcff57eae67010f3d4b/Images/Primary?api_key=ACCESS_TOKEN',
@@ -213,6 +215,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
       ]),
       'label': None,
@@ -276,6 +279,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/dd954bbf54398e247d803186d3585b79/Images/Backdrop/0?api_key=ACCESS_TOKEN',
@@ -387,6 +391,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/da9c458e425584680765ddc3a89cbc0c/Images/Primary?api_key=ACCESS_TOKEN',
@@ -487,6 +492,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
       ]),
       'label': None,
@@ -567,6 +573,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/54918f75ee8f6c8b8dc5efd680644f29/Images/Primary?api_key=ACCESS_TOKEN',
@@ -686,6 +693,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'http://localhost:1234/Items/fb12a77f49616a9fc56a6fab2b94174c/Images/Primary?api_key=ACCESS_TOKEN',
