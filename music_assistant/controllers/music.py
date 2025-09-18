@@ -40,7 +40,6 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.provider import SyncTask
-from music_assistant_models.smart_fades import SmartFadesAnalysis
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
@@ -67,6 +66,7 @@ from music_assistant.helpers.compare import compare_strings, compare_version, cr
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.smart_fades import SmartFadesAnalysis
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version

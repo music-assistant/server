@@ -30,21 +30,21 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import QueueEmpty
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player_queue import PlayLogEntry
-from music_assistant_models.smart_fades import SmartFadesAnalysis
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     CONF_ALLOW_AUDIO_CACHE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
-    CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
+    CONF_DEPRECATED_CROSSFADE,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
     CONF_PUBLISH_IP,
     CONF_SAMPLE_RATES,
+    CONF_SMART_FADES_MODE,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
@@ -68,7 +68,9 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.smart_fades import (
     MAX_SMART_CROSSFADE_DURATION,
+    SmartFadesAnalysis,
     SmartFadesMixer,
+    SmartFadesMode,
 )
 from music_assistant.helpers.util import (
     get_folder_size,
@@ -447,23 +449,36 @@ class StreamsController(CoreController):
             channels=2,
         )
 
-        crossfade = await self.mass.config.get_player_config_value(queue.queue_id, CONF_CROSSFADE)
-        if crossfade and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features:
+        deprecated_crossfade = self.mass.config.get_raw_player_config_value(
+            queue.queue_id, CONF_DEPRECATED_CROSSFADE, False
+        )
+        smart_fades_mode = (
+            await self.mass.config.get_player_config_value(queue.queue_id, CONF_SMART_FADES_MODE)
+            or SmartFadesMode.DISABLED
+        )
+        if smart_fades_mode == SmartFadesMode.DISABLED and deprecated_crossfade:
+            smart_fades_mode = SmartFadesMode.DEFAULT_CROSSFADE
+
+        if (
+            smart_fades_mode != SmartFadesMode.DISABLED
+            and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features
+        ):
             # crossfade is not supported on this player due to missing gapless playback
             self.logger.warning(
                 "Crossfade disabled: Player %s does not support gapless playback",
                 queue_player.display_name,
             )
-            crossfade = False
+            smart_fades_mode = SmartFadesMode.DISABLED
 
-        if crossfade:
+        if smart_fades_mode != SmartFadesMode.DISABLED:
             # crossfade is enabled, use special crossfaded single item stream
             # where the crossfade of the next track is present in the stream of
             # a single track. This only works if the player supports gapless playback.
-            audio_input = self.get_queue_item_stream_with_crossfade(
+            audio_input = self.get_queue_item_stream_with_smartfade(
                 queue_item=queue_item,
                 pcm_format=pcm_format,
                 session_id=session_id,
+                smart_fades_mode=smart_fades_mode,
             )
         else:
             audio_input = self.get_queue_item_stream(
@@ -799,19 +814,28 @@ class StreamsController(CoreController):
         pcm_sample_size = int(
             pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels
         )
-        crossfade_enabled = await self.mass.config.get_player_config_value(
-            queue.queue_id, CONF_CROSSFADE
+        deprecated_crossfade = self.mass.config.get_raw_player_config_value(
+            queue.queue_id, CONF_DEPRECATED_CROSSFADE, False
         )
+        smart_fades_mode = (
+            await self.mass.config.get_player_config_value(queue.queue_id, CONF_SMART_FADES_MODE)
+            or SmartFadesMode.DISABLED
+        )
+        if smart_fades_mode == SmartFadesMode.DISABLED and deprecated_crossfade:
+            smart_fades_mode = SmartFadesMode.DEFAULT_CROSSFADE
         if start_queue_item.media_type != MediaType.TRACK:
             # we only support crossfade for tracks, not for radio items
-            crossfade_enabled = False
-        crossfade_duration = self.mass.config.get_raw_player_config_value(
+            smart_fades_mode = SmartFadesMode.DISABLED
+        default_crossfade_duration = self.mass.config.get_raw_player_config_value(
             queue.queue_id, CONF_CROSSFADE_DURATION, 10
         )
         self.logger.info(
-            "Start Queue Flow stream for Queue %s - crossfade: %s",
+            "Start Queue Flow stream for Queue %s - %s: %s",
+            smart_fades_mode,
             queue.display_name,
-            f"{crossfade_duration}s" if crossfade_enabled else "disabled",
+            f"{default_crossfade_duration}s"
+            if smart_fades_mode == SmartFadesMode.DEFAULT_CROSSFADE
+            else "",
         )
         total_bytes_sent = 0
 
@@ -853,7 +877,11 @@ class StreamsController(CoreController):
                 pcm_format=pcm_format,
             ):
                 # buffer size needs to be big enough to include the crossfade part
-                req_buffer_size = pcm_sample_size if not crossfade_enabled else crossfade_size
+                req_buffer_size = (
+                    pcm_sample_size
+                    if smart_fades_mode == SmartFadesMode.DISABLED
+                    else crossfade_size
+                )
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -875,7 +903,7 @@ class StreamsController(CoreController):
                         fade_in_analysis=queue_track.streamdetails.smart_fades,
                         fade_out_analysis=last_fadeout_analysis,
                         pcm_format=pcm_format,
-                        fallback_crossfade_duration=crossfade_duration,
+                        fallback_crossfade_duration=default_crossfade_duration,
                     )
 
                     # send crossfade_part (as one big chunk)
@@ -1101,11 +1129,12 @@ class StreamsController(CoreController):
             yield chunk
             del chunk
 
-    async def get_queue_item_stream_with_crossfade(
+    async def get_queue_item_stream_with_smartfade(
         self,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
         session_id: str | None = None,
+        smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
     ) -> AsyncGenerator[bytes, None]:
         """Get the audio stream for a single queue item with crossfade to the next item."""
         queue = self.mass.player_queues.get(queue_item.queue_id)
@@ -1158,6 +1187,7 @@ class StreamsController(CoreController):
                     fade_out_analysis=crossfade_data.smart_fades_analysis,
                     pcm_format=pcm_format,
                     fallback_crossfade_duration=crossfade_duration,
+                    smart_fades_mode=smart_fades_mode,
                 )
                 # send crossfade_part (as one big chunk)
                 bytes_written += len(crossfade_part)

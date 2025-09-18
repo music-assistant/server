@@ -60,14 +60,15 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-    CONF_CROSSFADE,
+    CONF_DEPRECATED_CROSSFADE,
     CONF_FLOW_MODE,
+    CONF_SMART_FADES_MODE,
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_details
-from music_assistant.helpers.smart_fades import SmartFadesAnalyzer
+from music_assistant.helpers.smart_fades import SmartFadesAnalyzer, SmartFadesMode
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
@@ -1149,7 +1150,12 @@ class PlayerQueuesController(CoreController):
         )
         # allow stripping silence from the begin/end of the track if crossfade is enabled
         # this will allow for (much) smoother crossfades
-        if await self.mass.config.get_player_config_value(queue_id, CONF_CROSSFADE):
+        if self.mass.config.get_raw_player_config_value(
+            queue_id, CONF_DEPRECATED_CROSSFADE, False
+        ) or await self.mass.config.get_player_config_value(queue_id, CONF_SMART_FADES_MODE) in (
+            SmartFadesMode.DEFAULT_CROSSFADE,
+            SmartFadesMode.SMART_FADES,
+        ):
             queue_item.streamdetails.strip_silence_end = True
             queue_item.streamdetails.strip_silence_begin = not is_start
 
@@ -1578,7 +1584,13 @@ class PlayerQueuesController(CoreController):
 
                 if next_item := await self.preload_next_queue_item(queue_id, item_id_in_buffer):
                     self._enqueue_next_item(queue_id, next_item)
-                    self._trigger_smart_fades_analysis(next_item)
+                    if (
+                        await self.mass.config.get_player_config_value(
+                            queue_id, CONF_SMART_FADES_MODE
+                        )
+                        == SmartFadesMode.SMART_FADES
+                    ):
+                        self._trigger_smart_fades_analysis(next_item)
             except QueueEmpty:
                 return
 

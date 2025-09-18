@@ -45,8 +45,8 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
-    CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
+    CONF_DEPRECATED_CROSSFADE,
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_ENABLE_ICY_METADATA,
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -54,7 +54,6 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_AUTO_PLAY,
-    CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_EXPOSE_PLAYER_TO_HA,
     CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED,
@@ -69,6 +68,8 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_SAMPLE_RATES,
+    CONF_ENTRY_SMART_FADES_DJ_MODE,
+    CONF_ENTRY_SMART_FADES_MODE,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
@@ -93,7 +94,8 @@ BASE_CONFIG_ENTRIES = [
     # config entries that are valid for all player types
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_SMART_FADES_MODE,
+    CONF_ENTRY_SMART_FADES_DJ_MODE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_OUTPUT_LIMITER,
@@ -1375,11 +1377,12 @@ class SyncGroupPlayer(GroupPlayer):
             allowed_conf_entries = (
                 CONF_HTTP_PROFILE,
                 CONF_ENABLE_ICY_METADATA,
-                CONF_CROSSFADE,
+                CONF_DEPRECATED_CROSSFADE,
                 CONF_CROSSFADE_DURATION,
                 CONF_OUTPUT_CODEC,
                 CONF_FLOW_MODE,
                 CONF_SAMPLE_RATES,
+                # TODO: Should we allow the Smart Fades Config entry too ?
             )
             child_config_entries = await child_player.get_config_entries()
             entries.extend(
