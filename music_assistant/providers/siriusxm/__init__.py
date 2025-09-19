@@ -29,6 +29,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from tenacity import RetryError
 
+from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_RADIOS
 from music_assistant.helpers.util import select_free_port
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.music_provider import MusicProvider
@@ -94,6 +95,8 @@ async def get_config_entries(
             label="Region",
             required=True,
         ),
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
     )
 
 

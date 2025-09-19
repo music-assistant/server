@@ -53,7 +53,13 @@ from plexapi.base import PlexObject
 from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
 from plexapi.server import PlexServer
 
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+    UNKNOWN_ARTIST,
+)
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import parse_title_and_version
@@ -305,6 +311,14 @@ async def get_config_entries(  # noqa: PLR0915
                 required=False,
             )
         )
+
+    # Add standardized config entries to configure import/sync behavior
+    entries += [
+        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+        CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    ]
 
     # return all config entries
     return tuple(entries)

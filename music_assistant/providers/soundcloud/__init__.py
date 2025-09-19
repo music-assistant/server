@@ -29,6 +29,11 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from soundcloudpy import SoundcloudAsyncAPI
 
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
@@ -95,6 +100,10 @@ async def get_config_entries(
             label="Authorization",
             required=True,
         ),
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
     )
 
 

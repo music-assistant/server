@@ -40,6 +40,10 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
     CONF_PASSWORD,
     CONF_USERNAME,
     VARIOUS_ARTISTS_MBID,
@@ -114,6 +118,11 @@ async def get_config_entries(
             label="Password",
             required=True,
         ),
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+        CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
     )
 
 

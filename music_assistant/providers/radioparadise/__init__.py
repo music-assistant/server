@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_RADIOS
+
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigEntry,
@@ -32,4 +34,7 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    return ()
+    return (
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
+    )

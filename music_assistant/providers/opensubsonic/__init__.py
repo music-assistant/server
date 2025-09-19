@@ -7,7 +7,17 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_PORT, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+    CONF_PASSWORD,
+    CONF_PATH,
+    CONF_PORT,
+    CONF_USERNAME,
+)
 
 from .sonic_provider import (
     CONF_BASE_URL,
@@ -136,4 +146,10 @@ async def get_config_entries(
             description="How many recommendations from each enabled type should be included.",
             default_value=10,
         ),
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+        CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
     )

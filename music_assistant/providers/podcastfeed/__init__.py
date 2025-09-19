@@ -26,6 +26,7 @@ from music_assistant_models.errors import InvalidProviderURI, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, Podcast, PodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_PODCASTS
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
 from music_assistant.models.music_provider import MusicProvider
@@ -73,6 +74,8 @@ async def get_config_entries(
             label="RSS Feed URL",
             required=True,
         ),
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
     )
 
 

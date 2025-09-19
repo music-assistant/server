@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import DEFAULT_PROVIDER_CONFIG_ENTRIES
+from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_PODCASTS
 
 from .constants import CONF_API_KEY, CONF_API_SECRET, CONF_STORED_PODCASTS
 from .provider import PodcastIndexProvider
@@ -65,5 +65,6 @@ async def get_config_entries(
             required=False,
             hidden=True,
         ),
-        *DEFAULT_PROVIDER_CONFIG_ENTRIES,
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
     )

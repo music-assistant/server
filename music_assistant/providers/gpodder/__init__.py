@@ -20,11 +20,7 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-    ProviderConfig,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -38,14 +34,10 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.media_items import (
-    AudioFormat,
-    MediaItemType,
-    Podcast,
-    PodcastEpisode,
-)
+from music_assistant_models.media_items import AudioFormat, MediaItemType, Podcast, PodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_PODCASTS
 from music_assistant.helpers.podcast_parsers import (
     get_stream_url_and_guid_from_episode,
     parse_podcast,
@@ -53,12 +45,7 @@ from music_assistant.helpers.podcast_parsers import (
 )
 from music_assistant.models.music_provider import MusicProvider
 
-from .client import (
-    EpisodeActionDelete,
-    EpisodeActionNew,
-    EpisodeActionPlay,
-    GPodderClient,
-)
+from .client import EpisodeActionDelete, EpisodeActionNew, EpisodeActionPlay, GPodderClient
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -256,6 +243,8 @@ async def get_config_entries(
             required=False,
             value=values.get(CONF_USING_GPODDER),
         ),
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
     )
 
 

@@ -10,6 +10,13 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+)
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.auth import AuthenticationHelper
 
@@ -134,27 +141,6 @@ async def get_config_entries(
             hidden=not auth_required,
         ),
         ConfigEntry(
-            key=CONF_SYNC_PLAYED_STATUS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Sync Played Status from Spotify",
-            description="Automatically sync episode played status from Spotify to Music Assistant. "
-            "Episodes marked as played in Spotify will be marked as played in MA."
-            "Only enable this if you use both the Spotify app and Music Assistant "
-            "for podcast playback.",
-            default_value=False,
-            value=values.get(CONF_SYNC_PLAYED_STATUS, True) if values else True,
-        ),
-        ConfigEntry(
-            key=CONF_PLAYED_THRESHOLD,
-            type=ConfigEntryType.INTEGER,
-            label="Played Threshold (%)",
-            description="Percentage of episode completion to consider it 'played' "
-            "when not explicitly marked by Spotify (50 = 50%, 90 = 90%).",
-            default_value=90,
-            value=values.get(CONF_PLAYED_THRESHOLD, 90) if values else 90,
-            range=(1, 100),
-        ),
-        ConfigEntry(
             key=CONF_ACTION_AUTH,
             type=ConfigEntryType.ACTION,
             label="Authenticate with Spotify",
@@ -171,6 +157,36 @@ async def get_config_entries(
             action_label="Clear authentication",
             required=False,
             hidden=auth_required,
+        ),
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+        CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+        ConfigEntry(
+            key=CONF_SYNC_PLAYED_STATUS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Sync Played Status from Spotify",
+            description="Automatically sync episode played status from Spotify to Music Assistant. "
+            "Episodes marked as played in Spotify will be marked as played in MA."
+            "Only enable this if you use both the Spotify app and Music Assistant "
+            "for podcast playback.",
+            default_value=False,
+            value=values.get(CONF_SYNC_PLAYED_STATUS, True) if values else True,
+            category="library",
+        ),
+        ConfigEntry(
+            key=CONF_PLAYED_THRESHOLD,
+            type=ConfigEntryType.INTEGER,
+            label="Played Threshold (%)",
+            description="Percentage of episode completion to consider it 'played' "
+            "when not explicitly marked by Spotify (50 = 50%, 90 = 90%).",
+            default_value=90,
+            value=values.get(CONF_PLAYED_THRESHOLD, 90) if values else 90,
+            range=(1, 100),
+            depends_on=CONF_SYNC_PLAYED_STATUS,
+            category="library",
         ),
     )
 

@@ -5,10 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -16,11 +13,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-)
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
@@ -31,7 +24,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_USERNAME
+from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_RADIOS, CONF_USERNAME
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
@@ -83,6 +76,8 @@ async def get_config_entries(
             label="Username",
             required=True,
         ),
+        # Add standardized config entries to configure import/sync behavior
+        CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
     )
 
 
