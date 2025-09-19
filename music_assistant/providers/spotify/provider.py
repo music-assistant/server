@@ -395,13 +395,29 @@ class SpotifyProvider(MusicProvider):
                     "Podcast with ID %s is no longer available on Spotify", prov_podcast_id
                 )
 
-        # Get cached episode data - this is where the performance improvement happens
+        # Get cached episode data
         episodes_data = await self._get_podcast_episodes_data(prov_podcast_id)
 
         # Parse and yield episodes with position
         for idx, episode_data in enumerate(episodes_data):
             episode = parse_podcast_episode(episode_data, self, podcast)
             episode.position = idx + 1
+
+            # Set played status if sync is enabled and resume data exists
+            if self.sync_played_status_enabled and "resume_point" in episode_data:
+                resume_point = episode_data["resume_point"]
+                fully_played = resume_point.get("fully_played", False)
+                position_ms = resume_point.get("resume_position_ms", 0)
+
+                # Apply threshold logic
+                if not fully_played and episode_data.get("duration_ms", 0) > 0:
+                    completion_ratio = position_ms / episode_data["duration_ms"]
+                    if completion_ratio >= self.played_threshold:
+                        fully_played = True
+
+                episode.fully_played = fully_played if fully_played else None
+                episode.resume_position_ms = position_ms if position_ms > 0 else None
+
             yield episode
 
     @use_cache(86400)  # 24 hours
