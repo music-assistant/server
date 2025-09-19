@@ -29,6 +29,7 @@ ibroadcastaio==0.4.0
 ifaddr==0.2.0
 liblistenbrainz==0.6.0
 librosa==0.11.0
+llvmlite==0.44.0
 mashumaro==3.16
 music-assistant-frontend==2.15.3
 music-assistant-models @ git+https://github.com/music-assistant/models.git@feat/smart_fades

@@ -38,6 +38,7 @@ dependencies = [
   "zeroconf==0.147.0",
   "uv>=0.8.0",
   "librosa==0.11.0",
+  "llvmlite==0.44.0",
   "numpy==2.2.6",
 ]
 description = "Music Assistant"
