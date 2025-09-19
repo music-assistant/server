@@ -1,0 +1,10 @@
+{
+  "domain": "internet-archive",
+  "name": "Internet Archive",
+  "description": "Free access to millions of audio recordings including live concerts, historical content, and LibriVox audiobooks",
+  "documentation": "https://music-assistant.io/music-providers/inter-archive/",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@ozgav",
+  "multi_instance": false
+}
