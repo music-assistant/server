@@ -20,6 +20,7 @@ async def get_librespot_binary() -> str:
         except OSError:
             return None
 
+    # Try to find platform-specific binary
     base_path = os.path.join(os.path.dirname(__file__), "bin")
     system = platform.system().lower().replace("darwin", "macos")
     architecture = platform.machine().lower()
@@ -29,5 +30,9 @@ async def get_librespot_binary() -> str:
     ):
         return librespot_binary
 
-    msg = f"Unable to locate Librespot for {system}/{architecture}"
+    # Fallback to librespot in PATH
+    if librespot_binary := await check_librespot("librespot"):
+        return librespot_binary
+
+    msg = f"Unable to locate Librespot in PATH or for {system}/{architecture}"
     raise RuntimeError(msg)
