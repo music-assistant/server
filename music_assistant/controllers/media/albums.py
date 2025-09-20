@@ -316,7 +316,7 @@ class AlbumsController(MediaControllerBase[Album]):
         )
 
     async def add_item_mapping_as_album_to_library(
-        self, item: ItemMapping, import_as_favorite: bool
+        self, item: ItemMapping, import_as_favorite: bool = False
     ) -> Album:
         """
         Add an ItemMapping as an Album to the library.
