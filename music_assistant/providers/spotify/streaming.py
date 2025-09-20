@@ -86,13 +86,15 @@ class LibrespotStreamer:
                 stderr=None if log_librespot else False,
                 name="librespot",
             ) as librespot_proc:
+                # get first chunk with timeout, to catch the issue where librespot is not starting
+                # which seems to happen from time to time (but rarely)
                 try:
                     chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=10 * attempt)
                     if not chunk:
-                        raise AudioError("No audio data received from librespot")
+                        raise AudioError(f"No audio data received from librespot for {spotify_uri}")
                     yield chunk
                 except (TimeoutError, AudioError):
-                    err_mesg = "No audio received from librespot within timeout"
+                    err_mesg = f"No audio received from librespot within timeout for {spotify_uri}"
                     if attempt == 2:
                         raise AudioError(err_mesg)
                     self.provider.logger.warning("%s - will retry once", err_mesg)
