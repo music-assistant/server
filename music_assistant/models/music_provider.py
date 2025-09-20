@@ -750,11 +750,6 @@ class MusicProvider(Provider):
                     if import_as_favorite:
                         prov_item.favorite = True
                     library_item = await self.mass.music.artists.add_item_to_library(prov_item)
-                elif library_item.available != prov_item.available:
-                    # existing library item but availability changed
-                    library_item = await self.mass.music.artists.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.artists.set_favorite(library_item.item_id, True)
@@ -792,11 +787,6 @@ class MusicProvider(Provider):
                     if import_as_favorite:
                         prov_item.favorite = True
                     library_item = await self.mass.music.albums.add_item_to_library(prov_item)
-                elif library_item.available != prov_item.available:
-                    # existing library item but availability changed
-                    library_item = await self.mass.music.albums.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.albums.set_favorite(library_item.item_id, True)
@@ -832,11 +822,6 @@ class MusicProvider(Provider):
                 if not library_track:
                     # add item to the library
                     library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
-                elif library_track.available != prov_track.available:
-                    # existing library track but availability changed
-                    library_track = await self.mass.music.tracks.update_item_in_library(
-                        library_track.item_id, prov_track
-                    )
                 elif not self._check_provider_mappings(library_track, prov_track, True):
                     # existing library track but provider mapping doesn't match
                     library_track = await self.mass.music.tracks.update_item_in_library(
@@ -864,11 +849,6 @@ class MusicProvider(Provider):
                     if import_as_favorite:
                         prov_item.favorite = True
                     library_item = await self.mass.music.audiobooks.add_item_to_library(prov_item)
-                elif library_item.available != prov_item.available:
-                    # existing library item but availability changed
-                    library_item = await self.mass.music.audiobooks.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.audiobooks.set_favorite(library_item.item_id, True)
@@ -1079,11 +1059,6 @@ class MusicProvider(Provider):
                     if import_as_favorite:
                         prov_item.favorite = True
                     library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                elif library_item.available != prov_item.available:
-                    # existing library item but availability changed
-                    library_item = await self.mass.music.radio.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.radio.set_favorite(library_item.item_id, True)

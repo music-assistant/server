@@ -59,7 +59,8 @@ class AlbumsController(MediaControllerBase[Album]):
                         'available', provider_mappings.available,
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
-                        'details', provider_mappings.details
+                        'details', provider_mappings.details,
+                        'in_library', provider_mappings.in_library
                 )) FROM provider_mappings WHERE provider_mappings.item_id = albums.item_id AND media_type = 'album') AS provider_mappings,
             (SELECT JSON_GROUP_ARRAY(
                 json_object(
@@ -393,11 +394,6 @@ class AlbumsController(MediaControllerBase[Album]):
         else:
             album_type = cur_item.album_type
         cur_item.external_ids.update(update.external_ids)
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*cur_item.provider_mappings, *update.provider_mappings}
-        )
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
         await self.mass.music.database.update(
@@ -418,6 +414,11 @@ class AlbumsController(MediaControllerBase[Album]):
             },
         )
         # update/set provider_mappings table
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*update.provider_mappings, *cur_item.provider_mappings}
+        )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set album artist(s)
         artists = update.artists if overwrite else cur_item.artists + update.artists

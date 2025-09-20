@@ -360,7 +360,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_mappings = (
             update.provider_mappings
             if overwrite
-            else {*cur_item.provider_mappings, *update.provider_mappings}
+            else {*update.provider_mappings, *cur_item.provider_mappings}
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)

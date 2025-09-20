@@ -1393,6 +1393,9 @@ class MusicController(CoreController):
         self, provider: MusicProvider, media_type: MediaType, is_initial: bool = False
     ) -> None:
         """Schedule Library sync for given provider and media type."""
+        job_key = f"sync_{provider.instance_id}_{media_type.value}"
+        # cancel any existing timers
+        self.mass.cancel_timer(job_key)
         # handle mediatype specific sync config
         conf_key = f"library_import_{media_type}s"
         sync_conf = await self.mass.config.get_provider_config_value(provider.instance_id, conf_key)
@@ -1408,7 +1411,6 @@ class MusicController(CoreController):
             return
         sync_interval = sync_interval * 60  # config interval is in minutes - convert to seconds
         import_as_favorite = sync_conf == "import_as_favorite"
-        job_key = f"sync_{provider.instance_id}_{media_type.value}"
 
         if is_initial:
             # schedule the first sync run
@@ -1418,7 +1420,6 @@ class MusicController(CoreController):
                 initial_interval += max(0, sync_interval - (self.mass.loop.time() - last_sync))
             sync_interval = initial_interval
 
-        job_key = f"sync_{provider.instance_id}_{media_type.value}"
         self.mass.call_later(
             sync_interval,
             self._start_provider_sync,
@@ -1682,7 +1683,8 @@ class MusicController(CoreController):
         if prev_version <= 18:
             # add in_library column to provider_mappings table
             await self.database.execute(
-                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN in_library BOOLEAN DEFAULT 0;"
+                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN in_library "
+                "BOOLEAN NOT NULL DEFAULT 0;"
             )
             # migrate existing entries in provider_mappings which are filesystem
             await self.database.execute(
@@ -1735,13 +1737,13 @@ class MusicController(CoreController):
                     [version] TEXT,
                     [album_type] TEXT NOT NULL,
                     [year] INTEGER,
-                    [favorite] BOOLEAN DEFAULT 0,
+                    [favorite] BOOLEAN NOT NULL DEFAULT 0,
                     [metadata] json NOT NULL,
                     [external_ids] json NOT NULL,
-                    [play_count] INTEGER DEFAULT 0,
-                    [last_played] INTEGER DEFAULT 0,
+                    [play_count] INTEGER NOT NULL DEFAULT 0,
+                    [last_played] INTEGER NOT NULL DEFAULT 0,
                     [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    [timestamp_modified] INTEGER,
+                    [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
                     [search_name] TEXT NOT NULL,
                     [search_sort_name] TEXT NOT NULL
                 );"""
@@ -1752,13 +1754,13 @@ class MusicController(CoreController):
             [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1771,13 +1773,13 @@ class MusicController(CoreController):
             [sort_name] TEXT NOT NULL,
             [version] TEXT,
             [duration] INTEGER,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1791,13 +1793,13 @@ class MusicController(CoreController):
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
             [cache_checksum] TEXT DEFAULT '',
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1808,13 +1810,13 @@ class MusicController(CoreController):
             [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1826,7 +1828,7 @@ class MusicController(CoreController):
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
             [version] TEXT,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [publisher] TEXT,
             [authors] json NOT NULL,
             [narrators] json NOT NULL,
@@ -1836,7 +1838,7 @@ class MusicController(CoreController):
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1848,15 +1850,15 @@ class MusicController(CoreController):
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
             [version] TEXT,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [publisher] TEXT,
-            [total_episodes] INTEGER,
+            [total_episodes] INTEGER NOT NULL,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
-            [play_count] INTEGER DEFAULT 0,
-            [last_played] INTEGER DEFAULT 0,
+            [play_count] INTEGER NOT NULL DEFAULT 0,
+            [last_played] INTEGER NOT NULL DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1882,8 +1884,8 @@ class MusicController(CoreController):
             [provider_domain] TEXT NOT NULL,
             [provider_instance] TEXT NOT NULL,
             [provider_item_id] TEXT NOT NULL,
-            [available] BOOLEAN DEFAULT 1,
-            [in_library] BOOLEAN DEFAULT 0,
+            [available] BOOLEAN NOT NULL DEFAULT 1,
+            [in_library] BOOLEAN NOT NULL DEFAULT 0,
             [url] text,
             [audio_format] json,
             [details] TEXT,

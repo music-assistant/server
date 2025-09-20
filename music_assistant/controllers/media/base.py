@@ -99,7 +99,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         'available', provider_mappings.available,
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
-                        'details', provider_mappings.details
+                        'details', provider_mappings.details,
+                        'in_library', provider_mappings.in_library
                 )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
                     AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
             FROM {self.db_table} """  # noqa: E501
@@ -684,22 +685,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 {"media_type": self.media_type.value, "item_id": db_id},
             )
         for provider_mapping in provider_mappings:
-            if not provider_mapping.provider_instance:
-                continue
-            await self.mass.music.database.insert_or_replace(
+            prov_map_obj = {
+                "media_type": self.media_type.value,
+                "item_id": db_id,
+                "provider_domain": provider_mapping.provider_domain,
+                "provider_instance": provider_mapping.provider_instance,
+                "provider_item_id": provider_mapping.item_id,
+                "available": provider_mapping.available,
+                "audio_format": serialize_to_json(provider_mapping.audio_format),
+            }
+            for key in ("url", "details", "in_library"):
+                if (value := getattr(provider_mapping, key, None)) is not None:
+                    prov_map_obj[key] = value
+            await self.mass.music.database.upsert(
                 DB_TABLE_PROVIDER_MAPPINGS,
-                {
-                    "media_type": self.media_type.value,
-                    "item_id": db_id,
-                    "provider_domain": provider_mapping.provider_domain,
-                    "provider_instance": provider_mapping.provider_instance,
-                    "provider_item_id": provider_mapping.item_id,
-                    "available": provider_mapping.available,
-                    "url": provider_mapping.url,
-                    "audio_format": serialize_to_json(provider_mapping.audio_format),
-                    "details": provider_mapping.details,
-                    "in_library": provider_mapping.in_library,
-                },
+                prov_map_obj,
             )
 
     @abstractmethod

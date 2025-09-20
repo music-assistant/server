@@ -204,6 +204,16 @@ class DatabaseConnection:
         """Insert or replace data in given table."""
         return await self.insert(table=table, values=values, allow_replace=True)
 
+    async def upsert(self, table: str, values: dict[str, Any]) -> None:
+        """Upsert data in given table."""
+        keys = tuple(values.keys())
+        sql_query = (
+            f"INSERT INTO {table}({','.join(keys)}) VALUES ({','.join(f':{x}' for x in keys)})"
+        )
+        sql_query += f" ON CONFLICT DO UPDATE SET {','.join(f'{x}=:{x}' for x in keys)}"
+        await self._db.execute(sql_query, values)
+        await self._db.commit()
+
     async def update(
         self,
         table: str,

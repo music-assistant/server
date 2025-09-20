@@ -61,7 +61,8 @@ class TracksController(MediaControllerBase[Track]):
                         'available', provider_mappings.available,
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
-                        'details', provider_mappings.details
+                        'details', provider_mappings.details,
+                        'in_library', provider_mappings.in_library
                 )) FROM provider_mappings WHERE provider_mappings.item_id = tracks.item_id AND media_type = 'track') AS provider_mappings,
 
             (SELECT JSON_GROUP_ARRAY(
@@ -494,7 +495,7 @@ class TracksController(MediaControllerBase[Track]):
         provider_mappings = (
             update.provider_mappings
             if overwrite
-            else {*cur_item.provider_mappings, *update.provider_mappings}
+            else {*update.provider_mappings, *cur_item.provider_mappings}
         )
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         # set track artist(s)
