@@ -44,7 +44,8 @@ CALLBACK_REDIRECT_URL = "https://music-assistant.io/callback"
 # Other Constants
 LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
 
-# Base Features
+# Base Features - Note: Audiobook features are dynamically added in the provider
+# based on the CONF_ENABLE_AUDIOBOOKS setting
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
