@@ -128,12 +128,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         if not isinstance(item, Audiobook):
             msg = "Not a valid Audiobook object (ItemMapping can not be added to db)"
             raise InvalidDataError(msg)
-        # DEBUG: Check what duration we're about to store
-        self.logger.warning(
-            f"DEBUG AUDIOBOOKS: About to store audiobook "
-            f"'{item.name}' with duration: {item.duration}s"
-        )
-
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
