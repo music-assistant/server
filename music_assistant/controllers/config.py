@@ -268,31 +268,47 @@ class ConfigController:
             values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
 
         # add dynamic optional config entries that depend on features
-        supported_features: set[ProviderFeature] = getattr(prov_mod, "SUPPORTED_FEATURES", set())
+        if instance_id and (provider := self.mass.get_provider(instance_id)):
+            supported_features = provider.supported_features
+        else:
+            supported_features: set[ProviderFeature] = getattr(
+                prov_mod, "SUPPORTED_FEATURES", set()
+            )
         extra_entries: list[ConfigEntry] = []
-        if manifest.type == ProviderType.MUSIC and supported_features:
+        if manifest.type == ProviderType.MUSIC:
+            # library sync settings
             if ProviderFeature.LIBRARY_ARTISTS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ARTISTS)
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS)
             if ProviderFeature.LIBRARY_ALBUMS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUMS)
-                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS)
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS)
+                if provider and provider.is_streaming_provider:
+                    extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS)
             if ProviderFeature.LIBRARY_TRACKS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_TRACKS)
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS)
             if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS)
-                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS)
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS)
+                if provider and provider.is_streaming_provider:
+                    extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS)
             if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS)
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS)
             if ProviderFeature.LIBRARY_PODCASTS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PODCASTS)
-                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS)
             if ProviderFeature.LIBRARY_RADIOS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_RADIOS)
+            # sync interval settings
+            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS)
+            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS)
+            if ProviderFeature.LIBRARY_TRACKS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS)
+            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS)
+            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS)
+            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS)
+            if ProviderFeature.LIBRARY_RADIOS in supported_features:
                 extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS)
 
         return [
@@ -1091,7 +1107,4 @@ class ConfigController:
             # loading failed, remove config
             self.remove(conf_key)
             raise
-        if prov.type == ProviderType.MUSIC:
-            # kick off initial library scan
-            self.mass.music.start_sync(None, [config.instance_id])
         return config

@@ -717,7 +717,7 @@ class MusicAssistant:
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         await self._update_available_providers_cache()
         if isinstance(provider, MusicProvider):
-            self.music.schedule_provider_sync(provider.instance_id)
+            await self.music.schedule_provider_sync(provider.instance_id)
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""
