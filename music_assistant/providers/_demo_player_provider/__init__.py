@@ -35,7 +35,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .constants import CONF_NUMBER_OF_PLAYERS
 from .provider import DemoPlayerprovider
@@ -47,6 +47,16 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES = {
+    # MANDATORY
+    # this constant should contain a set of provider-level features
+    # that your provider supports or an empty set if none.
+    # see the ProviderFeature enum for all available features
+    ProviderFeature.SYNC_PLAYERS,
+    ProviderFeature.CREATE_GROUP_PLAYER,
+    ProviderFeature.REMOVE_GROUP_PLAYER,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -55,7 +65,7 @@ async def setup(
     # setup is called when the user wants to setup a new provider instance.
     # you are free to do any preflight checks here and but you must return
     # an instance of your provider.
-    return DemoPlayerprovider(mass, manifest, config)
+    return DemoPlayerprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(

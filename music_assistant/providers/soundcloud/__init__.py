@@ -29,11 +29,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from soundcloudpy import SoundcloudAsyncAPI
 
-from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
@@ -70,7 +65,7 @@ async def setup(
     if not config.get_value(CONF_CLIENT_ID) or not config.get_value(CONF_AUTHORIZATION):
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
-    return SoundcloudMusicProvider(mass, manifest, config)
+    return SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -100,10 +95,6 @@ async def get_config_entries(
             label="Authorization",
             required=True,
         ),
-        # Add standardized config entries to configure import/sync behavior
-        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
     )
 
 
@@ -122,11 +113,6 @@ class SoundcloudMusicProvider(MusicProvider):
         await self._soundcloud.login()
         self._me = await self._soundcloud.get_account_details()
         self._user_id = self._me["id"]
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10

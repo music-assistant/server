@@ -113,6 +113,11 @@ exists = wrap(os.path.exists)
 makedirs = wrap(os.makedirs)
 scandir = wrap(os.scandir)
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -167,7 +172,7 @@ class LocalFileSystemProvider(MusicProvider):
         base_path: str,
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self.base_path: str = base_path
         self.write_access: bool = False
         self.sync_running: bool = False
@@ -176,10 +181,7 @@ class LocalFileSystemProvider(MusicProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        base_features = {
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-        }
+        base_features = {*SUPPORTED_FEATURES}
         if self.media_content_type == "audiobooks":
             return {ProviderFeature.LIBRARY_AUDIOBOOKS, *base_features}
         if self.media_content_type == "podcasts":

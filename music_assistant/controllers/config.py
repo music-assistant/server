@@ -22,7 +22,7 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.dsp import DSPConfig, DSPConfigPreset, ToneControlFilter
-from music_assistant_models.enums import EventType, ProviderType
+from music_assistant_models.enums import EventType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     ActionUnavailable,
     InvalidDataError,
@@ -35,6 +35,15 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_BASS,
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS,
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+    CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_PRESETS,
@@ -251,8 +260,30 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
 
+        # add dynamic optional config entries that depend on features
+        supported_features: set[ProviderFeature] = getattr(prov_mod, "SUPPORTED_FEATURES", set())
+        extra_entries: list[ConfigEntry] = []
+        if manifest.type == ProviderType.MUSIC and supported_features:
+            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ARTISTS)
+            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUMS)
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS)
+            if ProviderFeature.LIBRARY_TRACKS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_TRACKS)
+            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS)
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS)
+            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS)
+            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PODCASTS)
+            if ProviderFeature.LIBRARY_RADIOS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_RADIOS)
+
         return [
             *DEFAULT_PROVIDER_CONFIG_ENTRIES,
+            *extra_entries,
             *await prov_mod.get_config_entries(
                 self.mass, instance_id=instance_id, action=action, values=values
             ),

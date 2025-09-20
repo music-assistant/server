@@ -29,7 +29,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from tenacity import RetryError
 
-from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_RADIOS
 from music_assistant.helpers.util import select_free_port
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.music_provider import MusicProvider
@@ -49,12 +48,17 @@ CONF_SXM_USERNAME = "sxm_email_address"
 CONF_SXM_PASSWORD = "sxm_password"
 CONF_SXM_REGION = "sxm_region"
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_RADIOS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return SiriusXMProvider(mass, manifest, config)
+    return SiriusXMProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -95,8 +99,6 @@ async def get_config_entries(
             label="Region",
             required=True,
         ),
-        # Add standardized config entries to configure import/sync behavior
-        CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
     )
 
 
@@ -114,14 +116,6 @@ class SiriusXMProvider(MusicProvider):
     _base_url: str
 
     _current_stream_details: StreamDetails | None = None
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_RADIOS,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -40,10 +40,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
     CONF_PASSWORD,
     CONF_USERNAME,
     VARIOUS_ARTISTS_MBID,
@@ -88,7 +84,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return QobuzProvider(mass, manifest, config)
+    return QobuzProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -118,11 +114,6 @@ async def get_config_entries(
             label="Password",
             required=True,
         ),
-        # Add standardized config entries to configure import/sync behavior
-        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
     )
 
 
@@ -144,11 +135,6 @@ class QobuzProvider(MusicProvider):
         if not token:
             msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
             raise LoginFailed(msg)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types=list[MediaType], limit: int = 5

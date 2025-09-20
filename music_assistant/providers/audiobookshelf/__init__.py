@@ -60,10 +60,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
-    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
-)
 from music_assistant.helpers.audio import get_multi_file_stream
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
@@ -101,12 +97,19 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_AUDIOBOOKS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.RECOMMENDATIONS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return Audiobookshelf(mass, manifest, config)
+    return Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -188,9 +191,6 @@ async def get_config_entries(
             category="advanced",
             default_value=False,
         ),
-        # Add standardized config entries to configure import/sync behavior
-        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
-        CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
     )
 
 
@@ -218,16 +218,6 @@ class Audiobookshelf(MusicProvider):
                 return await method(*args, **kwargs)
 
         return wrapper
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Features supported by this Provider."""
-        return {
-            ProviderFeature.LIBRARY_PODCASTS,
-            ProviderFeature.LIBRARY_AUDIOBOOKS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.RECOMMENDATIONS,
-        }
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""

@@ -647,7 +647,7 @@ CONF_ENTRY_LIBRARY_IMPORT_ARTISTS = ConfigEntry(
     "provider into the Music Assistant Library.",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
 )
 CONF_ENTRY_LIBRARY_IMPORT_ALBUMS = ConfigEntry(
     key="library_import_albums",
@@ -659,7 +659,7 @@ CONF_ENTRY_LIBRARY_IMPORT_ALBUMS = ConfigEntry(
     "the album artists will always be imported as well (not as favorites though).",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
 )
 CONF_ENTRY_LIBRARY_IMPORT_TRACKS = ConfigEntry(
     key="library_import_tracks",
@@ -671,7 +671,7 @@ CONF_ENTRY_LIBRARY_IMPORT_TRACKS = ConfigEntry(
     "the track artists and album will always be imported as well (not as favorites though).",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
 )
 CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS = ConfigEntry(
     key="library_import_playlists",
@@ -681,7 +681,7 @@ CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS = ConfigEntry(
     "provider into the Music Assistant Library.",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
 )
 CONF_ENTRY_LIBRARY_IMPORT_PODCASTS = ConfigEntry(
     key="library_import_podcasts",
@@ -691,7 +691,7 @@ CONF_ENTRY_LIBRARY_IMPORT_PODCASTS = ConfigEntry(
     "provider into the Music Assistant Library.",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
 )
 CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS = ConfigEntry(
     key="library_import_audiobooks",
@@ -701,7 +701,7 @@ CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS = ConfigEntry(
     "provider into the Music Assistant Library.",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
 )
 CONF_ENTRY_LIBRARY_IMPORT_RADIOS = ConfigEntry(
     key="library_import_radios",
@@ -711,7 +711,36 @@ CONF_ENTRY_LIBRARY_IMPORT_RADIOS = ConfigEntry(
     "provider into the Music Assistant Library.",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS = ConfigEntry(
+    key="library_import_album_tracks",
+    type=ConfigEntryType.BOOLEAN,
+    label="Import album tracks",
+    description="By default, when importing albums into the library, "
+    "only the Album itself will be imported into the Music Assistant Library, "
+    "allowing you to manually browse and select which tracks you want to import. \n\n"
+    "If you want to override this default behavior, "
+    "you can use this configuration option.\n\n"
+    "Please note that some streaming providers may already define this behavior unsolicited, "
+    "by automatically marking all tracks from the album in their library/favorites.",
+    default_value=False,
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS = ConfigEntry(
+    key="library_import_playlist_tracks",
+    type=ConfigEntryType.STRING,
+    label="Import playlist tracks",
+    description="By default, when importing playlists into the library, "
+    "only the Playlist itself will be imported into the Music Assistant Library, "
+    "allowing you to browse and play the playlist and optionally add any individual "
+    "tracks of the playlist to the Music Assistant Library manually. \n\n"
+    "Use this configuration option to override this default behavior, "
+    "by specifying the playlists for which you'd like to import all tracks.\n"
+    "You can either enter the Playlist name (case sensitive) or the Playlist URI.",
+    default_value=[],
+    category="sync_options",
+    multi_value=True,
 )
 
 

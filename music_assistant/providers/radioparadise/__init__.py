@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_RADIOS
+from music_assistant_models.enums import ProviderFeature
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
@@ -19,12 +19,17 @@ if TYPE_CHECKING:
 
 from .provider import RadioParadiseProvider
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_RADIOS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return RadioParadiseProvider(mass, manifest, config)
+    return RadioParadiseProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -35,6 +40,5 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
-        # Add standardized config entries to configure import/sync behavior
-        CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
+        # we (currently) don't have any config entries to set up
     )

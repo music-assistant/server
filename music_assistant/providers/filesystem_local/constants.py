@@ -62,7 +62,7 @@ CONF_ENTRY_LIBRARY_IMPORT_TRACKS = ConfigEntry(
     "the track artists and album will always be imported as well (not as favorites though).",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="music",
 )
@@ -75,7 +75,7 @@ CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS = ConfigEntry(
     "they can still be manually browsed using the Browse feature.",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="music",
 )
@@ -88,7 +88,7 @@ CONF_ENTRY_LIBRARY_IMPORT_PODCASTS = ConfigEntry(
     "they can still be manually browsed using the Browse feature.",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="podcasts",
 )
@@ -101,7 +101,7 @@ CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS = ConfigEntry(
     "they can still be manually browsed using the Browse feature.",
     options=CONF_LIBRARY_IMPORT_OPTIONS,
     default_value="import_only",
-    category="library",
+    category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="audiobooks",
 )

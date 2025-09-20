@@ -51,15 +51,7 @@ from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
-from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-    CONF_USERNAME,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import install_package
 from music_assistant.models.music_provider import MusicProvider
@@ -150,7 +142,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return YoutubeMusicProvider(mass, manifest, config)
+    return YoutubeMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -189,12 +181,6 @@ async def get_config_entries(
             "**Note that this does require you to have the "
             "'YT Music PO Token Generator' addon installed!**",
         ),
-        # Add standardized config entries to configure import/sync behavior
-        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
     )
 
 
@@ -239,11 +225,6 @@ class YoutubeMusicProvider(MusicProvider):
             self.language = "en"
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types=list[MediaType], limit: int = 5

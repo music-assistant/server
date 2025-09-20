@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import ProviderFeature
+
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
 
 from .provider import SonosPlayerProvider
@@ -21,12 +23,19 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.SYNC_PLAYERS,
+    # support sync groups by reporting create/remove player group support
+    ProviderFeature.CREATE_GROUP_PLAYER,
+    ProviderFeature.REMOVE_GROUP_PLAYER,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = SonosPlayerProvider(mass, manifest, config)
+    prov = SonosPlayerProvider(mass, manifest, config, SUPPORTED_FEATURES)
     # set-up aiosonos logging
     if prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
         logging.getLogger("aiosonos").setLevel(logging.DEBUG)

@@ -24,13 +24,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-    UNKNOWN_ARTIST_ID_MBID,
-)
+from music_assistant.constants import UNKNOWN_ARTIST_ID_MBID
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
@@ -65,12 +59,23 @@ CONF_PASSWORD = "password"
 CONF_VERIFY_SSL = "verify_ssl"
 FAKE_ARTIST_PREFIX = "_fake://"
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.SIMILAR_TRACKS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return JellyfinProvider(mass, manifest, config)
+    return JellyfinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -120,11 +125,6 @@ async def get_config_entries(
             category="advanced",
             default_value=True,
         ),
-        # Add standardized config entries to configure import/sync behavior
-        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
     )
 
 
@@ -171,20 +171,6 @@ class JellyfinProvider(MusicProvider):
             )
         except Exception as err:
             raise LoginFailed(f"Authentication failed: {err}") from err
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return a list of supported features."""
-        return {
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.SIMILAR_TRACKS,
-        }
 
     @property
     def is_streaming_provider(self) -> bool:

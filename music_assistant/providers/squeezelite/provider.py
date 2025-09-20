@@ -9,7 +9,7 @@ from aiohttp import web
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
-from music_assistant_models.enums import ContentType, ProviderFeature
+from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 
@@ -23,34 +23,12 @@ from .player import SqueezelitePlayer
 
 if TYPE_CHECKING:
     from aioslimproto.client import SlimClient
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
-
-    from music_assistant import MusicAssistant
 
 
 class SqueezelitePlayerProvider(PlayerProvider):
     """Player provider for players using slimproto (like Squeezelite)."""
 
-    def __init__(
-        self,
-        mass: MusicAssistant,
-        manifest: ProviderManifest,
-        config: ProviderConfig,
-    ) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, manifest, config)
-        self.slimproto: SlimServer | None = None
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-            # support sync groups by reporting create/remove player group support
-            ProviderFeature.CREATE_GROUP_PLAYER,
-            ProviderFeature.REMOVE_GROUP_PLAYER,
-        }
+    slimproto: SlimServer | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

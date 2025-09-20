@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import urllib.parse
 from collections.abc import Iterable
-from contextlib import suppress
 from typing import Any
 
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     InvalidDataError,
-    MediaNotFoundError,
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
@@ -541,23 +539,12 @@ class TracksController(MediaControllerBase[Track]):
         if not db_album or overwrite:
             # ensure we have an actual album object
             if isinstance(album, ItemMapping):
-                album = await self.mass.music.albums.get_provider_item(
-                    album.item_id, album.provider, fallback=album
-                )
-            with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
+                album = await self.mass.music.albums.add_item_mapping_as_album_to_library(album)
+            else:
                 db_album = await self.mass.music.albums.add_item_to_library(
                     album,
                     overwrite_existing=overwrite,
                 )
-        if not db_album:
-            # this should not happen but streaming providers can be awful sometimes
-            self.logger.warning(
-                "Unable to resolve Album %s for track %s, "
-                "track will be added to the library without this album!",
-                album.uri,
-                db_id,
-            )
-            return
         # write (or update) record in album_tracks table
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_ALBUM_TRACKS,

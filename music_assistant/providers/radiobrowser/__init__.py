@@ -54,7 +54,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return RadioBrowserProvider(mass, manifest, config)
+    return RadioBrowserProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -88,11 +88,6 @@ async def get_config_entries(
 
 class RadioBrowserProvider(MusicProvider):
     """Provider implementation for RadioBrowser."""
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

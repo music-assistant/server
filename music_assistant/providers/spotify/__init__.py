@@ -7,16 +7,9 @@ from urllib.parse import urlencode
 
 import pkce
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
-from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-)
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.auth import AuthenticationHelper
 
@@ -38,6 +31,25 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_PODCASTS_EDIT,
+}
 
 
 async def get_config_entries(
@@ -158,12 +170,6 @@ async def get_config_entries(
             required=False,
             hidden=auth_required,
         ),
-        # Add standardized config entries to configure import/sync behavior
-        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
         ConfigEntry(
             key=CONF_SYNC_PLAYED_STATUS,
             type=ConfigEntryType.BOOLEAN,
@@ -174,7 +180,7 @@ async def get_config_entries(
             "for podcast playback.",
             default_value=False,
             value=values.get(CONF_SYNC_PLAYED_STATUS, True) if values else True,
-            category="library",
+            category="sync_options",
         ),
         ConfigEntry(
             key=CONF_PLAYED_THRESHOLD,
@@ -186,7 +192,7 @@ async def get_config_entries(
             value=values.get(CONF_PLAYED_THRESHOLD, 90) if values else 90,
             range=(1, 100),
             depends_on=CONF_SYNC_PLAYED_STATUS,
-            category="library",
+            category="sync_options",
         ),
     )
 
@@ -198,4 +204,4 @@ async def setup(
     if config.get_value(CONF_REFRESH_TOKEN) in (None, ""):
         msg = "Re-Authentication required"
         raise SetupFailedError(msg)
-    return SpotifyProvider(mass, manifest, config)
+    return SpotifyProvider(mass, manifest, config, SUPPORTED_FEATURES)

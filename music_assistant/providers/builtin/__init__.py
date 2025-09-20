@@ -95,12 +95,23 @@ DEFAULT_FANART = MediaItemImage(
     remotely_accessible=False,
 )
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.LIBRARY_RADIOS_EDIT,
+    ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return BuiltinProvider(mass, manifest, config)
+    return BuiltinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -162,20 +173,6 @@ class BuiltinProvider(MusicProvider):
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return False
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_RADIOS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.LIBRARY_TRACKS_EDIT,
-            ProviderFeature.LIBRARY_RADIOS_EDIT,
-            ProviderFeature.PLAYLIST_CREATE,
-            ProviderFeature.PLAYLIST_TRACKS_EDIT,
-        }
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""

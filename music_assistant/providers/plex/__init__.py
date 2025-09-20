@@ -53,13 +53,7 @@ from plexapi.base import PlexObject
 from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
 from plexapi.server import PlexServer
 
-from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-    UNKNOWN_ARTIST,
-)
+from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import parse_title_and_version
@@ -95,6 +89,16 @@ FAKE_ARTIST_PREFIX = "_fake://"
 
 AUTH_TOKEN_UNAUTH = "local_auth"
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -104,7 +108,7 @@ async def setup(
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
 
-    return PlexProvider(mass, manifest, config)
+    return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(  # noqa: PLR0915
@@ -312,14 +316,6 @@ async def get_config_entries(  # noqa: PLR0915
             )
         )
 
-    # Add standardized config entries to configure import/sync behavior
-    entries += [
-        CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    ]
-
     # return all config entries
     return tuple(entries)
 
@@ -395,19 +391,6 @@ class PlexProvider(MusicProvider):
             )
         except requests.exceptions.ConnectionError as err:
             raise SetupFailedError from err
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return a list of supported features."""
-        return {
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-        }
 
     @property
     def is_streaming_provider(self) -> bool:

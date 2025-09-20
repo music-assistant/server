@@ -44,7 +44,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return FanartTvMetadataProvider(mass, manifest, config)
+    return FanartTvMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -99,11 +99,6 @@ class FanartTvMetadataProvider(MetadataProvider):
             self.throttler = Throttler(rate_limit=1, period=1)
         else:
             self.throttler = Throttler(rate_limit=1, period=30)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on fanart.tv."""

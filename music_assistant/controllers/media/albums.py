@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
-from music_assistant_models.media_items import Album, Artist, ItemMapping, Track, UniqueList
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.constants import (
     CACHE_CATEGORY_MUSIC_ALBUM_TRACKS,
@@ -307,13 +314,50 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts=[f"WHERE album_tracks.album_id = {item_id}"],
         )
 
+    async def add_item_mapping_as_album_to_library(
+        self, item: ItemMapping, import_as_favorite: bool
+    ) -> Album:
+        """
+        Add an ItemMapping as an Album to the library.
+
+        This is only used in special occasions as is basically adds an album
+        to the db without a lot of mandatory data, such as artists.
+        """
+        if existing := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+            await self._update_library_item(existing.id, item)
+            return await self.get_library_item(existing.item_id)
+        db_id = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "version": item.version,
+                "favorite": import_as_favorite,
+                "album_type": AlbumType.UNKNOWN.value,
+                "external_ids": serialize_to_json(item.external_ids),
+                "search_name": create_safe_string(item.name, True, True),
+                "search_sort_name": create_safe_string(item.sort_name, True, True),
+            },
+        )
+        provider = cast("MusicProvider", self.mass.get_provider(item.provider))
+        await self.set_provider_mappings(
+            db_id,
+            {
+                ProviderMapping(
+                    item_id=item.item_id,
+                    provider_domain=provider.domain,
+                    provider_instance=provider.instance_id,
+                    in_library=True,
+                )
+            },
+        )
+        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        return await self.get_library_item(db_id)
+
     async def _add_library_item(self, item: Album) -> int:
         """Add a new record to the database."""
         if not isinstance(item, Album):
             msg = "Not a valid Album object (ItemMapping can not be added to db)"
-            raise InvalidDataError(msg)
-        if not item.artists:
-            msg = "Album is missing artist(s)"
             raise InvalidDataError(msg)
         db_id = await self.mass.music.database.insert(
             self.db_table,

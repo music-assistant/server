@@ -24,7 +24,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_ENTRY_LIBRARY_IMPORT_RADIOS, CONF_USERNAME
+from music_assistant.constants import CONF_USERNAME
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
@@ -52,7 +52,7 @@ async def setup(
         msg = "Username is invalid"
         raise LoginFailed(msg)
 
-    return TuneInProvider(mass, manifest, config)
+    return TuneInProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -76,8 +76,6 @@ async def get_config_entries(
             label="Username",
             required=True,
         ),
-        # Add standardized config entries to configure import/sync behavior
-        CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
     )
 
 
@@ -85,11 +83,6 @@ class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
     _throttler: Throttler
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

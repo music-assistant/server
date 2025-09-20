@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -51,7 +51,6 @@ from .constants import (
     CONF_REFRESH_TOKEN,
     CONF_SYNC_PLAYED_STATUS,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
-    SUPPORTED_FEATURES,
 )
 from .helpers import get_librespot_binary
 from .parsers import (
@@ -64,12 +63,6 @@ from .parsers import (
 )
 from .streaming import LibrespotStreamer
 
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
-
-    from music_assistant import MusicAssistant
-
 
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
@@ -79,12 +72,6 @@ class SpotifyProvider(MusicProvider):
     _librespot_bin: str | None = None
     custom_client_id_active: bool = False
     throttler: ThrottlerManager
-
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, manifest, config)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -124,12 +111,12 @@ class SpotifyProvider(MusicProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        base = SUPPORTED_FEATURES.copy()
+        features = self._supported_features
         if not self.custom_client_id_active:
             # Spotify has killed the similar tracks api for developers
             # https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api
-            base.add(ProviderFeature.SIMILAR_TRACKS)
-        return base
+            return {*features, ProviderFeature.SIMILAR_TRACKS}
+        return features
 
     @property
     def instance_name_postfix(self) -> str | None:

@@ -28,7 +28,11 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.constants import CACHE_CATEGORY_LIBRARY_ITEMS
+from music_assistant.constants import (
+    CACHE_CATEGORY_LIBRARY_ITEMS,
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS,
+)
 
 from .provider import Provider
 
@@ -705,9 +709,10 @@ class MusicProvider(Provider):
                         # this item is removed from the provider's library
                         # and we have no other providers attached to it
                         # it is safe to remove it from the MA library too
-                        # note that we do not remove item's recursively on purpose
                         try:
-                            await controller.remove_item_from_library(db_id, recursive=False)
+                            await controller.remove_item_from_library(
+                                db_id, recursive=media_type == MediaType.ALBUM
+                            )
                         except MusicAssistantError as err:
                             # this is probably because the item still has dependents
                             self.logger.warning(
@@ -716,6 +721,12 @@ class MusicProvider(Provider):
                             # just un-favorite the item if we can't remove it
                             if library_item.favorite:
                                 await controller.set_favorite(db_id, False)
+                            for prov_map in library_item.provider_mappings:
+                                if prov_map.provider_instance == self.instance_id:
+                                    prov_map.in_library = False
+                            await controller.set_provider_mappings(
+                                db_id, library_item.provider_mappings
+                            )
                     await asyncio.sleep(0)  # yield to eventloop
         # store current list of id's in cache so we can track changes
         await self.mass.cache.set(
@@ -766,6 +777,11 @@ class MusicProvider(Provider):
         """Sync Library Albums to Music Assistant library."""
         self.logger.debug("Start sync of Albums to Music Assistant library.")
         cur_db_ids: set[int] = set()
+        conf_sync_album_tracks = self.config.get_value(
+            CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS.key,
+            CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS.default_value,
+        )
+        sync_album_tracks = bool(conf_sync_album_tracks)
         async for prov_item in self.get_library_albums():
             library_item = await self.mass.music.albums.get_library_item_by_prov_mappings(
                 prov_item.provider_mappings,
@@ -789,9 +805,11 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.albums.update_item_in_library(
                         library_item.item_id, prov_item
                     )
-
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
+                # optionally add album tracks to library
+                if sync_album_tracks:
+                    await self._sync_album_tracks(prov_item)
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Skipping sync of album %s - error details: %s",
@@ -799,6 +817,38 @@ class MusicProvider(Provider):
                     str(err),
                 )
         return cur_db_ids
+
+    async def _sync_album_tracks(self, provider_album: Album) -> None:
+        """Sync Album Tracks to Music Assistant library."""
+        self.logger.debug(
+            "Start sync of Album Tracks to Music Assistant library for album %s.",
+            provider_album.name,
+        )
+        for prov_track in await self.get_album_tracks(provider_album.item_id):
+            library_track = await self.mass.music.tracks.get_library_item_by_prov_mappings(
+                prov_track.provider_mappings,
+            )
+            try:
+                if not library_track:
+                    # add item to the library
+                    library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
+                elif library_track.available != prov_track.available:
+                    # existing library track but availability changed
+                    library_track = await self.mass.music.tracks.update_item_in_library(
+                        library_track.item_id, prov_track
+                    )
+                elif not self._check_provider_mappings(library_track, prov_track, True):
+                    # existing library track but provider mapping doesn't match
+                    library_track = await self.mass.music.tracks.update_item_in_library(
+                        library_track.item_id, prov_track
+                    )
+                await asyncio.sleep(0)  # yield to eventloop
+            except MusicAssistantError as err:
+                self.logger.warning(
+                    "Skipping sync of album track %s - error details: %s",
+                    prov_track.uri,
+                    str(err),
+                )
 
     async def _sync_library_audiobooks(self, import_as_favorite: bool) -> set[int]:
         """Sync Library Audiobooks to Music Assistant library."""
@@ -854,6 +904,11 @@ class MusicProvider(Provider):
     async def _sync_library_playlists(self, import_as_favorite: bool) -> set[int]:
         """Sync Library Playlists to Music Assistant library."""
         self.logger.debug("Start sync of Playlists to Music Assistant library.")
+        conf_sync_playlist_tracks = self.config.get_value(
+            CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS.key,
+            CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS.default_value,
+        )
+        conf_sync_playlist_tracks = cast("list[str]", conf_sync_playlist_tracks)
         cur_db_ids: set[int] = set()
         async for prov_item in self.get_library_playlists():
             library_item = await self.mass.music.playlists.get_library_item_by_prov_mappings(
@@ -865,11 +920,6 @@ class MusicProvider(Provider):
                     if import_as_favorite:
                         prov_item.favorite = True
                     library_item = await self.mass.music.playlists.add_item_to_library(prov_item)
-                elif library_item.available != prov_item.available:
-                    # existing library item but availability changed
-                    library_item = await self.mass.music.playlists.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
                 elif library_item.cache_checksum != prov_item.cache_checksum:
                     # existing dbitem checksum changed (used to determine if a playlist has changed)
                     library_item = await self.mass.music.playlists.update_item_in_library(
@@ -885,12 +935,12 @@ class MusicProvider(Provider):
                     )
                 cur_db_ids.add(int(library_item.item_id))
                 await asyncio.sleep(0)  # yield to eventloop
-                # precache playlist tracks
-                # TODO: Add config option to add playlist tracks (of THIS playlist) to library
-                async for _ in self.mass.music.playlists.tracks(
-                    library_item.item_id, library_item.provider
+                # optionally sync playlist tracks
+                if (
+                    prov_item.name in conf_sync_playlist_tracks
+                    or prov_item.uri in conf_sync_playlist_tracks
                 ):
-                    await asyncio.sleep(0)  # yield to eventloop
+                    await self._sync_playlist_tracks(prov_item)
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Skipping sync of playlist %s - error details: %s",
@@ -898,6 +948,33 @@ class MusicProvider(Provider):
                     str(err),
                 )
         return cur_db_ids
+
+    async def _sync_playlist_tracks(self, provider_playlist: Playlist) -> None:
+        """Sync Playlist Tracks to Music Assistant library."""
+        self.logger.debug(
+            "Start sync of Playlist Tracks to Music Assistant library for playlist %s.",
+            provider_playlist.name,
+        )
+        async for prov_track in self.iter_playlist_tracks(provider_playlist.item_id):
+            library_track = await self.mass.music.tracks.get_library_item_by_prov_mappings(
+                prov_track.provider_mappings,
+            )
+            try:
+                if not library_track:
+                    # add item to the library
+                    library_track = await self.mass.music.tracks.add_item_to_library(prov_track)
+                elif not self._check_provider_mappings(library_track, prov_track, True):
+                    # existing library track but provider mapping doesn't match
+                    library_track = await self.mass.music.tracks.update_item_in_library(
+                        library_track.item_id, prov_track
+                    )
+                await asyncio.sleep(0)  # yield to eventloop
+            except MusicAssistantError as err:
+                self.logger.warning(
+                    "Skipping sync of album track %s - error details: %s",
+                    prov_track.uri,
+                    str(err),
+                )
 
     async def _sync_library_tracks(self, import_as_favorite: bool) -> set[int]:
         """Sync Library Tracks to Music Assistant library."""
@@ -1065,6 +1142,23 @@ class MusicProvider(Provider):
             return ProviderFeature.LIBRARY_PODCASTS_EDIT in self.supported_features
         return False
 
+    async def iter_playlist_tracks(
+        self,
+        prov_playlist_id: str,
+    ) -> AsyncGenerator[Track, None]:
+        """Iterate playlist tracks for the given provider playlist id."""
+        page = 0
+        while True:
+            tracks = await self.get_playlist_tracks(
+                prov_playlist_id,
+                page=page,
+            )
+            if not tracks:
+                break
+            for track in tracks:
+                yield track
+            page += 1
+
     def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType, None]:
         """Return library generator for given media_type."""
         if media_type == MediaType.ARTIST:
@@ -1104,5 +1198,7 @@ class MusicProvider(Provider):
             )
             if not library_mapping:
                 return False
-            return provider_mapping.in_library == library_mapping.in_library
+            if provider_mapping.in_library != library_mapping.in_library:
+                return False
+            return provider_mapping.available == library_mapping.available
         return False
