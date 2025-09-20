@@ -270,12 +270,7 @@ class SmartFadesAnalyzer:
             return None
 
     def _prepare_audio_for_librosa(self, pcm_data: bytes) -> np.ndarray[Any, np.dtype[np.float32]]:
-        """Convert PCM bytes to numpy array for librosa.
-
-        Expects PCM data in ANALYSIS_PCM_FORMAT (stereo PCM_F32LE).
-        Returns array with shape (samples, channels).
-        """
-        # Convert PCM data to numpy array
+        """Convert PCM bytes to numpy array for librosa."""
         audio_array = np.frombuffer(pcm_data, dtype=np.float32)
 
         # Reshape based on the number of channels specified in ANALYSIS_PCM_FORMAT
@@ -762,20 +757,7 @@ class SmartFadesMixer:
         fade_in_analysis: SmartFadesAnalysis,
         crossfade_bars: int,
     ) -> tuple[list[str], float]:
-        """Create FFmpeg filters for gradual time stretching.
-
-        Uses the entire buffer duration (45s) to gradually adjust tempo from
-        original BPM to target BPM, ensuring the smoothest possible transition.
-        Returns passthrough filter if time stretching is not needed.
-
-        Args:
-            fade_out_analysis: Analysis data for the outgoing track
-            fade_in_analysis: Analysis data for the incoming track
-            crossfade_bars: Number of bars for the crossfade
-
-        Returns:
-            Tuple of (FFmpeg filter strings, tempo factor for position adjustment)
-        """
+        """Create FFmpeg filters to gradually adjust tempo from original BPM to target BPM."""
         # Check if time stretching should be applied (BPM difference < 3%)
         original_bpm = fade_out_analysis.bpm
         target_bpm = fade_in_analysis.bpm
@@ -858,8 +840,6 @@ class SmartFadesMixer:
 
             # Clamp to atempo's valid range (should never exceed for < 3% changes)
             segment_tempo = max(0.5, min(2.0, segment_tempo))
-
-            # Validate segment tempo is within range (should never fail for <3% changes)
 
             # Trim segment and apply tempo adjustment
             filters.append(
@@ -993,10 +973,10 @@ class SmartFadesMixer:
             crossover_freq = int(crossover_freq * 0.85)
 
         # Asymmetric EQ durations for better musical flow
-        fadeout_eq_duration = min(
-            max(crossfade_duration * 2.5, 8.0), MAX_SMART_CROSSFADE_DURATION
-        )  # Extended lowpass effect
-        fadein_eq_duration = crossfade_duration  # Quick highpass removal
+        # Extended lowpass effect
+        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), MAX_SMART_CROSSFADE_DURATION)
+        # Quicker highpass removal
+        fadein_eq_duration = crossfade_duration
 
         # Calculate when the EQ sweep should start
         # The crossfade always happens at the END of the buffer, regardless of beat alignment
