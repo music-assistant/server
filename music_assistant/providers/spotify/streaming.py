@@ -44,8 +44,6 @@ class LibrespotStreamer:
         self, spotify_uri: str, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item using a direct Spotify URI."""
-        self.provider.logger.debug(f"DEBUG: get_audio_stream_by_uri called with URI: {spotify_uri}")
-
         async for chunk in self._stream_spotify_uri(spotify_uri, seek_position):
             yield chunk
 
@@ -88,9 +86,6 @@ class LibrespotStreamer:
                 stderr=None if log_librespot else False,
                 name="librespot",
             ) as librespot_proc:
-                # Log what librespot is doing
-                self.provider.logger.debug(f"DEBUG: librespot started with args: {args}")
-
                 try:
                     chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=10 * attempt)
                     if not chunk:

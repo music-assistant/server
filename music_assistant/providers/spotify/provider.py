@@ -442,70 +442,29 @@ class SpotifyProvider(MusicProvider):
 
         return audiobook
 
-    async def _debug_audiobook_durations(self, audiobook_id: str) -> None:
-        """Debug method to check audiobook duration calculations."""
-        try:
-            # Get the main audiobook object
-            audiobook_obj = await self._get_data(f"audiobooks/{audiobook_id}")
-            main_duration_ms = audiobook_obj.get("duration_ms", 0)
-            self.logger.info(f"Main audiobook duration_ms: {main_duration_ms}")
-
-            # Get chapters data
-            chapters_data = await self._get_audiobook_chapters_data(audiobook_id)
-            self.logger.info(f"Found {len(chapters_data)} chapters")
-
-            total_from_chapters = 0
-            for i, chapter in enumerate(chapters_data[:5]):  # Log first 5 chapters
-                duration_ms = chapter.get("duration_ms", 0)
-                total_from_chapters += duration_ms
-                self.logger.info(
-                    f"Chapter {i + 1}: {chapter.get('name', 'Unknown')} - "
-                    f"{duration_ms}ms ({duration_ms // 1000}s)"
-                )
-
-            if len(chapters_data) > 5:
-                # Add remaining chapters without logging each one
-                for chapter in chapters_data[5:]:
-                    total_from_chapters += chapter.get("duration_ms", 0)
-
-            self.logger.info(
-                f"Total from chapters: {total_from_chapters}ms ({total_from_chapters // 1000}s)"
-            )
-            self.logger.info(
-                f"Main vs chapters difference: {abs(main_duration_ms - total_from_chapters)}ms"
-            )
-
-        except Exception as e:
-            self.logger.error(f"Error debugging audiobook durations: {e}")
-
     async def _add_audiobook_chapters(self, audiobook: Audiobook) -> None:
         """Add chapter metadata to an audiobook from Spotify API data."""
         try:
-            # Debug the duration calculations
-            await self._debug_audiobook_durations(audiobook.item_id)
-
             chapters_data = await self._get_audiobook_chapters_data(audiobook.item_id)
             if chapters_data:
                 chapters = []
-                total_duration_ms = 0
+                total_duration_seconds = 0.0
 
                 for idx, chapter in enumerate(chapters_data):
                     duration_ms = chapter.get("duration_ms", 0)
+                    duration_seconds = duration_ms / 1000.0
+
                     chapter_obj = MediaItemChapter(
                         position=idx + 1,
                         name=chapter.get("name", f"Chapter {idx + 1}"),
-                        # Store start/end times as FLOATING POINT seconds for precision
-                        start=total_duration_ms / 1000.0,  # Keep millisecond precision
-                        end=(total_duration_ms + duration_ms)
-                        / 1000.0,  # Keep millisecond precision
+                        start=total_duration_seconds,
+                        end=total_duration_seconds + duration_seconds,
                     )
                     chapters.append(chapter_obj)
-                    total_duration_ms += duration_ms
+                    total_duration_seconds += duration_seconds
 
                 audiobook.metadata.chapters = chapters
-                # Store duration in SECONDS (like filesystem provider)
-                audiobook.duration = total_duration_ms // 1000
-                self.logger.info(f"Set audiobook duration to {audiobook.duration} seconds")
+                audiobook.duration = int(total_duration_seconds)
 
         except (MediaNotFoundError, ResourceTemporarilyUnavailable, ProviderUnavailableError) as e:
             self.logger.warning(f"Failed to get chapters for audiobook {audiobook.item_id}: {e}")
@@ -926,26 +885,13 @@ class SpotifyProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return content details for the given track/episode/audiobook when it will be streamed."""
         if media_type == MediaType.AUDIOBOOK and self.audiobooks_enabled:
-            # Try to get the properly parsed audiobook first
-            duration_seconds = None
-            try:
-                audiobook = await self.get_audiobook(item_id)
-                duration_seconds = audiobook.duration
-                self.logger.info(
-                    f"Using audiobook duration from parsed object: {duration_seconds} seconds"
-                )
-            except Exception as e:
-                self.logger.warning(f"Could not get parsed audiobook: {e}")
-                # Fallback: calculate from raw chapters
-                chapters_data = await self._get_audiobook_chapters_data(item_id)
-                if not chapters_data:
-                    raise MediaNotFoundError(f"No chapters found for audiobook {item_id}")
-                total_duration_ms = sum(chapter.get("duration_ms", 0) for chapter in chapters_data)
-                duration_seconds = total_duration_ms // 1000
-                self.logger.info(f"Calculated fallback duration: {duration_seconds} seconds")
-
-            # Get chapters data for seeking (we need the raw data regardless)
             chapters_data = await self._get_audiobook_chapters_data(item_id)
+            if not chapters_data:
+                raise MediaNotFoundError(f"No chapters found for audiobook {item_id}")
+
+            # Calculate total duration and convert to seconds for StreamDetails
+            total_duration_ms = sum(chapter.get("duration_ms", 0) for chapter in chapters_data)
+            duration_seconds = total_duration_ms // 1000
 
             # Create chapter URIs for streaming
             chapter_uris = []
@@ -963,10 +909,7 @@ class SpotifyProvider(MusicProvider):
                 allow_seek=True,
                 can_seek=True,
                 duration=duration_seconds,
-                data={
-                    "chapters": chapter_uris,
-                    "chapters_data": chapters_data,
-                },  # Include raw data for seeking
+                data={"chapters": chapter_uris, "chapters_data": chapters_data},
             )
 
         # For all other media types (tracks, podcast episodes)
@@ -974,10 +917,7 @@ class SpotifyProvider(MusicProvider):
             item_id=item_id,
             provider=self.lookup_key,
             media_type=media_type,
-            audio_format=AudioFormat(
-                content_type=ContentType.OGG,
-                bit_rate=320,
-            ),
+            audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
             stream_type=StreamType.CUSTOM,
             allow_seek=True,
             can_seek=True,
@@ -987,98 +927,50 @@ class SpotifyProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Get audio stream from Spotify via librespot."""
-        self.logger.debug(f"DEBUG: provider.get_audio_stream called for {streamdetails.item_id}")
-        self.logger.debug(f"DEBUG: media_type: {streamdetails.media_type}")
-        self.logger.debug(f"DEBUG: seek_position: {seek_position}")
-
         if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
             chapter_uris = streamdetails.data.get("chapters", [])
             chapters_data = streamdetails.data.get("chapters_data", [])
 
-            self.logger.debug(f"DEBUG: Found {len(chapter_uris)} audiobook chapters")
-
             # Calculate which chapter to start from based on seek_position
-            current_seek = seek_position
+            seek_position_ms = seek_position * 1000
+            current_seek_ms = seek_position_ms
             start_chapter = 0
 
             if seek_position > 0 and chapters_data:
-                self.logger.debug("DEBUG: Calculating chapter position from raw chapter data")
-                accumulated_duration = 0
+                accumulated_duration_ms = 0
 
                 for i, chapter_data in enumerate(chapters_data):
-                    chapter_duration_seconds = chapter_data.get("duration_ms", 0) // 1000
+                    chapter_duration_ms = chapter_data.get("duration_ms", 0)
 
-                    if accumulated_duration + chapter_duration_seconds > seek_position:
+                    if accumulated_duration_ms + chapter_duration_ms > seek_position_ms:
                         start_chapter = i
-                        current_seek = seek_position - accumulated_duration
-                        self.logger.debug(
-                            f"DEBUG: Found target chapter {i + 1}: "
-                            f"chapter_duration={chapter_duration_seconds}s, "
-                            f"accumulated={accumulated_duration}s, "
-                            f"seek_within_chapter={current_seek}s"
-                        )
+                        current_seek_ms = seek_position_ms - accumulated_duration_ms
                         break
-                    accumulated_duration += chapter_duration_seconds
+                    accumulated_duration_ms += chapter_duration_ms
                 else:
-                    # Seek position is beyond the end, start from last chapter
                     start_chapter = len(chapter_uris) - 1
-                    current_seek = 0
-                    self.logger.debug("DEBUG: Seek beyond end, starting from last chapter")
+                    current_seek_ms = 0
 
-            self.logger.debug(
-                f"DEBUG: Starting from chapter {start_chapter + 1} with {current_seek}s offset"
-            )
+            # Convert back to seconds for librespot
+            current_seek_seconds = int(current_seek_ms // 1000)
 
             # Stream chapters starting from the calculated position
             for i in range(start_chapter, len(chapter_uris)):
                 chapter_uri = chapter_uris[i]
-                # Only apply seek position to the first chapter we're streaming
-                chapter_seek = current_seek if i == start_chapter else 0
+                chapter_seek = current_seek_seconds if i == start_chapter else 0
 
-                self.logger.debug(
-                    f"DEBUG: About to stream chapter {i + 1}: {chapter_uri} (seek: {chapter_seek}s)"
-                )
                 try:
                     async for chunk in self.streamer.get_audio_stream_by_uri(
                         chapter_uri, chapter_seek
                     ):
                         yield chunk
-                    self.logger.debug(f"DEBUG: Finished streaming chapter {i + 1}")
                 except Exception as e:
-                    self.logger.error(f"DEBUG: Chapter {i + 1} failed: {e}")
-                    # Continue to next chapter instead of failing completely
+                    self.logger.error(f"Chapter {i + 1} streaming failed: {e}")
                     continue
         else:
             # Handle normal tracks and podcast episodes
-            self.logger.debug("DEBUG: Calling streamer.get_audio_stream for normal episode/track")
             async for chunk in self.streamer.get_audio_stream(streamdetails, seek_position):
                 yield chunk
-
-    # Enhanced debug method to show precision
-    async def _debug_chapter_metadata(self, audiobook_id: str) -> None:
-        """Debug method to verify chapter start/end times with precision."""
-        try:
-            audiobook = await self.get_audiobook(audiobook_id)
-            if audiobook.metadata.chapters:
-                self.logger.info("Audiobook chapter metadata verification (with precision):")
-
-                # Check chapters around the problematic area (chapter 50)
-                start_idx = max(0, 48)  # Chapter 49
-                end_idx = min(len(audiobook.metadata.chapters), 53)  # Chapter 53
-
-                for i in range(start_idx, end_idx):
-                    chapter = audiobook.metadata.chapters[i]
-                    start_time = chapter.start or 0.0
-                    end_time = chapter.end or 0.0
-                    duration = end_time - start_time
-                    self.logger.info(
-                        f"  Chapter {i + 1}: {chapter.start:.3f}s - {chapter.end:.3f}s "
-                        f"(duration: {duration:.3f}s) - {chapter.name}"
-                    )
-            else:
-                self.logger.warning("No chapter metadata found in audiobook")
-        except Exception as e:
-            self.logger.error(f"Error debugging chapter metadata: {e}")
 
     @lock
     async def login(self, force_refresh: bool = False) -> dict[str, Any]:
