@@ -841,11 +841,19 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        if media_type == MediaType.AUDIOBOOK:
-            return await self._get_stream_details_for_audiobook(item_id)
-        if media_type == MediaType.PODCAST_EPISODE:
-            return await self._get_stream_details_for_podcast_episode(item_id)
-        return await self._get_stream_details_for_track(item_id)
+        try:
+            if media_type == MediaType.AUDIOBOOK:
+                return await self._get_stream_details_for_audiobook(item_id)
+            if media_type == MediaType.PODCAST_EPISODE:
+                return await self._get_stream_details_for_podcast_episode(item_id)
+            return await self._get_stream_details_for_track(item_id)
+        except FileNotFoundError:
+            self.logger.warning(
+                "File not found for media item %s",
+                item_id,
+            )
+            msg = f"Media file not found: {item_id}"
+            raise MediaNotFoundError(msg)
 
     async def resolve_image(self, path: str) -> str | bytes:
         """
@@ -954,6 +962,7 @@ class LocalFileSystemProvider(MusicProvider):
             track.track_number = tags.track
         track.metadata.copyright = tags.get("copyright")
         track.metadata.lyrics = tags.lyrics
+        track.metadata.grouping = tags.get("grouping")
         track.metadata.description = tags.get("comment")
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:

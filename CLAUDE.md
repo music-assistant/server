@@ -23,6 +23,7 @@ Always run `pre-commit run --all-files` after a code change to ensure the new co
 
 ### Running the Server
 - Use F5 in VS Code to start Music Assistant locally (debug mode)
+- Or run from command line: `python -m music_assistant --log-level debug`
 - Server runs on `localhost:8095`
 - Entry point: `music_assistant.__main__:main`
 

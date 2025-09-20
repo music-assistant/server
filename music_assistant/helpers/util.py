@@ -633,6 +633,29 @@ def percentage(part: float, whole: float) -> int:
     return int(100 * float(part) / float(whole))
 
 
+def validate_announcement_chime_url(url: str) -> bool:
+    """Validate announcement chime URL format."""
+    if not url or not url.strip():
+        return True  # Empty URL is valid
+
+    try:
+        parsed = urlparse(url.strip())
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        if not parsed.netloc:
+            return False
+
+        path_lower = parsed.path.lower()
+        audio_extensions = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
+
+        return any(path_lower.endswith(ext) for ext in audio_extensions)
+
+    except Exception:
+        return False
+
+
 class TaskManager:
     """
     Helper class to run many tasks at once.
