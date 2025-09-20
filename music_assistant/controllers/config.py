@@ -271,6 +271,7 @@ class ConfigController:
         if instance_id and (provider := self.mass.get_provider(instance_id)):
             supported_features = provider.supported_features
         else:
+            provider = None
             supported_features: set[ProviderFeature] = getattr(
                 prov_mod, "SUPPORTED_FEATURES", set()
             )
