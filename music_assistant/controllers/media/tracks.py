@@ -540,7 +540,7 @@ class TracksController(MediaControllerBase[Track]):
         if not db_album or overwrite:
             # ensure we have an actual album object
             if isinstance(album, ItemMapping):
-                album = await self.mass.music.albums.add_item_mapping_as_album_to_library(album)
+                db_album = await self.mass.music.albums.add_item_mapping_as_album_to_library(album)
             else:
                 db_album = await self.mass.music.albums.add_item_to_library(
                     album,
