@@ -44,6 +44,13 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
     CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
     CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_PRESETS,
@@ -266,20 +273,27 @@ class ConfigController:
         if manifest.type == ProviderType.MUSIC and supported_features:
             if ProviderFeature.LIBRARY_ARTISTS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ARTISTS)
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS)
             if ProviderFeature.LIBRARY_ALBUMS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUMS)
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS)
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS)
             if ProviderFeature.LIBRARY_TRACKS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_TRACKS)
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS)
             if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS)
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS)
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS)
             if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS)
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS)
             if ProviderFeature.LIBRARY_PODCASTS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PODCASTS)
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS)
             if ProviderFeature.LIBRARY_RADIOS in supported_features:
                 extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_RADIOS)
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS)
 
         return [
             *DEFAULT_PROVIDER_CONFIG_ENTRIES,

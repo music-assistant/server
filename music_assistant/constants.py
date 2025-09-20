@@ -743,6 +743,103 @@ CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS = ConfigEntry(
     multi_value=True,
 )
 
+CONF_PROVIDER_SYNC_INTERVAL_OPTIONS = [
+    ConfigValueOption("Disable automatic sync for this mediatype", 0),
+    ConfigValueOption("Every 30 minutes", 30),
+    ConfigValueOption("Every hour", 60),
+    ConfigValueOption("Every 3 hours", 180),
+    ConfigValueOption("Every 6 hours", 360),
+    ConfigValueOption("Every 12 hours", 720),
+    ConfigValueOption("Every 24 hours", 1440),
+    ConfigValueOption("Every 36 hours", 2160),
+    ConfigValueOption("Every 48 hours", 2880),
+    ConfigValueOption("Once a week", 10080),
+]
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS = ConfigEntry(
+    key="provider_sync_interval_artists",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Artists",
+    description="The interval at which the Artists are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=180,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_ARTISTS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS = ConfigEntry(
+    key="provider_sync_interval_albums",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Albums",
+    description="The interval at which the Albums are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=180,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_ALBUMS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS = ConfigEntry(
+    key="provider_sync_interval_tracks",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Tracks",
+    description="The interval at which the Tracks are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=180,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_TRACKS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS = ConfigEntry(
+    key="provider_sync_interval_playlists",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Playlists",
+    description="The interval at which the Playlists are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=180,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS = ConfigEntry(
+    key="provider_sync_interval_podcasts",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Podcasts",
+    description="The interval at which the Podcasts are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=180,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_PODCASTS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS = ConfigEntry(
+    key="provider_sync_interval_audiobooks",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Audiobooks",
+    description="The interval at which the Audiobooks are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=180,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS = ConfigEntry(
+    key="provider_sync_interval_radios",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Radios",
+    description="The interval at which the Radios are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=180,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_RADIOS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+
 
 def create_sample_rates_config_entry(
     supported_sample_rates: list[int] | None = None,
