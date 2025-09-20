@@ -86,7 +86,6 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
 DB_SCHEMA_VERSION: Final[int] = 19
 
 
@@ -132,14 +131,6 @@ class MusicController(CoreController):
                 label="Sync interval",
                 description="Interval (in minutes) that a (delta) sync "
                 "of all providers should be performed.",
-            ),
-            ConfigEntry(
-                key=CONF_ADD_LIBRARY_ON_PLAY,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                label="Add item to the library as soon as its played",
-                description="Automatically add a track or radio station to "
-                "the library when played (if its not already in the library).",
             ),
             ConfigEntry(
                 key=CONF_RESET_DB,
@@ -916,14 +907,6 @@ class MusicController(CoreController):
             # skip non media items (e.g. plugin source)
             return
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
-        if (
-            not db_item
-            and media_item.media_type in (MediaType.TRACK, MediaType.RADIO)
-            and self.mass.config.get_raw_core_config_value(self.domain, CONF_ADD_LIBRARY_ON_PLAY)
-        ):
-            # handle feature to add to the lib on playback
-            db_item = await self.add_item_to_library(media_item)
-
         if db_item:
             await self.database.execute(
                 f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
