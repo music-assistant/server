@@ -587,7 +587,7 @@ class SpotifyProvider(MusicProvider):
         """Get resume position for episode/audiobook from Spotify."""
         if media_type == MediaType.PODCAST_EPISODE:
             if not self.sync_played_status_enabled:
-                raise NotImplementedError("Spotify resume sync disabled in settings")
+                raise NotImplementedError("Spotify podcast resume sync disabled in settings")
 
             try:
                 episode_obj = await self._get_data(f"episodes/{item_id}", market="from_token")

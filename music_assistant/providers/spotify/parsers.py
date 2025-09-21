@@ -352,15 +352,14 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
         },
     )
 
-    # DEBUG: Check if there's any duration field in the main audiobook object
     if "duration_ms" in audiobook_obj:
-        provider.logger.info(
-            f"DEBUG: Found duration_ms in audiobook object: {audiobook_obj['duration_ms']}"
+        provider.logger.debug(
+            f"Found duration_ms in audiobook object: {audiobook_obj['duration_ms']}"
         )
         audiobook.duration = audiobook_obj["duration_ms"] // 1000
     else:
-        provider.logger.info(
-            "DEBUG: No duration_ms found in main audiobook object - will calculate from chapters"
+        provider.logger.debug(
+            "No duration_ms found in main audiobook object - will calculate from chapters"
         )
         # Don't set duration here - let get_audiobook calculate it from chapters
         audiobook.duration = 0
@@ -404,7 +403,4 @@ def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) ->
                 date_str = f"{date_str}T00:00:00+00:00"
             audiobook.metadata.release_date = datetime.fromisoformat(date_str)
 
-    provider.logger.info(
-        f"DEBUG: parse_audiobook finished - duration set to: {audiobook.duration}s"
-    )
     return audiobook
