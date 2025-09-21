@@ -142,7 +142,7 @@ class MusicAssistant:
         self.version = await get_package_version("music_assistant") or "0.0.0"
         # create shared zeroconf instance
         # TODO: enumerate interfaces and enable IPv6 support
-        self.aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only)
+        self.aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only, interfaces=InterfaceChoice.Default)
         # load all available providers from manifest files
         await self.__load_provider_manifests()
         # setup config controller first and fetch important config values
