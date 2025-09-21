@@ -1048,7 +1048,7 @@ class MusicController(CoreController):
         This is a separate call to ensure the resume position is always up-to-date
         and because many providers have this info present on a dedicated endpoint.
 
-        Will be called right before playbook starts to ensure the resume position is correct.
+        Will be called right before playback starts to ensure the resume position is correct.
 
         Returns a boolean with the fully_played status
         and an integer with the resume position in ms.
