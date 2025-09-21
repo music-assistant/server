@@ -8,26 +8,17 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from music_assistant_models.enums import (
-    ContentType,
-    ImageType,
-    MediaType,
-    ProviderFeature,
-    StreamType,
-)
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
-    AudioFormat,
-    MediaItemImage,
+    MediaItemChapter,
     ProviderMapping,
     SearchResults,
     Track,
 )
-from music_assistant_models.media_items.metadata import MediaItemChapter
-from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import UNKNOWN_ARTIST
@@ -39,13 +30,15 @@ from .helpers import (
     InternetArchiveClient,
     clean_text,
     extract_year,
-    get_image_url,
     parse_duration,
 )
+from .parsers import InternetArchiveParsers
+from .streaming import InternetArchiveStreaming
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant import MusicAssistant
 
@@ -62,6 +55,10 @@ class InternetArchiveProvider(MusicProvider):
         """Initialize the provider."""
         super().__init__(mass, manifest, config)
         self.client = InternetArchiveClient(mass)
+        self.parsers = InternetArchiveParsers(
+            self.domain, self.instance_id, self.client.get_item_url
+        )
+        self.streaming = InternetArchiveStreaming(self.client, self.instance_id)
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -73,7 +70,6 @@ class InternetArchiveProvider(MusicProvider):
         """Return True if provider is a streaming provider."""
         return True
 
-    @use_cache(expiration=86400 * 3)  # Cache search results for 3 days
     async def search(
         self,
         search_query: str,
@@ -248,7 +244,7 @@ class InternetArchiveProvider(MusicProvider):
 
         # Use identifier as fallback title if needed
         if not title:
-            title = self._create_title_from_identifier(identifier)
+            title = self.parsers.create_title_from_identifier(identifier)
 
         # Determine what type of item this is
         mediatype = doc.get("mediatype", "")
@@ -260,239 +256,38 @@ class InternetArchiveProvider(MusicProvider):
         is_audiobook = any(coll in AUDIOBOOK_COLLECTIONS for coll in collection)
 
         if is_audiobook and MediaType.AUDIOBOOK in media_types:
-            audiobook = self._doc_to_audiobook(doc)
+            audiobook = self.parsers.doc_to_audiobook(doc)
             if audiobook:
                 audiobooks.append(audiobook)
 
         # For etree items, usually each item is an album (concert)
         elif mediatype == "etree" or "etree" in collection:
             if MediaType.ALBUM in media_types:
-                album = self._doc_to_album(doc)
+                album = self.parsers.doc_to_album(doc)
                 if album:
                     albums.append(album)
 
             if MediaType.ARTIST in media_types and creator:
-                artist = self._doc_to_artist(creator)
-                if artist and not self._artist_exists(artist, artists):
+                artist = self.parsers.doc_to_artist(creator)
+                if artist and not self.parsers.artist_exists(artist, artists):
                     artists.append(artist)
 
         elif mediatype == "audio":
             # Use heuristics to determine album vs track without expensive API calls
-            if self._is_likely_album(doc):
+            if self.parsers.is_likely_album(doc):
                 if MediaType.ALBUM in media_types:
-                    album = self._doc_to_album(doc)
+                    album = self.parsers.doc_to_album(doc)
                     if album:
                         albums.append(album)
             elif MediaType.TRACK in media_types:
-                track = self._doc_to_track(doc)
+                track = self.parsers.doc_to_track(doc)
                 if track:
                     tracks.append(track)
 
             if MediaType.ARTIST in media_types and creator:
-                artist = self._doc_to_artist(creator)
-                if artist and not self._artist_exists(artist, artists):
+                artist = self.parsers.doc_to_artist(creator)
+                if artist and not self.parsers.artist_exists(artist, artists):
                     artists.append(artist)
-
-    def _create_title_from_identifier(self, identifier: str) -> str:
-        """Create a human-readable title from an Internet Archive identifier."""
-        return identifier.replace("_", " ").replace("-", " ").title()
-
-    def _artist_exists(self, artist: Artist, artists: list[Artist]) -> bool:
-        """Check if an artist already exists in the list to avoid duplicates."""
-        return any(existing.name == artist.name for existing in artists)
-
-    def _is_likely_album(self, doc: dict[str, Any]) -> bool:
-        """
-        Determine if an Internet Archive item is likely an album using metadata heuristics.
-
-        This method uses collection types, media types, and title analysis to classify items
-        without making expensive API calls to check individual file counts. This optimization
-        significantly improves performance for artist browsing and search operations.
-
-        Args:
-            doc: Internet Archive document metadata
-
-        Returns:
-            True if the item is likely an album, False if likely a single track
-        """
-        mediatype = doc.get("mediatype", "")
-        collection = doc.get("collection", [])
-        title = clean_text(doc.get("title", "")).lower()
-
-        if isinstance(collection, str):
-            collection = [collection]
-
-        # etree collection items are almost always live concert albums
-        if "etree" in collection:
-            return True
-
-        # Skip obvious audiobook/speech collections
-        if any(coll in AUDIOBOOK_COLLECTIONS for coll in collection):
-            return False
-
-        # Use title keywords to identify likely albums vs singles
-        album_indicators = ["album", "live", "concert", "session", "collection", "compilation"]
-        single_indicators = ["single", "track", "song"]
-
-        if any(indicator in title for indicator in album_indicators):
-            return True
-        if any(indicator in title for indicator in single_indicators):
-            return False
-
-        # Default to treating audio items as albums - better user experience
-        # Individual tracks will still be accessible through album track listings
-        return bool(mediatype == "audio")
-
-    def _doc_to_audiobook(self, doc: dict[str, Any]) -> Audiobook | None:
-        """
-        Convert Internet Archive document to Audiobook object.
-
-        Args:
-            doc: Internet Archive document metadata
-
-        Returns:
-            Audiobook object or None if conversion fails
-        """
-        identifier = doc.get("identifier")
-        title = clean_text(doc.get("title"))
-        creator = clean_text(doc.get("creator"))
-
-        if not identifier or not title:
-            return None
-
-        audiobook = Audiobook(
-            item_id=identifier,
-            provider=self.instance_id,
-            name=title,
-            provider_mappings={self._create_provider_mapping(identifier)},
-        )
-
-        # Add author/narrator
-        if creator:
-            audiobook.authors.append(creator)
-
-        # Add metadata
-        if description := clean_text(doc.get("description")):
-            audiobook.metadata.description = description
-
-        # Add thumbnail
-        self._add_item_image(audiobook, identifier)
-
-        return audiobook
-
-    def _doc_to_track(self, doc: dict[str, Any]) -> Track | None:
-        """
-        Convert Internet Archive document to Track object.
-
-        Args:
-            doc: Internet Archive document metadata
-
-        Returns:
-            Track object or None if conversion fails
-        """
-        identifier = doc.get("identifier")
-        title = clean_text(doc.get("title"))
-        creator = clean_text(doc.get("creator"))
-
-        if not identifier or not title:
-            return None
-
-        track = Track(
-            item_id=identifier,
-            provider=self.instance_id,
-            name=title,
-            provider_mappings={self._create_provider_mapping(identifier)},
-        )
-
-        # Add artist if available
-        if creator:
-            track.artists = UniqueList([self._create_artist(creator)])
-
-        # Add thumbnail
-        self._add_item_image(track, identifier)
-
-        return track
-
-    def _doc_to_album(self, doc: dict[str, Any]) -> Album | None:
-        """
-        Convert Internet Archive document to Album object.
-
-        Args:
-            doc: Internet Archive document metadata
-
-        Returns:
-            Album object or None if conversion fails
-        """
-        identifier = doc.get("identifier")
-        title = clean_text(doc.get("title"))
-        creator = clean_text(doc.get("creator"))
-
-        if not identifier or not title:
-            return None
-
-        album = Album(
-            item_id=identifier,
-            provider=self.instance_id,
-            name=title,
-            provider_mappings={self._create_provider_mapping(identifier)},
-        )
-
-        # Add artist if available
-        if creator:
-            album.artists = UniqueList([self._create_artist(creator)])
-
-        # Add metadata
-        if date := extract_year(doc.get("date")):
-            album.year = date
-
-        if description := clean_text(doc.get("description")):
-            album.metadata.description = description
-
-        # Add thumbnail
-        self._add_item_image(album, identifier)
-
-        return album
-
-    def _create_provider_mapping(self, identifier: str) -> ProviderMapping:
-        """Create a standardized provider mapping for an item."""
-        return ProviderMapping(
-            item_id=identifier,
-            provider_domain=self.domain,
-            provider_instance=self.instance_id,
-            url=self.client.get_item_url(identifier),
-            available=True,
-        )
-
-    def _create_artist(self, creator_name: str) -> Artist:
-        """Create an Artist object from creator name."""
-        return Artist(
-            item_id=creator_name,
-            provider=self.instance_id,
-            name=creator_name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=creator_name,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-
-    def _doc_to_artist(self, creator_name: str) -> Artist:
-        """Convert creator name to Artist object."""
-        return self._create_artist(creator_name)
-
-    def _add_item_image(self, item: Track | Album | Audiobook, identifier: str) -> None:
-        """Add thumbnail image to a media item if available."""
-        if thumb_url := get_image_url(identifier):
-            item.metadata.add_image(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=thumb_url,
-                    provider=self.instance_id,
-                    remotely_accessible=True,
-                )
-            )
 
     async def get_track(self, prov_track_id: str) -> Track:
         """
@@ -520,14 +315,14 @@ class InternetArchiveProvider(MusicProvider):
             item_id=prov_track_id,
             provider=self.instance_id,
             name=title,
-            provider_mappings={self._create_provider_mapping(prov_track_id)},
+            provider_mappings={self.parsers._create_provider_mapping(prov_track_id)},
         )
 
         # Add artist
         if creator:
-            track.artists = UniqueList([self._create_artist(creator)])
+            track.artists = UniqueList([self.parsers._create_artist(creator)])
         else:
-            track.artists = UniqueList([self._create_artist(UNKNOWN_ARTIST)])
+            track.artists = UniqueList([self.parsers._create_artist(UNKNOWN_ARTIST)])
 
         # Add duration from first audio file
         try:
@@ -546,7 +341,7 @@ class InternetArchiveProvider(MusicProvider):
             track.metadata.description = description
 
         # Add thumbnail
-        self._add_item_image(track, prov_track_id)
+        self.parsers._add_item_image(track, prov_track_id)
 
         return track
 
@@ -576,14 +371,14 @@ class InternetArchiveProvider(MusicProvider):
             item_id=prov_album_id,
             provider=self.instance_id,
             name=title,
-            provider_mappings={self._create_provider_mapping(prov_album_id)},
+            provider_mappings={self.parsers._create_provider_mapping(prov_album_id)},
         )
 
         # Add artist
         if creator:
-            album.artists = UniqueList([self._create_artist(creator)])
+            album.artists = UniqueList([self.parsers._create_artist(creator)])
         else:
-            album.artists = UniqueList([self._create_artist(UNKNOWN_ARTIST)])
+            album.artists = UniqueList([self.parsers._create_artist(UNKNOWN_ARTIST)])
 
         # Add metadata
         if date := extract_year(item_metadata.get("date")):
@@ -593,7 +388,7 @@ class InternetArchiveProvider(MusicProvider):
             album.metadata.description = description
 
         # Add thumbnail
-        self._add_item_image(album, prov_album_id)
+        self.parsers._add_item_image(album, prov_album_id)
 
         return album
 
@@ -647,7 +442,7 @@ class InternetArchiveProvider(MusicProvider):
             item_id=prov_audiobook_id,
             provider=self.instance_id,
             name=title,
-            provider_mappings={self._create_provider_mapping(prov_audiobook_id)},
+            provider_mappings={self.parsers._create_provider_mapping(prov_audiobook_id)},
         )
 
         # Add author/narrator
@@ -659,7 +454,7 @@ class InternetArchiveProvider(MusicProvider):
             audiobook.metadata.description = description
 
         # Add thumbnail
-        self._add_item_image(audiobook, prov_audiobook_id)
+        self.parsers._add_item_image(audiobook, prov_audiobook_id)
 
         # Calculate duration and create chapters in a single pass through audio files
         try:
@@ -750,14 +545,14 @@ class InternetArchiveProvider(MusicProvider):
             # Add file-specific artist if available, otherwise use album artist
             file_artist = file_info.get("artist") or file_info.get("creator")
             if file_artist:
-                track.artists = UniqueList([self._create_artist(clean_text(file_artist))])
+                track.artists = UniqueList([self.parsers._create_artist(clean_text(file_artist))])
             else:
                 # Use album-level artist
                 album_artist = clean_text(item_metadata.get("creator"))
                 if album_artist:
-                    track.artists = UniqueList([self._create_artist(album_artist)])
+                    track.artists = UniqueList([self.parsers._create_artist(album_artist)])
                 else:
-                    track.artists = UniqueList([self._create_artist(UNKNOWN_ARTIST)])
+                    track.artists = UniqueList([self.parsers._create_artist(UNKNOWN_ARTIST)])
 
             # Add duration if available
             if duration_str := file_info.get("length"):
@@ -822,8 +617,8 @@ class InternetArchiveProvider(MusicProvider):
             try:
                 # Use metadata heuristics instead of expensive API calls
                 # to determine if item is an album
-                if self._is_likely_album(doc):
-                    album = self._doc_to_album(doc)
+                if self.parsers.is_likely_album(doc):
+                    album = self.parsers.doc_to_album(doc)
                     if album:
                         albums.append(album)
             except (KeyError, ValueError, TypeError) as err:
@@ -876,8 +671,8 @@ class InternetArchiveProvider(MusicProvider):
             try:
                 # For top tracks, prioritize single track items or first tracks
                 # from popular albums to avoid expensive file enumeration
-                if not self._is_likely_album(doc):  # Prefer actual single tracks
-                    track = self._doc_to_track(doc)
+                if not self.parsers.is_likely_album(doc):  # Prefer actual single tracks
+                    track = self.parsers.doc_to_track(doc)
                     if track:
                         tracks.append(track)
             except (KeyError, ValueError, TypeError) as err:
@@ -917,7 +712,7 @@ class InternetArchiveProvider(MusicProvider):
         )
 
         for doc in search_response.get("docs", []):
-            audiobook = self._doc_to_audiobook(doc)
+            audiobook = self.parsers.doc_to_audiobook(doc)
             if audiobook:
                 yield audiobook
 
@@ -925,8 +720,7 @@ class InternetArchiveProvider(MusicProvider):
         """
         Get streamdetails for a track or audiobook.
 
-        For multi-file audiobooks, returns a MULTI_FILE stream with all chapter URLs.
-        For single files or tracks, returns a standard HTTP stream.
+        Delegates to the streaming handler for proper multi-file support.
 
         Args:
             item_id: Provider-specific item identifier
@@ -938,80 +732,60 @@ class InternetArchiveProvider(MusicProvider):
         Raises:
             MediaNotFoundError: If no audio files are found for the item
         """
-        if "#" in item_id:
-            # This is a track from an album or chapter from audiobook
-            parent_id, filename = item_id.split("#", 1)
-            download_url = self.client.get_download_url(parent_id, filename)
+        return await self.streaming.get_stream_details(item_id, media_type)
 
-            return StreamDetails(
-                provider=self.instance_id,
-                item_id=item_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.UNKNOWN,  # Let ffmpeg detect format
-                ),
-                media_type=media_type,
-                stream_type=StreamType.HTTP,
-                path=download_url,
-                allow_seek=True,
-                can_seek=True,
-            )
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Get audio stream from Internet Archive."""
+        if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
+            chapter_urls = streamdetails.data.get("chapters", [])
+            chapters_data = streamdetails.data.get("chapters_data", [])
+
+            # Calculate which chapter to start from based on seek_position
+            seek_position_ms = seek_position * 1000
+            start_chapter = 0
+            chapter_seek_ms = 0
+
+            if seek_position > 0 and chapters_data:
+                accumulated_duration_ms = 0
+
+                for i, chapter_data in enumerate(chapters_data):
+                    chapter_duration_ms = (
+                        parse_duration(chapter_data.get("length", "0")) or 0
+                    ) * 1000
+
+                    if accumulated_duration_ms + chapter_duration_ms > seek_position_ms:
+                        start_chapter = i
+                        chapter_seek_ms = seek_position_ms - accumulated_duration_ms
+                        break
+                    accumulated_duration_ms += chapter_duration_ms
+
+                # Log the seek position for debugging
+                self.logger.info(
+                    f"Seeking to chapter {start_chapter + 1}, offset: {chapter_seek_ms / 1000:.1f}s"
+                )
+
+            # Stream chapters starting from calculated position
+            for i in range(start_chapter, len(chapter_urls)):
+                chapter_url = chapter_urls[i]
+
+                try:
+                    async with self.mass.http_session.get(chapter_url) as response:
+                        response.raise_for_status()
+                        async for chunk in response.content.iter_chunked(8192):
+                            yield chunk
+                except Exception as e:
+                    self.logger.error(f"Chapter {i + 1} streaming failed: {e}")
+                    continue
         else:
-            # This is a single item, find the audio files
-            audio_files = await self.client.get_audio_files(item_id)
-            if not audio_files:
-                raise MediaNotFoundError(f"No audio files found for {item_id}")
-
-            # For audiobooks with multiple files, use MULTI_FILE stream type
-            if media_type == MediaType.AUDIOBOOK and len(audio_files) > 1:
-                # Create list of download URLs for all chapters
-                chapter_urls = []
-                total_duration = 0
-                for file_info in audio_files:
-                    filename = file_info["name"]
-                    download_url = self.client.get_download_url(item_id, filename)
-                    chapter_urls.append(download_url)
-                    # Add duration if available
-                    if duration_str := file_info.get("length"):
-                        if duration := parse_duration(duration_str):
-                            total_duration += duration
-
-                self.logger.debug(
-                    "Creating multi-file stream for audiobook %s with %d files, total duration: %s",
-                    item_id,
-                    len(chapter_urls),
-                    total_duration,
+            # Handle single files
+            audio_files = await self.client.get_audio_files(streamdetails.item_id)
+            if audio_files:
+                download_url = self.client.get_download_url(
+                    streamdetails.item_id, audio_files[0]["name"]
                 )
-
-                return StreamDetails(
-                    provider=self.instance_id,
-                    item_id=item_id,
-                    audio_format=AudioFormat(
-                        content_type=ContentType.UNKNOWN,  # Let ffmpeg detect format
-                    ),
-                    media_type=media_type,
-                    stream_type=StreamType.MULTI_FILE,
-                    duration=total_duration if total_duration > 0 else None,
-                    data=chapter_urls,
-                    allow_seek=True,
-                    can_seek=True,
-                    # Disable caching for multi-file streams to avoid issues
-                    enable_cache=False,
-                )
-            else:
-                # Single file - use regular HTTP stream
-                best_file = audio_files[0]
-                filename = best_file["name"]
-                download_url = self.client.get_download_url(item_id, filename)
-
-                return StreamDetails(
-                    provider=self.instance_id,
-                    item_id=item_id,
-                    audio_format=AudioFormat(
-                        content_type=ContentType.UNKNOWN,  # Let ffmpeg detect format
-                    ),
-                    media_type=media_type,
-                    stream_type=StreamType.HTTP,
-                    path=download_url,
-                    allow_seek=True,
-                    can_seek=True,
-                )
+                async with self.mass.http_session.get(download_url) as response:
+                    response.raise_for_status()
+                    async for chunk in response.content.iter_chunked(8192):
+                        yield chunk
