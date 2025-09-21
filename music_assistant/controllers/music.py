@@ -1351,8 +1351,9 @@ class MusicController(CoreController):
                 continue
             if media_type in sync_task.media_types:
                 self.logger.debug(
-                    "Skip sync task for %s because another task is already in progress",
+                    "Skip sync task for %s/%ss because another task is already in progress",
                     provider.name,
+                    media_type.value,
                 )
                 return
 
@@ -1380,12 +1381,13 @@ class MusicController(CoreController):
                 return
             if task_err := task.exception():
                 self.logger.warning(
-                    "Sync task for %s completed with errors",
+                    "Sync task for %s/%ss completed with errors",
                     provider.name,
+                    media_type.value,
                     exc_info=task_err if self.logger.isEnabledFor(10) else None,
                 )
             else:
-                self.logger.info("Sync task for %s completed", provider.name)
+                self.logger.info("Sync task for %s/%ss completed", provider.name, media_type.value)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
             cache_key = f"last_library_sync_{provider.instance_id}_{media_type.value}"
             self.mass.create_task(self.mass.cache.set, cache_key, self.mass.loop.time())

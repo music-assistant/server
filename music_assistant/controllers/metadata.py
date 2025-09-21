@@ -293,6 +293,8 @@ class MetaDataController(CoreController):
         """Schedule metadata update for given MediaItem uri."""
         if "library" not in uri:
             return
+        if self._lookup_jobs.exists(uri):
+            return
         with suppress(asyncio.QueueFull):
             self._lookup_jobs.put_nowait(uri)
 
@@ -799,8 +801,7 @@ class MetaDataController(CoreController):
                 )
 
     async def _scan_missing_metadata(self) -> None:
-        """Scanner for (missing) metadata, periodically in the background."""
-        self._periodic_scan = None
+        """Scanner for (missing) metadata, runs periodically in the background."""
         # Scan for missing artist images
         self.logger.debug("Start lookup for missing artist images...")
         query = (
@@ -808,7 +809,9 @@ class MetaDataController(CoreController):
             f"AND (json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') ISNULL "
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
         )
-        for artist in await self.mass.music.artists.library_items(extra_query=query):
+        for artist in await self.mass.music.artists.library_items(
+            limit=25, order_by="random", extra_query=query
+        ):
             if artist.uri:
                 self.schedule_update_metadata(artist.uri)
 
@@ -820,7 +823,7 @@ class MetaDataController(CoreController):
             f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.images') = '[]')"
         )
         for album in await self.mass.music.albums.library_items(
-            limit=50, order_by="random", extra_query=query
+            limit=5, order_by="random", extra_query=query
         ):
             if album.uri:
                 self.schedule_update_metadata(album.uri)
