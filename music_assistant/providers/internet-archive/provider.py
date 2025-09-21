@@ -289,6 +289,7 @@ class InternetArchiveProvider(MusicProvider):
                 if artist and not self.parsers.artist_exists(artist, artists):
                     artists.append(artist)
 
+    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist "tracks" change infrequently
     async def get_track(self, prov_track_id: str) -> Track:
         """
         Get full track details by id.
@@ -345,6 +346,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return track
 
+    @use_cache(expiration=86400 * 7)  # Cache for 1 week - album catalogs change infrequently
     async def get_album(self, prov_album_id: str) -> Album:
         """
         Get full album details by id.
@@ -392,6 +394,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return album
 
+    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist catalogs change infrequently
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """
         Get full artist details by id.
@@ -416,6 +419,7 @@ class InternetArchiveProvider(MusicProvider):
             },
         )
 
+    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist catalogs change infrequently
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """
         Get full audiobook details by id.
