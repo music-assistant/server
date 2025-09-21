@@ -52,12 +52,10 @@ from music_assistant.models.music_provider import MusicProvider
 from .constants import (
     CONF_CLIENT_ID,
     CONF_ENABLE_AUDIOBOOKS,
-    CONF_PLAYED_THRESHOLD,
     CONF_REFRESH_TOKEN,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
-    SUPPORTED_FEATURES,
 )
 from .helpers import get_librespot_binary
 from .parsers import (
@@ -88,10 +86,15 @@ class SpotifyProvider(MusicProvider):
     throttler: ThrottlerManager
 
     def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature],
     ) -> None:
         """Initialize the provider."""
         super().__init__(mass, manifest, config)
+        self._base_supported_features = supported_features
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -124,24 +127,9 @@ class SpotifyProvider(MusicProvider):
         return bool(value) if value is not None else True
 
     @property
-    def played_threshold(self) -> float:
-        """Get the played threshold percentage."""
-        value = self.config.get_value(CONF_PLAYED_THRESHOLD, 90)
-        if isinstance(value, (int, float)):
-            # Convert from 1-100 percentage to 0.0-1.0 decimal
-            return float(value) / 100.0
-        elif isinstance(value, str):
-            try:
-                return float(value) / 100.0
-            except ValueError:
-                return 0.9  # fallback to default (90%)
-        else:
-            return 0.9  # fallback to default for any other type
-
-    @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        base = SUPPORTED_FEATURES.copy()
+        base = self._base_supported_features.copy()
         if not self.custom_client_id_active:
             # Spotify has killed the similar tracks api for developers
             # https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api
@@ -498,26 +486,22 @@ class SpotifyProvider(MusicProvider):
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get all podcast episodes."""
-        # Get podcast object for context if available - this should be cached from previous calls
+        # Get podcast object for context if available
         podcast: Podcast | None = None
-
         try:
             podcast = await self.mass.music.podcasts.get_provider_item(
                 prov_podcast_id, self.instance_id
             )
         except MediaNotFoundError:
-            self.logger.debug("Podcast %s not found in Music Assistant library", prov_podcast_id)
-
-        # If we don't have the podcast from MA context, get it via the API
-        if not podcast:
+            # If not in MA library, get it via API (this is cached)
             try:
-                podcast = await self.get_podcast(prov_podcast_id)  # This is cached
+                podcast = await self.get_podcast(prov_podcast_id)
             except MediaNotFoundError:
                 self.logger.warning(
                     "Podcast with ID %s is no longer available on Spotify", prov_podcast_id
                 )
 
-        # Get cached episode data
+        # Get cached episode data - this should be fast after first call
         episodes_data = await self._get_podcast_episodes_data(prov_podcast_id)
 
         # Parse and yield episodes with position
@@ -530,12 +514,6 @@ class SpotifyProvider(MusicProvider):
                 resume_point = episode_data["resume_point"]
                 fully_played = resume_point.get("fully_played", False)
                 position_ms = resume_point.get("resume_position_ms", 0)
-
-                # Apply threshold logic
-                if not fully_played and episode_data.get("duration_ms", 0) > 0:
-                    completion_ratio = position_ms / episode_data["duration_ms"]
-                    if completion_ratio >= self.played_threshold:
-                        fully_played = True
 
                 episode.fully_played = fully_played if fully_played else None
                 episode.resume_position_ms = position_ms if position_ms > 0 else None
@@ -564,71 +542,44 @@ class SpotifyProvider(MusicProvider):
                 self.logger.debug(f"Error fetching episode {item_id}: {e}")
                 raise NotImplementedError("Unable to fetch episode data from Spotify")
 
-            if not episode_obj:
-                raise NotImplementedError("No episode data from Spotify")
-
-            if "resume_point" not in episode_obj or not episode_obj["resume_point"]:
+            if (
+                not episode_obj
+                or "resume_point" not in episode_obj
+                or not episode_obj["resume_point"]
+            ):
                 raise NotImplementedError("No resume point data from Spotify")
 
-            try:
-                resume_point = episode_obj["resume_point"]
-                fully_played = resume_point.get("fully_played", False)
-                position_ms = resume_point.get("resume_position_ms", 0)
-
-                # Apply played threshold logic
-                if not fully_played and episode_obj.get("duration_ms", 0) > 0:
-                    completion_ratio = position_ms / episode_obj["duration_ms"]
-                    if completion_ratio >= self.played_threshold:
-                        fully_played = True
-
-                return fully_played, position_ms
-            except (KeyError, TypeError, AttributeError) as e:
-                self.logger.debug(f"Invalid resume point data structure for {item_id}: {e}")
-                raise NotImplementedError("Invalid resume point data from Spotify")
+            resume_point = episode_obj["resume_point"]
+            fully_played = resume_point.get("fully_played", False)
+            position_ms = resume_point.get("resume_position_ms", 0)
+            return fully_played, position_ms
 
         elif media_type == MediaType.AUDIOBOOK:
             if not self.audiobooks_enabled:
                 raise NotImplementedError("Audiobook support is disabled")
-
             if not self.audiobook_progress_sync_enabled:
                 raise NotImplementedError("Spotify audiobook resume sync disabled in settings")
 
             try:
-                # Get chapters data to find current position
                 chapters_data = await self._get_audiobook_chapters_data(item_id)
                 if not chapters_data:
                     raise NotImplementedError("No chapters data available")
 
                 total_position_ms = 0
                 fully_played = True
-                found_current_chapter = False
 
-                # Calculate total position by summing completed chapters + current chapter progress
                 for chapter in chapters_data:
                     resume_point = chapter.get("resume_point", {})
                     chapter_fully_played = resume_point.get("fully_played", False)
                     chapter_position_ms = resume_point.get("resume_position_ms", 0)
 
                     if chapter_fully_played:
-                        # Add full chapter duration to total
                         total_position_ms += chapter.get("duration_ms", 0)
-                    elif chapter_position_ms > 0 and not found_current_chapter:
-                        # This is the current chapter - add partial progress
+                    elif chapter_position_ms > 0:
                         total_position_ms += chapter_position_ms
                         fully_played = False
-                        found_current_chapter = True
-
-                        # Apply played threshold logic for current chapter
-                        if chapter.get("duration_ms", 0) > 0:
-                            completion_ratio = chapter_position_ms / chapter["duration_ms"]
-                            if completion_ratio >= self.played_threshold:
-                                # Consider this chapter as played
-                                total_position_ms = (
-                                    total_position_ms - chapter_position_ms + chapter["duration_ms"]
-                                )
                         break
                     else:
-                        # Not played, not current - audiobook is not fully played
                         fully_played = False
                         break
 

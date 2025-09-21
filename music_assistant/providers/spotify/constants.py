@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from music_assistant_models.enums import ProviderFeature
-
 # Configuration Keys
 CONF_CLIENT_ID = "client_id"
 CONF_ACTION_AUTH = "auth"
@@ -12,7 +10,6 @@ CONF_ACTION_CLEAR_AUTH = "clear_auth"
 CONF_ENABLE_AUDIOBOOKS = "enable_audiobooks"
 CONF_SYNC_PODCAST_PROGRESS = "sync_podcast_progress"
 CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
-CONF_PLAYED_THRESHOLD = "played_threshold"
 
 # OAuth Settings
 SCOPE = [
@@ -43,25 +40,3 @@ CALLBACK_REDIRECT_URL = "https://music-assistant.io/callback"
 
 # Other Constants
 LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
-
-# Base Features - Note: Audiobook features are dynamically added in the provider
-# based on the CONF_ENABLE_AUDIOBOOKS setting
-SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ALBUMS,
-    ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.LIBRARY_ARTISTS_EDIT,
-    ProviderFeature.LIBRARY_ALBUMS_EDIT,
-    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-    ProviderFeature.LIBRARY_TRACKS_EDIT,
-    ProviderFeature.PLAYLIST_TRACKS_EDIT,
-    ProviderFeature.PLAYLIST_CREATE,
-    ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,
-    ProviderFeature.ARTIST_ALBUMS,
-    ProviderFeature.ARTIST_TOPTRACKS,
-    ProviderFeature.SIMILAR_TRACKS,
-    ProviderFeature.LIBRARY_PODCASTS,
-    ProviderFeature.LIBRARY_PODCASTS_EDIT,
-}

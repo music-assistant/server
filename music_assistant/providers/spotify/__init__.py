@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 import pkce
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
@@ -19,7 +19,6 @@ from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_CLIENT_ID,
     CONF_ENABLE_AUDIOBOOKS,
-    CONF_PLAYED_THRESHOLD,
     CONF_REFRESH_TOKEN,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
@@ -34,10 +33,29 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_PODCASTS_EDIT,
+}
+
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
+    instance_id: str | None = None,
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -48,6 +66,8 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+    # ruff: noqa: ARG001
+
     if action == CONF_ACTION_AUTH:
         # spotify PKCE auth flow
         # https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
@@ -134,47 +154,6 @@ async def get_config_entries(
             hidden=not auth_required,
         ),
         ConfigEntry(
-            key=CONF_ENABLE_AUDIOBOOKS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Audiobook Support",
-            description="Enable support for Spotify audiobooks. Note that audiobook availability "
-            "varies by country. Check availability at: "
-            "https://support.spotify.com/us/authors/article/audiobooks-availability/",
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_SYNC_PODCAST_PROGRESS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Sync Played Status from Spotify",
-            description="Automatically sync episode played status from Spotify to Music Assistant. "
-            "Episodes marked as played in Spotify will be marked as played in MA."
-            "Only enable this if you use both the Spotify app and Music Assistant "
-            "for podcast playback.",
-            default_value=False,
-            value=values.get(CONF_SYNC_PODCAST_PROGRESS, False) if values else False,
-        ),
-        ConfigEntry(
-            key=CONF_SYNC_AUDIOBOOK_PROGRESS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Sync Audiobook Progress from Spotify",
-            description="Automatically sync audiobook progress from Spotify to Music Assistant. "
-            "Progress from Spotify app will sync to MA when audiobooks are accessed. "
-            "Only enable this if you use both the Spotify app and Music Assistant "
-            "for audiobook playback.",
-            default_value=False,
-            value=values.get(CONF_SYNC_AUDIOBOOK_PROGRESS, False) if values else False,
-        ),
-        ConfigEntry(
-            key=CONF_PLAYED_THRESHOLD,
-            type=ConfigEntryType.INTEGER,
-            label="Played Threshold (%)",
-            description="Percentage of episode completion to consider it 'played' "
-            "when not explicitly marked by Spotify (50 = 50%, 90 = 90%).",
-            default_value=90,
-            value=values.get(CONF_PLAYED_THRESHOLD, 90) if values else 90,
-            range=(1, 100),
-        ),
-        ConfigEntry(
             key=CONF_ACTION_AUTH,
             type=ConfigEntryType.ACTION,
             label="Authenticate with Spotify",
@@ -192,6 +171,39 @@ async def get_config_entries(
             required=False,
             hidden=auth_required,
         ),
+        ConfigEntry(
+            key=CONF_ENABLE_AUDIOBOOKS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable Audiobook Support",
+            description="Enable support for Spotify audiobooks. Note that audiobook availability "
+            "varies by country. Check availability at: "
+            "https://support.spotify.com/us/authors/article/audiobooks-availability/",
+            default_value=False,
+        ),
+        ConfigEntry(
+            key=CONF_SYNC_PODCAST_PROGRESS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Sync Podcast Status from Spotify",
+            description="Automatically sync episode played status from Spotify to Music Assistant. "
+            "Episodes marked as played in Spotify will be marked as played in MA."
+            "Only enable this if you use both the Spotify app and Music Assistant "
+            "for podcast playback.",
+            default_value=False,
+            value=values.get(CONF_SYNC_PODCAST_PROGRESS, True) if values else True,
+            category="sync_options",
+        ),
+        ConfigEntry(
+            key=CONF_SYNC_AUDIOBOOK_PROGRESS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Sync Audiobook Progress from Spotify",
+            description="Automatically sync audiobook progress from Spotify to Music Assistant. "
+            "Progress from Spotify app will sync to MA when audiobooks are accessed. "
+            "Only enable this if you use both the Spotify app and Music Assistant "
+            "for audiobook playback.",
+            default_value=False,
+            value=values.get(CONF_SYNC_AUDIOBOOK_PROGRESS, False) if values else False,
+            category="sync_options",
+        ),
     )
 
 
@@ -202,4 +214,4 @@ async def setup(
     if config.get_value(CONF_REFRESH_TOKEN) in (None, ""):
         msg = "Re-Authentication required"
         raise SetupFailedError(msg)
-    return SpotifyProvider(mass, manifest, config)
+    return SpotifyProvider(mass, manifest, config, SUPPORTED_FEATURES)
