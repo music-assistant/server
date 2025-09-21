@@ -42,6 +42,8 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     CACHE_CATEGORY_MUSIC_SEARCH,
+    CONF_ENTRY_LIBRARY_EXPORT_ADD,
+    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -605,11 +607,6 @@ class MusicController(CoreController):
         """Add an item to the favorites."""
         if isinstance(item, str):
             item = await self.get_item_by_uri(item)
-        # ensure item is added to streaming provider library
-        if (provider := self.mass.get_provider(item.provider)) and provider.library_edit_supported(
-            item.media_type
-        ):
-            await provider.library_add(item)
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
@@ -625,6 +622,26 @@ class MusicController(CoreController):
             full_item.item_id,
             True,
         )
+        # add to provider(s) library if needed/wanted
+        provider_mappings_updated = False
+        for prov_mapping in full_item.provider_mappings:
+            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            if not provider.library_edit_supported(item.media_type):
+                continue
+            if prov_mapping.in_library:
+                continue
+            conf_export_library = provider.config.get_value(
+                CONF_ENTRY_LIBRARY_EXPORT_ADD.key, CONF_ENTRY_LIBRARY_EXPORT_ADD.default_value
+            )
+            if conf_export_library != "export_favorite":
+                continue
+            prov_item = full_item
+            prov_item.provider = prov_mapping.provider_instance
+            prov_item.item_id = prov_mapping.item_id
+            self.mass.create_task(provider.library_add(prov_item))
+            provider_mappings_updated = True
+        if provider_mappings_updated:
+            await ctrl.set_provider_mappings(full_item.item_id, full_item.provider_mappings)
 
     @api_command("music/favorites/remove_item")
     async def remove_item_from_favorites(
@@ -638,6 +655,25 @@ class MusicController(CoreController):
             library_item_id,
             False,
         )
+        # remove from provider(s) library if needed
+        provider_mappings_updated = False
+        full_item = await ctrl.get_library_item(library_item_id)
+        for prov_mapping in full_item.provider_mappings:
+            if not prov_mapping.in_library:
+                continue
+            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            if not provider.library_edit_supported(full_item.media_type):
+                continue
+            conf_export_library = provider.config.get_value(
+                CONF_ENTRY_LIBRARY_EXPORT_REMOVE.key, CONF_ENTRY_LIBRARY_EXPORT_REMOVE.default_value
+            )
+            if conf_export_library != "export_favorite":
+                continue
+            self.mass.create_task(provider.library_remove(prov_mapping.item_id, media_type))
+            prov_mapping.in_library = False
+            provider_mappings_updated = True
+        if provider_mappings_updated:
+            await ctrl.set_provider_mappings(library_item_id, full_item.provider_mappings)
 
     @api_command("music/library/remove_item")
     async def remove_item_from_library(
@@ -649,15 +685,21 @@ class MusicController(CoreController):
         Destructive! Will remove the item and all dependants.
         """
         ctrl = self.get_controller(media_type)
-        item = await ctrl.get_library_item(library_item_id)
-        # remove from all providers
-        for provider_mapping in item.provider_mappings:
-            if not provider_mapping.in_library:
+        # remove from provider(s) library
+        full_item = await ctrl.get_library_item(library_item_id)
+        for prov_mapping in full_item.provider_mappings:
+            if not prov_mapping.in_library:
                 continue
-            if prov_controller := self.mass.get_provider(provider_mapping.provider_instance):
-                if not prov_controller.library_edit_supported(item.media_type):
-                    continue
-                await prov_controller.library_remove(provider_mapping.item_id, item.media_type)
+            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            if not provider.library_edit_supported(full_item.media_type):
+                continue
+            conf_export_library = provider.config.get_value(
+                CONF_ENTRY_LIBRARY_EXPORT_REMOVE.key, CONF_ENTRY_LIBRARY_EXPORT_REMOVE.default_value
+            )
+            if conf_export_library != "export_library":
+                continue
+            self.mass.create_task(provider.library_remove(prov_mapping.item_id, media_type))
+        # remove from library
         await ctrl.remove_item_from_library(library_item_id, recursive)
 
     @api_command("music/library/add_item")
@@ -676,11 +718,18 @@ class MusicController(CoreController):
         # add to provider(s) library first
         for prov_mapping in item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if provider.library_edit_supported(item.media_type):
-                prov_item = item
-                prov_item.provider = prov_mapping.provider_instance
-                prov_item.item_id = prov_mapping.item_id
-                await provider.library_add(prov_item)
+            if not provider.library_edit_supported(item.media_type):
+                continue
+            conf_export_library = provider.config.get_value(
+                CONF_ENTRY_LIBRARY_EXPORT_ADD.key, CONF_ENTRY_LIBRARY_EXPORT_ADD.default_value
+            )
+            if conf_export_library != "export_library":
+                continue
+            prov_item = item
+            prov_item.provider = prov_mapping.provider_instance
+            prov_item.item_id = prov_mapping.item_id
+            prov_mapping.in_library = True
+            self.mass.create_task(provider.library_add(prov_item))
         # add (or overwrite) to library
         ctrl = self.get_controller(item.media_type)
         library_item = await ctrl.add_item_to_library(item, overwrite_existing)

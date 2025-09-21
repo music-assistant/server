@@ -35,6 +35,8 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_BASS,
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
+    CONF_ENTRY_LIBRARY_EXPORT_ADD,
+    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
     CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS,
     CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
     CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
@@ -311,6 +313,20 @@ class ConfigController:
                 extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS)
             if ProviderFeature.LIBRARY_RADIOS in supported_features:
                 extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS)
+            # sync export settings
+            if supported_features.intersection(
+                {
+                    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+                    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+                    ProviderFeature.LIBRARY_TRACKS_EDIT,
+                    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+                    ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+                    ProviderFeature.LIBRARY_PODCASTS_EDIT,
+                    ProviderFeature.LIBRARY_RADIOS_EDIT,
+                }
+            ):
+                extra_entries.append(CONF_ENTRY_LIBRARY_EXPORT_ADD)
+                extra_entries.append(CONF_ENTRY_LIBRARY_EXPORT_REMOVE)
 
         return [
             *DEFAULT_PROVIDER_CONFIG_ENTRIES,

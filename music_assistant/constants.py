@@ -743,6 +743,48 @@ CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS = ConfigEntry(
     multi_value=True,
 )
 
+CONF_ENTRY_LIBRARY_EXPORT_ADD = ConfigEntry(
+    key="library_export_add",
+    type=ConfigEntryType.STRING,
+    label="Sync back library additions",
+    description="Specify the behavior if an item is (manually) added to the "
+    "Music Assistant Library (or favorites). \n"
+    "Should we synchronise that action back to the provider?\n\n"
+    "You can choose to add items to the provider's library as soon as you "
+    "add it to the Music Assistant Library or only do that when you mark the item as "
+    "favorite. \nIf you do not want to sync back to the provider at all, you can choose "
+    "the 'Don't sync back to the provider' option.",
+    default_value="export_favorite",
+    category="sync_options",
+    options=[
+        ConfigValueOption("When an item is added to the library", "export_library"),
+        ConfigValueOption("When an item is marked as favorite", "export_favorite"),
+        ConfigValueOption("Don't sync back to the provider", "no_export"),
+    ],
+)
+CONF_ENTRY_LIBRARY_EXPORT_REMOVE = ConfigEntry(
+    key="library_export_remove",
+    type=ConfigEntryType.STRING,
+    label="Sync back library removals",
+    description="Specify the behavior if an item is (manually) removed from the "
+    "Music Assistant Library (or favorites). \n"
+    "Should we synchronise that action back to the provider?\n\n"
+    "You can choose to remove items from the provider's library as soon as you (manually) "
+    "remove it from the Music Assistant Library or only do that when you unmark the item as "
+    "favorite. \nIf you do not want to sync back to the provider at all, you can choose "
+    "the 'Don't sync back to the provider' option.\n\n"
+    "Please note that if you you don't sync removals back to the provider and you have enabled "
+    "automatic sync/import for this provider, the item may reappear in the library "
+    "the next time a sync is performed.",
+    default_value="export_favorite",
+    category="sync_options",
+    options=[
+        ConfigValueOption("When an item is removed from the library", "export_library"),
+        ConfigValueOption("When an item is unmarked as favorite", "export_favorite"),
+        ConfigValueOption("Don't sync back to the provider", "no_export"),
+    ],
+)
+
 CONF_PROVIDER_SYNC_INTERVAL_OPTIONS = [
     ConfigValueOption("Disable automatic sync for this mediatype", 0),
     ConfigValueOption("Every 30 minutes", 30),
