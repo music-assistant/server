@@ -118,7 +118,7 @@ class SpotifyProvider(MusicProvider):
         return bool(self.config.get_value(CONF_SYNC_AUDIOBOOK_PROGRESS, False))
 
     @property
-    def sync_played_status_enabled(self) -> bool:
+    def podcast_progress_sync_enabled(self) -> bool:
         """Check if played status sync is enabled."""
         value = self.config.get_value(CONF_SYNC_PODCAST_PROGRESS, True)
         return bool(value) if value is not None else True
@@ -401,44 +401,11 @@ class SpotifyProvider(MusicProvider):
         # Parse basic audiobook without chapters first
         audiobook = parse_audiobook(audiobook_obj, self)
 
-        # Add chapters from Spotify API data - this properly creates an Audiobook object
+        # Add chapters from Spotify API data
         await self._add_audiobook_chapters(audiobook)
 
-        # Set resume position - use max of MA internal position and Spotify position
-        ma_resume_position = 0
-        spotify_resume_position = 0
-
-        # Try to get MA's internal resume position from existing library item
-        try:
-            existing_item = await self.mass.music.audiobooks.get_library_item_by_prov_id(
-                prov_audiobook_id, self.instance_id
-            )
-            if existing_item and existing_item.resume_position_ms:
-                ma_resume_position = existing_item.resume_position_ms
-        except MediaNotFoundError:
-            self.logger.debug(f"No existing library item for audiobook {prov_audiobook_id}")
-        except ResourceTemporarilyUnavailable as e:
-            self.logger.debug(
-                "Temporary error retrieving existing resume position "
-                f"for audiobook {prov_audiobook_id}: {e}"
-            )
-
-        # Try to get Spotify's resume position if sync is enabled
-        if self.audiobook_progress_sync_enabled:
-            try:
-                _, spotify_resume_position = await self.get_resume_position(
-                    prov_audiobook_id, MediaType.AUDIOBOOK
-                )
-            except NotImplementedError:
-                spotify_resume_position = 0
-            except Exception as e:
-                self.logger.debug(
-                    f"Could not get Spotify resume position for {prov_audiobook_id}: {e}"
-                )
-                spotify_resume_position = 0
-
-        # Use the greater of the two positions to ensure no progress is lost
-        audiobook.resume_position_ms = max(ma_resume_position, spotify_resume_position)
+        # Note: Resume position will be handled by MA's internal system
+        # which calls get_resume_position() when needed
 
         return audiobook
 
@@ -559,7 +526,7 @@ class SpotifyProvider(MusicProvider):
             episode.position = idx + 1
 
             # Set played status if sync is enabled and resume data exists
-            if self.sync_played_status_enabled and "resume_point" in episode_data:
+            if self.podcast_progress_sync_enabled and "resume_point" in episode_data:
                 resume_point = episode_data["resume_point"]
                 fully_played = resume_point.get("fully_played", False)
                 position_ms = resume_point.get("resume_position_ms", 0)
@@ -586,7 +553,7 @@ class SpotifyProvider(MusicProvider):
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
         """Get resume position for episode/audiobook from Spotify."""
         if media_type == MediaType.PODCAST_EPISODE:
-            if not self.sync_played_status_enabled:
+            if not self.podcast_progress_sync_enabled:
                 raise NotImplementedError("Spotify podcast resume sync disabled in settings")
 
             try:
