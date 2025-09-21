@@ -141,11 +141,7 @@ class SmartFadesAnalyzer:
     def _librosa_beat_analysis(
         self, audio_array: np.ndarray[Any, np.dtype[np.float32]]
     ) -> SmartFadesAnalysis | None:
-        """Perform beat analysis using librosa.
-
-        Uses librosa.beat.beat_track() for reliable BPM and beat detection.
-        This runs in a thread pool via asyncio.to_thread() for async compatibility.
-        """
+        """Perform beat analysis using librosa."""
         try:
             # Convert to mono for analysis (average stereo channels)
             audio_mono = np.mean(audio_array, axis=1).astype(np.float32)

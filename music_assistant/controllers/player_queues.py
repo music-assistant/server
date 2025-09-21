@@ -2133,7 +2133,6 @@ class PlayerQueuesController(CoreController):
 
     def _trigger_smart_fades_analysis(self, next_item: QueueItem) -> None:
         """Trigger analysis for smart fades if needed."""
-        # TODO: Make conditional based on smart fade config
         if not next_item.streamdetails:
             self.logger.warning("No stream details for smart fades analysis: %s", next_item.name)
             return
