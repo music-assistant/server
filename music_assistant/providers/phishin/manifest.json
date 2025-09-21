@@ -1,0 +1,10 @@
+{
+  "domain": "phishin",
+  "name": "Phish.in",
+  "description": "An open source archive of live Phish audience recordings",
+  "documentation": "https://music-assistant.io/music-providers/phishin/",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@ozgav",
+  "multi_instance": false
+}
