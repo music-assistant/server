@@ -723,7 +723,7 @@ CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS = ConfigEntry(
     "If you want to override this default behavior, "
     "you can use this configuration option.\n\n"
     "Please note that some streaming providers may already define this behavior unsolicited, "
-    "by automatically marking all tracks from the album in their library/favorites.",
+    "by automatically adding all tracks from the album to their library/favorites.",
     default_value=False,
     category="sync_options",
 )
