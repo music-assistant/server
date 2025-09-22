@@ -45,6 +45,7 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
@@ -53,7 +54,7 @@ from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.util import install_package
+from music_assistant.helpers.util import infer_album_type, install_package
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -685,6 +686,10 @@ class YoutubeMusicProvider(MusicProvider):
     def _parse_album(self, album_obj: dict, album_id: str | None = None) -> Album:
         """Parse a YT Album response to an Album model object."""
         album_id = album_id or album_obj.get("id") or album_obj.get("browseId")
+
+        if not album_id:
+            raise InvalidDataError("Album ID is required but not found")
+
         if "title" in album_obj:
             name = album_obj["title"]
         elif "name" in album_obj:
@@ -705,19 +710,21 @@ class YoutubeMusicProvider(MusicProvider):
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
         if "thumbnails" in album_obj:
-            album.metadata.images = self._parse_thumbnails(album_obj["thumbnails"])
+            album.metadata.images = UniqueList(self._parse_thumbnails(album_obj["thumbnails"]))
         if description := album_obj.get("description"):
             album.metadata.description = unquote(description)
         if "isExplicit" in album_obj:
             album.metadata.explicit = album_obj["isExplicit"]
         if "artists" in album_obj:
-            album.artists = [
-                self._get_artist_item_mapping(artist)
-                for artist in album_obj["artists"]
-                if artist.get("id")
-                or artist.get("channelId")
-                or artist.get("name") == "Various Artists"
-            ]
+            album.artists = UniqueList(
+                [
+                    self._get_artist_item_mapping(artist)
+                    for artist in album_obj["artists"]
+                    if artist.get("id")
+                    or artist.get("channelId")
+                    or artist.get("name") == "Various Artists"
+                ]
+            )
         if "type" in album_obj:
             if album_obj["type"] == "Single":
                 album_type = AlbumType.SINGLE
@@ -728,6 +735,12 @@ class YoutubeMusicProvider(MusicProvider):
             else:
                 album_type = AlbumType.UNKNOWN
             album.album_type = album_type
+
+        # Try inference - override if it finds something more specific
+        inferred_type = infer_album_type(name, "")  # YouTube doesn't seem to have version field
+        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+            album.album_type = inferred_type
+
         return album
 
     def _parse_artist(self, artist_obj: dict) -> Artist:

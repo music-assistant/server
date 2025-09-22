@@ -6,7 +6,7 @@ import datetime
 import hashlib
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import client_exceptions
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -48,7 +48,12 @@ from music_assistant.constants import (
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.helpers.util import lock, parse_title_and_version, try_parse_int
+from music_assistant.helpers.util import (
+    infer_album_type,
+    lock,
+    parse_title_and_version,
+    try_parse_int,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -137,7 +142,7 @@ class QobuzProvider(MusicProvider):
             raise LoginFailed(msg)
 
     async def search(
-        self, search_query: str, media_types=list[MediaType], limit: int = 5
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -513,7 +518,9 @@ class QobuzProvider(MusicProvider):
             artist.metadata.description = artist_obj["biography"].get("content")
         return artist
 
-    async def _parse_album(self, album_obj: dict, artist_obj: dict | None = None):
+    async def parse_album(
+        self, album_obj: dict[str, Any], artist_obj: dict[str, Any] | None = None
+    ) -> Album:
         """Parse qobuz album object to generic layout."""
         if not artist_obj and "artist" not in album_obj:
             # artist missing in album info, return full abum instead
@@ -555,17 +562,23 @@ class QobuzProvider(MusicProvider):
             or album_obj.get("release_type", "") == "album"
         ):
             album.album_type = AlbumType.ALBUM
+
+        # Try inference - override if it finds something more specific
+        inferred_type = infer_album_type(name, version)
+        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+            album.album_type = inferred_type
+
         if "genre" in album_obj:
             album.metadata.genres = {album_obj["genre"]["name"]}
         if img := self.__get_image(album_obj):
-            album.metadata.images = [
+            album.metadata.add_image(
                 MediaItemImage(
+                    provider=self.lookup_key,
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
-            ]
+            )
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]["name"]
         if released_at := album_obj.get("released_at"):
