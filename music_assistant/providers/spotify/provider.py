@@ -878,9 +878,7 @@ class SpotifyProvider(MusicProvider):
                 chapter_seek = current_seek_seconds if i == start_chapter else 0
 
                 try:
-                    async for chunk in self.streamer.get_audio_stream_by_uri(
-                        chapter_uri, chapter_seek
-                    ):
+                    async for chunk in self.streamer.stream_spotify_uri(chapter_uri, chapter_seek):
                         yield chunk
                 except Exception as e:
                     self.logger.error(f"Chapter {i + 1} streaming failed: {e}")

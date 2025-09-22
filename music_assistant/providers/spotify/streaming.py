@@ -37,17 +37,10 @@ class LibrespotStreamer:
             VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot"
         )
 
-        async for chunk in self._stream_spotify_uri(spotify_uri, seek_position):
+        async for chunk in self.stream_spotify_uri(spotify_uri, seek_position):
             yield chunk
 
-    async def get_audio_stream_by_uri(
-        self, spotify_uri: str, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item using a direct Spotify URI."""
-        async for chunk in self._stream_spotify_uri(spotify_uri, seek_position):
-            yield chunk
-
-    async def _stream_spotify_uri(
+    async def stream_spotify_uri(
         self, spotify_uri: str, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Stream a Spotify URI using librespot.
