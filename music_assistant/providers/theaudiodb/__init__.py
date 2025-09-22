@@ -88,7 +88,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return AudioDbMetadataProvider(mass, manifest, config)
+    return AudioDbMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -142,11 +142,6 @@ class AudioDbMetadataProvider(MetadataProvider):
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=1, period=1)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on theaudiodb."""

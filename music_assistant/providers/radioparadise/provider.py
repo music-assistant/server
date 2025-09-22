@@ -5,14 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiohttp
-from music_assistant_models.enums import (
-    MediaType,
-    ProviderFeature,
-    StreamType,
-)
+from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -29,27 +25,9 @@ from . import parsers
 from .constants import RADIO_PARADISE_CHANNELS
 from .helpers import build_stream_url, find_current_song, get_current_block_position, get_next_song
 
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
-
-    from music_assistant import MusicAssistant
-
 
 class RadioParadiseProvider(MusicProvider):
     """Radio Paradise Music Provider for Music Assistant."""
-
-    def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig):
-        """Initialize the provider."""
-        super().__init__(mass, manifest, config)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_RADIOS,
-        }
 
     @property
     def is_streaming_provider(self) -> bool:

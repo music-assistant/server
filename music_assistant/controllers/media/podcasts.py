@@ -35,20 +35,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
     def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
-        self.base_query = """
-        SELECT
-            podcasts.*,
-            (SELECT JSON_GROUP_ARRAY(
-                json_object(
-                'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                        'provider_instance', provider_mappings.provider_instance,
-                        'available', provider_mappings.available,
-                        'audio_format', json(provider_mappings.audio_format),
-                        'url', provider_mappings.url,
-                        'details', provider_mappings.details
-                )) FROM provider_mappings WHERE provider_mappings.item_id = podcasts.item_id AND media_type = 'podcast') AS provider_mappings
-            FROM podcasts"""  # noqa: E501
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/podcast_episodes", self.episodes)
@@ -174,7 +160,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, item.provider_mappings)
+        await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         return db_id
 
@@ -186,11 +172,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         cur_item = await self.get_library_item(db_id)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*cur_item.provider_mappings, *update.provider_mappings}
-        )
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
         await self.mass.music.database.update(
@@ -211,7 +192,12 @@ class PodcastsController(MediaControllerBase[Podcast]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*update.provider_mappings, *cur_item.provider_mappings}
+        )
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_podcast_episodes(

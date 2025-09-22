@@ -25,7 +25,7 @@ from hass_client.utils import (
     get_websocket_url,
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 from music_assistant_models.player_control import PlayerControl
 
@@ -53,12 +53,16 @@ CONF_POWER_CONTROLS = "power_controls"
 CONF_MUTE_CONTROLS = "mute_controls"
 CONF_VOLUME_CONTROLS = "volume_controls"
 
+SUPPORTED_FEATURES: set[ProviderFeature] = (
+    set()
+)  # we don't have any special supported features (yet)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return HomeAssistantProvider(mass, manifest, config)
+    return HomeAssistantProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(

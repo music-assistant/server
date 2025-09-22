@@ -14,7 +14,7 @@ from libopensonic.errors import (
     ParameterError,
     SonicError,
 )
-from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
     LoginFailed,
@@ -140,27 +140,6 @@ class OpenSonicProvider(MusicProvider):
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
         self._reco_limit = int(str(self.config.get_value(CONF_RECO_SIZE)))
         self._cache_base_key = f"{self.instance_id}/"
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return a list of supported features."""
-        return {
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.RECOMMENDATIONS,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-            ProviderFeature.SIMILAR_TRACKS,
-            ProviderFeature.PLAYLIST_TRACKS_EDIT,
-            ProviderFeature.PLAYLIST_CREATE,
-            ProviderFeature.LIBRARY_PODCASTS,
-            ProviderFeature.LIBRARY_PODCASTS_EDIT,
-        }
 
     @property
     def is_streaming_provider(self) -> bool:

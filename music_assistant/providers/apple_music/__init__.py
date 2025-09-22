@@ -103,7 +103,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return AppleMusicProvider(mass, manifest, config)
+    return AppleMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -276,11 +276,6 @@ class AppleMusicProvider(MusicProvider):
             os.path.join(WIDEVINE_BASE_PATH, DECRYPT_PRIVATE_KEY_FILENAME), "rb"
         ) as _file:
             self._decrypt_private_key = await _file.read()
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5

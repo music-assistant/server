@@ -65,7 +65,7 @@ async def setup(
     if not config.get_value(CONF_CLIENT_ID) or not config.get_value(CONF_AUTHORIZATION):
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
-    return SoundcloudMusicProvider(mass, manifest, config)
+    return SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -113,11 +113,6 @@ class SoundcloudMusicProvider(MusicProvider):
         await self._soundcloud.login()
         self._me = await self._soundcloud.get_account_details()
         self._user_id = self._me["id"]
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10

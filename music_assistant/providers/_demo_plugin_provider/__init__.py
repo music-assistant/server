@@ -50,6 +50,18 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES = {
+    # MANDATORY
+    # this constant should contain a set of provider-level features
+    # that your provider supports or an empty set if none.
+    # see the ProviderFeature enum for all available features
+    # at time of writing the only plugin-specific feature is the
+    # 'AUDIO_SOURCE' feature which indicates that this provider can
+    # provide a (single) audio source to Music Assistant, such as a live stream.
+    # we add this feature here to demonstrate the concept.
+    ProviderFeature.AUDIO_SOURCE
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -58,7 +70,7 @@ async def setup(
     # setup is called when the user wants to setup a new provider instance.
     # you are free to do any preflight checks here and but you must return
     # an instance of the provider.
-    return MyDemoPluginprovider(mass, manifest, config)
+    return MyDemoPluginprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -100,17 +112,6 @@ class MyDemoPluginprovider(PluginProvider):
     In most cases its not needed to override any of the builtin methods and you only
     implement the abc methods with your actual implementation.
     """
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        # you should return a set of provider-level features
-        # here that your plugin provider supports or empty set if none.
-        # at time of writing the only plugin-specific feature is the
-        # 'AUDIO_SOURCE' feature which indicates that this provider can
-        # provide a (single) audio source to Music Assistant, such as a live stream.
-        # we add this feature here to demonstrate the concept.
-        return {ProviderFeature.AUDIO_SOURCE}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""

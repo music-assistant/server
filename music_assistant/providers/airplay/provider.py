@@ -7,7 +7,7 @@ import socket
 from random import randrange
 from typing import cast
 
-from music_assistant_models.enums import PlaybackState, ProviderFeature
+from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
@@ -39,16 +39,6 @@ class AirPlayProvider(PlayerProvider):
     cliraop_bin: str | None
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-            # support sync groups by reporting create/remove player group support
-            ProviderFeature.CREATE_GROUP_PLAYER,
-            ProviderFeature.REMOVE_GROUP_PLAYER,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -78,11 +78,11 @@ SORT_KEYS = {
 }
 
 
-class MediaControllerBase[ItemCls](metaclass=ABCMeta):
+class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     """Base model for controller managing a MediaType."""
 
     media_type: MediaType
-    item_cls: MediaItemType
+    item_cls: type[MediaItemType]
     db_table: str
 
     def __init__(self, mass: MusicAssistant) -> None:
@@ -99,7 +99,8 @@ class MediaControllerBase[ItemCls](metaclass=ABCMeta):
                         'available', provider_mappings.available,
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
-                        'details', provider_mappings.details
+                        'details', provider_mappings.details,
+                        'in_library', provider_mappings.in_library
                 )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
                     AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
             FROM {self.db_table} """  # noqa: E501
@@ -584,7 +585,7 @@ class MediaControllerBase[ItemCls](metaclass=ABCMeta):
         if provider_mapping in library_item.provider_mappings:
             return
         library_item.provider_mappings.add(provider_mapping)
-        await self._set_provider_mappings(db_id, library_item.provider_mappings)
+        await self.set_provider_mappings(db_id, library_item.provider_mappings)
 
     async def remove_provider_mapping(
         self, item_id: str | int, provider_instance_id: str, provider_item_id: str
@@ -667,6 +668,39 @@ class MediaControllerBase[ItemCls](metaclass=ABCMeta):
             # remove item if it has no more providers
             with suppress(AssertionError):
                 await self.remove_item_from_library(db_id)
+
+    async def set_provider_mappings(
+        self,
+        item_id: str | int,
+        provider_mappings: Iterable[ProviderMapping],
+        overwrite: bool = False,
+    ) -> None:
+        """Update the provider_items table for the media item."""
+        db_id = int(item_id)  # ensure integer
+        if overwrite:
+            # on overwrite, clear the provider_mappings table first
+            # this is done for filesystem provider changing the path (and thus item_id)
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {"media_type": self.media_type.value, "item_id": db_id},
+            )
+        for provider_mapping in provider_mappings:
+            prov_map_obj = {
+                "media_type": self.media_type.value,
+                "item_id": db_id,
+                "provider_domain": provider_mapping.provider_domain,
+                "provider_instance": provider_mapping.provider_instance,
+                "provider_item_id": provider_mapping.item_id,
+                "available": provider_mapping.available,
+                "audio_format": serialize_to_json(provider_mapping.audio_format),
+            }
+            for key in ("url", "details", "in_library"):
+                if (value := getattr(provider_mapping, key, None)) is not None:
+                    prov_map_obj[key] = value
+            await self.mass.music.database.upsert(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                prov_map_obj,
+            )
 
     @abstractmethod
     async def _add_library_item(
@@ -838,39 +872,6 @@ class MediaControllerBase[ItemCls](metaclass=ABCMeta):
                 sql_query += f" ORDER BY {sort_key}"
 
         return sql_query
-
-    async def _set_provider_mappings(
-        self,
-        item_id: str | int,
-        provider_mappings: Iterable[ProviderMapping],
-        overwrite: bool = False,
-    ) -> None:
-        """Update the provider_items table for the media item."""
-        db_id = int(item_id)  # ensure integer
-        if overwrite:
-            # on overwrite, clear the provider_mappings table first
-            # this is done for filesystem provider changing the path (and thus item_id)
-            await self.mass.music.database.delete(
-                DB_TABLE_PROVIDER_MAPPINGS,
-                {"media_type": self.media_type.value, "item_id": db_id},
-            )
-        for provider_mapping in provider_mappings:
-            if not provider_mapping.provider_instance:
-                continue
-            await self.mass.music.database.insert_or_replace(
-                DB_TABLE_PROVIDER_MAPPINGS,
-                {
-                    "media_type": self.media_type.value,
-                    "item_id": db_id,
-                    "provider_domain": provider_mapping.provider_domain,
-                    "provider_instance": provider_mapping.provider_instance,
-                    "provider_item_id": provider_mapping.item_id,
-                    "available": provider_mapping.available,
-                    "url": provider_mapping.url,
-                    "audio_format": serialize_to_json(provider_mapping.audio_format),
-                    "details": provider_mapping.details,
-                },
-            )
 
     @staticmethod
     def _parse_db_row(db_row: Mapping) -> dict[str, Any]:
