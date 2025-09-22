@@ -34,7 +34,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return GeniusProvider(mass, manifest, config)
+    return GeniusProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -60,11 +60,6 @@ class GeniusProvider(MetadataProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._genius = Genius("public", skip_non_songs=True, remove_section_headers=True)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve synchronized lyrics for a track."""

@@ -99,6 +99,25 @@ DEFAULT_LIMIT = 50
 
 T = TypeVar("T")
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SEARCH,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.RECOMMENDATIONS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -316,7 +335,7 @@ class TidalProvider(MusicProvider):
 
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig):
         """Initialize Tidal provider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self.auth = TidalAuthManager(
             http_session=mass.http_session,
             config_updater=self._update_auth_config,
@@ -374,28 +393,6 @@ class TidalProvider(MusicProvider):
         user_info = self._extract_data(api_result)
         logged_in_user = await self.get_user(str(user_info.get("userId")))
         await self.auth.update_user_info(logged_in_user, str(user_info.get("sessionId")))
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-            ProviderFeature.SEARCH,
-            ProviderFeature.LIBRARY_ARTISTS_EDIT,
-            ProviderFeature.LIBRARY_ALBUMS_EDIT,
-            ProviderFeature.LIBRARY_TRACKS_EDIT,
-            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            ProviderFeature.PLAYLIST_CREATE,
-            ProviderFeature.SIMILAR_TRACKS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.PLAYLIST_TRACKS_EDIT,
-            ProviderFeature.RECOMMENDATIONS,
-        }
 
     #
     # API REQUEST HELPERS & DECORATORS

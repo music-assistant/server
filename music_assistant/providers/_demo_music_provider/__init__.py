@@ -67,6 +67,29 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.SIMILAR_TRACKS,
+    # MANDATORY
+    # this constant should contain a set of provider-level features
+    # that your music provider supports or an empty set if none.
+    # for example 'ProviderFeature.BROWSE' if you can browse the provider's items.
+    # see the ProviderFeature enum for all available features
+}
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -74,7 +97,7 @@ async def setup(
     # setup is called when the user wants to setup a new provider instance.
     # you are free to do any preflight checks here and but you must return
     #  an instance of the provider.
-    return MyDemoMusicprovider(mass, manifest, config)
+    return MyDemoMusicprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -127,31 +150,6 @@ class MyDemoMusicprovider(MusicProvider):
     In most cases its not needed to override any of the builtin methods and you only
     implement the abc methods with your actual implementation.
     """
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        # MANDATORY
-        # you should return a tuple of provider-level features
-        # here that your music provider supports or an empty tuple if none.
-        # for example 'ProviderFeature.BROWSE' if you can browse the provider's items.
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.RECOMMENDATIONS,
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-            ProviderFeature.LIBRARY_ARTISTS_EDIT,
-            ProviderFeature.LIBRARY_ALBUMS_EDIT,
-            ProviderFeature.LIBRARY_TRACKS_EDIT,
-            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            ProviderFeature.SIMILAR_TRACKS,
-            # see the ProviderFeature enum for all available features
-        }
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -516,7 +514,7 @@ class MyDemoMusicprovider(MusicProvider):
         # This is only called if you reported the RECOMMENDATIONS feature in the supported_features.
         return []
 
-    async def sync_library(self, media_type: MediaType) -> None:
+    async def sync_library(self, media_type: MediaType, import_as_favorite: bool) -> None:
         """Run library sync for this provider."""
         # Run a full sync of the library for the given media type.
         # This is called by the music controller to sync items from your provider to the library.

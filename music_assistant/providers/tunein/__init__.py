@@ -5,10 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -16,11 +13,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-)
+from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
@@ -59,7 +52,7 @@ async def setup(
         msg = "Username is invalid"
         raise LoginFailed(msg)
 
-    return TuneInProvider(mass, manifest, config)
+    return TuneInProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -90,11 +83,6 @@ class TuneInProvider(MusicProvider):
     """Provider implementation for Tune In."""
 
     _throttler: Throttler
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

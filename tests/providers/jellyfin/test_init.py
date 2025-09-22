@@ -38,6 +38,7 @@ async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
                     "password": "password",
                 },
             )
+            await mass.music.start_sync()
 
         yield config
 

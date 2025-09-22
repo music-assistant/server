@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 
@@ -25,12 +25,19 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.SYNC_PLAYERS,
+    # support sync groups by reporting create/remove player group support
+    ProviderFeature.CREATE_GROUP_PLAYER,
+    ProviderFeature.REMOVE_GROUP_PLAYER,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return SonosPlayerProvider(mass, manifest, config)
+    return SonosPlayerProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(

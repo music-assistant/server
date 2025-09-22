@@ -6,7 +6,7 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.provider import ProviderManifest
 
@@ -33,12 +33,20 @@ from music_assistant.providers.snapcast.constants import (
 )
 from music_assistant.providers.snapcast.provider import SnapCastProvider
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.SYNC_PLAYERS,
+    ProviderFeature.REMOVE_PLAYER,
+    # support sync groups by reporting create/remove player group support
+    ProviderFeature.CREATE_GROUP_PLAYER,
+    ProviderFeature.REMOVE_GROUP_PLAYER,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return SnapCastProvider(mass, manifest, config)
+    return SnapCastProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(

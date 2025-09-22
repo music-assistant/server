@@ -13,7 +13,7 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientError
 from aiosonos.api.models import SonosCapability
 from aiosonos.utils import get_discovery_info
-from music_assistant_models.enums import PlaybackState, ProviderFeature
+from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
@@ -34,16 +34,6 @@ if TYPE_CHECKING:
 
 class SonosPlayerProvider(PlayerProvider):
     """Sonos Player provider."""
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-            # support sync groups by reporting create/remove player group support
-            ProviderFeature.CREATE_GROUP_PLAYER,
-            ProviderFeature.REMOVE_GROUP_PLAYER,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

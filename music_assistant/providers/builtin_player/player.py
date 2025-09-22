@@ -63,7 +63,7 @@ class BuiltinPlayer(Player):
         self._attr_needs_poll = True
         self._attr_poll_interval = POLL_INTERVAL
         self._attr_hidden_by_default = True
-        self._attr_expose_to_ha_by_default = False
+        self._attr_expose_to_ha_by_default = True
         self.register(name, False)
 
     def unregister_routes(self) -> None:

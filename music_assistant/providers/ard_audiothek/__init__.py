@@ -80,12 +80,19 @@ IDENTITY_TOOLKIT_TOKEN = "AIzaSyCEvA_fVGNMRcS9F-Ubaaa0y0qBDUMlh90"
 ARD_ACCOUNTS_URL = "https://accounts.ard.de"
 ARD_AUDIOTHEK_GRAPHQL = "https://api.ardaudiothek.de/graphql"
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.LIBRARY_PODCASTS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return ARDAudiothek(mass, manifest, config)
+    return ARDAudiothek(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def _login(session: ClientSession, email: str, password: str) -> tuple[str, str, str]:
@@ -232,16 +239,6 @@ async def get_config_entries(
 
 class ARDAudiothek(MusicProvider):
     """ARD Audiothek Music provider."""
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.LIBRARY_RADIOS,
-            ProviderFeature.LIBRARY_PODCASTS,
-        }
 
     async def get_client(self) -> Client:
         """Wrap the client creation procedure to recreate client.

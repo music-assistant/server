@@ -67,7 +67,7 @@ async def setup(
     if not config.get_value(CONF_USERNAME) or not config.get_value(CONF_PASSWORD):
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
-    return IBroadcastProvider(mass, manifest, config)
+    return IBroadcastProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -120,11 +120,6 @@ class IBroadcastProvider(MusicProvider):
 
             # temporary call to refresh library until ibroadcast provides a detailed api
             await self._client.refresh_library()
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from ibroadcast."""

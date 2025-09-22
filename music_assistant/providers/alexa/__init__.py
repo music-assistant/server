@@ -49,14 +49,14 @@ CONF_API_BASIC_AUTH_USERNAME = "api_username"
 CONF_API_BASIC_AUTH_PASSWORD = "api_password"
 CONF_API_URL = "api_url"
 
-SUPPORTED_FEATURES: set[ProviderFeature] = set()
+SUPPORTED_FEATURES: set[ProviderFeature] = set()  # no special features supported (yet)
 
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return AlexaProvider(mass, manifest, config)
+    return AlexaProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -353,16 +353,8 @@ class AlexaProvider(PlayerProvider):
     login: AlexaLogin
     devices: dict[str, AlexaDevice]
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
-
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize AlexaProvider and its device mapping."""
-        super().__init__(mass, manifest, config)
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
         self.devices = {}
 
     async def loaded_in_mass(self) -> None:

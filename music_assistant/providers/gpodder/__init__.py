@@ -20,11 +20,7 @@ from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-    ProviderConfig,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -38,12 +34,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.media_items import (
-    AudioFormat,
-    MediaItemType,
-    Podcast,
-    PodcastEpisode,
-)
+from music_assistant_models.media_items import AudioFormat, MediaItemType, Podcast, PodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.podcast_parsers import (
@@ -53,12 +44,7 @@ from music_assistant.helpers.podcast_parsers import (
 )
 from music_assistant.models.music_provider import MusicProvider
 
-from .client import (
-    EpisodeActionDelete,
-    EpisodeActionNew,
-    EpisodeActionPlay,
-    GPodderClient,
-)
+from .client import EpisodeActionDelete, EpisodeActionNew, EpisodeActionPlay, GPodderClient
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -90,12 +76,17 @@ CACHE_KEY_TIMESTAMP = (
 )
 CACHE_KEY_FEEDS = "feeds"  # list[str] : all available rss feed urls
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.BROWSE,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return GPodder(mass, manifest, config)
+    return GPodder(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -261,14 +252,6 @@ async def get_config_entries(
 
 class GPodder(MusicProvider):
     """gPodder MusicProvider."""
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Features supported by this Provider."""
-        return {
-            ProviderFeature.LIBRARY_PODCASTS,
-            ProviderFeature.BROWSE,
-        }
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""

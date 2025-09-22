@@ -83,10 +83,14 @@ class MusicCastProvider(PlayerProvider):
     update_player_locks: dict[str, asyncio.Lock] = {}
 
     def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature],
     ) -> None:
         """Init."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, supported_features)
         # str is device_id here:
         self.musiccast_player_helpers: dict[str, MusicCastPlayerHelper] = {}
 
@@ -95,16 +99,6 @@ class MusicCastProvider(PlayerProvider):
         for mc_player in self.mass.players.all(provider_filter=self.lookup_key):
             assert isinstance(mc_player, MusicCastPlayer)  # for type checking
             mc_player.physical_device.remove()
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-            # support sync groups by reporting create/remove player group support
-            ProviderFeature.CREATE_GROUP_PLAYER,
-            ProviderFeature.REMOVE_GROUP_PLAYER,
-        }
 
     async def handle_async_init(self) -> None:
         """Async init."""

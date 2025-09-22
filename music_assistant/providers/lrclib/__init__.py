@@ -37,7 +37,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return LrclibProvider(mass, manifest, config)
+    return LrclibProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -76,11 +76,6 @@ class LrclibProvider(MetadataProvider):
             # Less strict throttling for custom API endpoint
             self.throttler = ThrottlerManager(rate_limit=1, period=1)
             self.logger.debug("Using custom API endpoint: %s (throttling disabled)", self.api_url)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     @throttle_with_retries
     async def _get_data(self, **params: Any) -> dict[str, Any] | None:

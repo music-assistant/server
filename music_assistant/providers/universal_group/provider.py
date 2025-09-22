@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import shortuuid
-from music_assistant_models.enums import ProviderFeature
 
 from music_assistant.constants import CONF_DYNAMIC_GROUP_MEMBERS, CONF_GROUP_MEMBERS
 from music_assistant.models.player_provider import PlayerProvider
@@ -19,11 +18,6 @@ if TYPE_CHECKING:
 
 class UniversalGroupProvider(PlayerProvider):
     """Universal Group Player Provider."""
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {ProviderFeature.CREATE_GROUP_PLAYER, ProviderFeature.REMOVE_GROUP_PLAYER}
 
     async def create_group_player(
         self, name: str, members: list[str], dynamic: bool = True

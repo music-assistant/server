@@ -20,7 +20,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 if TYPE_CHECKING:
     from .provider import SpotifyProvider
@@ -115,6 +115,11 @@ def parse_album(album_obj: dict[str, Any], provider: SpotifyProvider) -> Album:
 
     with contextlib.suppress(ValueError):
         album.album_type = AlbumType(album_obj["album_type"])
+
+    # Override with inferred type if version indicates it
+    inferred_type = infer_album_type(album.name, album.version)
+    if inferred_type in (AlbumType.LIVE, AlbumType.SOUNDTRACK):
+        album.album_type = inferred_type
 
     if "genres" in album_obj:
         album.metadata.genres = set(album_obj["genres"])

@@ -62,12 +62,21 @@ CONF_KEY_NUM_TRACKS = "num_tracks"
 CONF_KEY_NUM_PODCASTS = "num_podcasts"
 CONF_KEY_NUM_AUDIOBOOKS = "num_audiobooks"
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_AUDIOBOOKS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return TestProvider(mass, manifest, config)
+    return TestProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -134,22 +143,6 @@ class TestProvider(MusicProvider):
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return False
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        sup_features = {ProviderFeature.BROWSE}
-        if self.config.get_value(CONF_KEY_NUM_ARTISTS):
-            sup_features.add(ProviderFeature.LIBRARY_ARTISTS)
-        if self.config.get_value(CONF_KEY_NUM_ALBUMS):
-            sup_features.add(ProviderFeature.LIBRARY_ALBUMS)
-        if self.config.get_value(CONF_KEY_NUM_TRACKS):
-            sup_features.add(ProviderFeature.LIBRARY_TRACKS)
-        if self.config.get_value(CONF_KEY_NUM_PODCASTS):
-            sup_features.add(ProviderFeature.LIBRARY_PODCASTS)
-        if self.config.get_value(CONF_KEY_NUM_AUDIOBOOKS):
-            sup_features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
-        return sup_features
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""

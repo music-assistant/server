@@ -22,7 +22,7 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.dsp import DSPConfig, DSPConfigPreset, ToneControlFilter
-from music_assistant_models.enums import EventType, ProviderType
+from music_assistant_models.enums import EventType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     ActionUnavailable,
     InvalidDataError,
@@ -35,6 +35,24 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_BASS,
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
+    CONF_ENTRY_LIBRARY_EXPORT_ADD,
+    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS,
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+    CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_PRESETS,
@@ -231,7 +249,7 @@ class ConfigController:
         instance_id: str | None = None,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    ) -> list[ConfigEntry]:
         """
         Return Config entries to setup/configure a provider.
 
@@ -241,9 +259,9 @@ class ConfigController:
         values: the (intermediate) raw values for config entries sent with the action.
         """
         # lookup provider manifest and module
-        for prov in self.mass.get_provider_manifests():
-            if prov.domain == provider_domain:
-                prov_mod = await load_provider_module(provider_domain, prov.requirements)
+        for manifest in self.mass.get_provider_manifests():
+            if manifest.domain == provider_domain:
+                prov_mod = await load_provider_module(provider_domain, manifest.requirements)
                 break
         else:
             msg = f"Unknown provider domain: {provider_domain}"
@@ -251,12 +269,72 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
 
-        return (
-            await prov_mod.get_config_entries(
-                self.mass, instance_id=instance_id, action=action, values=values
+        # add dynamic optional config entries that depend on features
+        if instance_id and (provider := self.mass.get_provider(instance_id)):
+            supported_features = provider.supported_features
+        else:
+            provider = None
+            supported_features: set[ProviderFeature] = getattr(
+                prov_mod, "SUPPORTED_FEATURES", set()
             )
-            + DEFAULT_PROVIDER_CONFIG_ENTRIES
-        )
+        extra_entries: list[ConfigEntry] = []
+        if manifest.type == ProviderType.MUSIC:
+            # library sync settings
+            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ARTISTS)
+            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUMS)
+                if provider and provider.is_streaming_provider:
+                    extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS)
+            if ProviderFeature.LIBRARY_TRACKS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_TRACKS)
+            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS)
+                if provider and provider.is_streaming_provider:
+                    extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS)
+            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS)
+            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PODCASTS)
+            if ProviderFeature.LIBRARY_RADIOS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_RADIOS)
+            # sync interval settings
+            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS)
+            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS)
+            if ProviderFeature.LIBRARY_TRACKS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS)
+            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS)
+            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS)
+            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS)
+            if ProviderFeature.LIBRARY_RADIOS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS)
+            # sync export settings
+            if supported_features.intersection(
+                {
+                    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+                    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+                    ProviderFeature.LIBRARY_TRACKS_EDIT,
+                    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+                    ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+                    ProviderFeature.LIBRARY_PODCASTS_EDIT,
+                    ProviderFeature.LIBRARY_RADIOS_EDIT,
+                }
+            ):
+                extra_entries.append(CONF_ENTRY_LIBRARY_EXPORT_ADD)
+                extra_entries.append(CONF_ENTRY_LIBRARY_EXPORT_REMOVE)
+
+        return [
+            *DEFAULT_PROVIDER_CONFIG_ENTRIES,
+            *extra_entries,
+            *await prov_mod.get_config_entries(
+                self.mass, instance_id=instance_id, action=action, values=values
+            ),
+        ]
 
     @api_command("config/providers/save")
     async def save_provider_config(
@@ -1046,7 +1124,4 @@ class ConfigController:
             # loading failed, remove config
             self.remove(conf_key)
             raise
-        if prov.type == ProviderType.MUSIC:
-            # kick off initial library scan
-            self.mass.music.start_sync(None, [config.instance_id])
         return config

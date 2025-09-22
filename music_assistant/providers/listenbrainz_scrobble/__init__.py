@@ -12,7 +12,7 @@ from collections.abc import Callable
 from liblistenbrainz import Listen, ListenBrainz
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import ConfigEntryType, EventType
+from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
@@ -23,6 +23,9 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
 
 CONF_USER_TOKEN = "_user_token"
+SUPPORTED_FEATURES: set[ProviderFeature] = (
+    set()
+)  # we don't have any special supported features (yet)
 
 
 async def setup(
@@ -52,7 +55,7 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         client: ListenBrainz,
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._client = client
         self._on_unload: list[Callable[[], None]] = []
 
