@@ -110,25 +110,28 @@ class ResonatePlayer(Player):
         self.logger.debug("Received GroupEvent: %s", event)
 
         match event:
-            case GroupCommandEvent(command=command, volume=_, mute=_):
+            case GroupCommandEvent(command=command, volume=volume, mute=mute):
                 self.logger.info("Group command received: %s", command)
                 match command:
                     case MediaCommand.PLAY:
-                        raise NotImplementedError
+                        await self.mass.players.cmd_play(self.player_id)
                     case MediaCommand.PAUSE:
-                        raise NotImplementedError
+                        await self.mass.players.cmd_pause(self.player_id)
                     case MediaCommand.STOP:
-                        raise NotImplementedError
+                        await self.mass.players.cmd_stop(self.player_id)
                     case MediaCommand.NEXT:
-                        raise NotImplementedError
+                        await self.mass.players.cmd_next_track(self.player_id)
                     case MediaCommand.PREVIOUS:
-                        raise NotImplementedError
+                        await self.mass.players.cmd_previous_track(self.player_id)
                     case MediaCommand.SEEK:
-                        raise NotImplementedError
+                        raise NotImplementedError("TODO: not supported by spec yet")
                     case MediaCommand.VOLUME:
-                        raise NotImplementedError
+                        assert volume is not None
+                        await self.mass.players.cmd_group_volume(self.player_id, volume)
                     case MediaCommand.MUTE:
-                        raise NotImplementedError
+                        assert mute is not None
+                        for member in self.mass.players.iter_group_members(self, active_only=True):
+                            await member.volume_mute(mute)
             case GroupStateChangedEvent(state=state):
                 self.logger.info("Group state changed to: %s", state)
                 match state:
