@@ -349,6 +349,7 @@ class AudioAddictProvider(MusicProvider):
             path=stream_url,
             allow_seek=False,
             can_seek=False,
+            duration=0,  # Infinite duration for radio streams
         )
 
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
