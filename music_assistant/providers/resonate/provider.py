@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from aioresonate.server import ClientAddedEvent, ClientRemovedEvent, ResonateEvent, ResonateServer
 from music_assistant_models.enums import ProviderFeature
@@ -65,9 +65,11 @@ class ResonateProvider(PlayerProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
-        # Start server for handling incoming Resonate connections on
-        # /resonate on the default port
-        await self.server_api.start_server(port=8927)
+        # Start server for handling incoming Resonate connections from clients
+        # and mDNS discovery of new clients
+        await self.server_api.start_server(
+            port=8927, host=cast("str", self.mass.streams.publish_ip)
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """
