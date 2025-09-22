@@ -7,12 +7,7 @@ from typing import TYPE_CHECKING
 
 from aioresonate.server import ClientAddedEvent, ClientRemovedEvent, ResonateEvent, ResonateServer
 from music_assistant_models.enums import ProviderFeature
-from zeroconf import ServiceStateChange
 
-from music_assistant.helpers.util import (
-    get_port_from_zeroconf,
-    get_primary_ip_address_from_zeroconf,
-)
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.resonate.player import ResonatePlayer
@@ -20,7 +15,6 @@ from music_assistant.providers.resonate.player import ResonatePlayer
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
-    from zeroconf.asyncio import AsyncServiceInfo
 
 
 class ResonateProvider(PlayerProvider):
@@ -91,29 +85,3 @@ class ResonateProvider(PlayerProvider):
         for player in self.players:
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
-
-    async def on_mdns_service_state_change(
-        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
-    ) -> None:
-        """Handle MDNS service state callback."""
-        self.logger.debug(
-            "MDNS service state change for resonate, name=%s, state_change=%s, info=%s",
-            name,
-            state_change,
-            info,
-        )
-        if state_change == ServiceStateChange.Removed:
-            # we don't listen for removed players here.
-            # instead we just wait for the player connection to fail
-            return
-        if not info:
-            return  # guard
-
-        name = name.split("@", 1)[1] if "@" in name else name
-        if path := info.properties.get(b"path"):
-            ip = get_primary_ip_address_from_zeroconf(info)
-            assert ip
-            url = "ws://" + ip + ":" + str(get_port_from_zeroconf(info)) + path.decode()
-
-            self.logger.debug("Discovered resonate client, connecting to %s", url)
-            self.server_api.connect_to_client(url)
