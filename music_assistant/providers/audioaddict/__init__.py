@@ -56,7 +56,6 @@ if TYPE_CHECKING:
 else:
     from music_assistant_models.config_entries import (
         ConfigEntry,
-        ConfigEntryType,
         ConfigValueOption,
     )
 
