@@ -199,7 +199,7 @@ class MediaAssistantPlayer(Player):
                 ),
             }
 
-            if queue := self.mass.player_queues.get_active_queue(self.player_id):
+            if queue := self.mass.player_queues.get_active_queue(media.source_id):
                 if queue.active:
                     current_duration = 0
 
@@ -314,7 +314,7 @@ class MediaAssistantPlayer(Player):
                             "Playback Position received from %s Was Invalid", self.name
                         )
 
-                if not (queue := self.mass.player_queues.get_active_queue(self.player_id)):
+                if not (queue := self.mass.player_queues.get_active_queue(self.current_media.source_id)):
                     return
 
                 if (
