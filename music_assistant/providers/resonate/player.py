@@ -96,8 +96,6 @@ class ResonatePlayer(Player):
             case ClientGroupChangedEvent(new_group=new_group):
                 self.unsub_group_event_cb()
                 self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
-            case _:
-                self.logger.error("Unknown resonate player event: %s", event)
 
     async def group_event_cb(self, event: GroupEvent) -> None:
         """Event callback registered to the resonate group this player belongs to."""
@@ -126,8 +124,6 @@ class ResonatePlayer(Player):
                 pass
             case GroupMemberRemovedEvent(client_id=_):
                 pass
-            case _:
-                self.logger.error("Unknown resonate group event: %s", event)
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
