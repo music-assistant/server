@@ -45,6 +45,14 @@ if TYPE_CHECKING:
 class PhishInProvider(MusicProvider):
     """Phish.in music provider."""
 
+    def __getattribute__(self, name: str) -> Any:
+        """Debug ALL method calls."""
+        if name.startswith(("get_", "__init__", "__getattribute__")):
+            # Skip to avoid recursion
+            if name not in ("__getattribute__", "__class__"):
+                self.logger.error(f"=== METHOD CALLED: {name} ===")
+        return super().__getattribute__(name)
+
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this provider."""
@@ -353,11 +361,11 @@ class PhishInProvider(MusicProvider):
                 track_count = playlist_data.get("tracks_count", 0)
                 if track_count > 0:
                     playlist_id = str(playlist_data.get("id"))
-                    self.logger.info(f"Creating playlist with ID: {playlist_id}")  # Add this
+                    self.logger.info(f"Creating playlist with ID: {playlist_id}")
 
-                    yield Playlist(
+                    playlist = Playlist(
                         item_id=playlist_id,
-                        provider=self.instance_id,
+                        provider=self.lookup_key,
                         name=playlist_data.get("name", ""),
                         owner=playlist_data.get("username", ""),
                         is_editable=False,
@@ -370,12 +378,14 @@ class PhishInProvider(MusicProvider):
                             )
                         },
                     )
+                    self.logger.debug(f"Complete playlist object: {playlist}")
+                    yield playlist
         except Exception as err:
             self.logger.error("Failed to get library playlists: %s", err)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        self.logger.error(f"=== get_playlist called: {prov_playlist_id} ===")
+        self.logger.error(f"get_playlist called: {prov_playlist_id}")
         try:
             # First get all playlists to find the slug for this ID
             playlists_data = await api_request(self, ENDPOINTS["playlists"])
@@ -393,7 +403,7 @@ class PhishInProvider(MusicProvider):
 
             return Playlist(
                 item_id=prov_playlist_id,
-                provider=self.instance_id,
+                provider=self.lookup_key,
                 name=playlist_info.get("name", ""),
                 owner=playlist_info.get("username", ""),
                 is_editable=False,
@@ -413,8 +423,7 @@ class PhishInProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks for given playlist id."""
-        self.logger.info(f"Fetching tracks for playlist {prov_playlist_id}")
-        self.logger.error(f"=== get_playlist_tracks called: {prov_playlist_id} ===")
+        self.logger.error(f"=== get_playlist_tracks START: {prov_playlist_id}, page: {page} ===")
 
         try:
             # Find playlist slug (keep existing logic for now)
@@ -469,7 +478,6 @@ class PhishInProvider(MusicProvider):
         """Browse this provider's items."""
         self.logger.info(f"Browse called with path: {path}")
 
-        # Parse path once
         path_parts = [] if "://" not in path else path.split("://")[1].split("/")
         subpath = path_parts[0] if len(path_parts) > 0 else ""
         subsubpath = path_parts[1] if len(path_parts) > 1 else ""
@@ -532,16 +540,16 @@ class PhishInProvider(MusicProvider):
                 name="Browse by Venue",
             ),
             BrowseFolder(
-                item_id="playlists",
-                provider=self.domain,
-                path=path + "playlists",
-                name="User Playlists",
-            ),
-            BrowseFolder(
                 item_id="tags",
                 provider=self.domain,
                 path=path + "tags",
                 name="Browse by Tag",
+            ),
+            BrowseFolder(
+                item_id="playlists",
+                provider=self.domain,
+                path=path + "playlists",
+                name="User Playlists",
             ),
             BrowseFolder(
                 item_id="top_shows",
