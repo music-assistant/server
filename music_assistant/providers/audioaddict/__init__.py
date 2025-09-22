@@ -120,9 +120,8 @@ async def get_config_entries(
     instance_id: str | None = None,
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
+) -> tuple[ConfigEntry, ...]:  # ruff: noqa: ARG001
     """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
     entries = []
 
     # Listen key configuration
