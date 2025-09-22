@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from aioresonate.server import PlayerAddedEvent, PlayerRemovedEvent, ResonateEvent, ResonateServer
+from aioresonate.server import ClientAddedEvent, ClientRemovedEvent, ResonateEvent, ResonateServer
 from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
 
@@ -41,7 +41,7 @@ class ResonateProvider(PlayerProvider):
             self.server_api.add_event_listener(self.event_cb),
             # For the web player
             self.mass.webserver.register_dynamic_route(
-                "/resonate", self.server_api.on_player_connect
+                "/resonate", self.server_api.on_client_connect
             ),
         ]
 
@@ -49,13 +49,13 @@ class ResonateProvider(PlayerProvider):
         """Event callback registered to the resonate server."""
         self.logger.debug("Received ResonateEvent: %s", event)
         match event:
-            case PlayerAddedEvent(player_id):
-                player = ResonatePlayer(self, player_id)
-                self.logger.info("Player %s connected", player_id)
+            case ClientAddedEvent(client_id):
+                player = ResonatePlayer(self, client_id)
+                self.logger.info("Client %s connected", client_id)
                 await self.mass.players.register(player)
-            case PlayerRemovedEvent(player_id):
-                self.logger.info("Player %s disconnected", player_id)
-                await self.mass.players.unregister(player_id)
+            case ClientRemovedEvent(client_id):
+                self.logger.info("Client %s disconnected", client_id)
+                await self.mass.players.unregister(client_id)
             case _:
                 self.logger.error("Unknown resonate event: %s", event)
 
@@ -115,5 +115,5 @@ class ResonateProvider(PlayerProvider):
             assert ip
             url = "ws://" + ip + ":" + str(get_port_from_zeroconf(info)) + path.decode()
 
-            self.logger.debug("Discovered resonate player, connecting to %s", url)
-            self.server_api.connect_to_player(url)
+            self.logger.debug("Discovered resonate client, connecting to %s", url)
+            self.server_api.connect_to_client(url)

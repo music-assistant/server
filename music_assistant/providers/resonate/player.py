@@ -6,29 +6,26 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
+from aioresonate.models.types import PlaybackStateType
 from aioresonate.models.types import RepeatMode as ResonateRepeatMode
 from aioresonate.server import (
     AudioFormat as ResonateAudioFormat,
 )
 from aioresonate.server import (
+    ClientEvent,
     GroupEvent,
-    GroupState,
     GroupStateChangedEvent,
-    PlayerEvent,
     VolumeChangedEvent,
+)
+from aioresonate.server.client import (
+    ClientGroupChangedEvent,
+    DisconnectBehaviour,
 )
 from aioresonate.server.group import (
     AudioCodec,
     GroupMemberAddedEvent,
     GroupMemberRemovedEvent,
     Metadata,
-)
-from aioresonate.server.player import (
-    DisconnectBehaviour,
-    PlayerGroupChangedEvent,
-    StreamPauseEvent,
-    StreamStartEvent,
-    StreamStopEvent,
 )
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
@@ -50,7 +47,7 @@ from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 if TYPE_CHECKING:
-    from aioresonate.server import Player as PlayerAPI
+    from aioresonate.server.client import Client
 
     from .provider import ResonateProvider
 
@@ -58,39 +55,37 @@ if TYPE_CHECKING:
 class ResonatePlayer(Player):
     """A resonate audio player in Music Assistant."""
 
-    api: PlayerAPI
+    api: Client
     unsub_event_cb: Callable[[], None]
     unsub_group_event_cb: Callable[[], None]
 
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
         super().__init__(provider, player_id)
-        resonate_player = provider.server_api.get_player(player_id)
-        assert resonate_player is not None
-        self.api = resonate_player
+        resonate_client = provider.server_api.get_client(player_id)
+        assert resonate_client is not None
+        self.api = resonate_client
         self.api.disconnect_behaviour = DisconnectBehaviour.STOP
-        self.unsub_event_cb = resonate_player.add_event_listener(self.event_cb)
-        self.unsub_group_event_cb = resonate_player.group.add_event_listener(self.group_event_cb)
+        self.unsub_event_cb = resonate_client.add_event_listener(self.event_cb)
+        self.unsub_group_event_cb = resonate_client.group.add_event_listener(self.group_event_cb)
 
         self.logger = self.provider.logger.getChild(player_id)
         # init some static variables
-        self._attr_name = resonate_player.name
+        self._attr_name = resonate_client.name
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
             PlayerFeature.SET_MEMBERS,
-            PlayerFeature.VOLUME_SET,
-            PlayerFeature.VOLUME_MUTE,
         }
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._attr_device_info = DeviceInfo()
-        self._attr_volume_level = resonate_player.volume
-        self._attr_volume_muted = resonate_player.muted
+        self._attr_volume_level = resonate_client.volume
+        self._attr_volume_muted = resonate_client.muted
         self._attr_available = True
         self._attr_poll_interval = 5  # For metadata updates
         self._attr_needs_poll = False
 
-    async def event_cb(self, event: PlayerEvent) -> None:
+    async def event_cb(self, event: ClientEvent) -> None:
         """Event callback registered to the resonate server."""
         self.logger.debug("Received PlayerEvent: %s", event)
         match event:
@@ -98,22 +93,7 @@ class ResonatePlayer(Player):
                 self._attr_volume_level = volume
                 self._attr_volume_muted = muted
                 self.update_state()
-            case StreamStartEvent():
-                synced_to = self.synced_to
-                await self.mass.player_queues.play(
-                    synced_to if synced_to is not None else self.player_id
-                )
-            case StreamStopEvent():
-                synced_to = self.synced_to
-                await self.mass.player_queues.stop(
-                    synced_to if synced_to is not None else self.player_id
-                )
-            case StreamPauseEvent():
-                synced_to = self.synced_to
-                await self.mass.player_queues.pause(
-                    synced_to if synced_to is not None else self.player_id
-                )
-            case PlayerGroupChangedEvent(new_group=new_group):
+            case ClientGroupChangedEvent(new_group=new_group):
                 self.unsub_group_event_cb()
                 self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
             case _:
@@ -130,33 +110,34 @@ class ResonatePlayer(Player):
             case GroupStateChangedEvent(state=state):
                 self.logger.info("Group state changed to: %s", state)
                 match state:
-                    case GroupState.PLAYING:
+                    case PlaybackStateType.PLAYING:
                         self._attr_playback_state = PlaybackState.PLAYING
                         self._attr_needs_poll = True
-                    case GroupState.IDLE:
+                    case PlaybackStateType.PAUSED:
+                        self._attr_playback_state = PlaybackState.PAUSED
+                        self._attr_needs_poll = False
+                    case PlaybackStateType.STOPPED:
                         self._attr_playback_state = PlaybackState.IDLE
                         self._attr_needs_poll = False
                         self._attr_elapsed_time = 0
                         self._attr_elapsed_time_last_updated = time.time()
                 self.update_state()
-            case GroupMemberAddedEvent(player_id=_):
+            case GroupMemberAddedEvent(client_id=_):
                 pass
-            case GroupMemberRemovedEvent(player_id=_):
+            case GroupMemberRemovedEvent(client_id=_):
                 pass
             case _:
                 self.logger.error("Unknown resonate group event: %s", event)
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        self.api.set_volume(min(max(1, volume_level), 100))
+        # Volume is not supported by the spec yet
+        self.logger.warning("Volume control is not supported by the Resonate spec yet")
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        if muted:
-            self.api.mute()
-        else:
-            self.api.unmute()
-        self.update_state()
+        # Mute is not supported by the spec yet
+        self.logger.warning("Mute control is not supported by the Resonate spec yet")
 
     async def stop(self) -> None:
         """Stop command."""
@@ -248,14 +229,14 @@ class ResonatePlayer(Player):
         for player_id in player_ids_to_remove or []:
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
-            self.api.group.remove_player(player.api)
+            self.api.group.remove_client(player.api)
             player.api.disconnect_behaviour = DisconnectBehaviour.STOP
             self._attr_group_members.remove(player_id)
         for player_id in player_ids_to_add or []:
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
             player.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
-            self.api.group.add_player(player.api)
+            self.api.group.add_client(player.api)
             self._attr_group_members.append(player_id)
         self.update_state()
 
