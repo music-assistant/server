@@ -144,9 +144,9 @@ async def get_config_entries(
             default_value="medium",
             required=True,
             options=[
-                ConfigValueOption("low", "Low - 64k AAC-HE"),
-                ConfigValueOption("medium", "Medium - 128k AAC"),
-                ConfigValueOption("high", "High - 320k MP3"),
+                ConfigValueOption("Low - 64k AAC-HE", "low"),
+                ConfigValueOption("Medium - 128k AAC", "medium"),
+                ConfigValueOption("High - 320k MP3", "high"),
             ],
         )
     )
