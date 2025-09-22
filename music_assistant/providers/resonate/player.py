@@ -282,8 +282,10 @@ class ResonatePlayer(Player):
         # Extract metadata following the same pattern as RAOP implementation
         title = current_item.name
         artist = None
+        album_artist = None
         album = None
         track = None
+        artwork_url = None
         year = None
 
         if (streamdetails := current_item.streamdetails) and streamdetails.stream_title:
@@ -302,8 +304,15 @@ class ResonatePlayer(Player):
             if _album := getattr(media_item, "album", None):
                 album = _album.name
                 year = _album.year
+                if _album_artist := getattr(_album, "artist_str", None):
+                    album_artist = _album_artist.artists_str
             if _track_number := getattr(media_item, "track_number", None):
                 track = _track_number
+
+        if current_item.image is not None:
+            artwork_url = self.mass.metadata.get_image_url(current_item.image)
+
+        track_duration = current_item.duration
 
         repeat = ResonateRepeatMode.OFF
         if queue.repeat_mode == RepeatMode.ALL:
@@ -316,12 +325,12 @@ class ResonatePlayer(Player):
         metadata = Metadata(
             title=title,
             artist=artist,
-            album_artist=None,
+            album_artist=album_artist,
             album=album,
-            artwork_url=None,
+            artwork_url=artwork_url,
             year=year,
             track=track,
-            track_duration=None,
+            track_duration=track_duration,
             playback_speed=1,
             repeat=repeat,
             shuffle=shuffle,
