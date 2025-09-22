@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -40,6 +41,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -64,6 +66,20 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.LIBRARY_RADIOS,
 }
+
+# API Configuration
+API_BASE_URL = "api.audioaddict.com/v1"
+API_TIMEOUT = 30
+CACHE_CHANNELS = 86400  # 24 hours
+CACHE_STREAM_URL = 3600  # 1 hour
+
+# Rate limiting
+RATE_LIMIT = 2  # requests per period
+RATE_PERIOD = 1  # second
+
+# Validation constants
+MIN_LISTEN_KEY_LENGTH = 10
+HTTPS_SCHEME_PREFIX = "//"
 
 # AudioAddict networks configuration
 NETWORKS = {
@@ -151,24 +167,32 @@ async def get_config_entries(
         )
     )
 
-    # Network activation settings
-    for network_key, network_info in NETWORKS.items():
-        entries.append(
-            ConfigEntry(
-                key=f"activate_{network_key}",
-                type=ConfigEntryType.BOOLEAN,
-                label=f"Enable {network_info['display_name']}",
-                description=f"Enable access to {network_info['description']}",
-                default_value=True,
-                required=False,
-            )
+    # Network selection - multi-select instead of individual booleans
+    network_options = [
+        ConfigValueOption(network_info["display_name"], network_key)
+        for network_key, network_info in NETWORKS.items()
+    ]
+
+    entries.append(
+        ConfigEntry(
+            key="enabled_networks",
+            type=ConfigEntryType.STRING,
+            label="Enabled Networks",
+            description="Select which AudioAddict networks to enable",
+            default_value=list(NETWORKS.keys()),  # Enable all by default
+            required=True,
+            options=network_options,
+            multi_value=True,
         )
+    )
 
     return tuple(entries)
 
 
 class AudioAddictProvider(MusicProvider):
     """AudioAddict Music Provider."""
+
+    _throttler: Throttler
 
     def __init__(
         self,
@@ -179,21 +203,34 @@ class AudioAddictProvider(MusicProvider):
     ) -> None:
         """Initialize AudioAddict provider."""
         super().__init__(mass, manifest, config, supported_features)
+        self._throttler = Throttler(rate_limit=RATE_LIMIT, period=RATE_PERIOD)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # Test API connectivity by trying to get stats/channels from a network
-        for network_key in self._get_active_networks():
-            try:
-                await self._get_channels(network_key)
-                break
-            except Exception as err:
-                self.logger.warning("Failed to connect to network %s: %s", network_key, err)
-                continue
-        else:
-            # If no networks are accessible, raise an error
-            msg = "AudioAddict API unavailable - no networks accessible"
+        # Validate configuration
+        enabled_networks = self._get_active_networks()
+        if not enabled_networks:
+            msg = f"{self.domain}: At least one network must be enabled"
             raise ProviderUnavailableError(msg)
+
+        listen_key = self.config.get_value("listen_key")
+        if (
+            not listen_key
+            or not isinstance(listen_key, str)
+            or len(listen_key.strip()) < MIN_LISTEN_KEY_LENGTH
+        ):
+            msg = f"{self.domain}: Invalid listen key provided"
+            raise ProviderUnavailableError(msg)
+
+        # Test API connectivity by trying to get channels from first enabled network
+        try:
+            first_network = enabled_networks[0]
+            await self._get_channels(first_network)
+            self.logger.info("%s: Successfully connected to AudioAddict API", self.domain)
+        except Exception as err:
+            self.logger.error("%s: Failed to connect to AudioAddict API: %s", self.domain, err)
+            msg = f"{self.domain}: API unavailable: {err}"
+            raise ProviderUnavailableError(msg) from err
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -212,7 +249,10 @@ class AudioAddictProvider(MusicProvider):
         if MediaType.RADIO not in media_types:
             return results
 
-        search_query_lower = search_query.lower()
+        search_query_lower = search_query.lower().strip()
+        if not search_query_lower:
+            return results
+
         radios = []
 
         # Search across all active networks
@@ -221,7 +261,8 @@ class AudioAddictProvider(MusicProvider):
                 channels = await self._get_channels(network_key)
 
                 for channel_data in channels:
-                    if search_query_lower in str(channel_data["name"]).lower():
+                    channel_name = str(channel_data.get("name", "")).lower()
+                    if search_query_lower in channel_name:
                         radio = self._channel_to_radio(channel_data, network_key)
                         radios.append(radio)
 
@@ -229,7 +270,9 @@ class AudioAddictProvider(MusicProvider):
                             break
 
             except Exception as err:
-                self.logger.warning("Search failed for network %s: %s", network_key, err)
+                self.logger.debug(
+                    "%s: Search failed for network %s: %s", self.domain, network_key, err
+                )
                 continue
 
             if len(radios) >= limit:
@@ -248,17 +291,15 @@ class AudioAddictProvider(MusicProvider):
                     yield self._channel_to_radio(channel_data, network_key)
 
             except Exception as err:
-                self.logger.warning("Failed to get channels for network %s: %s", network_key, err)
+                self.logger.debug(
+                    "%s: Failed to get channels for network %s: %s", self.domain, network_key, err
+                )
                 continue
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
-        try:
-            # Parse the provider ID to get network and channel keys
-            network_key, channel_key = prov_radio_id.split(":", 1)
-        except ValueError as err:
-            msg = f"Invalid radio ID format: {prov_radio_id}"
-            raise MediaNotFoundError(msg) from err
+        # Validate and parse the provider ID
+        network_key, channel_key = self._validate_item_id(prov_radio_id)
 
         channels = await self._get_channels(network_key)
 
@@ -266,21 +307,33 @@ class AudioAddictProvider(MusicProvider):
             if channel_data["key"] == channel_key:
                 return self._channel_to_radio(channel_data, network_key)
 
-        msg = f"Radio station not found: {prov_radio_id}"
+        msg = f"{self.domain}: Radio station not found: {prov_radio_id}"
         raise MediaNotFoundError(msg)
+
+    def _validate_item_id(self, item_id: str) -> tuple[str, str]:
+        """Validate and parse item ID into network and channel keys."""
+        try:
+            network_key, channel_key = item_id.split(":", 1)
+        except ValueError as err:
+            msg = f"{self.domain}: Invalid item ID format: {item_id} (expected 'network:channel')"
+            raise MediaNotFoundError(msg) from err
+
+        self._validate_network_key(network_key)
+
+        if not channel_key.strip():
+            msg = f"{self.domain}: Empty channel key in item ID: {item_id}"
+            raise MediaNotFoundError(msg)
+
+        return network_key, channel_key
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if media_type != MediaType.RADIO:
-            msg = f"Unsupported media type: {media_type}"
-            raise ValueError(msg)
+            msg = f"{self.domain}: Unsupported media type: {media_type}"
+            raise MediaNotFoundError(msg)
 
-        try:
-            # Parse the provider ID
-            network_key, channel_key = item_id.split(":", 1)
-        except ValueError as err:
-            msg = f"Invalid item ID format: {item_id}"
-            raise MediaNotFoundError(msg) from err
+        # Validate and parse the provider ID
+        network_key, channel_key = self._validate_item_id(item_id)
 
         # Get the stream URL
         stream_url = await self._get_stream_url(network_key, channel_key)
@@ -300,170 +353,241 @@ class AudioAddictProvider(MusicProvider):
 
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
         """Browse AudioAddict networks and channels."""
-        self.logger.debug("Browse called with path: %s", path)
+        self.logger.debug("%s: Browse called with path: %s", self.domain, path)
 
-        # Parse the path to extract the actual browse path
-        path_parts = [] if "://" not in path else path.split("://")[1].split("/")
-        # Filter out empty parts and get the meaningful path components
-        meaningful_parts = [part for part in path_parts if part]
-        subpath = meaningful_parts[0] if len(meaningful_parts) > 0 else ""
+        # Extract meaningful path component
+        subpath = ""
+        if "://" in path:
+            # Remove the scheme prefix and get the first meaningful path component
+            path_parts = path.split("://")[1].split("/")
+            meaningful_parts = [part for part in path_parts if part]
+            subpath = meaningful_parts[0] if meaningful_parts else ""
 
-        self.logger.debug("Parsed subpath: %s", subpath)
+        self.logger.debug("%s: Parsed subpath: %s", self.domain, subpath)
 
         if not subpath:
             # Return root level - show networks
-            items: list[MediaItemType | BrowseFolder] = []
-
-            active_networks = self._get_active_networks()
-            self.logger.debug("Active networks: %s", active_networks)
-
-            for network_key in active_networks:
-                network_info = NETWORKS[network_key]
-                folder = BrowseFolder(
-                    item_id=network_key,
-                    provider=self.instance_id,
-                    path=f"{path}{network_key}"
-                    if path.endswith("://")
-                    else f"{path}/{network_key}",
-                    name=network_info["display_name"],
-                )
-                items.append(folder)
-                self.logger.debug("Added network folder: %s", network_info["display_name"])
-
-            self.logger.debug("Returning %d network folders", len(items))
-            return items
+            return await self._browse_networks(path)
 
         # Show channels for the selected network
         if subpath in NETWORKS:
-            self.logger.debug("Browsing channels for network: %s", subpath)
-            try:
-                channels = await self._get_channels(subpath)
-                self.logger.debug("Found %d channels for network %s", len(channels), subpath)
-                radio_items: list[MediaItemType | BrowseFolder] = [
-                    self._channel_to_radio(ch, subpath) for ch in channels
-                ]
-                self.logger.debug("Converted to %d radio items", len(radio_items))
-                return radio_items
-            except Exception as err:
-                self.logger.warning("Failed to browse network %s: %s", subpath, err)
-                return []
+            return await self._browse_network_channels(subpath)
 
-        self.logger.debug("No matching path found, returning empty list")
+        self.logger.debug("%s: No matching path found, returning empty list", self.domain)
         return []
+
+    async def _browse_networks(self, base_path: str) -> list[MediaItemType | BrowseFolder]:
+        """Browse available networks."""
+        items: list[MediaItemType | BrowseFolder] = []
+        active_networks = self._get_active_networks()
+        self.logger.debug("%s: Active networks: %s", self.domain, active_networks)
+
+        for network_key in active_networks:
+            network_info = NETWORKS[network_key]
+            folder = BrowseFolder(
+                item_id=network_key,
+                provider=self.instance_id,
+                path=f"{base_path}{network_key}"
+                if base_path.endswith("://")
+                else f"{base_path}/{network_key}",
+                name=network_info["display_name"],
+            )
+            items.append(folder)
+            self.logger.debug(
+                "%s: Added network folder: %s", self.domain, network_info["display_name"]
+            )
+
+        self.logger.debug("%s: Returning %d network folders", self.domain, len(items))
+        return items
+
+    async def _browse_network_channels(
+        self, network_key: str
+    ) -> list[MediaItemType | BrowseFolder]:
+        """Browse channels for a specific network."""
+        self.logger.debug("%s: Browsing channels for network: %s", self.domain, network_key)
+        try:
+            channels = await self._get_channels(network_key)
+            self.logger.debug(
+                "%s: Found %d channels for network %s", self.domain, len(channels), network_key
+            )
+            radio_items: list[MediaItemType | BrowseFolder] = [
+                self._channel_to_radio(ch, network_key) for ch in channels
+            ]
+            self.logger.debug("%s: Converted to %d radio items", self.domain, len(radio_items))
+            return radio_items
+        except Exception as err:
+            self.logger.warning(
+                "%s: Failed to browse network %s: %s", self.domain, network_key, err
+            )
+            return []
 
     def _get_active_networks(self) -> list[str]:
         """Get list of active/enabled networks."""
-        active = []
-        for network_key in NETWORKS:
-            if self.config.get_value(f"activate_{network_key}", True):
-                active.append(network_key)
-        return active
+        enabled_networks = self.config.get_value("enabled_networks", list(NETWORKS.keys()))
+        return self._validate_and_filter_networks(enabled_networks)
 
-    @use_cache(86400)  # Cache for 24 hours
+    def _validate_and_filter_networks(self, networks: Any) -> list[str]:
+        """Validate and filter network configuration."""
+        # Handle both single value and list for backwards compatibility
+        if isinstance(networks, str):
+            networks = [networks]
+        elif not isinstance(networks, list):
+            self.logger.warning(
+                "%s: Invalid networks configuration, defaulting to all networks", self.domain
+            )
+            return list(NETWORKS.keys())
+
+        # Ensure all items are strings and filter out non-strings/invalid networks
+        valid_networks = [str(net) for net in networks if net and str(net) in NETWORKS]
+
+        if not valid_networks:
+            self.logger.warning(
+                "%s: No valid networks enabled, defaulting to all networks", self.domain
+            )
+            return list(NETWORKS.keys())
+
+        return valid_networks
+
+    async def _api_request(
+        self,
+        network_key: str,
+        endpoint: str,
+        use_https: bool = True,
+        **params: Any,
+    ) -> Any:
+        """Make a generic API request to AudioAddict."""
+        # Network validation happens in _validate_network_key
+        self._validate_network_key(network_key)
+
+        scheme = "https" if use_https else "http"
+        base_url = f"{scheme}://{API_BASE_URL}/{network_key}"
+        url = f"{base_url}/{endpoint}"
+
+        timeout = aiohttp.ClientTimeout(total=API_TIMEOUT)
+
+        async with (
+            self._throttler,
+            self.mass.http_session.get(url, params=params, timeout=timeout) as resp,
+        ):
+            if resp.status == 403:
+                msg = f"{self.domain}: Access denied - check your listen key and subscription"
+                raise ProviderUnavailableError(msg)
+            if resp.status == 404:
+                msg = f"{self.domain}: API endpoint not found: {endpoint}"
+                raise MediaNotFoundError(msg)
+            if resp.status >= 500:
+                msg = f"{self.domain}: Server error (HTTP {resp.status})"
+                raise ProviderUnavailableError(msg)
+
+            resp.raise_for_status()
+            return await resp.json()
+
+    def _validate_network_key(self, network_key: str) -> None:
+        """Validate a network key."""
+        if network_key not in NETWORKS:
+            msg = f"{self.domain}: Invalid network key: {network_key}"
+            raise MediaNotFoundError(msg)
+
+    @use_cache(CACHE_CHANNELS)
     async def _get_channels(self, network_key: str) -> list[dict[str, Any]]:
-        """Get channels for a specific network."""
+        """Get listenable channels for a specific network (optimized single call)."""
         try:
-            # Get all channels
-            base_url = f"api.audioaddict.com/v1/{network_key}"
+            # Get only listenable channels directly - no need for two API calls
+            channels_response = await self._api_request(network_key, "listen/channels")
 
-            async with self.mass.http_session.get(f"http://{base_url}/channels") as resp:
-                resp.raise_for_status()
-                all_channels = await resp.json()
+            if not channels_response or not isinstance(channels_response, list):
+                self.logger.warning("No channels returned for network %s", network_key)
+                return []
 
-            # Get listenable channels
-            async with self.mass.http_session.get(f"http://{base_url}/listen/channels") as resp:
-                resp.raise_for_status()
-                listen_channels_data = await resp.json()
-
-            listen_channel_keys = {ch["key"] for ch in listen_channels_data}
-
-            # Filter to only listenable channels
-            return [ch for ch in all_channels if ch["key"] in listen_channel_keys]
+            # Ensure all items are dictionaries
+            channels: list[dict[str, Any]] = [
+                ch for ch in channels_response if isinstance(ch, dict)
+            ]
+            return channels
 
         except Exception as err:
             self.logger.error("Failed to get channels for network %s: %s", network_key, err)
             raise
 
-    @use_cache(300)  # Cache for 5 minutes to avoid multiple API calls
+    @use_cache(CACHE_STREAM_URL)
     async def _get_stream_url(self, network_key: str, channel_key: str) -> str:
         """Get the streaming URL for a channel."""
-        self.logger.debug("Getting stream URL for %s:%s", network_key, channel_key)
+        self.logger.debug("%s: Getting stream URL for %s:%s", self.domain, network_key, channel_key)
 
         listen_key = self.config.get_value("listen_key")
         if not listen_key:
-            msg = "Listen key not configured"
-            raise ValueError(msg)
+            msg = f"{self.domain}: Listen key not configured"
+            raise ProviderUnavailableError(msg)
 
         quality = str(self.config.get_value("quality", "medium"))
         stream_key = QUALITY_SETTINGS.get(quality, "premium")
-        self.logger.debug("Using quality setting: %s -> stream_key: %s", quality, stream_key)
-
-        base_url = f"api.audioaddict.com/v1/{network_key}"
+        self.logger.debug(
+            "%s: Using quality setting: %s -> stream_key: %s", self.domain, quality, stream_key
+        )
 
         try:
-            # Get playlist with stream URLs
-            url = f"https://{base_url}/listen/{stream_key}/{channel_key}?listen_key={listen_key}"
-            self.logger.debug("Requesting playlist from: %s", url.replace(str(listen_key), "***"))
-
-            async with self.mass.http_session.get(url) as resp:
-                self.logger.debug("Playlist API response status: %d", resp.status)
-                if resp.status == 403:
-                    msg = "Invalid listen key or insufficient permissions"
-                    raise ValueError(msg)
-                resp.raise_for_status()
-                playlist = await resp.json()
+            # Get playlist with stream URLs using the new API method
+            params = {"listen_key": listen_key}
+            playlist = await self._api_request(
+                network_key, f"listen/{stream_key}/{channel_key}", use_https=True, **params
+            )
 
             # Use the first stream URL from the playlist
-            self.logger.debug("AudioAddict playlist returned %d URLs", len(playlist))
-            if not playlist:
-                msg = "No stream URLs returned from AudioAddict API"
-                raise RuntimeError(msg)
+            self.logger.debug(
+                "%s: AudioAddict playlist returned %d URLs", self.domain, len(playlist)
+            )
+            if not playlist or not isinstance(playlist, list):
+                msg = f"{self.domain}: No stream URLs returned from AudioAddict API"
+                raise MediaNotFoundError(msg)
 
             # Log all available URLs for debugging
             for i, url in enumerate(playlist):
-                self.logger.debug("Available stream URL %d: %s", i + 1, url)
+                self.logger.debug("%s: Available stream URL %d: %s", self.domain, i + 1, url)
 
             # Use the first URL - AudioAddict typically returns them in priority order
             stream_url: str = str(playlist[0])
-            self.logger.debug("Selected stream URL: %s", stream_url)
+            self.logger.debug("%s: Selected stream URL: %s", self.domain, stream_url)
 
             # Validate the stream URL
             if not stream_url or not isinstance(stream_url, str):
-                msg = f"Invalid stream URL received: {stream_url}"
-                raise RuntimeError(msg)
+                msg = f"{self.domain}: Invalid stream URL received: {stream_url}"
+                raise MediaNotFoundError(msg)
 
-            self.logger.debug("Final stream URL: %s", stream_url)
             return stream_url
 
+        except ProviderUnavailableError:
+            # Re-raise provider errors as-is
+            raise
         except Exception as err:
             self.logger.error(
-                "Failed to get stream URL for %s:%s: %s", network_key, channel_key, err
+                "%s: Failed to get stream URL for %s:%s: %s",
+                self.domain,
+                network_key,
+                channel_key,
+                err,
             )
-            raise
+            raise MediaNotFoundError(f"{self.domain}: Unable to get stream URL: {err}") from err
 
     def _channel_to_radio(self, channel_data: dict[str, Any], network_key: str) -> Radio:
         """Convert channel data to Radio object."""
         # Create provider ID as network:channel_key
-        prov_id = f"{network_key}:{channel_data['key']}"
+        channel_key = channel_data.get("key")
+        if not channel_key:
+            msg = f"Channel missing 'key' field: {channel_data}"
+            raise ValueError(msg)
 
-        # Get image URL
-        image_url = None
-        if "images" in channel_data and "default" in channel_data["images"]:
-            image_url = channel_data["images"]["default"]
-            if image_url.startswith("//"):
-                image_url = f"http:{image_url}"
-            # Remove template parts if present
-            image_url = image_url.split("{")[0]
-
+        prov_id = f"{network_key}:{channel_key}"
+        channel_name = str(channel_data.get("name", "Unknown"))
         network_info = NETWORKS[network_key]
 
         # Create metadata with optional image
         metadata = MediaItemMetadata(
-            description=f"{network_info['description']} - {channel_data['name']}",
+            description=f"{network_info['description']} - {channel_name}",
             explicit=False,
         )
 
-        # Add image if available
+        # Process image URL if available
+        image_url = self._extract_image_url(channel_data)
         if image_url:
             metadata.images = UniqueList(
                 [
@@ -479,7 +603,7 @@ class AudioAddictProvider(MusicProvider):
         return Radio(
             item_id=prov_id,
             provider=self.instance_id,
-            name=str(channel_data["name"]),
+            name=channel_name,
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_id,
@@ -493,3 +617,20 @@ class AudioAddictProvider(MusicProvider):
             },
             metadata=metadata,
         )
+
+    def _extract_image_url(self, channel_data: dict[str, Any]) -> str | None:
+        """Extract and normalize image URL from channel data."""
+        images = channel_data.get("images")
+        if not images or not isinstance(images, dict):
+            return None
+
+        image_url = images.get("default")
+        if not image_url or not isinstance(image_url, str):
+            return None
+
+        # Add protocol if missing
+        if image_url.startswith(HTTPS_SCHEME_PREFIX):
+            image_url = f"https:{image_url}"
+
+        # Remove template parts if present
+        return str(image_url.split("{")[0])
