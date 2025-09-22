@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
+from aioresonate.models import MediaCommand
 from aioresonate.models.types import PlaybackStateType
 from aioresonate.models.types import RepeatMode as ResonateRepeatMode
 from aioresonate.server import (
@@ -13,6 +14,7 @@ from aioresonate.server import (
 )
 from aioresonate.server import (
     ClientEvent,
+    GroupCommandEvent,
     GroupEvent,
     GroupStateChangedEvent,
     VolumeChangedEvent,
@@ -105,6 +107,25 @@ class ResonatePlayer(Player):
         self.logger.debug("Received GroupEvent: %s", event)
 
         match event:
+            case GroupCommandEvent(command=command, volume=_, mute=_):
+                self.logger.info("Group command received: %s", command)
+                match command:
+                    case MediaCommand.PLAY:
+                        raise NotImplementedError
+                    case MediaCommand.PAUSE:
+                        raise NotImplementedError
+                    case MediaCommand.STOP:
+                        raise NotImplementedError
+                    case MediaCommand.NEXT:
+                        raise NotImplementedError
+                    case MediaCommand.PREVIOUS:
+                        raise NotImplementedError
+                    case MediaCommand.SEEK:
+                        raise NotImplementedError
+                    case MediaCommand.VOLUME:
+                        raise NotImplementedError
+                    case MediaCommand.MUTE:
+                        raise NotImplementedError
             case GroupStateChangedEvent(state=state):
                 self.logger.info("Group state changed to: %s", state)
                 match state:
@@ -123,6 +144,8 @@ class ResonatePlayer(Player):
             case GroupMemberAddedEvent(client_id=_):
                 pass
             case GroupMemberRemovedEvent(client_id=_):
+                pass
+            case GroupMemberAddedEvent(client_id=_):
                 pass
 
     async def volume_set(self, volume_level: int) -> None:
@@ -291,11 +314,15 @@ class ResonatePlayer(Player):
         shuffle = queue.shuffle_enabled
 
         metadata = Metadata(
-            title=title or "",
-            artist=artist or "",
-            album=album or "",
-            year=year or 0,
-            track=track or 0,
+            title=title,
+            artist=artist,
+            album_artist=None,
+            album=album,
+            artwork_url=None,
+            year=year,
+            track=track,
+            track_duration=None,
+            playback_speed=1,
             repeat=repeat,
             shuffle=shuffle,
         )
