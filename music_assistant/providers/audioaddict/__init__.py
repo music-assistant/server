@@ -100,10 +100,9 @@ NETWORKS = {
 }
 
 QUALITY_SETTINGS = {
-    "low": "premium_low",
-    "moderate": "premium",
-    "medium": "premium_medium",
-    "high": "premium_high",
+    "low": "premium_medium",  # 64k AAC-HE
+    "medium": "premium",  # 128k AAC
+    "high": "premium_high",  # 320k MP3 (Ultra)
 }
 
 
@@ -114,12 +113,13 @@ async def setup(
     return AudioAddictProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
+# ruff: noqa: ARG001
 async def get_config_entries(
     mass: MusicAssistant,
     instance_id: str | None = None,
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:  # ruff: noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     entries = []
 
@@ -144,10 +144,9 @@ async def get_config_entries(
             default_value="medium",
             required=True,
             options=[
-                ConfigValueOption("low", "Low Quality"),
-                ConfigValueOption("moderate", "Moderate Quality"),
-                ConfigValueOption("medium", "Medium Quality"),
-                ConfigValueOption("high", "High Quality"),
+                ConfigValueOption("low", "Low - 64k AAC-HE"),
+                ConfigValueOption("medium", "Medium - 128k AAC"),
+                ConfigValueOption("high", "High - 320k MP3"),
             ],
         )
     )
@@ -396,7 +395,7 @@ class AudioAddictProvider(MusicProvider):
             raise ValueError(msg)
 
         quality = str(self.config.get_value("quality", "medium"))
-        stream_key = QUALITY_SETTINGS.get(quality, "premium_medium")
+        stream_key = QUALITY_SETTINGS.get(quality, "premium")
         self.logger.debug("Using quality setting: %s -> stream_key: %s", quality, stream_key)
 
         base_url = f"api.audioaddict.com/v1/{network_key}"
