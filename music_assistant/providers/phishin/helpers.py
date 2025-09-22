@@ -180,7 +180,7 @@ def track_to_ma_track(
     # Fix: Get song data from songs array instead of song object
     songs = track_data.get("songs", [])
     song_data = songs[0] if songs else {}
-    song_title = song_data.get("title", "Unknown Song")
+    song_title = track_data.get("title", "Unknown Song")
 
     # Duration in milliseconds, convert to seconds
     duration_ms = track_data.get("duration")
@@ -240,6 +240,30 @@ def track_to_ma_track(
     if track_data.get("likes_count"):
         details_parts.append(f"likes_count:{track_data.get('likes_count', 0)}")
 
+    metadata = MediaItemMetadata()
+
+    if show_data and show_data.get("album_cover_url"):
+        # Determine image path
+        image_path = (
+            show_data.get("album_cover_url")
+            if show_data and show_data.get("album_cover_url")
+            else FALLBACK_ALBUM_IMAGE
+        ) or FALLBACK_ALBUM_IMAGE
+
+        # Create metadata with the determined image
+        metadata = MediaItemMetadata(
+            images=UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=image_path,
+                        provider=provider.instance_id,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
+        )
+
     return Track(
         item_id=track_id,
         provider=provider.instance_id,
@@ -248,6 +272,7 @@ def track_to_ma_track(
         album=album_mapping,  # Use ItemMapping instead of ProviderMapping
         duration=duration,  # int, not int | None
         track_number=track_number,  # int, not int | None
+        metadata=metadata,
         provider_mappings={
             ProviderMapping(
                 item_id=track_id,
