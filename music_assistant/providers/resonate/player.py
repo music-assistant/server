@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
 from aioresonate.models import MediaCommand
@@ -41,6 +42,7 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo
+from PIL import Image
 
 from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_OUTPUT_CODEC
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -60,6 +62,7 @@ class ResonatePlayer(Player):
     api: Client
     unsub_event_cb: Callable[[], None]
     unsub_group_event_cb: Callable[[], None]
+    last_sent_artwork_url: str | None = None
 
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -311,6 +314,18 @@ class ResonatePlayer(Player):
 
         if current_item.image is not None:
             artwork_url = self.mass.metadata.get_image_url(current_item.image)
+
+        if artwork_url != self.last_sent_artwork_url:
+            # Image changed, resend the artwork
+            self.last_sent_artwork_url = artwork_url
+            if artwork_url is not None and current_item.media_item is not None:
+                image_data = await self.mass.metadata.get_image_data_for_item(
+                    current_item.media_item
+                )
+                if image_data is not None:
+                    image = Image.open(BytesIO(image_data))
+                    self.api.group.set_media_art(image)
+            # TODO: null media art if not set?
 
         track_duration = current_item.duration
 
