@@ -127,13 +127,14 @@ class ResonatePlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        # Volume is not supported by the spec yet
-        self.logger.warning("Volume control is not supported by the Resonate spec yet")
+        self.api.set_volume(volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        # Mute is not supported by the spec yet
-        self.logger.warning("Mute control is not supported by the Resonate spec yet")
+        if muted:
+            self.api.mute()
+        else:
+            self.api.unmute()
 
     async def stop(self) -> None:
         """Stop command."""
