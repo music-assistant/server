@@ -550,7 +550,7 @@ class SonosPlayer(Player):
     def on_player_event(self, event: SonosEvent | None) -> None:
         """Handle incoming event from player."""
         self.update_attributes()
-        self.update_state()
+        # self.update_state()
 
     def update_attributes(self) -> None:  # noqa: PLR0915
         """Update the player attributes."""
