@@ -5,5 +5,5 @@
   "name": "Resonate",
   "description": "Resonate provider for Music Assistant.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["aioresonate==0.8.0"]
+  "requirements": ["aioresonate==0.9.0"]
 }
