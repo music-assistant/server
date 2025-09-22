@@ -1044,9 +1044,12 @@ class MusicController(CoreController):
     async def get_resume_position(self, media_item: Audiobook | PodcastEpisode) -> tuple[bool, int]:
         """
         Get progress (resume point) details for the given audiobook or episode.
+
         This is a separate call to ensure the resume position is always up-to-date
         and because many providers have this info present on a dedicated endpoint.
+
         Will be called right before playback starts to ensure the resume position is correct.
+
         Returns a boolean with the fully_played status
         and an integer with the resume position in ms.
         """
@@ -1070,6 +1073,7 @@ class MusicController(CoreController):
                 db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
             )
             return (db_entry["fully_played"], resume_position_ms)
+
         return (False, 0)
 
     def get_controller(
