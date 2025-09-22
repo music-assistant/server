@@ -5,9 +5,11 @@ cookie based on the api_token.
 """
 
 import datetime
+from collections.abc import Mapping
 from http.cookies import BaseCookie, Morsel
+from typing import Any, cast
 
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientTimeout
 from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
@@ -46,12 +48,10 @@ class GWClient:
         self.session = session
 
     async def _set_cookie(self) -> None:
-        cookie = Morsel()
+        cookie: Morsel[str] = Morsel()
 
         cookie.set("arl", self._arl_token, self._arl_token)
-        cookie.domain = ".deezer.com"
-        cookie.path = "/"
-        cookie.httponly = {"HttpOnly": True}
+        cookie.update({"domain": ".deezer.com", "path": "/", "httponly": "True"})
 
         self.session.cookie_jar.update_cookies(BaseCookie({"arl": cookie}), URL(GW_LIGHT_URL))
 
@@ -84,7 +84,7 @@ class GWClient:
         await self._set_cookie()
         await self._update_user_data()
 
-    async def _get_license(self):
+    async def _get_license(self) -> str | None:
         if (
             self._license_expiration_timestamp
             < (datetime.datetime.now() + datetime.timedelta(days=1)).timestamp()
@@ -93,8 +93,14 @@ class GWClient:
         return self._license
 
     async def _gw_api_call(
-        self, method, use_csrf_token=True, args=None, params=None, http_method="POST", retry=True
-    ):
+        self,
+        method: str,
+        use_csrf_token: bool = True,
+        args: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        http_method: str = "POST",
+        retry: bool = True,
+    ) -> dict[str, Any]:
         csrf_token = self._gw_csrf_token if use_csrf_token else "null"
         if params is None:
             params = {}
@@ -103,8 +109,8 @@ class GWClient:
         result = await self.session.request(
             http_method,
             GW_LIGHT_URL,
-            params=parameters,
-            timeout=30,
+            params=cast("Mapping[str, str]", parameters),
+            timeout=ClientTimeout(total=30),
             json=args,
             headers={"User-Agent": USER_AGENT_HEADER},
         )
@@ -119,13 +125,13 @@ class GWClient:
             else:
                 msg = "Failed to call GW-API"
                 raise DeezerGWError(msg, result_json["error"])
-        return result_json
+        return cast("dict[str, Any]", result_json)
 
-    async def get_song_data(self, track_id):
+    async def get_song_data(self, track_id: str) -> dict[str, Any]:
         """Get data such as the track token for a given track."""
         return await self._gw_api_call("song.getData", args={"SNG_ID": track_id})
 
-    async def get_deezer_track_urls(self, track_id):
+    async def get_deezer_track_urls(self, track_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         """Get the URL for a given track id."""
         dz_license = await self._get_license()
 
@@ -171,7 +177,7 @@ class GWClient:
             msg = "last or current track information must be provided."
             raise DeezerGWError(msg)
 
-        payload = {}
+        payload: dict[str, Any] = {}
 
         if next_track:
             payload["next_media"] = {"media": {"id": next_track, "type": "song"}}
