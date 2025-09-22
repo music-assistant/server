@@ -335,7 +335,6 @@ def parse_podcast_episode(
 
 def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) -> Audiobook:
     """Parse spotify audiobook object to generic layout."""
-
     audiobook = Audiobook(
         item_id=audiobook_obj["id"],
         provider=provider.lookup_key,
