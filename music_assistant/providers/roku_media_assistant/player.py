@@ -185,9 +185,7 @@ class MediaAssistantPlayer(Player):
                     if media.artist is not None
                     else ("Flow Mode" if self.flow_mode else "Music Assistant")
                 ),
-                "albumArt": (
-                    "" if self.flow_mode else media.image_url or ""
-                ),
+                "albumArt": ("" if self.flow_mode else media.image_url or ""),
                 "songFormat": "flac",
                 "duration": media.duration or "",
                 "isLive": (
@@ -198,22 +196,6 @@ class MediaAssistantPlayer(Player):
                     else ""
                 ),
             }
-
-            if queue := self.mass.player_queues.get_active_queue(media.source_id):
-                if queue.active:
-                    current_duration = 0
-
-                    if queue.current_item is not None and queue.current_item.media_item is not None:
-                        current_duration = cast("int", queue.current_item.media_item.duration)
-
-                    f_media.update(
-                        {
-                            "timeOffset": ""
-                            if media.duration is None
-                            else (current_duration - media.duration),
-                            "duration": "" if media.duration is None else current_duration,
-                        }
-                    )
 
             if app_running:
                 await self.roku_input(f_media)
@@ -314,7 +296,9 @@ class MediaAssistantPlayer(Player):
                             "Playback Position received from %s Was Invalid", self.name
                         )
 
-                if not (queue := self.mass.player_queues.get_active_queue(self.current_media.source_id)):
+                if not (
+                    queue := self.mass.player_queues.get_active_queue(self.current_media.source_id)
+                ):
                     return
 
                 if (
