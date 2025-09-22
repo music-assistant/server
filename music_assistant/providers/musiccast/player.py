@@ -298,6 +298,7 @@ class MusicCastPlayer(Player):
 
         If this player is not synced to another player (or is the sync leader itself),
         this should return None.
+        If it is part of a (permanent) group, this should also return None.
         """
         if self.zone_device.is_network_client:
             server_id = self._get_player_id_from_zone_device(self.zone_device.group_server)

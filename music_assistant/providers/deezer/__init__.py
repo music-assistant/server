@@ -116,7 +116,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return DeezerProvider(mass, manifest, config)
+    return DeezerProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -189,11 +189,6 @@ class DeezerProvider(MusicProvider):
             self.config.get_value(CONF_ARL_TOKEN),
         )
         await self.gw_client.setup()
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types=list[MediaType], limit: int = 5

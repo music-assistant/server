@@ -77,6 +77,7 @@ CONF_ANNOUNCE_VOLUME_STRATEGY: Final[str] = "announce_volume_strategy"
 CONF_ANNOUNCE_VOLUME: Final[str] = "announce_volume"
 CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
 CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
+CONF_PRE_ANNOUNCE_CHIME_URL: Final[str] = "pre_announcement_chime_url"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
@@ -479,6 +480,8 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
 CONF_ENTRY_ANNOUNCE_VOLUME_MAX_HIDDEN = ConfigEntry.from_dict(
     {**CONF_ENTRY_ANNOUNCE_VOLUME_MAX.to_dict(), "hidden": True}
 )
+
+
 HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES = (
     CONF_ENTRY_ANNOUNCE_VOLUME_HIDDEN,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN_HIDDEN,
@@ -629,6 +632,254 @@ CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
     default_value=[],
     required=False,
     multi_value=True,
+)
+
+CONF_LIBRARY_IMPORT_OPTIONS = [
+    ConfigValueOption("Import into the library only", "import_only"),
+    ConfigValueOption("Import into the library, and mark as favorite", "import_as_favorite"),
+    ConfigValueOption("Do not import into the library", "no_import"),
+]
+CONF_ENTRY_LIBRARY_IMPORT_ARTISTS = ConfigEntry(
+    key="library_import_artists",
+    type=ConfigEntryType.STRING,
+    label="Import Artists from this provider into Music Assistant",
+    description="Whether to import (favourite/library) artists from this "
+    "provider into the Music Assistant Library.",
+    options=CONF_LIBRARY_IMPORT_OPTIONS,
+    default_value="import_as_favorite",
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_ALBUMS = ConfigEntry(
+    key="library_import_albums",
+    type=ConfigEntryType.STRING,
+    label="Import Albums from this provider into Music Assistant",
+    description="Whether to import (favourite/library) albums from this "
+    "provider into the Music Assistant Library. \n\n"
+    "Please note that by adding an Album into the Music Assistant library, "
+    "the album artists will always be imported as well (not as favorites though).",
+    options=CONF_LIBRARY_IMPORT_OPTIONS,
+    default_value="import_as_favorite",
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_TRACKS = ConfigEntry(
+    key="library_import_tracks",
+    type=ConfigEntryType.STRING,
+    label="Import Tracks from this provider into Music Assistant",
+    description="Whether to import (favourite/library) tracks from this "
+    "provider into the Music Assistant Library. \n\n"
+    "Please note that by adding a Track into the Music Assistant library, "
+    "the track artists and album will always be imported as well (not as favorites though).",
+    options=CONF_LIBRARY_IMPORT_OPTIONS,
+    default_value="import_as_favorite",
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS = ConfigEntry(
+    key="library_import_playlists",
+    type=ConfigEntryType.STRING,
+    label="Import Playlists from this provider into Music Assistant",
+    description="Whether to import (favourite/library) playlists from this "
+    "provider into the Music Assistant Library.",
+    options=CONF_LIBRARY_IMPORT_OPTIONS,
+    default_value="import_as_favorite",
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_PODCASTS = ConfigEntry(
+    key="library_import_podcasts",
+    type=ConfigEntryType.STRING,
+    label="Import Podcasts from this provider into Music Assistant",
+    description="Whether to import (favourite/library) podcasts from this "
+    "provider into the Music Assistant Library.",
+    options=CONF_LIBRARY_IMPORT_OPTIONS,
+    default_value="import_as_favorite",
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS = ConfigEntry(
+    key="library_import_audiobooks",
+    type=ConfigEntryType.STRING,
+    label="Import Audiobooks from this provider into Music Assistant",
+    description="Whether to import (favourite/library) audiobooks from this "
+    "provider into the Music Assistant Library.",
+    options=CONF_LIBRARY_IMPORT_OPTIONS,
+    default_value="import_as_favorite",
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_RADIOS = ConfigEntry(
+    key="library_import_radios",
+    type=ConfigEntryType.STRING,
+    label="Import Radios from this provider into Music Assistant",
+    description="Whether to import (favourite/library) radios from this "
+    "provider into the Music Assistant Library.",
+    options=CONF_LIBRARY_IMPORT_OPTIONS,
+    default_value="import_as_favorite",
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS = ConfigEntry(
+    key="library_import_album_tracks",
+    type=ConfigEntryType.BOOLEAN,
+    label="Import album tracks",
+    description="By default, when importing albums into the library, "
+    "only the Album itself will be imported into the Music Assistant Library, "
+    "allowing you to manually browse and select which tracks you want to import. \n\n"
+    "If you want to override this default behavior, "
+    "you can use this configuration option.\n\n"
+    "Please note that some streaming providers may already define this behavior unsolicited, "
+    "by automatically adding all tracks from the album to their library/favorites.",
+    default_value=False,
+    category="sync_options",
+)
+CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS = ConfigEntry(
+    key="library_import_playlist_tracks",
+    type=ConfigEntryType.STRING,
+    label="Import playlist tracks",
+    description="By default, when importing playlists into the library, "
+    "only the Playlist itself will be imported into the Music Assistant Library, "
+    "allowing you to browse and play the playlist and optionally add any individual "
+    "tracks of the playlist to the Music Assistant Library manually. \n\n"
+    "Use this configuration option to override this default behavior, "
+    "by specifying the playlists for which you'd like to import all tracks.\n"
+    "You can either enter the Playlist name (case sensitive) or the Playlist URI.",
+    default_value=[],
+    category="sync_options",
+    multi_value=True,
+)
+
+CONF_ENTRY_LIBRARY_EXPORT_ADD = ConfigEntry(
+    key="library_export_add",
+    type=ConfigEntryType.STRING,
+    label="Sync back library additions",
+    description="Specify the behavior if an item is (manually) added to the "
+    "Music Assistant Library (or favorites). \n"
+    "Should we synchronise that action back to the provider?\n\n"
+    "You can choose to add items to the provider's library as soon as you "
+    "add it to the Music Assistant Library or only do that when you mark the item as "
+    "favorite. \nIf you do not want to sync back to the provider at all, you can choose "
+    "the 'Don't sync back to the provider' option.",
+    default_value="export_favorite",
+    category="sync_options",
+    options=[
+        ConfigValueOption("When an item is added to the library", "export_library"),
+        ConfigValueOption("When an item is marked as favorite", "export_favorite"),
+        ConfigValueOption("Don't sync back to the provider", "no_export"),
+    ],
+)
+CONF_ENTRY_LIBRARY_EXPORT_REMOVE = ConfigEntry(
+    key="library_export_remove",
+    type=ConfigEntryType.STRING,
+    label="Sync back library removals",
+    description="Specify the behavior if an item is (manually) removed from the "
+    "Music Assistant Library (or favorites). \n"
+    "Should we synchronise that action back to the provider?\n\n"
+    "You can choose to remove items from the provider's library as soon as you (manually) "
+    "remove it from the Music Assistant Library or only do that when you unmark the item as "
+    "favorite. \nIf you do not want to sync back to the provider at all, you can choose "
+    "the 'Don't sync back to the provider' option.\n\n"
+    "Please note that if you you don't sync removals back to the provider and you have enabled "
+    "automatic sync/import for this provider, the item may reappear in the library "
+    "the next time a sync is performed.",
+    default_value="export_favorite",
+    category="sync_options",
+    options=[
+        ConfigValueOption("When an item is removed from the library", "export_library"),
+        ConfigValueOption("When an item is unmarked as favorite", "export_favorite"),
+        ConfigValueOption("Don't sync back to the provider", "no_export"),
+    ],
+)
+
+CONF_PROVIDER_SYNC_INTERVAL_OPTIONS = [
+    ConfigValueOption("Disable automatic sync for this mediatype", 0),
+    ConfigValueOption("Every 30 minutes", 30),
+    ConfigValueOption("Every hour", 60),
+    ConfigValueOption("Every 3 hours", 180),
+    ConfigValueOption("Every 6 hours", 360),
+    ConfigValueOption("Every 12 hours", 720),
+    ConfigValueOption("Every 24 hours", 1440),
+    ConfigValueOption("Every 36 hours", 2160),
+    ConfigValueOption("Every 48 hours", 2880),
+    ConfigValueOption("Once a week", 10080),
+]
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS = ConfigEntry(
+    key="provider_sync_interval_artists",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Artists",
+    description="The interval at which the Artists are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=720,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_ARTISTS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS = ConfigEntry(
+    key="provider_sync_interval_albums",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Albums",
+    description="The interval at which the Albums are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=720,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_ALBUMS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS = ConfigEntry(
+    key="provider_sync_interval_tracks",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Tracks",
+    description="The interval at which the Tracks are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=720,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_TRACKS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS = ConfigEntry(
+    key="provider_sync_interval_playlists",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Playlists",
+    description="The interval at which the Playlists are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=720,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS = ConfigEntry(
+    key="provider_sync_interval_podcasts",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Podcasts",
+    description="The interval at which the Podcasts are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=720,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_PODCASTS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS = ConfigEntry(
+    key="provider_sync_interval_audiobooks",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Audiobooks",
+    description="The interval at which the Audiobooks are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=720,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS.key,
+    depends_on_value_not="no_import",
+    required=True,
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS = ConfigEntry(
+    key="provider_sync_interval_radios",
+    type=ConfigEntryType.INTEGER,
+    label="Automatic Sync Interval for Radios",
+    description="The interval at which the Radios are synced to the library for this provider.",
+    options=CONF_PROVIDER_SYNC_INTERVAL_OPTIONS,
+    default_value=720,
+    category="sync_options",
+    depends_on=CONF_ENTRY_LIBRARY_IMPORT_RADIOS.key,
+    depends_on_value_not="no_import",
+    required=True,
 )
 
 

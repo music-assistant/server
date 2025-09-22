@@ -89,6 +89,16 @@ FAKE_ARTIST_PREFIX = "_fake://"
 
 AUTH_TOKEN_UNAUTH = "local_auth"
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -98,7 +108,7 @@ async def setup(
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
 
-    return PlexProvider(mass, manifest, config)
+    return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(  # noqa: PLR0915
@@ -381,19 +391,6 @@ class PlexProvider(MusicProvider):
             )
         except requests.exceptions.ConnectionError as err:
             raise SetupFailedError from err
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return a list of supported features."""
-        return {
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-        }
 
     @property
     def is_streaming_provider(self) -> bool:

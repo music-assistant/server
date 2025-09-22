@@ -7,7 +7,7 @@ import socket
 from typing import cast
 
 from bidict import bidict
-from music_assistant_models.enums import PlaybackState, ProviderFeature
+from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import SetupFailedError
 from snapcast.control import create_server
 from snapcast.control.client import Snapclient
@@ -46,17 +46,6 @@ class SnapCastProvider(PlayerProvider):
     _ids_map: bidict[str, str]  # ma_id / snapclient_id
     _use_builtin_server: bool
     _stop_called: bool
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-            ProviderFeature.REMOVE_PLAYER,
-            # support sync groups by reporting create/remove player group support
-            ProviderFeature.CREATE_GROUP_PLAYER,
-            ProviderFeature.REMOVE_GROUP_PLAYER,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

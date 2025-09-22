@@ -84,7 +84,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return QobuzProvider(mass, manifest, config)
+    return QobuzProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -135,11 +135,6 @@ class QobuzProvider(MusicProvider):
         if not token:
             msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
             raise LoginFailed(msg)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types=list[MediaType], limit: int = 5

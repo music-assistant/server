@@ -48,12 +48,17 @@ CONF_SXM_USERNAME = "sxm_email_address"
 CONF_SXM_PASSWORD = "sxm_password"
 CONF_SXM_REGION = "sxm_region"
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_RADIOS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return SiriusXMProvider(mass, manifest, config)
+    return SiriusXMProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -111,14 +116,6 @@ class SiriusXMProvider(MusicProvider):
     _base_url: str
 
     _current_stream_details: StreamDetails | None = None
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_RADIOS,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

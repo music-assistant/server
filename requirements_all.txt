@@ -20,7 +20,7 @@ bidict==0.23.1
 certifi==2025.8.3
 chardet>=5.2.0
 colorlog==6.9.0
-cryptography==45.0.6
+cryptography==45.0.7
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 duration-parser==1.0.1
@@ -32,7 +32,7 @@ liblistenbrainz==0.6.0
 lyricsgenius==3.6.5
 mashumaro==3.16
 music-assistant-frontend==2.15.4
-music-assistant-models==1.1.53
+music-assistant-models==1.1.58
 mutagen==1.47.0
 orjson==3.11.3
 pillow==11.3.0

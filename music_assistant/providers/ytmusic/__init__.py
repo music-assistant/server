@@ -142,7 +142,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return YoutubeMusicProvider(mass, manifest, config)
+    return YoutubeMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -225,11 +225,6 @@ class YoutubeMusicProvider(MusicProvider):
             self.language = "en"
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types=list[MediaType], limit: int = 5

@@ -256,7 +256,7 @@ class HomeAssistantPlayer(Player):
 
         # Optimistically update state
         self._attr_current_media = media
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self._attr_playback_state = PlaybackState.PLAYING

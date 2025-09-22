@@ -49,6 +49,8 @@ CONNECT_ITEM_ID = "spotify_connect"
 
 EVENTS_SCRIPT = pathlib.Path(__file__).parent.resolve().joinpath("events.py")
 
+SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -113,7 +115,7 @@ class SpotifyConnectProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self.mass_player_id = cast("str", self.config.get_value(CONF_MASS_PLAYER_ID))
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
         self._librespot_bin: str | None = None
@@ -157,11 +159,6 @@ class SpotifyConnectProvider(PluginProvider):
                 self._handle_custom_webservice,
             ),
         ]
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {ProviderFeature.AUDIO_SOURCE}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

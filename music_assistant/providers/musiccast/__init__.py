@@ -1,10 +1,7 @@
 """MusicCast for MusicAssistant."""
 
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-    ProviderConfig,
-)
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.mass import MusicAssistant
@@ -12,12 +9,19 @@ from music_assistant.models import ProviderInstanceType
 
 from .provider import MusicCastProvider
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.SYNC_PLAYERS,
+    # support sync groups by reporting create/remove player group support
+    ProviderFeature.CREATE_GROUP_PLAYER,
+    ProviderFeature.REMOVE_GROUP_PLAYER,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return MusicCastProvider(mass, manifest, config)
+    return MusicCastProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(

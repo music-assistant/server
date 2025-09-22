@@ -46,7 +46,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                         'available', provider_mappings.available,
                         'audio_format', json(provider_mappings.audio_format),
                         'url', provider_mappings.url,
-                        'details', provider_mappings.details
+                        'details', provider_mappings.details,
+                        'in_library', provider_mappings.in_library
                 )) FROM provider_mappings WHERE provider_mappings.item_id = audiobooks.item_id AND media_type = 'audiobook') AS provider_mappings,
             playlog.fully_played AS fully_played,
             playlog.seconds_played AS seconds_played,
@@ -146,7 +147,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, item.provider_mappings)
+        await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         await self._set_playlog(db_id, item)
         return db_id
@@ -159,11 +160,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         cur_item = await self.get_library_item(db_id)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*cur_item.provider_mappings, *update.provider_mappings}
-        )
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
         await self.mass.music.database.update(
@@ -190,7 +186,12 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*update.provider_mappings, *cur_item.provider_mappings}
+        )
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
         await self._set_playlog(db_id, update)
 

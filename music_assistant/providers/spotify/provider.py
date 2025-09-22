@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -69,12 +69,6 @@ from .parsers import (
 )
 from .streaming import LibrespotStreamer
 
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
-
-    from music_assistant import MusicAssistant
-
 
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
@@ -84,17 +78,6 @@ class SpotifyProvider(MusicProvider):
     _librespot_bin: str | None = None
     custom_client_id_active: bool = False
     throttler: ThrottlerManager
-
-    def __init__(
-        self,
-        mass: MusicAssistant,
-        manifest: ProviderManifest,
-        config: ProviderConfig,
-        supported_features: set[ProviderFeature],
-    ) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, manifest, config)
-        self._base_supported_features = supported_features
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -129,18 +112,18 @@ class SpotifyProvider(MusicProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        base = self._base_supported_features.copy()
+        features = self._supported_features
+        # Add audiobook features if enabled
+        if self.audiobooks_enabled:
+            features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
+            features.add(ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT)
+
         if not self.custom_client_id_active:
             # Spotify has killed the similar tracks api for developers
             # https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api
-            base.add(ProviderFeature.SIMILAR_TRACKS)
+            return {*features, ProviderFeature.SIMILAR_TRACKS}
 
-        # Add audiobook features if enabled
-        if self.audiobooks_enabled:
-            base.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
-            base.add(ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT)
-
-        return base
+        return features
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -501,7 +484,7 @@ class SpotifyProvider(MusicProvider):
                     "Podcast with ID %s is no longer available on Spotify", prov_podcast_id
                 )
 
-        # Get cached episode data - this should be fast after first call
+        # Get cached episode data
         episodes_data = await self._get_podcast_episodes_data(prov_podcast_id)
 
         # Parse and yield episodes with position

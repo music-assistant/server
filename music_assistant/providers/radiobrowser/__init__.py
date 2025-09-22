@@ -30,6 +30,12 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError, Station
 
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_EXPORT_ADD,
+    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
+    CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -49,12 +55,41 @@ if TYPE_CHECKING:
 
 CONF_STORED_RADIOS = "stored_radios"
 
+CONF_ENTRY_LIBRARY_IMPORT_RADIOS_HIDDEN = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_LIBRARY_IMPORT_RADIOS.to_dict(),
+        "hidden": True,
+        "default_value": "import_only",
+    }
+)
+CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS.to_dict(),
+        "hidden": True,
+        "default_value": 180,
+    }
+)
+CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_LIBRARY_EXPORT_ADD.to_dict(),
+        "hidden": True,
+        "default_value": "export_library",
+    }
+)
+CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_LIBRARY_EXPORT_REMOVE.to_dict(),
+        "hidden": True,
+        "default_value": "export_library",
+    }
+)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return RadioBrowserProvider(mass, manifest, config)
+    return RadioBrowserProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -83,16 +118,16 @@ async def get_config_entries(
             required=False,
             hidden=True,
         ),
+        # hide some of the default (dynamic) entries for library management
+        CONF_ENTRY_LIBRARY_IMPORT_RADIOS_HIDDEN,
+        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
+        CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN,
+        CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN,
     )
 
 
 class RadioBrowserProvider(MusicProvider):
     """Provider implementation for RadioBrowser."""
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

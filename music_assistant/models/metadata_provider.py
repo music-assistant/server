@@ -12,23 +12,11 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, MediaItemMetadata, Track
 
 
-DEFAULT_SUPPORTED_FEATURES = {
-    ProviderFeature.ARTIST_METADATA,
-    ProviderFeature.ALBUM_METADATA,
-    ProviderFeature.TRACK_METADATA,
-}
-
-
 class MetadataProvider(Provider):
     """Base representation of a Metadata Provider (controller).
 
     Metadata Provider implementations should inherit from this base model.
     """
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return DEFAULT_SUPPORTED_FEATURES
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for an artist on this Metadata provider."""

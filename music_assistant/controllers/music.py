@@ -42,6 +42,8 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     CACHE_CATEGORY_MUSIC_SEARCH,
+    CONF_ENTRY_LIBRARY_EXPORT_ADD,
+    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -86,8 +88,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 18
+DB_SCHEMA_VERSION: Final[int] = 19
 
 
 class MusicController(CoreController):
@@ -115,7 +116,6 @@ class MusicController(CoreController):
             "Music Assistant's core controller which manages all music from all providers."
         )
         self.manifest.icon = "archive-music"
-        self._sync_task: asyncio.Task | None = None
 
     async def get_config_entries(
         self,
@@ -124,23 +124,6 @@ class MusicController(CoreController):
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         entries = (
-            ConfigEntry(
-                key=CONF_SYNC_INTERVAL,
-                type=ConfigEntryType.INTEGER,
-                range=(5, 720),
-                default_value=DEFAULT_SYNC_INTERVAL,
-                label="Sync interval",
-                description="Interval (in minutes) that a (delta) sync "
-                "of all providers should be performed.",
-            ),
-            ConfigEntry(
-                key=CONF_ADD_LIBRARY_ON_PLAY,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                label="Add item to the library as soon as its played",
-                description="Automatically add a track or radio station to "
-                "the library when played (if its not already in the library).",
-            ),
             ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
@@ -154,7 +137,7 @@ class MusicController(CoreController):
         if action == CONF_RESET_DB:
             await self._reset_database()
             await self.mass.cache.clear()
-            self.start_sync()
+            await self.start_sync()
             entries = (
                 *entries,
                 ConfigEntry(
@@ -170,19 +153,14 @@ class MusicController(CoreController):
         self.config = config
         # setup library database
         await self._setup_database()
-        sync_interval = config.get_value(CONF_SYNC_INTERVAL)
-        self.logger.info("Using a sync interval of %s minutes.", sync_interval)
         # make sure to finish any removal jobs
         for removed_provider in self.mass.config.get_raw_core_config_value(
             self.domain, CONF_DELETED_PROVIDERS, []
         ):
             await self.cleanup_provider(removed_provider)
-        self._schedule_sync()
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        if self._sync_task and not self._sync_task.done():
-            self._sync_task.cancel()
         if self.database:
             await self.database.close()
 
@@ -192,7 +170,7 @@ class MusicController(CoreController):
         return self.mass.get_providers(ProviderType.MUSIC)
 
     @api_command("music/sync")
-    def start_sync(
+    async def start_sync(
         self,
         media_types: list[MediaType] | None = None,
         providers: list[str] | None = None,
@@ -213,7 +191,15 @@ class MusicController(CoreController):
                     continue
                 if not provider.library_supported(media_type):
                     continue
-                self._start_provider_sync(provider, media_type)
+                # handle mediatype specific sync config
+                conf_key = f"library_import_{media_type}s"
+                sync_conf = await self.mass.config.get_provider_config_value(
+                    provider.instance_id, conf_key
+                )
+                if sync_conf == "no_import":
+                    continue
+                import_as_favorite = sync_conf == "import_as_favorite"
+                self._start_provider_sync(provider, media_type, import_as_favorite)
 
     @api_command("music/synctasks")
     def get_running_sync_tasks(self) -> list[SyncTask]:
@@ -621,13 +607,6 @@ class MusicController(CoreController):
         """Add an item to the favorites."""
         if isinstance(item, str):
             item = await self.get_item_by_uri(item)
-        # ensure item is added to streaming provider library
-        if (
-            (provider := self.mass.get_provider(item.provider))
-            and provider.is_streaming_provider
-            and provider.library_edit_supported(item.media_type)
-        ):
-            await provider.library_add(item)
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
@@ -643,6 +622,26 @@ class MusicController(CoreController):
             full_item.item_id,
             True,
         )
+        # add to provider(s) library if needed/wanted
+        provider_mappings_updated = False
+        for prov_mapping in full_item.provider_mappings:
+            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            if not provider.library_edit_supported(item.media_type):
+                continue
+            if prov_mapping.in_library:
+                continue
+            conf_export_library = provider.config.get_value(
+                CONF_ENTRY_LIBRARY_EXPORT_ADD.key, CONF_ENTRY_LIBRARY_EXPORT_ADD.default_value
+            )
+            if conf_export_library != "export_favorite":
+                continue
+            prov_item = full_item
+            prov_item.provider = prov_mapping.provider_instance
+            prov_item.item_id = prov_mapping.item_id
+            self.mass.create_task(provider.library_add(prov_item))
+            provider_mappings_updated = True
+        if provider_mappings_updated:
+            await ctrl.set_provider_mappings(full_item.item_id, full_item.provider_mappings)
 
     @api_command("music/favorites/remove_item")
     async def remove_item_from_favorites(
@@ -656,6 +655,25 @@ class MusicController(CoreController):
             library_item_id,
             False,
         )
+        # remove from provider(s) library if needed
+        provider_mappings_updated = False
+        full_item = await ctrl.get_library_item(library_item_id)
+        for prov_mapping in full_item.provider_mappings:
+            if not prov_mapping.in_library:
+                continue
+            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            if not provider.library_edit_supported(full_item.media_type):
+                continue
+            conf_export_library = provider.config.get_value(
+                CONF_ENTRY_LIBRARY_EXPORT_REMOVE.key, CONF_ENTRY_LIBRARY_EXPORT_REMOVE.default_value
+            )
+            if conf_export_library != "export_favorite":
+                continue
+            self.mass.create_task(provider.library_remove(prov_mapping.item_id, media_type))
+            prov_mapping.in_library = False
+            provider_mappings_updated = True
+        if provider_mappings_updated:
+            await ctrl.set_provider_mappings(library_item_id, full_item.provider_mappings)
 
     @api_command("music/library/remove_item")
     async def remove_item_from_library(
@@ -667,15 +685,21 @@ class MusicController(CoreController):
         Destructive! Will remove the item and all dependants.
         """
         ctrl = self.get_controller(media_type)
-        item = await ctrl.get_library_item(library_item_id)
-        # remove from all providers
-        for provider_mapping in item.provider_mappings:
-            if prov_controller := self.mass.get_provider(provider_mapping.provider_instance):
-                # we simply try to remove it on the provider library
-                # NOTE that the item may not be in the provider's library at all
-                # so we need to be a bit forgiving here
-                with suppress(NotImplementedError):
-                    await prov_controller.library_remove(provider_mapping.item_id, item.media_type)
+        # remove from provider(s) library
+        full_item = await ctrl.get_library_item(library_item_id)
+        for prov_mapping in full_item.provider_mappings:
+            if not prov_mapping.in_library:
+                continue
+            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            if not provider.library_edit_supported(full_item.media_type):
+                continue
+            conf_export_library = provider.config.get_value(
+                CONF_ENTRY_LIBRARY_EXPORT_REMOVE.key, CONF_ENTRY_LIBRARY_EXPORT_REMOVE.default_value
+            )
+            if conf_export_library != "export_library":
+                continue
+            self.mass.create_task(provider.library_remove(prov_mapping.item_id, media_type))
+        # remove from library
         await ctrl.remove_item_from_library(library_item_id, recursive)
 
     @api_command("music/library/add_item")
@@ -694,11 +718,18 @@ class MusicController(CoreController):
         # add to provider(s) library first
         for prov_mapping in item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if provider.library_edit_supported(item.media_type):
-                prov_item = item
-                prov_item.provider = prov_mapping.provider_instance
-                prov_item.item_id = prov_mapping.item_id
-                await provider.library_add(prov_item)
+            if not provider.library_edit_supported(item.media_type):
+                continue
+            conf_export_library = provider.config.get_value(
+                CONF_ENTRY_LIBRARY_EXPORT_ADD.key, CONF_ENTRY_LIBRARY_EXPORT_ADD.default_value
+            )
+            if conf_export_library != "export_library":
+                continue
+            prov_item = item
+            prov_item.provider = prov_mapping.provider_instance
+            prov_item.item_id = prov_mapping.item_id
+            prov_mapping.in_library = True
+            self.mass.create_task(provider.library_add(prov_item))
         # add (or overwrite) to library
         ctrl = self.get_controller(item.media_type)
         library_item = await ctrl.add_item_to_library(item, overwrite_existing)
@@ -910,14 +941,6 @@ class MusicController(CoreController):
             # skip non media items (e.g. plugin source)
             return
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
-        if (
-            not db_item
-            and media_item.media_type in (MediaType.TRACK, MediaType.RADIO)
-            and self.mass.config.get_raw_core_config_value(self.domain, CONF_ADD_LIBRARY_ON_PLAY)
-        ):
-            # handle feature to add to the lib on playback
-            db_item = await self.add_item_to_library(media_item)
-
         if db_item:
             await self.database.execute(
                 f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
@@ -1215,6 +1238,27 @@ class MusicController(CoreController):
                 "Provider %s was not not fully removed from library", provider_instance
             )
 
+    async def schedule_provider_sync(self, provider_instance_id: str) -> None:
+        """Schedule Library sync for given provider."""
+        if not (provider := self.mass.get_provider(provider_instance_id)):
+            return
+        self.unschedule_provider_sync(provider.instance_id)
+        for media_type in MediaType:
+            if not provider.library_supported(media_type):
+                continue
+            await self._schedule_provider_mediatype_sync(provider, media_type, True)
+
+    def unschedule_provider_sync(self, provider_instance_id: str) -> None:
+        """Unschedule Library sync for given provider."""
+        # cancel all scheduled sync tasks
+        for media_type in MediaType:
+            key = f"sync_{provider_instance_id}_{media_type.value}"
+            self.mass.cancel_timer(key)
+        # cancel any running sync tasks
+        for sync_task in self.in_progress_syncs:
+            if sync_task.provider_instance == provider_instance_id:
+                sync_task.task.cancel()
+
     async def _get_default_recommendations(self) -> list[RecommendationFolder]:
         """Return default recommendations."""
         return [
@@ -1295,16 +1339,21 @@ class MusicController(CoreController):
             )
             return []
 
-    def _start_provider_sync(self, provider: MusicProvider, media_type: MediaType) -> None:
+    def _start_provider_sync(
+        self, provider: MusicProvider, media_type: MediaType, import_as_favorite: bool
+    ) -> None:
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
         for sync_task in self.in_progress_syncs:
             if sync_task.provider_instance != provider.instance_id:
                 continue
+            if sync_task.task.done():
+                continue
             if media_type in sync_task.media_types:
                 self.logger.debug(
-                    "Skip sync task for %s because another task is already in progress",
+                    "Skip sync task for %s/%ss because another task is already in progress",
                     provider.name,
+                    media_type.value,
                 )
                 return
 
@@ -1312,12 +1361,7 @@ class MusicController(CoreController):
             # Wrap the provider sync into a lock to prevent
             # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
-                await provider.sync_library(media_type)
-            # precache playlist tracks
-            if media_type == MediaType.PLAYLIST:
-                for playlist in await self.playlists.library_items(provider=provider.instance_id):
-                    async for _ in self.playlists.tracks(playlist.item_id, playlist.provider):
-                        pass
+                await provider.sync_library(media_type, import_as_favorite)
 
         # we keep track of running sync tasks
         task = self.mass.create_task(run_sync())
@@ -1337,31 +1381,24 @@ class MusicController(CoreController):
                 return
             if task_err := task.exception():
                 self.logger.warning(
-                    "Sync task for %s completed with errors",
+                    "Sync task for %s/%ss completed with errors",
                     provider.name,
+                    media_type.value,
                     exc_info=task_err if self.logger.isEnabledFor(10) else None,
                 )
             else:
-                self.logger.info("Sync task for %s completed", provider.name)
+                self.logger.info("Sync task for %s/%ss completed", provider.name, media_type.value)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
+            cache_key = f"last_library_sync_{provider.instance_id}_{media_type.value}"
+            self.mass.create_task(self.mass.cache.set, cache_key, self.mass.loop.time())
             # schedule db cleanup after sync
             if not self.in_progress_syncs:
                 self.mass.create_task(self._cleanup_database())
+            # reschedule next execution
+            self.mass.create_task(self._schedule_provider_mediatype_sync(provider, media_type))
 
         task.add_done_callback(on_sync_task_done)
-
-    def _schedule_sync(self) -> None:
-        """Schedule the periodic sync."""
-        sync_interval = self.config.get_value(CONF_SYNC_INTERVAL) * 60
-
-        def run_scheduled_sync() -> None:
-            # kickoff the sync job
-            self.start_sync()
-            # reschedule ourselves
-            self.mass.loop.call_later(sync_interval, self._schedule_sync)
-
-        # schedule the first sync run
-        self.mass.loop.call_later(sync_interval, run_scheduled_sync)
+        return
 
     def _sort_search_result(
         self,
@@ -1402,6 +1439,46 @@ class MusicController(CoreController):
         # so we add all remaining items in their original order. We just prioritize
         # exact name matches and library items.
         return UniqueList([*[x[1] for x in scored_items], *items])
+
+    async def _schedule_provider_mediatype_sync(
+        self, provider: MusicProvider, media_type: MediaType, is_initial: bool = False
+    ) -> None:
+        """Schedule Library sync for given provider and media type."""
+        job_key = f"sync_{provider.instance_id}_{media_type.value}"
+        # cancel any existing timers
+        self.mass.cancel_timer(job_key)
+        # handle mediatype specific sync config
+        conf_key = f"library_import_{media_type}s"
+        sync_conf = await self.mass.config.get_provider_config_value(provider.instance_id, conf_key)
+        if sync_conf == "no_import":
+            return
+        conf_key = f"provider_sync_interval_{media_type.value}s"
+        sync_interval = cast(
+            "int",
+            await self.mass.config.get_provider_config_value(provider.instance_id, conf_key),
+        )
+        if sync_interval <= 0:
+            # sync disabled for this media type
+            return
+        sync_interval = sync_interval * 60  # config interval is in minutes - convert to seconds
+        import_as_favorite = sync_conf == "import_as_favorite"
+
+        if is_initial:
+            # schedule the first sync run
+            cache_key = f"last_library_sync_{provider.instance_id}_{media_type.value}"
+            initial_interval = 10
+            if last_sync := await self.mass.cache.get(cache_key):
+                initial_interval += max(0, sync_interval - (self.mass.loop.time() - last_sync))
+            sync_interval = initial_interval
+
+        self.mass.call_later(
+            sync_interval,
+            self._start_provider_sync,
+            provider,
+            media_type,
+            import_as_favorite,
+            task_id=job_key,
+        )
 
     async def _cleanup_database(self) -> None:
         """Perform database cleanup/maintenance."""
@@ -1654,6 +1731,18 @@ class MusicController(CoreController):
             ):
                 await self.database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
 
+        if prev_version <= 18:
+            # add in_library column to provider_mappings table
+            await self.database.execute(
+                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN in_library "
+                "BOOLEAN NOT NULL DEFAULT 0;"
+            )
+            # migrate existing entries in provider_mappings which are filesystem
+            await self.database.execute(
+                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
+                "WHERE provider_domain in ('filesystem_local', 'filesystem_smb');"
+            )
+
         # save changes
         await self.database.commit()
 
@@ -1667,7 +1756,7 @@ class MusicController(CoreController):
         await asyncio.to_thread(os.remove, db_path)
         await self._setup_database()
         # initiate full sync
-        self.start_sync()
+        await self.start_sync()
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
@@ -1699,13 +1788,13 @@ class MusicController(CoreController):
                     [version] TEXT,
                     [album_type] TEXT NOT NULL,
                     [year] INTEGER,
-                    [favorite] BOOLEAN DEFAULT 0,
+                    [favorite] BOOLEAN NOT NULL DEFAULT 0,
                     [metadata] json NOT NULL,
                     [external_ids] json NOT NULL,
-                    [play_count] INTEGER DEFAULT 0,
-                    [last_played] INTEGER DEFAULT 0,
+                    [play_count] INTEGER NOT NULL DEFAULT 0,
+                    [last_played] INTEGER NOT NULL DEFAULT 0,
                     [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    [timestamp_modified] INTEGER,
+                    [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
                     [search_name] TEXT NOT NULL,
                     [search_sort_name] TEXT NOT NULL
                 );"""
@@ -1716,13 +1805,13 @@ class MusicController(CoreController):
             [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1735,13 +1824,13 @@ class MusicController(CoreController):
             [sort_name] TEXT NOT NULL,
             [version] TEXT,
             [duration] INTEGER,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1755,13 +1844,13 @@ class MusicController(CoreController):
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
             [cache_checksum] TEXT DEFAULT '',
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1772,13 +1861,13 @@ class MusicController(CoreController):
             [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1790,7 +1879,7 @@ class MusicController(CoreController):
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
             [version] TEXT,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [publisher] TEXT,
             [authors] json NOT NULL,
             [narrators] json NOT NULL,
@@ -1800,7 +1889,7 @@ class MusicController(CoreController):
             [play_count] INTEGER DEFAULT 0,
             [last_played] INTEGER DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1812,15 +1901,15 @@ class MusicController(CoreController):
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
             [version] TEXT,
-            [favorite] BOOLEAN DEFAULT 0,
+            [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [publisher] TEXT,
-            [total_episodes] INTEGER,
+            [total_episodes] INTEGER NOT NULL,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
-            [play_count] INTEGER DEFAULT 0,
-            [last_played] INTEGER DEFAULT 0,
+            [play_count] INTEGER NOT NULL DEFAULT 0,
+            [last_played] INTEGER NOT NULL DEFAULT 0,
             [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER,
+            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
             [search_name] TEXT NOT NULL,
             [search_sort_name] TEXT NOT NULL
             );"""
@@ -1846,7 +1935,8 @@ class MusicController(CoreController):
             [provider_domain] TEXT NOT NULL,
             [provider_instance] TEXT NOT NULL,
             [provider_item_id] TEXT NOT NULL,
-            [available] BOOLEAN DEFAULT 1,
+            [available] BOOLEAN NOT NULL DEFAULT 1,
+            [in_library] BOOLEAN NOT NULL DEFAULT 0,
             [url] text,
             [audio_format] json,
             [details] TEXT,
@@ -1958,6 +2048,11 @@ class MusicController(CoreController):
             "CREATE INDEX IF NOT EXISTS "
             f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_domain_idx "
             f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_domain);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS "
+            f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_instance_library_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,in_library);"
         )
 
         # indexes on track_artists table

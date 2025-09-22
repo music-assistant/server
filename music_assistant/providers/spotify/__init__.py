@@ -52,6 +52,25 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_PODCASTS_EDIT,
+}
+
 
 async def get_config_entries(
     mass: MusicAssistant,
