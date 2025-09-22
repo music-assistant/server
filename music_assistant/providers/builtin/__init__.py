@@ -6,13 +6,11 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
 import aiofiles
 import shortuuid
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -43,57 +41,38 @@ from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
+from .constants import (
+    ALL_FAVORITE_TRACKS,
+    BUILTIN_PLAYLISTS,
+    BUILTIN_PLAYLISTS_ENTRIES,
+    COLLAGE_IMAGE_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN,
+    CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS_HIDDEN,
+    CONF_ENTRY_LIBRARY_IMPORT_RADIOS_HIDDEN,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS_HIDDEN,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN,
+    CONF_KEY_PLAYLISTS,
+    CONF_KEY_RADIOS,
+    CONF_KEY_TRACKS,
+    DEFAULT_FANART,
+    DEFAULT_THUMB,
+    RANDOM_ALBUM,
+    RANDOM_ARTIST,
+    RANDOM_TRACKS,
+    RECENTLY_PLAYED,
+    StoredItem,
+)
+
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-
-class StoredItem(TypedDict):
-    """Definition of an media item (for the builtin provider) stored in persistent storage."""
-
-    item_id: str  # url or (locally accessible) file path (or id in case of playlist)
-    name: str
-    image_url: NotRequired[str]
-    last_updated: NotRequired[int]
-
-
-CONF_KEY_RADIOS = "stored_radios"
-CONF_KEY_TRACKS = "stored_tracks"
-CONF_KEY_PLAYLISTS = "stored_playlists"
-
-
-ALL_FAVORITE_TRACKS = "all_favorite_tracks"
-RANDOM_ARTIST = "random_artist"
-RANDOM_ALBUM = "random_album"
-RANDOM_TRACKS = "random_tracks"
-RECENTLY_PLAYED = "recently_played"
-
-BUILTIN_PLAYLISTS = {
-    ALL_FAVORITE_TRACKS: "All favorited tracks",
-    RANDOM_ARTIST: "Random Artist (from library)",
-    RANDOM_ALBUM: "Random Album (from library)",
-    RANDOM_TRACKS: "500 Random tracks (from library)",
-    RECENTLY_PLAYED: "Recently played tracks",
-}
-
-COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, RANDOM_TRACKS)
-
-DEFAULT_THUMB = MediaItemImage(
-    type=ImageType.THUMB,
-    path="logo.png",
-    provider="builtin",
-    remotely_accessible=False,
-)
-
-DEFAULT_FANART = MediaItemImage(
-    type=ImageType.FANART,
-    path="fanart.jpg",
-    provider="builtin",
-    remotely_accessible=False,
-)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -127,15 +106,17 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    return tuple(
-        ConfigEntry(
-            key=key,
-            type=ConfigEntryType.BOOLEAN,
-            label=name,
-            default_value=True,
-            category="builtin_playlists",
-        )
-        for key, name in BUILTIN_PLAYLISTS.items()
+    return (
+        *BUILTIN_PLAYLISTS_ENTRIES,
+        # hide some of the default (dynamic) entries for library management
+        CONF_ENTRY_LIBRARY_IMPORT_TRACKS_HIDDEN,
+        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS_HIDDEN,
+        CONF_ENTRY_LIBRARY_IMPORT_RADIOS_HIDDEN,
+        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN,
+        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
+        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD,
+        CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN,
+        CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN,
     )
 
 
