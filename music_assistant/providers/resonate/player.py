@@ -142,6 +142,7 @@ class ResonatePlayer(Player):
     async def stop(self) -> None:
         """Stop command."""
         self.logger.info("Received STOP command on player %s", self.display_name)
+        # We don't care if we stopped the stream or it was already stopped
         _ = self.api.group.stop()
 
     async def play_media(self, media: PlayerMedia) -> None:
@@ -149,6 +150,8 @@ class ResonatePlayer(Player):
         self.logger.info(
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
+
+        # Update player state optimistically
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
