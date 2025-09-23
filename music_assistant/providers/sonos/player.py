@@ -494,7 +494,7 @@ class SonosPlayer(Player):
             # if airplay mode is enabled, we could possibly receive child player id's that are
             # not Sonos players, but AirPlay players. We redirect those.
             airplay_child_ids = [x for x in player_ids_to_add or [] if x.startswith("ap")]
-            player_ids_to_add = [x for x in player_ids_to_add if x not in airplay_child_ids]
+            player_ids_to_add = [x for x in player_ids_to_add or [] if x not in airplay_child_ids]
             if airplay_child_ids:
                 if (
                     airplay_player.active_source != self._attr_active_source
