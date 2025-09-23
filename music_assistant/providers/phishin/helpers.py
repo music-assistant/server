@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -14,6 +16,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    Playlist,
     ProviderMapping,
     Track,
 )
@@ -52,37 +55,29 @@ async def api_request(
             timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT),
         ) as response:
             if response.status == 404:
-                # 404 is expected for non-existent shows/items
                 raise MediaNotFoundError(f"Resource not found: {url}")
             response.raise_for_status()
             return await response.json()
     except MediaNotFoundError:
-        # Re-raise MediaNotFoundError as-is
         raise
     except aiohttp.ClientError as err:
         provider.logger.error("API request failed for %s: %s", url, err)
         raise ProviderUnavailableError(f"Phish.in API unavailable: {err}") from err
-    except Exception as err:
-        provider.logger.error("Unexpected error for %s: %s", url, err)
-        raise ProviderUnavailableError(f"Phish.in API error: {err}") from err
 
 
 def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
     """Convert a Phish.in show to a Music Assistant Album."""
     show_date = show_data.get("date", "")
-    # API change: venue is now a nested object
     venue_data = show_data.get("venue", {})
     venue_name = venue_data.get("name", "Unknown Venue")
     location = venue_data.get("location", "")
 
-    # Create album name from date and venue
     album_name = f"{show_date} - {venue_name}"
     if location:
         album_name += f", {location}"
 
-    album_cover_url = show_data.get("album_cover_url") or FALLBACK_ALBUM_IMAGE
-
     # Create metadata with image
+    album_cover_url = show_data.get("album_cover_url") or FALLBACK_ALBUM_IMAGE
     metadata = MediaItemMetadata(
         images=UniqueList(
             [
@@ -97,10 +92,10 @@ def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
     )
 
     # Parse year from date string (YYYY-MM-DD format)
-    try:
-        year = int(show_date.split("-")[0]) if show_date and "-" in show_date else None
-    except (ValueError, IndexError):
-        year = None
+    year = None
+    if show_date and "-" in show_date:
+        with contextlib.suppress(ValueError, IndexError):
+            year = int(show_date.split("-")[0])
 
     # Create details string for provider mapping
     details_parts = [f"venue:{venue_name}"]
@@ -108,9 +103,10 @@ def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
         details_parts.append(f"location:{location}")
     if show_data.get("duration"):
         details_parts.append(f"duration:{show_data.get('duration')}")
-    # API change: use audio_status instead of sbd/remastered
+
     audio_status = show_data.get("audio_status", "missing")
     details_parts.append(f"audio_status:{audio_status}")
+
     if show_data.get("tour_name"):
         details_parts.append(f"tour:{show_data.get('tour_name')}")
 
@@ -136,7 +132,6 @@ def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
                 item_id=show_date,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                # API change: use audio_status instead of incomplete
                 available=audio_status in ["complete", "partial"],
                 audio_format=AudioFormat(content_type=ContentType.MP3),
                 details="|".join(details_parts),
@@ -161,7 +156,7 @@ async def get_phish_artist(provider: MusicProvider) -> Artist:
         },
     )
 
-    # Add MusicBrainz ID for metadata enrichment
+    # Add external IDs for metadata enrichment
     artist.add_external_id(ExternalID.MB_ARTIST, PHISH_MUSICBRAINZ_ID)
     artist.add_external_id(ExternalID.DISCOGS, PHISH_DISCOGS_ID)
     artist.add_external_id(ExternalID.TADB, PHISH_TADB_ID)
@@ -177,18 +172,18 @@ def track_to_ma_track(
     """Convert a Phish.in track to a Music Assistant Track."""
     track_id = str(track_data.get("id", ""))
 
-    # Fix: Get song data from songs array instead of song object
+    # Get song data from songs array
     songs = track_data.get("songs", [])
     song_data = songs[0] if songs else {}
     song_title = track_data.get("title", "Unknown Song")
 
     # Duration in milliseconds, convert to seconds
     duration_ms = track_data.get("duration")
-    duration = int(duration_ms / 1000) if duration_ms else 0  # Default to 0, not None
+    duration = int(duration_ms / 1000) if duration_ms else 0
 
     # Track position in set
     position = track_data.get("position")
-    track_number = int(position) if position is not None else 0  # Default to 0, not None
+    track_number = int(position) if position is not None else 0
     set_name = track_data.get("set_name", "")
 
     # Show information
@@ -232,7 +227,7 @@ def track_to_ma_track(
     if venue_name:
         details_parts.append(f"venue:{venue_name}")
 
-    # Fix: Extract tag names from tag objects
+    # Extract tag names from tag objects
     if track_data.get("tags"):
         tag_names = [tag.get("name", "") for tag in track_data.get("tags", [])]
         details_parts.append(f"tags:{','.join(tag_names)}")
@@ -240,17 +235,10 @@ def track_to_ma_track(
     if track_data.get("likes_count"):
         details_parts.append(f"likes_count:{track_data.get('likes_count', 0)}")
 
+    # Create metadata with image if available
     metadata = MediaItemMetadata()
-
-    if show_data and show_data.get("album_cover_url"):
-        # Determine image path
-        image_path = (
-            show_data.get("album_cover_url")
-            if show_data and show_data.get("album_cover_url")
-            else FALLBACK_ALBUM_IMAGE
-        ) or FALLBACK_ALBUM_IMAGE
-
-        # Create metadata with the determined image
+    image_path = show_data.get("album_cover_url") if show_data else None
+    if image_path:
         metadata = MediaItemMetadata(
             images=UniqueList(
                 [
@@ -268,10 +256,10 @@ def track_to_ma_track(
         item_id=track_id,
         provider=provider.instance_id,
         name=track_title,
-        artists=UniqueList([phish_artist]),  # Use UniqueList with ItemMapping
-        album=album_mapping,  # Use ItemMapping instead of ProviderMapping
-        duration=duration,  # int, not int | None
-        track_number=track_number,  # int, not int | None
+        artists=UniqueList([phish_artist]),
+        album=album_mapping,
+        duration=duration,
+        track_number=track_number,
         metadata=metadata,
         provider_mappings={
             ProviderMapping(
@@ -281,7 +269,44 @@ def track_to_ma_track(
                 available=bool(track_data.get("mp3_url")),
                 audio_format=AudioFormat(content_type=ContentType.MP3),
                 url=track_data.get("mp3_url"),
-                details="|".join(details_parts),  # Store metadata in details
+                details="|".join(details_parts),
+            )
+        },
+    )
+
+
+def playlist_to_ma_playlist(provider: MusicProvider, playlist_data: dict[str, Any]) -> Playlist:
+    """Convert phish.in playlist data to Music Assistant Playlist."""
+    playlist_id = str(playlist_data["id"])
+
+    metadata = MediaItemMetadata(
+        description=playlist_data.get("description"),
+        images=UniqueList(
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=FALLBACK_ALBUM_IMAGE,
+                    provider=provider.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
+        ),
+    )
+
+    return Playlist(
+        item_id=playlist_id,
+        provider=provider.instance_id,
+        name=playlist_data.get("name", ""),
+        owner=playlist_data.get("username", ""),
+        is_editable=False,
+        cache_checksum=str(playlist_data.get("id")),
+        metadata=metadata,
+        provider_mappings={
+            ProviderMapping(
+                item_id=playlist_id,
+                provider_domain=provider.domain,
+                provider_instance=provider.instance_id,
+                available=True,
             )
         },
     )
@@ -311,59 +336,128 @@ def parse_search_results(
     provider: MusicProvider,
     search_data: dict[str, Any],
     media_types: list[MediaType],
-) -> tuple[list[Artist], list[Album], list[Track]]:
+    search_query: str,
+) -> tuple[list[Artist], list[Album], list[Track], list[Playlist]]:
     """Parse search results into MA media items."""
-    artists = []
-    albums = []
-    tracks = []
+    search_term = search_query.lower()
 
-    # Shows become albums - check exact_show and other_shows
-    if MediaType.ALBUM in media_types:
-        # Add exact show if present
-        if search_data.get("exact_show"):
-            try:
-                album = show_to_album(provider, search_data["exact_show"])
-                albums.append(album)
-            except Exception as err:
-                provider.logger.warning(
-                    "Failed to parse exact show %s: %s", search_data["exact_show"].get("date"), err
+    def contains_search_term(text: str | None) -> bool:
+        return search_term in text.lower() if text else False
+
+    artists: list[Artist] = _parse_artists(provider, media_types)
+    albums: list[Album] = _parse_albums(provider, search_data, media_types, contains_search_term)
+    tracks: list[Track] = _parse_tracks(provider, search_data, media_types, contains_search_term)
+    playlists: list[Playlist] = _parse_playlists(
+        provider, search_data, media_types, contains_search_term
+    )
+
+    return artists, albums, tracks, playlists
+
+
+def _parse_artists(provider: MusicProvider, media_types: list[MediaType]) -> list[Artist]:
+    """Parse artists from search results."""
+    artists: list[Artist] = []
+    if MediaType.ARTIST in media_types:
+        metadata = MediaItemMetadata(
+            images=UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=FALLBACK_ALBUM_IMAGE,
+                        provider=provider.instance_id,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
+        )
+
+        phish_artist_full = Artist(
+            item_id=PHISH_ARTIST_ID,
+            provider=provider.instance_id,
+            name=PHISH_ARTIST_NAME,
+            metadata=metadata,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=PHISH_ARTIST_ID,
+                    provider_domain=provider.domain,
+                    provider_instance=provider.instance_id,
+                    available=True,
                 )
+            },
+        )
+        artists.append(phish_artist_full)
 
-        # Add other shows
-        for show in search_data.get("other_shows", []):
-            try:
-                album = show_to_album(provider, show)
-                albums.append(album)
-            except Exception as err:
-                provider.logger.warning("Failed to parse show %s: %s", show.get("date"), err)
+    return artists
 
-    # Search tracks - API returns tracks array directly
+
+def _parse_albums(
+    provider: MusicProvider,
+    search_data: dict[str, Any],
+    media_types: list[MediaType],
+    contains_search_term: Callable[[str | None], bool],
+) -> list[Album]:
+    """Parse albums from search results."""
+    albums: list[Album] = []
+    if MediaType.ALBUM not in media_types:
+        return albums
+
+    # Add exact show if present
+    if search_data.get("exact_show"):
+        show = search_data["exact_show"]
+        venue_name = show.get("venue_name", "")
+        if contains_search_term(venue_name):
+            albums.append(show_to_album(provider, show))
+
+    # Add other shows
+    for show in search_data.get("other_shows", []):
+        venue_name = show.get("venue_name", "")
+        if contains_search_term(venue_name):
+            albums.append(show_to_album(provider, show))
+
+    # Add venue shows (from additional API calls)
+    for show in search_data.get("venue_shows", []):
+        venue_name = show.get("venue_name", "")
+        if contains_search_term(venue_name):
+            albums.append(show_to_album(provider, show))
+
+    return albums
+
+
+def _parse_tracks(
+    provider: MusicProvider,
+    search_data: dict[str, Any],
+    media_types: list[MediaType],
+    contains_search_term: Callable[[str | None], bool],
+) -> list[Track]:
+    """Parse tracks from search results."""
+    tracks: list[Track] = []
     if MediaType.TRACK in media_types:
         for track_data in search_data.get("tracks", []):
-            try:
-                track = track_to_ma_track(provider, track_data)
-                tracks.append(track)
-            except Exception as err:
-                provider.logger.warning("Failed to parse track %s: %s", track_data.get("id"), err)
+            track_title = track_data.get("title", "")
+            if contains_search_term(track_title):
+                # Extract show data from track data for image
+                show_data = {
+                    "date": track_data.get("show_date"),
+                    "album_cover_url": track_data.get("show_album_cover_url"),
+                    "venue": {"name": track_data.get("venue_name")},
+                }
+                tracks.append(track_to_ma_track(provider, track_data, show_data))
 
-    # Artists - always return Phish as the main artist if requested
-    if MediaType.ARTIST in media_types:
-        try:
-            phish_artist_full = Artist(
-                item_id=PHISH_ARTIST_ID,
-                provider=provider.instance_id,
-                name=PHISH_ARTIST_NAME,
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=PHISH_ARTIST_ID,
-                        provider_domain=provider.domain,
-                        provider_instance=provider.instance_id,
-                        available=True,
-                    )
-                },
-            )
-            artists.append(phish_artist_full)
-        except Exception as err:
-            provider.logger.warning("Failed to create Phish artist: %s", err)
+    return tracks
 
-    return artists, albums, tracks
+
+def _parse_playlists(
+    provider: MusicProvider,
+    search_data: dict[str, Any],
+    media_types: list[MediaType],
+    contains_search_term: Callable[[str | None], bool],
+) -> list[Playlist]:
+    """Parse playlists from search results."""
+    playlists: list[Playlist] = []
+    if MediaType.PLAYLIST in media_types:
+        for playlist_data in search_data.get("playlists", []):
+            playlist_name = playlist_data.get("name", "")
+            if contains_search_term(playlist_name):
+                playlists.append(playlist_to_ma_playlist(provider, playlist_data))
+
+    return playlists
