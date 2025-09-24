@@ -296,9 +296,14 @@ class MediaAssistantPlayer(Player):
                             "Playback Position received from %s Was Invalid", self.name
                         )
 
-                if not (
-                    queue := self.mass.player_queues.get_active_queue(self.current_media.source_id)
-                ):
+                if self.current_media and self.current_media.source_id:
+                    if not (
+                        queue := self.mass.player_queues.get_active_queue(
+                            self.current_media.source_id
+                        )
+                    ):
+                        return
+                else:
                     return
 
                 if (
