@@ -10,7 +10,6 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
-    ProviderFeature,
     StreamType,
 )
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
@@ -50,25 +49,32 @@ from .helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import MediaItemType
+    from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant.mass import MusicAssistant
 
 
 class PhishInProvider(MusicProvider):
     """Phish.in music provider."""
 
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature],
+    ) -> None:
+        """Initialize the provider."""
+        super().__init__(mass, manifest, config)
+        self._supported_features = supported_features
+
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-        }
+        return self._supported_features
 
     @property
     def is_streaming_provider(self) -> bool:
