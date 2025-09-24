@@ -310,8 +310,7 @@ class ResonatePlayer(Player):
             if _album := getattr(media_item, "album", None):
                 album = _album.name
                 year = _album.year
-                if _album_artist := getattr(_album, "artist_str", None):
-                    album_artist = _album_artist.artists_str
+                album_artist = getattr(_album, "artist_str", None)
             if _track_number := getattr(media_item, "track_number", None):
                 track = _track_number
 
