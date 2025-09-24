@@ -23,9 +23,10 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
 
-from .constants import AUDIOBOOK_COLLECTIONS, SUPPORTED_FEATURES
+from .constants import AUDIOBOOK_COLLECTIONS
 from .helpers import (
     InternetArchiveClient,
     clean_text,
@@ -51,24 +52,50 @@ class InternetArchiveProvider(MusicProvider):
         mass: MusicAssistant,
         manifest: ProviderManifest,
         config: ProviderConfig,
+        supported_features: set[ProviderFeature],
     ) -> None:
         """Initialize the provider."""
         super().__init__(mass, manifest, config)
+        self._supported_features = supported_features
+        self.throttler = ThrottlerManager(
+            rate_limit=10, period=60, retry_attempts=5, initial_backoff=5
+        )
         self.client = InternetArchiveClient(mass)
         self.parsers = InternetArchiveParsers(
             self.domain, self.instance_id, self.client.get_item_url
         )
-        self.streaming = InternetArchiveStreaming(self.client, self.instance_id)
+        self.streaming = InternetArchiveStreaming(self.client, self.instance_id, self)
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
+        return self._supported_features
 
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if provider is a streaming provider."""
         return True
+
+    @throttle_with_retries
+    async def _get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Make a GET request and return JSON response with throttling."""
+        return await self.client._get_json(url, params)
+
+    @throttle_with_retries
+    async def _search(self, **kwargs: Any) -> dict[str, Any]:
+        """Throttled search wrapper."""
+        return await self.client.search(**kwargs)
+
+    @throttle_with_retries
+    async def _get_metadata(self, identifier: str) -> dict[str, Any]:
+        """Throttled metadata wrapper."""
+        return await self.client.get_metadata(identifier)
+
+    @throttle_with_retries
+    @use_cache(expiration=86400)  # 24 hours - file listings are static
+    async def _get_audio_files(self, identifier: str) -> list[dict[str, Any]]:
+        """Throttled audio files wrapper."""
+        return await self.client.get_audio_files(identifier)
 
     async def search(
         self,
@@ -121,7 +148,7 @@ class InternetArchiveProvider(MusicProvider):
         for strategy_query, sort_order in search_strategies:
             self.logger.debug("Trying search strategy: %s", strategy_query)
 
-            search_response = await self.client.search(
+            search_response = await self._search(
                 query=strategy_query,
                 rows=effective_limit,
                 sort=sort_order,
@@ -303,7 +330,7 @@ class InternetArchiveProvider(MusicProvider):
         Raises:
             MediaNotFoundError: If track cannot be found or is invalid
         """
-        metadata = await self.client.get_metadata(prov_track_id)
+        metadata = await self._get_metadata(prov_track_id)
         item_metadata = metadata.get("metadata", {})
 
         title = clean_text(item_metadata.get("title"))
@@ -327,7 +354,7 @@ class InternetArchiveProvider(MusicProvider):
 
         # Add duration from first audio file
         try:
-            audio_files = await self.client.get_audio_files(prov_track_id)
+            audio_files = await self._get_audio_files(prov_track_id)
             if audio_files and audio_files[0].get("length"):
                 duration = parse_duration(audio_files[0]["length"])
                 if duration:
@@ -360,7 +387,7 @@ class InternetArchiveProvider(MusicProvider):
         Raises:
             MediaNotFoundError: If album cannot be found or is invalid
         """
-        metadata = await self.client.get_metadata(prov_album_id)
+        metadata = await self._get_metadata(prov_album_id)
         item_metadata = metadata.get("metadata", {})
 
         title = clean_text(item_metadata.get("title"))
@@ -421,19 +448,8 @@ class InternetArchiveProvider(MusicProvider):
 
     @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist catalogs change infrequently
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """
-        Get full audiobook details by id.
-
-        Args:
-            prov_audiobook_id: Provider-specific audiobook identifier
-
-        Returns:
-            Audiobook object with full metadata including chapters
-
-        Raises:
-            MediaNotFoundError: If audiobook cannot be found or is invalid
-        """
-        metadata = await self.client.get_metadata(prov_audiobook_id)
+        """Get full audiobook details by id."""
+        metadata = await self._get_metadata(prov_audiobook_id)
         item_metadata = metadata.get("metadata", {})
 
         title = clean_text(item_metadata.get("title"))
@@ -451,7 +467,8 @@ class InternetArchiveProvider(MusicProvider):
 
         # Add author/narrator
         if creator:
-            audiobook.authors.append(creator)
+            author_list = [creator]
+            audiobook.authors = UniqueList(author_list)
 
         # Add metadata
         if description := clean_text(item_metadata.get("description")):
@@ -460,64 +477,39 @@ class InternetArchiveProvider(MusicProvider):
         # Add thumbnail
         self.parsers._add_item_image(audiobook, prov_audiobook_id)
 
-        # Calculate duration and create chapters in a single pass through audio files
+        # Calculate duration and chapters
         try:
-            audio_files = await self.client.get_audio_files(prov_audiobook_id)
-            total_duration = 0
-            chapters = []
-            current_position = 0.0
-
-            for i, file_info in enumerate(audio_files, 1):
-                # Calculate duration
-                chapter_duration = parse_duration(file_info.get("length", "0")) or 0
-                total_duration += chapter_duration
-
-                # Create chapter with proper start/end positions
-                chapter_name = file_info.get("title") or file_info.get("name", f"Chapter {i}")
-
-                chapter = MediaItemChapter(
-                    position=i,
-                    name=clean_text(chapter_name),
-                    start=current_position,
-                    end=current_position + chapter_duration if chapter_duration > 0 else None,
-                )
-                chapters.append(chapter)
-                current_position += chapter_duration
-
-            # Set total duration
-            if total_duration > 0:
-                audiobook.duration = total_duration
-
-            # Set chapters if multiple files
-            if len(audio_files) > 1:
+            total_duration, chapters = await self._calculate_audiobook_duration_and_chapters(
+                prov_audiobook_id
+            )
+            audiobook.duration = total_duration
+            if len(chapters) > 1:
                 audiobook.metadata.chapters = chapters
 
-        except (TimeoutError, aiohttp.ClientError) as err:
-            self.logger.debug(
-                "Network error processing audio files for audiobook %s: %s", prov_audiobook_id, err
+        except Exception as err:
+            self.logger.warning(
+                f"Could not process audio files for audiobook {prov_audiobook_id}: {err}"
             )
-        except (KeyError, ValueError, TypeError) as err:
-            self.logger.debug(
-                "Could not parse audio file metadata for audiobook %s: %s", prov_audiobook_id, err
-            )
+            audiobook.duration = 0
+            audiobook.metadata.chapters = []
 
         return audiobook
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """
-        Get album tracks for given album id.
-
-        Args:
-            prov_album_id: Provider-specific album identifier
-
-        Returns:
-            List of Track objects belonging to the album
-        """
-        # Get the full item metadata to access individual file metadata
-        metadata = await self.client.get_metadata(prov_album_id)
+        """Get album tracks for given album id."""
+        metadata = await self._get_metadata(prov_album_id)
         item_metadata = metadata.get("metadata", {})
-        audio_files = await self.client.get_audio_files(prov_album_id)
+        audio_files = await self._get_audio_files(prov_album_id)
         tracks = []
+
+        # Pre-create album artist to avoid duplicates
+        album_artist = clean_text(item_metadata.get("creator"))
+        album_artist_normalized = album_artist.lower() if album_artist else ""
+        album_artist_obj = None
+        if album_artist:
+            album_artist_obj = self.parsers._create_artist(album_artist)
+        else:
+            album_artist_obj = self.parsers._create_artist(UNKNOWN_ARTIST)
 
         for i, file_info in enumerate(audio_files, 1):
             filename = file_info.get("name", "")
@@ -549,14 +541,16 @@ class InternetArchiveProvider(MusicProvider):
             # Add file-specific artist if available, otherwise use album artist
             file_artist = file_info.get("artist") or file_info.get("creator")
             if file_artist:
-                track.artists = UniqueList([self.parsers._create_artist(clean_text(file_artist))])
-            else:
-                # Use album-level artist
-                album_artist = clean_text(item_metadata.get("creator"))
-                if album_artist:
-                    track.artists = UniqueList([self.parsers._create_artist(album_artist)])
+                file_artist_cleaned = clean_text(file_artist)
+                file_artist_normalized = file_artist_cleaned.lower()
+                # Check if this is the same as album artist to avoid duplicates (case-insensitive)
+                if album_artist_normalized and file_artist_normalized == album_artist_normalized:
+                    track.artists = UniqueList([album_artist_obj])
                 else:
-                    track.artists = UniqueList([self.parsers._create_artist(UNKNOWN_ARTIST)])
+                    track.artists = UniqueList([self.parsers._create_artist(file_artist_cleaned)])
+            else:
+                # Use pre-created album artist object
+                track.artists = UniqueList([album_artist_obj])
 
             # Add duration if available
             if duration_str := file_info.get("length"):
@@ -602,44 +596,47 @@ class InternetArchiveProvider(MusicProvider):
         Returns:
             List of Album objects by the artist
         """
-        self.logger.debug("Getting albums for artist: %s", prov_artist_id)
+        albums: list[Album] = []
+        page = 0
+        page_size = 200  # IA's maximum
 
-        albums = []
-        search_response = await self.client.search(
-            query=(
-                f'creator:"{prov_artist_id}" AND '
-                f'(format:"VBR MP3" OR format:"FLAC" OR format:"Ogg Vorbis")'
-            ),
-            sort="downloads desc",
-        )
+        while len(albums) < 1000:  # Reasonable upper limit
+            search_response = await self._search(
+                query=f'creator:"{prov_artist_id}" AND (format:"VBR MP3" OR format:"FLAC" \
+        OR format:"Ogg Vorbis")',
+                sort="downloads desc",
+                rows=page_size,
+                page=page,
+            )
 
-        response_data = search_response.get("response", {})
-        docs = response_data.get("docs", [])
-        self.logger.debug("Found %d docs for artist %s", len(docs), prov_artist_id)
+            docs = search_response.get("response", {}).get("docs", [])
+            if not docs:
+                break
 
-        for doc in docs:
-            try:
-                # Use metadata heuristics instead of expensive API calls
-                # to determine if item is an album
-                if self.parsers.is_likely_album(doc):
-                    album = self.parsers.doc_to_album(doc)
-                    if album:
-                        albums.append(album)
-            except (KeyError, ValueError, TypeError) as err:
-                self.logger.debug("Skipping invalid album for artist %s: %s", prov_artist_id, err)
-                continue
-            except (TimeoutError, aiohttp.ClientError) as err:
-                self.logger.debug(
-                    "Network error processing album for artist %s: %s", prov_artist_id, err
-                )
-                continue
-            except Exception as err:
-                self.logger.exception(
-                    "Unexpected error processing album for artist %s: %s", prov_artist_id, err
-                )
-                continue
-
-        self.logger.debug("Returning %d albums for artist %s", len(albums), prov_artist_id)
+            for doc in docs:
+                try:
+                    # Use metadata heuristics instead of expensive API calls
+                    # to determine if item is an album
+                    if self.parsers.is_likely_album(doc):
+                        album = self.parsers.doc_to_album(doc)
+                        if album:
+                            albums.append(album)
+                except (KeyError, ValueError, TypeError) as err:
+                    self.logger.debug(
+                        "Skipping invalid album for artist %s: %s", prov_artist_id, err
+                    )
+                    continue
+                except (TimeoutError, aiohttp.ClientError) as err:
+                    self.logger.debug(
+                        "Network error processing album for artist %s: %s", prov_artist_id, err
+                    )
+                    continue
+                except Exception as err:
+                    self.logger.exception(
+                        "Unexpected error processing album for artist %s: %s", prov_artist_id, err
+                    )
+                    continue
+            page += 1
         return albums
 
     @use_cache(expiration=86400 * 7)  # Cache for 1 week
@@ -656,10 +653,8 @@ class InternetArchiveProvider(MusicProvider):
         Returns:
             List of Track objects representing the artist's top tracks
         """
-        self.logger.debug("Getting top tracks for artist: %s", prov_artist_id)
-
         tracks = []
-        search_response = await self.client.search(
+        search_response = await self._search(
             query=(
                 f'creator:"{prov_artist_id}" AND '
                 f'(format:"VBR MP3" OR format:"FLAC" OR format:"Ogg Vorbis")'
@@ -696,26 +691,19 @@ class InternetArchiveProvider(MusicProvider):
             if len(tracks) >= 25:
                 break
 
-        self.logger.debug("Returning %d tracks for artist %s", len(tracks), prov_artist_id)
         return tracks
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
-        """
-        Retrieve library audiobooks from the provider.
-
-        Returns LibriVox audiobooks which are verified free audiobook collection.
-
-        Yields:
-            Audiobook objects from the LibriVox collection
-        """
-        search_response = await self.client.search(
+        """Retrieve library audiobooks from the provider."""
+        search_response = await self._search(
             query="*",
             collection="librivoxaudio",
             rows=50,
             sort="downloads desc",
         )
 
-        for doc in search_response.get("docs", []):
+        response_data = search_response.get("response", {})
+        for doc in response_data.get("docs", []):
             audiobook = self.parsers.doc_to_audiobook(doc)
             if audiobook:
                 yield audiobook
@@ -738,10 +726,38 @@ class InternetArchiveProvider(MusicProvider):
         """
         return await self.streaming.get_stream_details(item_id, media_type)
 
+    async def _calculate_audiobook_duration_and_chapters(
+        self, item_id: str
+    ) -> tuple[int, list[MediaItemChapter]]:
+        """Calculate duration and chapters for audiobooks."""
+        audio_files = await self._get_audio_files(item_id)
+        total_duration = 0
+        chapters = []
+        current_position = 0.0
+
+        for i, file_info in enumerate(audio_files, 1):
+            chapter_duration = parse_duration(file_info.get("length", "0")) or 0
+            total_duration += chapter_duration
+
+            chapter_name = file_info.get("title") or file_info.get("name", f"Chapter {i}")
+            chapter = MediaItemChapter(
+                position=i,
+                name=clean_text(chapter_name),
+                start=current_position,
+                end=current_position + chapter_duration if chapter_duration > 0 else None,
+            )
+            chapters.append(chapter)
+            current_position += chapter_duration
+
+        return total_duration, chapters
+
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Get audio stream from Internet Archive."""
+        # Use sock_read=None to allow long audiobook chapters to stream fully
+        timeout = aiohttp.ClientTimeout(sock_read=None, total=None)
+
         if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
             chapter_urls = streamdetails.data.get("chapters", [])
             chapters_data = streamdetails.data.get("chapters_data", [])
@@ -749,7 +765,6 @@ class InternetArchiveProvider(MusicProvider):
             # Calculate which chapter to start from based on seek_position
             seek_position_ms = seek_position * 1000
             start_chapter = 0
-            chapter_seek_ms = 0
 
             if seek_position > 0 and chapters_data:
                 accumulated_duration_ms = 0
@@ -761,35 +776,38 @@ class InternetArchiveProvider(MusicProvider):
 
                     if accumulated_duration_ms + chapter_duration_ms > seek_position_ms:
                         start_chapter = i
-                        chapter_seek_ms = seek_position_ms - accumulated_duration_ms
                         break
                     accumulated_duration_ms += chapter_duration_ms
 
-                # Log the seek position for debugging
-                self.logger.info(
-                    f"Seeking to chapter {start_chapter + 1}, offset: {chapter_seek_ms / 1000:.1f}s"
-                )
-
             # Stream chapters starting from calculated position
+            chapters_yielded = False
             for i in range(start_chapter, len(chapter_urls)):
                 chapter_url = chapter_urls[i]
 
                 try:
-                    async with self.mass.http_session.get(chapter_url) as response:
+                    async with self.mass.http_session.get(chapter_url, timeout=timeout) as response:
                         response.raise_for_status()
                         async for chunk in response.content.iter_chunked(8192):
+                            chapters_yielded = True
                             yield chunk
                 except Exception as e:
                     self.logger.error(f"Chapter {i + 1} streaming failed: {e}")
                     continue
+
+            # If no chapters succeeded, raise an error instead of silent failure
+            if not chapters_yielded:
+                raise MediaNotFoundError(
+                    f"Failed to stream any chapters for audiobook {streamdetails.item_id}"
+                )
+
         else:
             # Handle single files
-            audio_files = await self.client.get_audio_files(streamdetails.item_id)
+            audio_files = await self._get_audio_files(streamdetails.item_id)
             if audio_files:
                 download_url = self.client.get_download_url(
                     streamdetails.item_id, audio_files[0]["name"]
                 )
-                async with self.mass.http_session.get(download_url) as response:
+                async with self.mass.http_session.get(download_url, timeout=timeout) as response:
                     response.raise_for_status()
                     async for chunk in response.content.iter_chunked(8192):
                         yield chunk
