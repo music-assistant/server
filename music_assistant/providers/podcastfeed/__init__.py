@@ -10,7 +10,6 @@ multiple instances with each one feed must exist.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
@@ -27,7 +26,11 @@ from music_assistant_models.media_items import AudioFormat, Podcast, PodcastEpis
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.compare import create_safe_string
-from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
+from music_assistant.helpers.podcast_parsers import (
+    get_podcastparser_dict,
+    parse_podcast,
+    parse_podcast_episode,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -203,17 +206,8 @@ class PodcastMusicprovider(MusicProvider):
         )
 
     async def _get_podcast(self) -> dict[str, Any]:
-        # without user agent, some feeds can not be retrieved
-        # https://github.com/music-assistant/support/issues/3596
         assert self.feed_url is not None
-        response = await self.mass.http_session.get(
-            self.feed_url, headers={"User-Agent": "Mozilla/5.0"}
-        )
-        if response.status != 200:
-            raise RuntimeError
-        feed_data = await response.read()
-        feed_stream = BytesIO(feed_data)
-        return podcastparser.parse(self.feed_url, feed_stream)  # type:ignore [no-any-return]
+        return await get_podcastparser_dict(session=self.mass.http_session, feed_url=self.feed_url)
 
     async def _cache_get_podcast(self) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
