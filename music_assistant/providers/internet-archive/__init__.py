@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .provider import InternetArchiveProvider
 
@@ -17,11 +17,19 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.SEARCH,
+    ProviderFeature.LIBRARY_AUDIOBOOKS,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+}
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider instance with given configuration."""
-    return InternetArchiveProvider(mass, manifest, config)
+    return InternetArchiveProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -30,21 +38,7 @@ async def get_config_entries(
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    The Internet Archive provider requires no authentication or configuration
-    as it accesses only public domain content.
-
-    Args:
-        mass: MusicAssistant instance (unused)
-        instance_id: Optional existing provider instance ID (unused)
-        action: Optional action key from config UI (unused)
-        values: Optional config values from action (unused)
-
-    Returns:
-        Tuple of ConfigEntry objects for provider setup
-    """
+    """Return Config entries to setup this provider."""
     return (
         ConfigEntry(
             key="info",

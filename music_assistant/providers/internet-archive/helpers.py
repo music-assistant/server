@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -27,43 +26,22 @@ from .constants import (
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
-LOGGER = logging.getLogger(__name__)
-
 
 class InternetArchiveClient:
     """Client for communicating with the Internet Archive API."""
 
     def __init__(self, mass: MusicAssistant) -> None:
-        """
-        Initialize the Internet Archive client.
-
-        Args:
-            mass: MusicAssistant instance for HTTP session access
-        """
+        """Initialize the Internet Archive client."""
         self.mass = mass
 
     async def _get_json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """
-        Make a GET request and return JSON response with proper error handling.
-
-        Args:
-            url: The URL to request
-            params: Optional query parameters
-
-        Returns:
-            Parsed JSON response as dictionary
-
-        Raises:
-            ResourceTemporarilyUnavailable: For rate limits, timeouts, or server errors
-            MediaNotFoundError: For 404 responses
-            InvalidDataError: For malformed JSON responses
-        """
+        """Make a GET request and return JSON response with proper error handling."""
         try:
             async with self.mass.http_session.get(
                 url, params=params, timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 if response.status == 429:
-                    # Rate limited
+                    # Rate limited - let throttler handle this
                     backoff_time = int(response.headers.get("Retry-After", 60))
                     raise ResourceTemporarilyUnavailable(
                         "Internet Archive rate limit exceeded", backoff_time=backoff_time
@@ -80,7 +58,6 @@ class InternetArchiveClient:
                 response.raise_for_status()
                 json_data = await response.json()
 
-                # Ensure we're returning a dictionary as promised by the type annotation
                 if not isinstance(json_data, dict):
                     raise InvalidDataError(f"Expected JSON object, got {type(json_data).__name__}")
 
@@ -125,7 +102,6 @@ class InternetArchiveClient:
         if sort:
             params["sort"] = sort
 
-        LOGGER.debug("Searching IA with query: %s", query)
         return await self._get_json(IA_SEARCH_URL, params)
 
     async def get_metadata(self, identifier: str) -> dict[str, Any]:

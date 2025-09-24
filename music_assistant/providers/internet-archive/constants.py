@@ -2,16 +2,6 @@
 
 from __future__ import annotations
 
-from music_assistant_models.enums import ProviderFeature
-
-# Provider features supported
-SUPPORTED_FEATURES = {
-    ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_AUDIOBOOKS,
-    ProviderFeature.ARTIST_ALBUMS,
-    ProviderFeature.ARTIST_TOPTRACKS,
-}
-
 # Internet Archive API endpoints
 IA_SEARCH_URL = "https://archive.org/advancedsearch.php"
 IA_METADATA_URL = "https://archive.org/metadata"
