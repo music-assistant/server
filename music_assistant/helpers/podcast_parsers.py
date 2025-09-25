@@ -31,11 +31,7 @@ async def get_podcastparser_dict(
     # https://github.com/music-assistant/support/issues/3596
     # but, reports on discord show, that also the opposite may be true
     for headers in [{"User-Agent": "Mozilla/5.0"}, {}]:
-        response = await session.get(feed_url, headers=headers)
-        if response.status == 200:
-            break
-    if response is None or response.status != 200:
-        raise RuntimeError
+        response = await session.get(feed_url, headers=headers, raise_for_status=True)
     feed_data = await response.read()
     feed_stream = BytesIO(feed_data)
     return podcastparser.parse(feed_url, feed_stream, max_episodes=max_episodes)  # type: ignore[no-any-return]
