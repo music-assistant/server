@@ -135,7 +135,7 @@ SUPPORTED_FEATURES = {
 
 
 # TODO: fix disabled tests
-# ruff: noqa: PLW2901
+# ruff: noqa: PLW2901, RET504
 
 
 async def setup(
@@ -934,6 +934,9 @@ class YoutubeMusicProvider(MusicProvider):
                 "extractor_args": {
                     "youtubepot-bgutilhttp": {
                         "base_url": [self._po_token_server_url],
+                        # Disable new PO Token server behavior. Disable after this issue is fixed:
+                        # https://github.com/Brainicism/bgutil-ytdlp-pot-provider/issues/138
+                        "disable_innertube": "1",
                     },
                     "youtube": {
                         "skip": ["translated_subs", "dash"],
