@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from io import BytesIO
@@ -276,6 +277,10 @@ class ResonatePlayer(Player):
             return
         await self.update_metadata()
 
+    def _update_media_art(self, image_data: bytes) -> None:
+        image = Image.open(BytesIO(image_data))
+        self.api.group.set_media_art(image)
+
     async def update_metadata(self) -> None:
         """Extract and send current media metadata to resonate players."""
         # Get current media from active queue
@@ -285,7 +290,6 @@ class ResonatePlayer(Player):
 
         current_item = queue.current_item
 
-        # Extract metadata following the same pattern as RAOP implementation
         title = current_item.name
         artist = None
         album_artist = None
@@ -325,8 +329,7 @@ class ResonatePlayer(Player):
                     current_item.media_item
                 )
                 if image_data is not None:
-                    image = Image.open(BytesIO(image_data))
-                    self.api.group.set_media_art(image)
+                    await asyncio.to_thread(self._update_media_art, image_data)
             # TODO: null media art if not set?
 
         track_duration = current_item.duration
