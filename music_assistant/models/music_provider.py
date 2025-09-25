@@ -1086,9 +1086,9 @@ class MusicProvider(Provider):
         """Check if provider mapping(s) are consistent between library and provider items."""
         for provider_mapping in provider_item.provider_mappings:
             if provider_mapping.item_id != provider_item.item_id:
-                raise MusicAssistantError("Inconsistent provider mapping item_id's found")
+                raise MusicAssistantError("Inconsistent provider mapping item_id found")
             if provider_mapping.provider_instance != self.instance_id:
-                raise MusicAssistantError("Inconsistent provider mapping instance_id's found")
+                raise MusicAssistantError("Inconsistent provider mapping instance_id found")
             provider_mapping.in_library = in_library
             library_mapping = next(
                 (

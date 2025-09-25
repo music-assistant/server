@@ -140,18 +140,14 @@ class TuneInProvider(MusicProvider):
         """Get radio station details."""
         if not prov_radio_id.startswith("http"):
             if "--" in prov_radio_id:
-                prov_radio_id, media_type = prov_radio_id.split("--", 1)
-            else:
-                media_type = None
+                # handle this for backwards compatibility
+                prov_radio_id = prov_radio_id.split("--")[0]
             params = {"c": "composite", "detail": "listing", "id": prov_radio_id}
             result = await self.__get_data("Describe.ashx", **params)
             if result and result.get("body") and result["body"][0].get("children"):
                 item = result["body"][0]["children"][0]
                 stream_info = await self._get_stream_info(prov_radio_id)
-                for stream in stream_info:
-                    if media_type and stream["media_type"] != media_type:
-                        continue
-                    return self._parse_radio(item, [stream])
+                return self._parse_radio(item, stream_info)
         # fallback - e.g. for handle custom urls ...
         async for radio in self.get_library_radios():
             if radio.item_id == prov_radio_id:
@@ -173,24 +169,26 @@ class TuneInProvider(MusicProvider):
             name = name.split(" (")[0]
 
         if stream_info is not None:
-            # stream info is provided: parse stream objects into provider mappings
+            # stream info is provided: parse first stream into provider mapping
+            # assuming here that the streams are sorted by quality (bitrate)
+            # and the first one is the best quality
+            preferred_stream = stream_info[0]
             radio = Radio(
                 item_id=details["preset_id"],
                 provider=self.lookup_key,
                 name=name,
                 provider_mappings={
                     ProviderMapping(
-                        item_id=f"{details['preset_id']}--{stream['media_type']}",
+                        item_id=details["preset_id"],
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
                         audio_format=AudioFormat(
-                            content_type=ContentType.try_parse(stream["media_type"]),
-                            bit_rate=stream.get("bitrate", 128),
+                            content_type=ContentType.try_parse(preferred_stream["media_type"]),
+                            bit_rate=preferred_stream.get("bitrate", 128),
                         ),
-                        details=stream["url"],
+                        details=preferred_stream["url"],
                         available=details.get("is_available", True),
                     )
-                    for stream in stream_info
                 },
             )
         else:
@@ -259,13 +257,12 @@ class TuneInProvider(MusicProvider):
                 can_seek=False,
             )
         if "--" in item_id:
-            stream_item_id, media_type = item_id.split("--", 1)
-        else:
-            media_type = None
-            stream_item_id = item_id
-        for stream in await self._get_stream_info(stream_item_id):
-            if media_type and stream["media_type"] != media_type:
-                continue
+            # handle this for backwards compatibility
+            item_id = item_id.split("--")[0]
+        if stream_info := await self._get_stream_info(item_id):
+            # assuming here that the streams are sorted by quality (bitrate)
+            # and the first one is the best quality
+            preferred_stream = stream_info[0]
             return StreamDetails(
                 provider=self.lookup_key,
                 item_id=item_id,
@@ -273,7 +270,7 @@ class TuneInProvider(MusicProvider):
                 audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
                 media_type=MediaType.RADIO,
                 stream_type=StreamType.HTTP,
-                path=stream["url"],
+                path=preferred_stream["url"],
                 allow_seek=False,
                 can_seek=False,
             )
