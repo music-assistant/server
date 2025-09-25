@@ -27,6 +27,7 @@ from aioresonate.server.client import (
 )
 from aioresonate.server.group import (
     AudioCodec,
+    GroupDeletedEvent,
     GroupMemberAddedEvent,
     GroupMemberRemovedEvent,
     Metadata,
@@ -152,7 +153,7 @@ class ResonatePlayer(Player):
                 pass
             case GroupMemberRemovedEvent(client_id=_):
                 pass
-            case GroupMemberAddedEvent(client_id=_):
+            case GroupDeletedEvent():
                 pass
 
     async def volume_set(self, volume_level: int) -> None:
