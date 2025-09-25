@@ -1,14 +1,11 @@
 {
   "type": "music",
   "domain": "opensubsonic",
-  "name": "Open Subsonic Media Server Library",
-  "description": "Support for Open Subsonic based streaming providers in Music Assistant.",
-  "codeowners": [
-    "@khers"
-  ],
-  "requirements": [
-    "py-opensonic==7.0.2"
-  ],
+  "stage": "stable",
+  "name": "OpenSubsonic Media Server Library",
+  "description": "Support for OpenSubsonic based streaming providers in Music Assistant.",
+  "codeowners": ["@khers"],
+  "requirements": ["py-opensonic==7.0.2"],
   "documentation": "https://music-assistant.io/music-providers/subsonic/",
   "multi_instance": true
 }
