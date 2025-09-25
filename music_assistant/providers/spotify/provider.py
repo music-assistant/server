@@ -94,7 +94,7 @@ class SpotifyProvider(MusicProvider):
         self.audiobooks_supported = await self._test_audiobook_support()
         if not self.audiobooks_supported:
             self.logger.info(
-                "Audiobooks are not available in your region. "
+                "Audiobook support disabled: Audiobooks are not available in your region. "
                 "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
                 "for supported countries."
             )
