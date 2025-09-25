@@ -41,7 +41,6 @@ from music_assistant_models.provider import SyncTask
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_MUSIC_SEARCH,
     CONF_ENTRY_LIBRARY_EXPORT_ADD,
     CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
     DB_TABLE_ALBUM_ARTISTS,
@@ -89,6 +88,8 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 DB_SCHEMA_VERSION: Final[int] = 19
+
+CACHE_CATEGORY_LAST_SYNC: Final[str] = "last_sync"
 
 
 class MusicController(CoreController):
@@ -355,37 +356,11 @@ class MusicController(CoreController):
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
-
-        # prefer cache items (if any)
-        media_types_str = ",".join(media_types)
-        cache_category = CACHE_CATEGORY_MUSIC_SEARCH
-        cache_base_key = prov.lookup_key
-        cache_key = f"{search_query}.{limit}.{media_types_str}"
-
-        if prov.is_streaming_provider and (
-            cache := await self.mass.cache.get(
-                cache_key, category=cache_category, base_key=cache_base_key
-            )
-        ):
-            return SearchResults.from_dict(cache)
-        # no items in cache - get listing from provider
-        result = await prov.search(
+        return await prov.search(
             search_query,
             media_types,
             limit,
         )
-        # store (serializable items) in cache
-        if prov.is_streaming_provider:
-            self.mass.create_task(
-                self.mass.cache.set(
-                    cache_key,
-                    result.to_dict(),
-                    expiration=86400 * 7,
-                    category=cache_category,
-                    base_key=cache_base_key,
-                )
-            )
-        return result
 
     async def search_library(
         self,
@@ -1404,8 +1379,14 @@ class MusicController(CoreController):
             else:
                 self.logger.info("Sync task for %s/%ss completed", provider.name, media_type.value)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            cache_key = f"last_library_sync_{provider.instance_id}_{media_type.value}"
-            self.mass.create_task(self.mass.cache.set, cache_key, self.mass.loop.time())
+            self.mass.create_task(
+                self.mass.cache.set(
+                    key=media_type.value,
+                    data=self.mass.loop.time(),
+                    provider=provider.instance_id,
+                    category=CACHE_CATEGORY_LAST_SYNC,
+                )
+            )
             # schedule db cleanup after sync
             if not self.in_progress_syncs:
                 self.mass.create_task(self._cleanup_database())
@@ -1480,9 +1461,12 @@ class MusicController(CoreController):
 
         if is_initial:
             # schedule the first sync run
-            cache_key = f"last_library_sync_{provider.instance_id}_{media_type.value}"
             initial_interval = 10
-            if last_sync := await self.mass.cache.get(cache_key):
+            if last_sync := await self.mass.cache.get(
+                key=media_type.value,
+                provider=provider.instance_id,
+                category=CACHE_CATEGORY_LAST_SYNC,
+            ):
                 initial_interval += max(0, sync_interval - (self.mass.loop.time() - last_sync))
             sync_interval = initial_interval
 

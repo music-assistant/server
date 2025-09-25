@@ -50,12 +50,32 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CACHE_CATEGORY_DEFAULT, CACHE_CATEGORY_RECOMMENDATIONS
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import infer_album_type
 from music_assistant.models.music_provider import MusicProvider
 
 from .auth_manager import ManualAuthenticationHelper, TidalAuthManager
+from .constants import (
+    BROWSE_URL,
+    CACHE_CATEGORY_ISRC_MAP,
+    CACHE_CATEGORY_RECOMMENDATIONS,
+    CACHE_KEY_RECOMMENDATIONS_ALL,
+    CONF_ACTION_CLEAR_AUTH,
+    CONF_ACTION_COMPLETE_PKCE_LOGIN,
+    CONF_ACTION_START_PKCE_LOGIN,
+    CONF_AUTH_TOKEN,
+    CONF_EXPIRY_TIME,
+    CONF_OOPS_URL,
+    CONF_QUALITY,
+    CONF_REFRESH_TOKEN,
+    CONF_TEMP_SESSION,
+    CONF_USER_ID,
+    DEFAULT_LIMIT,
+    LABEL_COMPLETE_PKCE_LOGIN,
+    LABEL_OOPS_URL,
+    LABEL_START_PKCE_LOGIN,
+    RESOURCES_URL,
+)
 from .tidal_page_parser import TidalPageParser
 
 if TYPE_CHECKING:
@@ -68,35 +88,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-TOKEN_TYPE = "Bearer"
-
-# Actions
-CONF_ACTION_START_PKCE_LOGIN = "start_pkce_login"
-CONF_ACTION_COMPLETE_PKCE_LOGIN = "auth"
-CONF_ACTION_CLEAR_AUTH = "clear_auth"
-
-# Intermediate steps
-CONF_TEMP_SESSION = "temp_session"
-CONF_OOPS_URL = "oops_url"
-
-# Config keys
-CONF_AUTH_TOKEN = "auth_token"
-CONF_REFRESH_TOKEN = "refresh_token"
-CONF_USER_ID = "user_id"
-CONF_EXPIRY_TIME = "expiry_time"
-CONF_COUNTRY_CODE = "country_code"
-CONF_SESSION_ID = "session_id"
-CONF_QUALITY = "quality"
-
-# Labels
-LABEL_START_PKCE_LOGIN = "start_pkce_login_label"
-LABEL_OOPS_URL = "oops_url_label"
-LABEL_COMPLETE_PKCE_LOGIN = "complete_pkce_login_label"
-
-BROWSE_URL = "https://tidal.com/browse"
-RESOURCES_URL = "https://resources.tidal.com/images"
-
-DEFAULT_LIMIT = 50
 
 T = TypeVar("T")
 
@@ -1011,9 +1002,10 @@ class TidalProvider(MusicProvider):
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's recommendations organized into folders."""
         # Check cache first
-        cache_key = f"tidal_recommendations_{self.lookup_key}"
         cached_recommendations: list[RecommendationFolder] = await self.mass.cache.get(
-            cache_key, category=CACHE_CATEGORY_RECOMMENDATIONS, base_key=self.lookup_key
+            CACHE_KEY_RECOMMENDATIONS_ALL,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_RECOMMENDATIONS,
         )
 
         if cached_recommendations:
@@ -1045,10 +1037,10 @@ class TidalProvider(MusicProvider):
 
             # Cache the results for 1 hour (3600 seconds)
             await self.mass.cache.set(
-                cache_key,
-                results,
+                key=CACHE_KEY_RECOMMENDATIONS_ALL,
+                data=results,
+                provider=self.instance_id,
                 category=CACHE_CATEGORY_RECOMMENDATIONS,
-                base_key=self.lookup_key,
                 expiration=3600,
             )
 
@@ -1282,9 +1274,8 @@ class TidalProvider(MusicProvider):
     async def _get_track_by_isrc(self, item_id: str) -> Track | None:
         """Get track by ISRC from library item, with caching."""
         # Try to get from cache first
-        cache_key = f"isrc_map_{item_id}"
         cached_track_id = await self.mass.cache.get(
-            cache_key, category=CACHE_CATEGORY_DEFAULT, base_key=self.lookup_key
+            item_id, provider=self.instance_id, category=CACHE_CATEGORY_ISRC_MAP
         )
 
         if cached_track_id:
@@ -1296,7 +1287,7 @@ class TidalProvider(MusicProvider):
             except MediaNotFoundError:
                 # Track no longer exists, invalidate cache
                 await self.mass.cache.delete(
-                    cache_key, category=CACHE_CATEGORY_DEFAULT, base_key=self.lookup_key
+                    item_id, provider=self.instance_id, category=CACHE_CATEGORY_ISRC_MAP
                 )
 
         # Lookup by ISRC if no cache or cached track not found
@@ -1337,10 +1328,12 @@ class TidalProvider(MusicProvider):
 
         # Cache the mapping for future use
         await self.mass.cache.set(
-            cache_key,
-            track_id,
-            category=CACHE_CATEGORY_DEFAULT,
-            base_key=self.lookup_key,
+            key=item_id,
+            data=track_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_ISRC_MAP,
+            persistent=True,
+            expiration=(86400 * 90),
         )
 
         return await self.get_track(track_id)
@@ -1393,17 +1386,16 @@ class TidalProvider(MusicProvider):
             self.logger.debug("Page '%s' indexed with: %s", page_path, parser.content_stats)
 
             # Cache the parser data
-            cache_key = f"tidal_page_{page_path}"
             cache_data = {
                 "module_map": parser._module_map,
                 "content_map": parser._content_map,
                 "parsed_at": parser._parsed_at,
             }
             await self.mass.cache.set(
-                cache_key,
-                cache_data,
+                key=page_path,
+                data=cache_data,
+                provider=self.instance_id,
                 category=CACHE_CATEGORY_RECOMMENDATIONS,
-                base_key=self.lookup_key,
                 expiration=self.page_cache_ttl,
             )
 

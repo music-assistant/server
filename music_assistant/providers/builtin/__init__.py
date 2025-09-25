@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import aiofiles
 import shortuuid
@@ -36,7 +36,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CACHE_CATEGORY_MEDIA_INFO, MASS_LOGO, VARIOUS_ARTISTS_FANART
+from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
@@ -73,6 +73,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
@@ -511,11 +512,9 @@ class BuiltinProvider(MusicProvider):
 
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
-        cache_category = CACHE_CATEGORY_MEDIA_INFO
-        cache_base_key = self.lookup_key
         # do we have some cached info for this url ?
         cached_info = await self.mass.cache.get(
-            url, category=cache_category, base_key=cache_base_key
+            url, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
         )
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
@@ -524,7 +523,7 @@ class BuiltinProvider(MusicProvider):
         if "authSig" in url:
             media_info.has_cover_image = False
         await self.mass.cache.set(
-            url, media_info.raw, category=cache_category, base_key=cache_base_key
+            url, media_info.raw, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
         )
         return media_info
 

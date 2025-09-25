@@ -326,7 +326,7 @@ class ITunesPodcastsProvider(MusicProvider):
     async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
             key=prov_podcast_id,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             default=None,
         )
@@ -350,7 +350,7 @@ class ITunesPodcastsProvider(MusicProvider):
     async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
         await self.mass.cache.set(
             key=feed_url,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             data=parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day
@@ -359,7 +359,7 @@ class ITunesPodcastsProvider(MusicProvider):
     async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:
         await self.mass.cache.set(
             key=CACHE_KEY_TOP_PODCASTS,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_RECOMMENDATIONS,
             data=top_podcast_helper.to_dict(),
             expiration=60 * 60 * 6,  # 6 hours
@@ -368,7 +368,7 @@ class ITunesPodcastsProvider(MusicProvider):
     async def _cache_get_top_podcasts(self) -> list[PodcastSearchResult]:
         parsed_top_podcasts = await self.mass.cache.get(
             key=CACHE_KEY_TOP_PODCASTS,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_RECOMMENDATIONS,
         )
         if parsed_top_podcasts is not None:

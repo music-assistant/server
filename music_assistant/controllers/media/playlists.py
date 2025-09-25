@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -14,11 +14,7 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.constants import (
-    CACHE_CATEGORY_MUSIC_PLAYLIST_TRACKS,
-    CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
-    DB_TABLE_PLAYLISTS,
-)
+from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.uri import create_uri, parse_uri
@@ -375,49 +371,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
     ) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
-        provider: MusicProvider = self.mass.get_provider(provider_instance_id_or_domain)
-        if not provider:
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
-        # prefer cache items (if any)
-        cache_category = CACHE_CATEGORY_MUSIC_PLAYLIST_TRACKS
-        cache_base_key = provider.lookup_key
-        cache_key = f"{item_id}.{page}"
-        if (
-            not force_refresh
-            and (
-                cache := await self.mass.cache.get(
-                    cache_key,
-                    checksum=cache_checksum,
-                    category=cache_category,
-                    base_key=cache_base_key,
-                )
-            )
-            is not None
-        ):
-            return [Track.from_dict(x) for x in cache]
-        # no items in cache (or force_refresh) - get listing from provider
-        items = await provider.get_playlist_tracks(item_id, page=page)
-        # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(
-                cache_key,
-                [x.to_dict() for x in items],
-                checksum=cache_checksum,
-                category=cache_category,
-                base_key=cache_base_key,
-            )
-        )
-        for item in items:
-            # if this is a complete track object, pre-cache it as
-            # that will save us an (expensive) lookup later
-            if item.image and item.artist_str and item.album and provider.domain != "builtin":
-                await self.mass.cache.set(
-                    f"track.{item_id}",
-                    item.to_dict(),
-                    category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
-                    base_key=provider.lookup_key,
-                )
-        return items
+        provider = cast("MusicProvider", provider)
+        return await provider.get_playlist_tracks(item_id, page=page)
 
     async def radio_mode_base_tracks(
         self,

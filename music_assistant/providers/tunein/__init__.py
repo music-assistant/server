@@ -37,6 +37,9 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+
+CACHE_CATEGORY_STREAMS = "tunein_streams"
+
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.BROWSE,
@@ -229,11 +232,14 @@ class TuneInProvider(MusicProvider):
 
     async def _get_stream_info(self, preset_id: str) -> list[dict]:
         """Get stream info for a radio station."""
-        cache_base_key = "tunein_stream"
-        if cache := await self.mass.cache.get(preset_id, base_key=cache_base_key):
+        if cache := await self.mass.cache.get(
+            preset_id, provider=self.instance_id, category=CACHE_CATEGORY_STREAMS
+        ):
             return cache
         result = (await self.__get_data("Tune.ashx", id=preset_id))["body"]
-        await self.mass.cache.set(preset_id, result, base_key=cache_base_key)
+        await self.mass.cache.set(
+            key=preset_id, data=result, provider=self.instance_id, category=CACHE_CATEGORY_STREAMS
+        )
         return result
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:

@@ -218,7 +218,7 @@ class PodcastMusicprovider(MusicProvider):
     async def _cache_get_podcast(self) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
             key=self.podcast_id,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             default=None,
         )
@@ -231,7 +231,7 @@ class PodcastMusicprovider(MusicProvider):
     async def _cache_set_podcast(self) -> None:
         await self.mass.cache.set(
             key=self.podcast_id,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             data=self.parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day

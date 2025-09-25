@@ -73,6 +73,11 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     AUDIOBOOK_EXTENSIONS,
+    CACHE_CATEGORY_ALBUM_INFO,
+    CACHE_CATEGORY_ARTIST_INFO,
+    CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
+    CACHE_CATEGORY_FOLDER_IMAGES,
+    CACHE_CATEGORY_PODCAST_METADATA,
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -1037,8 +1042,11 @@ class LocalFileSystemProvider(MusicProvider):
                         break
 
         # prefer (short lived) cache for a bit more speed
-        cache_base_key = f"{self.instance_id}.artist"
-        if artist_path and (cache := await self.cache.get(artist_path, base_key=cache_base_key)):
+        if artist_path and (
+            cache := await self.cache.get(
+                key=artist_path, provider=self.instance_id, category=CACHE_CATEGORY_ARTIST_INFO
+            )
+        ):
             return cast("Artist", cache)
 
         prov_artist_id = artist_path or name
@@ -1085,7 +1093,13 @@ class LocalFileSystemProvider(MusicProvider):
         if images := await self._get_local_images(artist_path, extra_thumb_names=("artist",)):
             artist.metadata.images = UniqueList(images)
 
-        await self.cache.set(artist_path, artist, base_key=cache_base_key, expiration=120)
+        await self.cache.set(
+            key=artist_path,
+            data=artist,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_ARTIST_INFO,
+            expiration=120,
+        )
 
         return artist
 
@@ -1339,8 +1353,13 @@ class LocalFileSystemProvider(MusicProvider):
         track_dir = os.path.dirname(track_path)
         album_dir = get_album_dir(track_dir, track_tags.album)
 
-        cache_base_key = f"{self.instance_id}.album"
-        if album_dir and (cache := await self.cache.get(album_dir, base_key=cache_base_key)):
+        if album_dir and (
+            cache := await self.cache.get(
+                key=album_dir,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_ALBUM_INFO,
+            )
+        ):
             return cast("Album", cache)
 
         # album artist(s)
@@ -1475,15 +1494,24 @@ class LocalFileSystemProvider(MusicProvider):
                     album.metadata.images = UniqueList(images)
                 else:
                     album.metadata.images += images
-        await self.cache.set(album_dir, album, base_key=cache_base_key, expiration=120)
+        await self.cache.set(
+            key=album_dir,
+            data=album,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_ALBUM_INFO,
+            expiration=120,
+        )
         return album
 
     async def _get_local_images(
         self, folder: str, extra_thumb_names: tuple[str, ...] | None = None
     ) -> UniqueList[MediaItemImage]:
         """Return local images found in a given folderpath."""
-        cache_base_key = f"{self.lookup_key}.folderimages"
-        if (cache := await self.cache.get(folder, base_key=cache_base_key)) is not None:
+        if (
+            cache := await self.cache.get(
+                key=folder, provider=self.instance_id, category=CACHE_CATEGORY_FOLDER_IMAGES
+            )
+        ) is not None:
             return cast("UniqueList[MediaItemImage]", cache)
         if extra_thumb_names is None:
             extra_thumb_names = ()
@@ -1524,7 +1552,13 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             )
 
-        await self.cache.set(folder, images, base_key=cache_base_key, expiration=120)
+        await self.cache.set(
+            key=folder,
+            data=images,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_FOLDER_IMAGES,
+            expiration=120,
+        )
         return images
 
     async def check_write_access(self) -> None:
@@ -1650,18 +1684,19 @@ class LocalFileSystemProvider(MusicProvider):
         prov_mapping = next(x for x in library_item.provider_mappings if x.item_id == item_id)
         file_item = await self.resolve(item_id)
         duration = library_item.duration
-        chapters_cache_key = f"{self.lookup_key}.audiobook.chapters"
         file_based_chapters: list[tuple[str, float]] | None = await self.cache.get(
-            file_item.relative_path,
-            base_key=chapters_cache_key,
+            key=file_item.relative_path,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
         )
         if file_based_chapters is None:
             # no cache available for this audiobook, we need to parse the chapters
             tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
             await self._parse_audiobook(file_item, tags)
             file_based_chapters = await self.cache.get(
-                file_item.relative_path,
-                base_key=chapters_cache_key,
+                key=file_item.relative_path,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
             )
 
         if file_based_chapters:
@@ -1752,16 +1787,22 @@ class LocalFileSystemProvider(MusicProvider):
         # store chapter files in cache
         # for easy access from streamdetails
         await self.cache.set(
-            audiobook_file_item.relative_path,
-            all_chapter_files,
-            base_key=f"{self.lookup_key}.audiobook.chapters",
+            key=audiobook_file_item.relative_path,
+            data=all_chapter_files,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
         )
         return (int(total_duration), chapters)
 
     async def _get_podcast_metadata(self, podcast_folder: str) -> dict[str, Any]:
         """Return metadata for a podcast."""
-        cache_base_key = f"{self.lookup_key}.podcastmetadata"
-        if (cache := await self.cache.get(podcast_folder, base_key=cache_base_key)) is not None:
+        if (
+            cache := await self.cache.get(
+                key=podcast_folder,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_PODCAST_METADATA,
+            )
+        ) is not None:
             return cast("dict[str, Any]", cache)
         data: dict[str, Any] = {}
         metadata_file = os.path.join(podcast_folder, "metadata.json")
@@ -1770,5 +1811,10 @@ class LocalFileSystemProvider(MusicProvider):
             metadata_file = self.get_absolute_path(metadata_file)
             async with aiofiles.open(metadata_file) as _file:
                 data.update(json_loads(await _file.read()))
-        await self.cache.set(podcast_folder, data, base_key=cache_base_key)
+        await self.cache.set(
+            key=podcast_folder,
+            data=data,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PODCAST_METADATA,
+        )
         return data

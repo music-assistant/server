@@ -276,11 +276,9 @@ for more details.
                         self._client.server_settings.version,
                     )
 
-        self.cache_base_key = self.instance_id
-
         cached_libraries = await self.mass.cache.get(
             key=CACHE_KEY_LIBRARIES,
-            base_key=self.cache_base_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_LIBRARIES,
             default=None,
         )
@@ -1538,7 +1536,7 @@ for more details.
     async def _cache_set_helper_libraries(self) -> None:
         await self.mass.cache.set(
             key=CACHE_KEY_LIBRARIES,
-            base_key=self.cache_base_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_LIBRARIES,
             data=self.libraries.to_dict(),
         )
