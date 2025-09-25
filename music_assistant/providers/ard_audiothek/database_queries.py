@@ -279,11 +279,11 @@ query CheckLogin($loginId: String!) {
 
 get_subscriptions_query = gql(
     """
-query GetBookmarksByLoginId($loginId: String!, $count: Int = 96) {
+query GetBookmarksByLoginId($loginId: String!) {
   allEndUsers(filter: { loginId: { eq: $loginId } }) {
     count
     nodes {
-      subscriptions(first: $count, orderBy: LASTLISTENEDAT_DESC) {
+      subscriptions {
         programSets {
           nodes {
             subscribedProgramSet {

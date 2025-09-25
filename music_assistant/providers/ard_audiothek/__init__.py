@@ -511,7 +511,7 @@ class ARDAudiothek(MusicProvider):
                         episode,
                         episode_id,
                         result["title"],
-                        idx,
+                        offset + idx,
                         progress,
                     )
 
