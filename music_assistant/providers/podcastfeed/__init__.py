@@ -13,6 +13,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -97,8 +98,8 @@ class PodcastMusicprovider(MusicProvider):
 
         try:
             self.parsed_podcast: dict[str, Any] = await self._cache_get_podcast()
-        except RuntimeError as exc:
-            raise RuntimeError("Invalid URL") from exc
+        except ClientError as exc:
+            raise MediaNotFoundError("Invalid URL") from exc
 
     @property
     def is_streaming_provider(self) -> bool:

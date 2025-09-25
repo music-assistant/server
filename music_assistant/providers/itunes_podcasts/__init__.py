@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import orjson
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -339,7 +340,7 @@ class ITunesPodcastsProvider(MusicProvider):
                     feed_url=prov_podcast_id,
                     max_episodes=self.max_episodes,
                 )
-            except RuntimeError as exc:
+            except ClientError as exc:
                 raise MediaNotFoundError from exc
             await self._cache_set_podcast(feed_url=prov_podcast_id, parsed_podcast=parsed_podcast)
 

@@ -18,6 +18,7 @@ import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -353,7 +354,7 @@ class GPodder(MusicProvider):
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
                 )
-            except RuntimeError:
+            except ClientError:
                 self.logger.warning(f"Was unable to obtain podcast with feed {feed_url}")
                 continue
             await self._cache_set_podcast(feed_url, parsed_podcast)
