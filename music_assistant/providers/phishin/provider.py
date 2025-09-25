@@ -152,14 +152,23 @@ class PhishInProvider(MusicProvider):
         """Retrieve library artists from the provider."""
         yield await get_phish_artist(self)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        """Retrieve library albums (shows) from the provider."""
+    async def get_artist(self, prov_artist_id: str) -> Artist:
+        """Get full artist details by id."""
+        if prov_artist_id == PHISH_ARTIST_ID:
+            return await get_phish_artist(self)
+        raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
+
+    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
+        """Get a list of all albums for the given artist."""
+        if prov_artist_id != PHISH_ARTIST_ID:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
+
+        albums = []
         page = 1
-        per_page = 50
-        max_pages = 20  # 1000 albums max for UI performance
+        per_page = 750  # Phish.in limit is 1000 but this caused asyncio warnings
 
         try:
-            while page <= max_pages:
+            while True:
                 shows_data = await api_request(
                     self,
                     ENDPOINTS["shows"],
@@ -176,75 +185,20 @@ class PhishInProvider(MusicProvider):
 
                 for show in shows:
                     if show.get("audio_status") in ["complete", "partial"]:
-                        yield show_to_album(self, show)
+                        albums.append(show_to_album(self, show))
 
                 if len(shows) < per_page:
                     break
 
                 page += 1
 
-        except (MediaNotFoundError, ProviderUnavailableError):
-            raise
-        except Exception as err:
-            self.logger.error("Failed to get library albums: %s", err)
-            raise ProviderUnavailableError(f"Library albums error: {err}") from err
-
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
-        """Retrieve library tracks from the provider."""
-        page = 1
-        per_page = 50
-        max_pages = 20  # 1000 tracks max for UI performance
-
-        try:
-            while page <= max_pages:
-                tracks_data = await api_request(
-                    self,
-                    ENDPOINTS["tracks"],
-                    params={
-                        "page": page,
-                        "per_page": per_page,
-                        "audio_status": "complete_or_partial",
-                    },
-                )
-
-                tracks = tracks_data.get("tracks", [])
-
-                if not tracks:
-                    break
-
-                for track in tracks:
-                    if track.get("mp3_url"):
-                        yield track_to_ma_track(self, track)
-
-                if len(tracks) < per_page:
-                    break
-
-                page += 1
+            return albums
 
         except (MediaNotFoundError, ProviderUnavailableError):
             raise
         except Exception as err:
-            self.logger.error("Failed to get library tracks: %s", err)
-            raise ProviderUnavailableError(f"Library tracks error: {err}") from err
-
-    async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Get full artist details by id."""
-        if prov_artist_id == PHISH_ARTIST_ID:
-            return await get_phish_artist(self)
-        raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
-
-    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist."""
-        if prov_artist_id != PHISH_ARTIST_ID:
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
-
-        albums = []
-        async for album in self.get_library_albums():
-            albums.append(album)
-            if len(albums) >= 1000:  # Reasonable limit
-                break
-
-        return albums
+            self.logger.error("Failed to get artist albums: %s", err)
+            raise ProviderUnavailableError(f"Artist albums error: {err}") from err
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
