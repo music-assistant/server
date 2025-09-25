@@ -69,7 +69,6 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.smart_fades import (
     MAX_SMART_CROSSFADE_DURATION,
-    SmartFadesAnalysis,
     SmartFadesDJStyleMode,
     SmartFadesMixer,
     SmartFadesMode,
@@ -84,6 +83,7 @@ from music_assistant.helpers.util import (
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.smart_fades import SmartFadesAnalysis
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
@@ -838,7 +838,7 @@ class StreamsController(CoreController):
             smart_fades_mode,
             queue.display_name,
             f"{default_crossfade_duration}s"
-            if smart_fades_mode == SmartFadesMode.DEFAULT_CROSSFADE
+            if smart_fades_mode == SmartFadesMode.STANDARD_CROSSFADE
             else "",
         )
         total_bytes_sent = 0
@@ -1423,7 +1423,7 @@ class StreamsController(CoreController):
             player_id, CONF_SMART_FADES_MODE
         )
         if smart_fades_mode == SmartFadesMode.DISABLED and deprecated_crossfade:
-            smart_fades_mode = SmartFadesMode.DEFAULT_CROSSFADE
+            smart_fades_mode = SmartFadesMode.STANDARD_CROSSFADE
         crossfade_duration = self.mass.config.get_raw_player_config_value(
             player_id, CONF_CROSSFADE_DURATION, 10
         )

@@ -67,11 +67,12 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_details
-from music_assistant.helpers.smart_fades import SmartFadesAnalyzer, SmartFadesMode
+from music_assistant.helpers.smart_fades import SmartFadesAnalyzer
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1153,7 +1154,7 @@ class PlayerQueuesController(CoreController):
         if self.mass.config.get_raw_player_config_value(
             queue_id, CONF_DEPRECATED_CROSSFADE, False
         ) or await self.mass.config.get_player_config_value(queue_id, CONF_SMART_FADES_MODE) in (
-            SmartFadesMode.DEFAULT_CROSSFADE,
+            SmartFadesMode.STANDARD_CROSSFADE,
             SmartFadesMode.SMART_FADES,
         ):
             queue_item.streamdetails.strip_silence_end = True

@@ -308,19 +308,19 @@ CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED = ConfigEntry(
 CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     key=CONF_SMART_FADES_MODE,
     type=ConfigEntryType.STRING,
-    label="Smart Fades Mode",
+    label="Enable Smart Fades",
     options=[
-        # TODO: Question: Should we move the enum to models and import it from there ?
         ConfigValueOption("Disabled", "disabled"),
         ConfigValueOption("Smart Fades", "smart_fades"),
-        ConfigValueOption("Default Crossfade", "default_crossfade"),
+        ConfigValueOption("Standard Crossfade", "standard_crossfade"),
     ],
     default_value="disabled",
     description="Select the crossfade mode to use when transitioning between tracks.\n\n"
     "- 'Smart Fades': Uses beat matching and DJ-like EQ filters to create smooth transitions"
     " between tracks.\n"
-    "- 'Default Crossfade': Regular crossfade that crossfades the last/first x-seconds of a track.",
-    category="smart_fades",
+    "- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a "
+    "track.",
+    category="audio",
 )
 
 CONF_ENTRY_SMART_FADES_DJ_MODE = ConfigEntry(
@@ -343,7 +343,7 @@ CONF_ENTRY_SMART_FADES_DJ_MODE = ConfigEntry(
     "- 'Off': No frequency filtering, volume crossfade only.",
     depends_on=CONF_SMART_FADES_MODE,
     depends_on_value="smart_fades",
-    category="smart_fades",
+    category="audio",
 )
 
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
@@ -355,7 +355,7 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     description="Duration in seconds of the fallback crossfade between tracks in case"
     " Smart Fade Mode = 'Defaul Crossfade' or when a Smart Fade fails",
     depends_on=CONF_SMART_FADES_MODE,
-    category="smart_fades",
+    category="audio",
 )
 
 CONF_ENTRY_HIDE_PLAYER_IN_UI = ConfigEntry(

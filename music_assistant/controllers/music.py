@@ -68,12 +68,12 @@ from music_assistant.helpers.compare import compare_strings, compare_version, cr
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import json_loads, serialize_to_json
-from music_assistant.helpers.smart_fades import SmartFadesAnalysis
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.smart_fades import SmartFadesAnalysis
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController

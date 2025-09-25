@@ -9,16 +9,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import librosa
 import numpy as np
+import numpy.typing as npt
 import shortuuid
-from mashumaro import DataClassDictMixin
-from mashumaro.config import BaseConfig
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
@@ -26,6 +23,11 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.audio import crossfade_pcm_parts, get_media_stream
 from music_assistant.helpers.process import communicate
 from music_assistant.helpers.util import remove_file
+from music_assistant.models.smart_fades import (
+    SmartFadesAnalysis,
+    SmartFadesDJStyleMode,
+    SmartFadesMode,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
@@ -35,41 +37,8 @@ if TYPE_CHECKING:
 MAX_SMART_CROSSFADE_DURATION = 45
 ANALYSIS_FPS = 100
 ANALYSIS_PCM_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=2
+    content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=1
 )
-
-
-class SmartFadesMode(StrEnum):
-    """Smart fades modes."""
-
-    SMART_FADES = "smart_fades"  # Use smart fades with beat matching and EQ filters
-    DEFAULT_CROSSFADE = "default_crossfade"  # Use standard crossfade only
-    DISABLED = "disabled"  # No crossfade
-
-
-class SmartFadesDJStyleMode(StrEnum):
-    """DJ transition style modes for Smartg."""
-
-    AUTO = "auto"  # Automatically select based on BPM compatibility
-    CLASSIC = "classic"  # Traditional HP/LP complementary filters
-    MODERN = "modern"  # Swapped LP/HP filters
-    DISABLED = "disabled"  # No frequency filtering, volume crossfade only
-
-
-@dataclass
-class SmartFadesAnalysis(DataClassDictMixin):
-    """Beat tracking analysis data for BPM matching crossfade."""
-
-    bpm: float
-    beats: np.ndarray[Any, np.dtype[np.float64]]  # Beat positions
-    downbeats: np.ndarray[Any, np.dtype[np.float64]]  # Downbeat positions
-    confidence: float  # Analysis confidence score 0-1
-    duration: float = 0.0  # Duration of the track in seconds
-
-    class Config(BaseConfig):  # noqa: D106
-        serialization_strategy = {
-            np.ndarray: {"serialize": lambda x: x.tolist(), "deserialize": lambda x: np.array(x)}
-        }
 
 
 class SmartFadesAnalyzer:
@@ -139,17 +108,13 @@ class SmartFadesAnalyzer:
             return None
 
     def _librosa_beat_analysis(
-        self, audio_array: np.ndarray[Any, np.dtype[np.float32]]
+        self, audio_array: npt.NDArray[np.float32]
     ) -> SmartFadesAnalysis | None:
         """Perform beat analysis using librosa."""
         try:
-            # Convert to mono for analysis (average stereo channels)
-            audio_mono = np.mean(audio_array, axis=1).astype(np.float32)
-
-            sample_rate = ANALYSIS_PCM_FORMAT.sample_rate
             tempo, beats_array = librosa.beat.beat_track(
-                y=audio_mono,
-                sr=sample_rate,
+                y=audio_array,
+                sr=ANALYSIS_PCM_FORMAT.sample_rate,
                 units="time",
             )
             if len(beats_array) < 2:
@@ -172,7 +137,7 @@ class SmartFadesAnalyzer:
             downbeats = self._estimate_musical_downbeats(beats_array, bpm)
 
             # Store complete track analysis
-            track_duration = len(audio_mono) / sample_rate
+            track_duration = len(audio_array) / ANALYSIS_PCM_FORMAT.sample_rate
 
             return SmartFadesAnalysis(
                 bpm=float(bpm),
@@ -187,8 +152,8 @@ class SmartFadesAnalyzer:
             return None
 
     def _estimate_musical_downbeats(
-        self, beats_array: np.ndarray[Any, np.dtype[np.float64]], bpm: float
-    ) -> np.ndarray[Any, np.dtype[np.float64]]:
+        self, beats_array: npt.NDArray[np.float64], bpm: float
+    ) -> npt.NDArray[np.float64]:
         """Estimate downbeats using musical logic and beat consistency."""
         if len(beats_array) < 4:
             return beats_array[:1] if len(beats_array) > 0 else np.array([])
@@ -237,21 +202,21 @@ class SmartFadesAnalyzer:
 
     async def _get_audio_bytes_from_stream_details(self, streamdetails: StreamDetails) -> bytes:
         """Retrieve bytes from the audio stream."""
-        audio_data = b""
+        audio_data = bytearray()
         async for chunk in get_media_stream(
             self.mass,
             streamdetails=streamdetails,
             pcm_format=ANALYSIS_PCM_FORMAT,
             filter_params=[],
         ):
-            audio_data += chunk
+            audio_data.extend(chunk)
         if not audio_data:
             self.logger.warning(
                 "No audio data received for analysis: %s",
                 f"{streamdetails.provider}/{streamdetails.item_id}",
             )
             return b""
-        return audio_data
+        return bytes(audio_data)
 
     async def _analyze_track_beats(
         self,
@@ -259,30 +224,12 @@ class SmartFadesAnalyzer:
     ) -> SmartFadesAnalysis | None:
         """Analyze track for beat tracking using librosa."""
         try:
-            audio_array = self._prepare_audio_for_librosa(audio_data)
+            # Convert PCM bytes directly to numpy array (mono audio)
+            audio_array = np.frombuffer(audio_data, dtype=np.float32)
             return await asyncio.to_thread(self._librosa_beat_analysis, audio_array)
         except Exception as e:
             self.logger.exception("Beat tracking analysis failed: %s", e)
             return None
-
-    def _prepare_audio_for_librosa(self, pcm_data: bytes) -> np.ndarray[Any, np.dtype[np.float32]]:
-        """Convert PCM bytes to numpy array for librosa."""
-        audio_array = np.frombuffer(pcm_data, dtype=np.float32)
-
-        # Reshape based on the number of channels specified in ANALYSIS_PCM_FORMAT
-        channels = ANALYSIS_PCM_FORMAT.channels
-
-        # Ensure we have complete frames (samples must be divisible by channel count)
-        if len(audio_array) % channels != 0:
-            # Pad to complete the last frame (edge case for truncated audio)
-            padding_needed = channels - (len(audio_array) % channels)
-            self.logger.warning(
-                "Incomplete audio frame detected, padding %d samples", padding_needed
-            )
-            audio_array = np.pad(audio_array, (0, padding_needed), constant_values=0.0)
-
-        # Reshape to (num_frames, channels)
-        return audio_array.reshape(-1, channels)
 
 
 class SmartFadesMixer:
