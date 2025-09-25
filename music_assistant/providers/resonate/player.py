@@ -389,12 +389,3 @@ class ResonatePlayer(Player):
         self.unsub_event_cb()
         self.unsub_group_event_cb()
         await self.api.disconnect()
-        # Clear group members
-        synced_to_id = self.synced_to
-        if synced_to_id and (synced_to := self.mass.players.get(synced_to_id)):
-            synced_to = cast("ResonatePlayer", synced_to)  # For type checking
-            synced_to._attr_group_members.remove(self.player_id)
-            synced_to.update_state()
-        if len(self._attr_group_members) > 0:
-            self._attr_group_members.clear()
-            self.update_state()
