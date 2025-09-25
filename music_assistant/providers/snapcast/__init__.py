@@ -460,7 +460,9 @@ class SnapCastProvider(PlayerProvider):
 
     async def remove_player(self, player_id: str) -> None:
         """Remove the client from the snapserver when it is deleted."""
-        success, error_msg = await self._snapserver.delete_client(self._get_snapclient_id(player_id))
+        success, error_msg = await self._snapserver.delete_client(
+            self._get_snapclient_id(player_id)
+        )
         if success:
             self.logger.debug("Snapclient removed %s", player_id)
         else:
