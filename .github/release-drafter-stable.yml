@@ -1,6 +1,8 @@
 name-template: '$RESOLVED_VERSION'
 tag-template: '$RESOLVED_VERSION'
 change-template: '- #$NUMBER - $TITLE (@$AUTHOR)'
+filter-by-commitish: true
+commitish: stable
 categories:
 
   - title: "⚠ Breaking Changes"
@@ -30,7 +32,14 @@ categories:
       - 'dependencies'
 
 template: |
-  ## What’s Changed
+
+  ## :bow: Thanks to our contributors
+
+  Special thanks to the following contributors who helped with this release:
+
+  $CONTRIBUTORS
+
+  ## Full Changelog
 
   $CHANGES
 

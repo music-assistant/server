@@ -4,12 +4,13 @@ on:
   push:
     branches:
       - stable
+      - dev
 
 jobs:
   update_release_draft:
     runs-on: ubuntu-latest
     steps:
-      # Drafts your next Release notes as Pull Requests are merged into "stable"
+      # Drafts your next Release notes as Pull Requests are merged
       - uses: release-drafter/release-drafter@v6.1.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
