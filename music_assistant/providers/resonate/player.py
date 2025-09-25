@@ -132,7 +132,9 @@ class ResonatePlayer(Player):
                         await self.mass.players.cmd_group_volume(self.player_id, volume)
                     case MediaCommand.MUTE:
                         assert mute is not None
-                        for member in self.mass.players.iter_group_members(self, active_only=True):
+                        for member in self.mass.players.iter_group_members(
+                            self, active_only=True, exclude_self=True
+                        ):
                             await member.volume_mute(mute)
             case GroupStateChangedEvent(state=state):
                 self.logger.info("Group state changed to: %s", state)
