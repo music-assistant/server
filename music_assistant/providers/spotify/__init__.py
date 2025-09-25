@@ -18,7 +18,6 @@ from .constants import (
     CONF_ACTION_AUTH,
     CONF_ACTION_CLEAR_AUTH,
     CONF_CLIENT_ID,
-    CONF_ENABLE_AUDIOBOOKS,
     CONF_REFRESH_TOKEN,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
@@ -32,25 +31,6 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ALBUMS,
-    ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.LIBRARY_ARTISTS_EDIT,
-    ProviderFeature.LIBRARY_ALBUMS_EDIT,
-    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-    ProviderFeature.LIBRARY_TRACKS_EDIT,
-    ProviderFeature.PLAYLIST_TRACKS_EDIT,
-    ProviderFeature.BROWSE,
-    ProviderFeature.SEARCH,
-    ProviderFeature.ARTIST_ALBUMS,
-    ProviderFeature.ARTIST_TOPTRACKS,
-    ProviderFeature.SIMILAR_TRACKS,
-    ProviderFeature.LIBRARY_PODCASTS,
-    ProviderFeature.LIBRARY_PODCASTS_EDIT,
-}
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -189,15 +169,6 @@ async def get_config_entries(
             action_label="Clear authentication",
             required=False,
             hidden=auth_required,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_AUDIOBOOKS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable Audiobook Support",
-            description="Enable support for Spotify audiobooks. Note that audiobook availability "
-            "varies by country. Check availability at: "
-            "https://support.spotify.com/us/authors/article/audiobooks-availability/",
-            default_value=False,
         ),
         ConfigEntry(
             key=CONF_SYNC_PODCAST_PROGRESS,

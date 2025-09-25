@@ -51,7 +51,6 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     CONF_CLIENT_ID,
-    CONF_ENABLE_AUDIOBOOKS,
     CONF_REFRESH_TOKEN,
     CONF_SYNC_AUDIOBOOK_PROGRESS,
     CONF_SYNC_PODCAST_PROGRESS,
@@ -92,11 +91,24 @@ class SpotifyProvider(MusicProvider):
         self._librespot_bin = await get_librespot_binary()
         # try login which will raise if it fails
         await self.login()
+        self.audiobooks_supported = await self._test_audiobook_support()
+        if not self.audiobooks_supported:
+            self.logger.info(
+                "Audiobooks are not available in your region. "
+                "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
+                "for supported countries."
+            )
 
-    @property
-    def audiobooks_enabled(self) -> bool:
-        """Check if audiobook support is enabled."""
-        return bool(self.config.get_value(CONF_ENABLE_AUDIOBOOKS, False))
+    async def _test_audiobook_support(self) -> bool:
+        """Test if audiobooks are supported in user's region."""
+        try:
+            # Use your existing _get_data method instead
+            await self._get_data("me/audiobooks", limit=1)
+            self.logger.debug("Audiobook support detected")
+            return True
+        except Exception as e:
+            self.logger.debug(f"Audiobook support not available: {e}")
+            return False
 
     @property
     def audiobook_progress_sync_enabled(self) -> bool:
@@ -114,7 +126,7 @@ class SpotifyProvider(MusicProvider):
         """Return the features supported by this Provider."""
         features = self._supported_features
         # Add audiobook features if enabled
-        if self.audiobooks_enabled:
+        if self.audiobooks_supported:
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT)
 
@@ -156,7 +168,7 @@ class SpotifyProvider(MusicProvider):
             searchtypes.append("playlist")
         if MediaType.PODCAST in media_types:
             searchtypes.append("show")
-        if MediaType.AUDIOBOOK in media_types and self.audiobooks_enabled:
+        if MediaType.AUDIOBOOK in media_types and self.audiobooks_supported:
             searchtypes.append("audiobook")
         if not searchtypes:
             return searchresult
@@ -213,7 +225,7 @@ class SpotifyProvider(MusicProvider):
                     podcasts.append(parse_podcast(item, self))
                 searchresult.podcasts = [*searchresult.podcasts, *podcasts]
                 items_received += len(api_result["shows"]["items"])
-            if "audiobooks" in api_result and self.audiobooks_enabled:
+            if "audiobooks" in api_result and self.audiobooks_supported:
                 audiobooks = [
                     parse_audiobook(item, self)
                     for item in api_result["audiobooks"]["items"]
@@ -271,7 +283,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
         """Retrieve library audiobooks from spotify."""
-        if not self.audiobooks_enabled:
+        if not self.audiobooks_supported:
             return
         async for item in self._get_all_items("me/audiobooks"):
             if item and item["id"]:
@@ -362,8 +374,8 @@ class SpotifyProvider(MusicProvider):
     @use_cache(86400)  # 24 hours
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
-        if not self.audiobooks_enabled:
-            raise UnsupportedFeaturedException("Audiobook support is disabled")
+        if not self.audiobooks_supported:
+            raise UnsupportedFeaturedException("Audiobooks are not supported with this account")
 
         audiobook_obj = await self._get_data(f"audiobooks/{prov_audiobook_id}")
         if not audiobook_obj:
@@ -538,7 +550,7 @@ class SpotifyProvider(MusicProvider):
             return fully_played, position_ms
 
         elif media_type == MediaType.AUDIOBOOK:
-            if not self.audiobooks_enabled:
+            if not self.audiobooks_supported:
                 raise NotImplementedError("Audiobook support is disabled")
             if not self.audiobook_progress_sync_enabled:
                 raise NotImplementedError("Spotify audiobook resume sync disabled in settings")
@@ -692,7 +704,7 @@ class SpotifyProvider(MusicProvider):
             await self._put_data(f"playlists/{item.item_id}/followers", data={"public": False})
         elif item.media_type == MediaType.PODCAST:
             await self._put_data("me/shows", ids=item.item_id)
-        elif item.media_type == MediaType.AUDIOBOOK and self.audiobooks_enabled:
+        elif item.media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
             # For audiobooks, we need special handling to ensure chapter metadata is included
             self.logger.info(f"Adding audiobook {item.item_id} to library with chapter metadata")
 
@@ -743,7 +755,7 @@ class SpotifyProvider(MusicProvider):
             await self._delete_data(f"playlists/{prov_item_id}/followers")
         elif media_type == MediaType.PODCAST:
             await self._delete_data("me/shows", ids=prov_item_id)
-        elif media_type == MediaType.AUDIOBOOK and self.audiobooks_enabled:
+        elif media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
             await self._delete_data("me/audiobooks", ids=prov_item_id)
         return True
 
@@ -785,7 +797,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return content details for the given track/episode/audiobook when it will be streamed."""
-        if media_type == MediaType.AUDIOBOOK and self.audiobooks_enabled:
+        if media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
             chapters_data = await self._get_audiobook_chapters_data(item_id)
             if not chapters_data:
                 raise MediaNotFoundError(f"No chapters found for audiobook {item_id}")
