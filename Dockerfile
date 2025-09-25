@@ -68,9 +68,9 @@ LABEL \
     io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"
 
-VOLUME [ "/data" ]
+VOLUME [ "/data", "/cache" ]
 EXPOSE 8095
 
 WORKDIR $VIRTUAL_ENV
 
-ENTRYPOINT ["mass", "--config", "/data"]
+ENTRYPOINT ["mass", "--data-dir", "/data", "--cache-dir", "/cache"]
