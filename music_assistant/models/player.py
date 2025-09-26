@@ -1551,10 +1551,12 @@ class SyncGroupPlayer(GroupPlayer):
             # collision: child player is part another group that is already active !
             # solve this by trying to leave the group first
             if other_group := self.mass.players.get(group):
-                try:
-                    other_group.check_feature(PlayerFeature.SET_MEMBERS)
+                if (
+                    other_group.supports_feature(PlayerFeature.SET_MEMBERS)
+                    and member.player_id not in other_group.static_group_members
+                ):
                     await other_group.set_members(player_ids_to_remove=[member.player_id])
-                except UnsupportedFeaturedException:
+                else:
                     # if the other group does not support SET_MEMBERS or it is a static
                     # member, we need to power it off to leave the group
                     await other_group.power(False)
