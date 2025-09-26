@@ -36,6 +36,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ContentType,
+    EventType,
     MediaType,
     PlaybackState,
     PlayerFeature,
@@ -54,6 +55,7 @@ from music_assistant.providers.universal_group.player import UniversalGroupPlaye
 
 if TYPE_CHECKING:
     from aioresonate.server.client import Client
+    from music_assistant_models.event import MassEvent
 
     from .provider import ResonateProvider
 
@@ -89,10 +91,12 @@ class ResonatePlayer(Player):
         self._attr_volume_level = resonate_client.volume
         self._attr_volume_muted = resonate_client.muted
         self._attr_available = True
-        # For metadata updates
-        self._attr_poll_interval = 5
-        # But only start polling once we are playing media
-        self._attr_needs_poll = False
+        self._on_unload_callbacks.append(
+            self.mass.subscribe(
+                self._on_queue_update,
+                (EventType.QUEUE_UPDATED),
+            )
+        )
 
     async def event_cb(self, event: ClientEvent) -> None:
         """Event callback registered to the resonate server."""
@@ -143,13 +147,10 @@ class ResonatePlayer(Player):
                 match state:
                     case PlaybackStateType.PLAYING:
                         self._attr_playback_state = PlaybackState.PLAYING
-                        self._attr_needs_poll = True
                     case PlaybackStateType.PAUSED:
                         self._attr_playback_state = PlaybackState.PAUSED
-                        self._attr_needs_poll = False
                     case PlaybackStateType.STOPPED:
                         self._attr_playback_state = PlaybackState.IDLE
-                        self._attr_needs_poll = False
                         self._attr_elapsed_time = 0
                         self._attr_elapsed_time_last_updated = time.time()
                 self.update_state()
@@ -245,7 +246,6 @@ class ResonatePlayer(Player):
             preferred_stream_codec=audio_codec,
         )
         self.update_state()
-        await self.update_metadata()
 
     async def set_members(
         self,
@@ -270,20 +270,12 @@ class ResonatePlayer(Player):
             self._attr_group_members.append(player_id)
         self.update_state()
 
-    async def poll(self) -> None:
-        """Poll player for metadata updates and send to resonate players."""
-        if self.playback_state != PlaybackState.PLAYING:
-            self._attr_needs_poll = False
-            return
-        await self.update_metadata()
-
     def _update_media_art(self, image_data: bytes) -> None:
         image = Image.open(BytesIO(image_data))
         self.api.group.set_media_art(image)
 
-    async def update_metadata(self) -> None:
-        """Extract and send current media metadata to resonate players."""
-        # Get current media from active queue
+    async def _on_queue_update(self, event: MassEvent) -> None:
+        """Extract and send current media metadata to resonate players on queue updates."""
         queue = self.mass.player_queues.get_active_queue(self.player_id)
         if not queue or not queue.current_item:
             return
