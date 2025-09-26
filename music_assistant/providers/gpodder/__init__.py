@@ -16,10 +16,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
-from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-import podcastparser
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -38,6 +37,7 @@ from music_assistant_models.media_items import AudioFormat, MediaItemType, Podca
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.podcast_parsers import (
+    get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
     parse_podcast_episode,
@@ -349,8 +349,12 @@ class GPodder(MusicProvider):
             self.logger.debug("Adding podcast with feed %s to library", feed_url)
             # parse podcast
             try:
-                parsed_podcast = await self._get_podcast(feed_url)
-            except RuntimeError:
+                parsed_podcast = await get_podcastparser_dict(
+                    session=self.mass.http_session,
+                    feed_url=feed_url,
+                    max_episodes=self.max_episodes,
+                )
+            except ClientError:
                 self.logger.warning(f"Was unable to obtain podcast with feed {feed_url}")
                 continue
             await self._cache_set_podcast(feed_url, parsed_podcast)
@@ -603,15 +607,6 @@ class GPodder(MusicProvider):
                 return stream_url
         return None
 
-    async def _get_podcast(self, feed_url: str) -> dict[str, Any]:
-        # see music-assistant/server@6aae82e
-        response = await self.mass.http_session.get(feed_url, headers={"User-Agent": "Mozilla/5.0"})
-        if response.status != 200:
-            raise RuntimeError
-        feed_data = await response.read()
-        feed_stream = BytesIO(feed_data)
-        return podcastparser.parse(feed_url, feed_stream, max_episodes=self.max_episodes)  # type: ignore[no-any-return]
-
     async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
             key=prov_podcast_id,
@@ -620,7 +615,11 @@ class GPodder(MusicProvider):
             default=None,
         )
         if parsed_podcast is None:
-            parsed_podcast = await self._get_podcast(feed_url=prov_podcast_id)
+            parsed_podcast = await get_podcastparser_dict(
+                session=self.mass.http_session,
+                feed_url=prov_podcast_id,
+                max_episodes=self.max_episodes,
+            )
             await self._cache_set_podcast(feed_url=prov_podcast_id, parsed_podcast=parsed_podcast)
 
         # this is a dictionary from podcastparser

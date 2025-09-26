@@ -213,6 +213,12 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows retrieving the library/favorite artists from your provider.
         # Warning: Async generator:
         # You should yield Artist objects for each artist in the library.
+        # NOTE: This is only called on each full sync of the library (at the specified interval).
+        # You are free to implement caching in your provider, as long as you return all items
+        # on each call. The Music Assistant will take care of adding/removing items from the
+        # library based on the returned items in the (default) 'sync_library' method.
+        # If you need more fine grained control over the sync process, you can override
+        # the 'sync_library' method.
         yield Artist(
             # A simple example of an artist object,
             # you should replace this with actual data from your provider.
@@ -247,6 +253,12 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows retrieving the library/favorite albums from your provider.
         # Warning: Async generator:
         # You should yield Album objects for each album in the library.
+        # NOTE: This is only called on each full sync of the library (at the specified interval).
+        # You are free to implement caching in your provider, as long as you return all items
+        # on each call. The Music Assistant will take care of adding/removing items from the
+        # library based on the returned items in the (default) 'sync_library' method.
+        # If you need more fine grained control over the sync process, you can override
+        # the 'sync_library' method.
         yield  # type: ignore[misc]
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
@@ -257,6 +269,12 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows retrieving the library/favorite tracks from your provider.
         # Warning: Async generator:
         # You should yield Track objects for each track in the library.
+        # NOTE: This is only called on each full sync of the library (at the specified interval).
+        # You are free to implement caching in your provider, as long as you return all items
+        # on each call. The Music Assistant will take care of adding/removing items from the
+        # library based on the returned items in the (default) 'sync_library' method.
+        # If you need more fine grained control over the sync process, you can override
+        # the 'sync_library' method.
         yield  # type: ignore[misc]
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
@@ -267,6 +285,12 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows retrieving the library/favorite playlists from your provider.
         # Warning: Async generator:
         # You should yield Playlist objects for each playlist in the library.
+        # NOTE: This is only called on each full sync of the library (at the specified interval).
+        # You are free to implement caching in your provider, as long as you return all items
+        # on each call. The Music Assistant will take care of adding/removing items from the
+        # library based on the returned items in the (default) 'sync_library' method.
+        # If you need more fine grained control over the sync process, you can override
+        # the 'sync_library' method.
         yield  # type: ignore[misc]
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
@@ -277,43 +301,77 @@ class MyDemoMusicprovider(MusicProvider):
         # It allows retrieving the library/favorite radio stations from your provider.
         # Warning: Async generator:
         # You should yield Radio objects for each radio station in the library.
+        # NOTE: This is only called on each full sync of the library (at the specified interval).
+        # You are free to implement caching in your provider, as long as you return all items
+        # on each call. The Music Assistant will take care of adding/removing items from the
+        # library based on the returned items in the (default) 'sync_library' method.
+        # If you need more fine grained control over the sync process, you can override
+        # the 'sync_library' method.
         yield  # type: ignore[misc]
 
     async def get_artist(self, prov_artist_id: str) -> Artist:  # type: ignore[empty-body]
         """Get full artist details by id."""
         # Get full details of a single Artist.
         # Mandatory only if you reported LIBRARY_ARTISTS in the supported_features.
+        # NOTE: Because this is often static data, it is advised to apply caching here
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:  # type: ignore[empty-body]
         """Get a list of all albums for the given artist."""
         # Get a list of all albums for the given artist.
         # Mandatory only if you reported ARTIST_ALBUMS in the supported_features.
+        # NOTE: Because this is often static data, it is advised to apply caching here
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:  # type: ignore[empty-body]
         """Get a list of most popular tracks for the given artist."""
         # Get a list of most popular tracks for the given artist.
         # Mandatory only if you reported ARTIST_TOPTRACKS in the supported_features.
         # Note that (local) file based providers will simply return all artist tracks here.
+        # NOTE: Because this is often static data, it is advised to apply caching here
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def get_album(self, prov_album_id: str) -> Album:  # type: ignore[empty-body]
         """Get full album details by id."""
         # Get full details of a single Album.
         # Mandatory only if you reported LIBRARY_ALBUMS in the supported_features.
+        # NOTE: Because this is often static data, it is advised to apply caching here
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def get_track(self, prov_track_id: str) -> Track:  # type: ignore[empty-body]
         """Get full track details by id."""
         # Get full details of a single Track.
         # Mandatory only if you reported LIBRARY_TRACKS in the supported_features.
+        # NOTE: Because this is often static data, it is advised to apply caching here
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:  # type: ignore[empty-body]
         """Get full playlist details by id."""
         # Get full details of a single Playlist.
         # Mandatory only if you reported LIBRARY_PLAYLISTS in the supported
+        # NOTE: Because this is often static data, it is advised to apply caching here
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def get_radio(self, prov_radio_id: str) -> Radio:  # type: ignore[empty-body]
         """Get full radio details by id."""
         # Get full details of a single Radio station.
         # Mandatory only if you reported LIBRARY_RADIOS in the supported_features.
+        # NOTE: Because this is often static data, it is advised to apply caching here
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def get_album_tracks(  # type: ignore[empty-body]
         self,
@@ -322,6 +380,10 @@ class MyDemoMusicprovider(MusicProvider):
         """Get album tracks for given album id."""
         # Get all tracks for a given album.
         # Mandatory only if you reported ARTIST_ALBUMS in the supported_features.
+        # NOTE: Because this is often static data, it is advised to apply caching here
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def get_playlist_tracks(  # type: ignore[empty-body]
         self,
@@ -331,6 +393,10 @@ class MyDemoMusicprovider(MusicProvider):
         """Get all playlist tracks for given playlist id."""
         # Get all tracks for a given playlist.
         # Mandatory only if you reported LIBRARY_PLAYLISTS in the supported_features.
+        # NOTE: It is advised to apply caching here (if possible)
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
@@ -367,6 +433,10 @@ class MyDemoMusicprovider(MusicProvider):
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         # Get a list of similar tracks based on the provided track.
         # This is only called if the provider supports the SIMILAR_TRACKS feature.
+        # NOTE: It is advised to apply caching here (if possible)
+        # to avoid too many calls to the provider's API.
+        # You can use the @use_cache decorator from music_assistant.controllers.cache
+        # to easily apply caching to this method.
 
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:  # type: ignore[empty-body]
         """
@@ -382,7 +452,7 @@ class MyDemoMusicprovider(MusicProvider):
         and an integer with the resume position in ms.
         """
         # optional function to get the resume position of a audiobook or podcast episode
-        # only implement this if your provider supports providing this information
+        # only implement this if your provider supports providing this information!
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""

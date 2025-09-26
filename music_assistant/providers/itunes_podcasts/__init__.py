@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import orjson
-import podcastparser
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -33,7 +32,11 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
+from music_assistant.helpers.podcast_parsers import (
+    get_podcastparser_dict,
+    parse_podcast,
+    parse_podcast_episode,
+)
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.itunes_podcasts.schema import (
@@ -333,17 +336,14 @@ class ITunesPodcastsProvider(MusicProvider):
             default=None,
         )
         if parsed_podcast is None:
-            # see music-assistant/server@6aae82e
-            response = await self.mass.http_session.get(
-                prov_podcast_id, headers={"User-Agent": "Mozilla/5.0"}
-            )
-            if response.status != 200:
-                raise MediaNotFoundError
-            feed_data = await response.read()
-            feed_stream = BytesIO(feed_data)
-            parsed_podcast = podcastparser.parse(
-                prov_podcast_id, feed_stream, max_episodes=self.max_episodes
-            )
+            try:
+                parsed_podcast = await get_podcastparser_dict(
+                    session=self.mass.http_session,
+                    feed_url=prov_podcast_id,
+                    max_episodes=self.max_episodes,
+                )
+            except ClientError as exc:
+                raise MediaNotFoundError from exc
             await self._cache_set_podcast(feed_url=prov_podcast_id, parsed_podcast=parsed_podcast)
 
         # this is a dictionary from podcastparser
