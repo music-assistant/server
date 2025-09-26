@@ -1026,7 +1026,7 @@ class SpotifyProvider(MusicProvider):
         locale = self.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
         headers["Accept-Language"] = f"{locale}, {language};q=0.9, *;q=0.5"
-        self.logger.debug(f"handling get data {url} with kwargs {kwargs}")
+        self.logger.debug("handling get data %s with kwargs %s", url, kwargs)
         async with (
             self.mass.http_session.get(
                 url,
