@@ -3,7 +3,7 @@
   "domain": "tidal",
   "stage": "stable",
   "name": "Tidal",
-  "description": "Stream HD music, playlists, and exclusives in lossless FLAC quality.",
+  "description": "Stream music, playlists, and exclusives in lossless FLAC quality.",
   "codeowners": ["@jozefKruszynski"],
   "requirements": ["pkce==1.0.3"],
   "documentation": "https://music-assistant.io/music-providers/tidal/",
