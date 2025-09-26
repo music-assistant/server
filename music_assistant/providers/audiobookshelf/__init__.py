@@ -37,9 +37,7 @@ from aioaudiobookshelf.schema.shelf import (
     ShelfPodcast,
     ShelfSeries,
 )
-from aioaudiobookshelf.schema.shelf import (
-    ShelfId as AbsShelfId,
-)
+from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
@@ -99,12 +97,19 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.LIBRARY_AUDIOBOOKS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.RECOMMENDATIONS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return Audiobookshelf(mass, manifest, config)
+    return Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -213,16 +218,6 @@ class Audiobookshelf(MusicProvider):
                 return await method(*args, **kwargs)
 
         return wrapper
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Features supported by this Provider."""
-        return {
-            ProviderFeature.LIBRARY_PODCASTS,
-            ProviderFeature.LIBRARY_AUDIOBOOKS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.RECOMMENDATIONS,
-        }
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
@@ -351,7 +346,7 @@ for more details.
         return False
 
     @handle_refresh_token
-    async def sync_library(self, media_type: MediaType) -> None:
+    async def sync_library(self, media_type: MediaType, import_as_favorite: bool) -> None:
         """Obtain audiobook library ids and podcast library ids."""
         libraries = await self._client.get_all_libraries()
         if len(libraries) == 0:
@@ -364,7 +359,7 @@ for more details.
                 and media_type == MediaType.PODCAST
             ):
                 self.libraries.podcasts[library.id_] = LibraryHelper(name=library.name)
-        await super().sync_library(media_type=media_type)
+        await super().sync_library(media_type, import_as_favorite)
         await self._cache_set_helper_libraries()
 
         # update playlog

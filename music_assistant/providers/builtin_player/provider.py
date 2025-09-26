@@ -3,51 +3,31 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, cast
 
 import shortuuid
 from music_assistant_models.builtin_player import BuiltinPlayerEvent, BuiltinPlayerState
-from music_assistant_models.enums import (
-    BuiltinPlayerEventType,
-    EventType,
-    PlayerFeature,
-    ProviderFeature,
-)
+from music_assistant_models.enums import BuiltinPlayerEventType, EventType, PlayerFeature
 
-from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
 
 from .player import BuiltinPlayer
 
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
-
 
 class BuiltinPlayerProvider(PlayerProvider):
     """Builtin Player Provider for playing to the Music Assistant Web Interface."""
 
-    _unregister_cbs: list[Callable[[], None]] = []
+    _unregister_cbs: list[Callable[[], None]]
 
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, manifest, config)
+    async def handle_async_init(self) -> None:
+        """Handle asynchronous initialization of the provider."""
         self._unregister_cbs = [
             self.mass.register_api_command("builtin_player/register", self.register_player),
             self.mass.register_api_command("builtin_player/unregister", self.unregister_player),
             self.mass.register_api_command("builtin_player/update_state", self.update_player_state),
         ]
 
-    @property
-    @override
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {ProviderFeature.REMOVE_PLAYER}
-
-    @override
     async def unload(self, is_removed: bool = False) -> None:
         """
         Handle unload/close of the provider.
@@ -58,7 +38,6 @@ class BuiltinPlayerProvider(PlayerProvider):
         for unload_cb in self._unregister_cbs:
             unload_cb()
 
-    @override
     async def remove_player(self, player_id: str) -> None:
         """Remove a player."""
         self.mass.signal_event(

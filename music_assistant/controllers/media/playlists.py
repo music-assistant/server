@@ -324,7 +324,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, item.provider_mappings)
+        await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         return db_id
 
@@ -360,9 +360,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_mappings = (
             update.provider_mappings
             if overwrite
-            else {*cur_item.provider_mappings, *update.provider_mappings}
+            else {*update.provider_mappings, *cur_item.provider_mappings}
         )
-        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_playlist_tracks(

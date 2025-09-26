@@ -33,6 +33,7 @@ from music_assistant_models.enums import (
     ContentType,
     ExternalID,
     ImageType,
+    MediaType,
     ProviderFeature,
     StreamType,
 )
@@ -49,11 +50,11 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemType,
-    MediaType,
     Playlist,
     ProviderMapping,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from pywidevine import PSSH, Cdm, Device, DeviceTypes
@@ -64,6 +65,7 @@ from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import fetch_playlist
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.util import infer_album_type
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -103,7 +105,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return AppleMusicProvider(mass, manifest, config)
+    return AppleMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -277,13 +279,8 @@ class AppleMusicProvider(MusicProvider):
         ) as _file:
             self._decrypt_private_key = await _file.read()
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
-
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
+        self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -524,7 +521,7 @@ class AppleMusicProvider(MusicProvider):
             enable_cache=True,
         )
 
-    def _parse_artist(self, artist_obj):
+    def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse artist object to generic layout."""
         relationships = artist_obj.get("relationships", {})
         if (
@@ -560,14 +557,14 @@ class AppleMusicProvider(MusicProvider):
             },
         )
         if artwork := attributes.get("artwork"):
-            artist.metadata.images = [
+            artist.metadata.add_image(
                 MediaItemImage(
+                    provider=self.lookup_key,
                     type=ImageType.THUMB,
                     path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
-                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
-            ]
+            )
         if genres := attributes.get("genreNames"):
             artist.metadata.genres = set(genres)
         if notes := attributes.get("editorialNotes"):
@@ -619,29 +616,31 @@ class AppleMusicProvider(MusicProvider):
             },
         )
         if artists := relationships.get("artists"):
-            album.artists = [self._parse_artist(artist) for artist in artists["data"]]
+            album.artists = UniqueList([self._parse_artist(artist) for artist in artists["data"]])
         elif artist_name := attributes.get("artistName"):
-            album.artists = [
-                ItemMapping(
-                    media_type=MediaType.ARTIST,
-                    provider=self.lookup_key,
-                    item_id=artist_name,
-                    name=artist_name,
-                )
-            ]
+            album.artists = UniqueList(
+                [
+                    ItemMapping(
+                        media_type=MediaType.ARTIST,
+                        provider=self.lookup_key,
+                        item_id=artist_name,
+                        name=artist_name,
+                    )
+                ]
+            )
         if release_date := attributes.get("releaseDate"):
             album.year = int(release_date.split("-")[0])
         if genres := attributes.get("genreNames"):
             album.metadata.genres = set(genres)
         if artwork := attributes.get("artwork"):
-            album.metadata.images = [
+            album.metadata.add_image(
                 MediaItemImage(
+                    provider=self.lookup_key,
                     type=ImageType.THUMB,
                     path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
-                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
-            ]
+            )
         if album_copyright := attributes.get("copyright"):
             album.metadata.copyright = album_copyright
         if record_label := attributes.get("recordLabel"):
@@ -658,6 +657,13 @@ class AppleMusicProvider(MusicProvider):
         elif attributes.get("isCompilation"):
             album_type = AlbumType.COMPILATION
         album.album_type = album_type
+
+        # Try inference - override if it finds something more specific
+        # Apple Music doesn't seem to have version field
+        inferred_type = infer_album_type(album.name, "")
+        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+            album.album_type = inferred_type
+
         return album
 
     def _parse_track(
@@ -714,14 +720,14 @@ class AppleMusicProvider(MusicProvider):
             if "data" in albums and len(albums["data"]) > 0:
                 track.album = self._parse_album(albums["data"][0])
         if artwork := attributes.get("artwork"):
-            track.metadata.images = [
+            track.metadata.add_image(
                 MediaItemImage(
+                    provider=self.lookup_key,
                     type=ImageType.THUMB,
                     path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
-                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
-            ]
+            )
         if genres := attributes.get("genreNames"):
             track.metadata.genres = set(genres)
         if composers := attributes.get("composerName"):
@@ -730,7 +736,7 @@ class AppleMusicProvider(MusicProvider):
             track.external_ids.add((ExternalID.ISRC, isrc))
         return track
 
-    def _parse_playlist(self, playlist_obj) -> Playlist:
+    def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         """Parse Apple Music playlist object to generic layout."""
         attributes = playlist_obj["attributes"]
         playlist_id = attributes["playParams"].get("globalId") or playlist_obj["id"]
@@ -754,14 +760,14 @@ class AppleMusicProvider(MusicProvider):
             url = artwork["url"]
             if artwork["width"] and artwork["height"]:
                 url = url.format(w=artwork["width"], h=artwork["height"])
-            playlist.metadata.images = [
+            playlist.metadata.add_image(
                 MediaItemImage(
+                    provider=self.lookup_key,
                     type=ImageType.THUMB,
                     path=url,
-                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
-            ]
+            )
         if description := attributes.get("description"):
             playlist.metadata.description = description.get("standard")
         if checksum := attributes.get("lastModifiedDate"):

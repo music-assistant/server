@@ -52,6 +52,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CACHE_CATEGORY_DEFAULT, CACHE_CATEGORY_RECOMMENDATIONS
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.util import infer_album_type
 from music_assistant.models.music_provider import MusicProvider
 
 from .auth_manager import ManualAuthenticationHelper, TidalAuthManager
@@ -98,6 +99,25 @@ RESOURCES_URL = "https://resources.tidal.com/images"
 DEFAULT_LIMIT = 50
 
 T = TypeVar("T")
+
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SEARCH,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.RECOMMENDATIONS,
+}
 
 
 async def setup(
@@ -316,7 +336,7 @@ class TidalProvider(MusicProvider):
 
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig):
         """Initialize Tidal provider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self.auth = TidalAuthManager(
             http_session=mass.http_session,
             config_updater=self._update_auth_config,
@@ -374,28 +394,6 @@ class TidalProvider(MusicProvider):
         user_info = self._extract_data(api_result)
         logged_in_user = await self.get_user(str(user_info.get("userId")))
         await self.auth.update_user_info(logged_in_user, str(user_info.get("sessionId")))
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-            ProviderFeature.SEARCH,
-            ProviderFeature.LIBRARY_ARTISTS_EDIT,
-            ProviderFeature.LIBRARY_ALBUMS_EDIT,
-            ProviderFeature.LIBRARY_TRACKS_EDIT,
-            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            ProviderFeature.PLAYLIST_CREATE,
-            ProviderFeature.SIMILAR_TRACKS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.PLAYLIST_TRACKS_EDIT,
-            ProviderFeature.RECOMMENDATIONS,
-        }
 
     #
     # API REQUEST HELPERS & DECORATORS
@@ -1729,6 +1727,11 @@ class TidalProvider(MusicProvider):
             album.album_type = AlbumType.EP
         elif album_type == "SINGLE":
             album.album_type = AlbumType.SINGLE
+
+        # Try inference - override if it finds something more specific
+        inferred_type = infer_album_type(name, version)
+        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+            album.album_type = inferred_type
 
         # Safely parse year
         if release_date := album_obj.get("releaseDate", ""):

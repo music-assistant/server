@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -51,7 +51,6 @@ from .constants import (
     CONF_REFRESH_TOKEN,
     CONF_SYNC_PLAYED_STATUS,
     LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX,
-    SUPPORTED_FEATURES,
 )
 from .helpers import get_librespot_binary
 from .parsers import (
@@ -64,12 +63,6 @@ from .parsers import (
 )
 from .streaming import LibrespotStreamer
 
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
-
-    from music_assistant import MusicAssistant
-
 
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
@@ -79,12 +72,6 @@ class SpotifyProvider(MusicProvider):
     _librespot_bin: str | None = None
     custom_client_id_active: bool = False
     throttler: ThrottlerManager
-
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, manifest, config)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -124,12 +111,12 @@ class SpotifyProvider(MusicProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        base = SUPPORTED_FEATURES.copy()
+        features = self._supported_features
         if not self.custom_client_id_active:
             # Spotify has killed the similar tracks api for developers
             # https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api
-            base.add(ProviderFeature.SIMILAR_TRACKS)
-        return base
+            return {*features, ProviderFeature.SIMILAR_TRACKS}
+        return features
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -395,13 +382,29 @@ class SpotifyProvider(MusicProvider):
                     "Podcast with ID %s is no longer available on Spotify", prov_podcast_id
                 )
 
-        # Get cached episode data - this is where the performance improvement happens
+        # Get cached episode data
         episodes_data = await self._get_podcast_episodes_data(prov_podcast_id)
 
         # Parse and yield episodes with position
         for idx, episode_data in enumerate(episodes_data):
             episode = parse_podcast_episode(episode_data, self, podcast)
             episode.position = idx + 1
+
+            # Set played status if sync is enabled and resume data exists
+            if self.sync_played_status_enabled and "resume_point" in episode_data:
+                resume_point = episode_data["resume_point"]
+                fully_played = resume_point.get("fully_played", False)
+                position_ms = resume_point.get("resume_position_ms", 0)
+
+                # Apply threshold logic
+                if not fully_played and episode_data.get("duration_ms", 0) > 0:
+                    completion_ratio = position_ms / episode_data["duration_ms"]
+                    if completion_ratio >= self.played_threshold:
+                        fully_played = True
+
+                episode.fully_played = fully_played if fully_played else None
+                episode.resume_position_ms = position_ms if position_ms > 0 else None
+
             yield episode
 
     @use_cache(86400)  # 24 hours
