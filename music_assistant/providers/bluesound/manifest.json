@@ -3,7 +3,7 @@
   "domain": "bluesound",
   "stage": "beta",
   "name": "Bluesound",
-  "description": "BluOS Player provider for Music Assistant.",
+  "description": "Send high-resolution audio to Bluesound speakers and multiroom systems.",
   "codeowners": ["@cyanogenbot"],
   "requirements": ["pyblu==2.0.5"],
   "documentation": "https://music-assistant.io/player-support/bluesound/",
