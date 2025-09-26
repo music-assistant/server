@@ -65,7 +65,12 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # ruff: noqa: ARG001
+    # Check if audiobooks are supported by existing provider instance
+    audiobooks_supported = (
+        instance_id
+        and (prov_instance := mass.get_provider(instance_id))
+        and getattr(prov_instance, "audiobooks_supported", False)
+    )
 
     if action == CONF_ACTION_AUTH:
         # spotify PKCE auth flow
@@ -193,6 +198,7 @@ async def get_config_entries(
             default_value=False,
             value=values.get(CONF_SYNC_AUDIOBOOK_PROGRESS, False) if values else False,
             category="sync_options",
+            hidden=not audiobooks_supported,
         ),
     )
 

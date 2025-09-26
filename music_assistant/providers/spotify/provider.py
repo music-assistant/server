@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -68,6 +68,12 @@ from .parsers import (
 )
 from .streaming import LibrespotStreamer
 
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant import MusicAssistant
+
 
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
@@ -77,6 +83,17 @@ class SpotifyProvider(MusicProvider):
     _librespot_bin: str | None = None
     custom_client_id_active: bool = False
     throttler: ThrottlerManager
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature],
+    ) -> None:
+        """Initialize the provider."""
+        super().__init__(mass, manifest, config)
+        self._base_supported_features = supported_features
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -91,8 +108,8 @@ class SpotifyProvider(MusicProvider):
         self._librespot_bin = await get_librespot_binary()
         # try login which will raise if it fails
         await self.login()
-        self.audiobooks_supported = await self._test_audiobook_support()
-        if not self.audiobooks_supported:
+        self._audiobooks_supported = await self._test_audiobook_support()
+        if not self._audiobooks_supported:
             self.logger.info(
                 "Audiobook support disabled: Audiobooks are not available in your region. "
                 "See https://support.spotify.com/us/authors/article/audiobooks-availability/ "
@@ -102,13 +119,19 @@ class SpotifyProvider(MusicProvider):
     async def _test_audiobook_support(self) -> bool:
         """Test if audiobooks are supported in user's region."""
         try:
-            # Use your existing _get_data method instead
             await self._get_data("me/audiobooks", limit=1)
-            self.logger.debug("Audiobook support detected")
             return True
-        except Exception as e:
-            self.logger.debug(f"Audiobook support not available: {e}")
+        except aiohttp.ClientResponseError as e:
+            if e.status == 403:
+                return False  # Not available
+            raise  # Re-raise other HTTP errors
+        except (MediaNotFoundError, ProviderUnavailableError):
             return False
+
+    @property
+    def audiobooks_supported(self) -> bool:
+        """Check if audiobooks are supported for this user/region."""
+        return getattr(self, "_audiobooks_supported", False)
 
     @property
     def audiobook_progress_sync_enabled(self) -> bool:
@@ -124,7 +147,7 @@ class SpotifyProvider(MusicProvider):
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        features = self._supported_features
+        features = self._base_supported_features.copy()
         # Add audiobook features if enabled
         if self.audiobooks_supported:
             features.add(ProviderFeature.LIBRARY_AUDIOBOOKS)
