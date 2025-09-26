@@ -142,9 +142,7 @@ class PhishInProvider(MusicProvider):
                 tracks=tracks[:limit] if MediaType.TRACK in media_types else [],
                 playlists=playlists[:limit] if MediaType.PLAYLIST in media_types else [],
             )
-        except (MediaNotFoundError, ProviderUnavailableError):
-            raise
-        except Exception as err:
+        except  (MediaNotFoundError, ProviderUnavailableError, aiohttp.ClientError) as err:
             self.logger.error("Search failed for query '%s': %s", search_query, err)
             raise ProviderUnavailableError(f"Search error: {err}") from err
 
