@@ -192,7 +192,7 @@ class CacheController(CoreController):
         """Delete data from cache."""
         match: dict[str, str | int] = {}
         if key is not None:
-            match["sub_key"] = key
+            match["key"] = key
         if category is not None:
             match["category"] = category
         if provider is not None:
