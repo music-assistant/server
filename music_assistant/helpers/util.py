@@ -11,7 +11,6 @@ import re
 import shutil
 import socket
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
@@ -24,9 +23,10 @@ from urllib.parse import urlparse
 
 import chardet
 import ifaddr
+from music_assistant_models.enums import AlbumType
 from zeroconf import IPVersion
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import LIVE_INDICATORS, SOUNDTRACK_INDICATORS, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
@@ -150,6 +150,18 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
                 title = title.replace(title_part, "").strip()
                 return (title, version)
     return title, version
+
+
+def infer_album_type(title: str, version: str) -> AlbumType:
+    """Infer album type by looking for live or soundtrack indicators."""
+    combined = f"{title} {version}".lower()
+    for pat in LIVE_INDICATORS:
+        if re.search(pat, combined):
+            return AlbumType.LIVE
+    for pat in SOUNDTRACK_INDICATORS:
+        if re.search(pat, combined):
+            return AlbumType.SOUNDTRACK
+    return AlbumType.UNKNOWN
 
 
 def strip_ads(line: str) -> str:

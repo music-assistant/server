@@ -180,7 +180,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "narrators": serialize_to_json(
                     update.narrators if overwrite else cur_item.narrators or update.narrators
                 ),
-                "duration": update.duration or update.duration,
+                "duration": update.duration if overwrite else cur_item.duration or update.duration,
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name, True, True),
             },

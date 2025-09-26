@@ -69,6 +69,7 @@ from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.music_provider import MusicProvider
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -82,7 +83,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
 
-    from music_assistant.models.music_provider import MusicProvider
 
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
@@ -1076,15 +1076,28 @@ class MusicController(CoreController):
         Returns a boolean with the fully_played status
         and an integer with the resume position in ms.
         """
+        provider_fully_played = False
+        provider_position_ms = 0
+
+        # Try to get position from providers
         for prov_mapping in media_item.provider_mappings:
-            if not (music_prov := self.mass.get_provider(prov_mapping.provider_instance)):
+            if not (provider := self.mass.get_provider(prov_mapping.provider_instance)):
                 continue
-            with suppress(NotImplementedError):
-                return await music_prov.get_resume_position(
-                    prov_mapping.item_id, media_item.media_type
-                )
-        # no provider info found, fallback to library playlog
-        if db_entry := await self.mass.music.database.get_row(
+            # Type guard: ensure this is a MusicProvider with get_resume_position method
+            if isinstance(provider, MusicProvider):
+                with suppress(NotImplementedError):
+                    (
+                        provider_fully_played,
+                        provider_position_ms,
+                    ) = await provider.get_resume_position(
+                        prov_mapping.item_id, media_item.media_type
+                    )
+                    break  # Use first provider that returns data
+
+        # Get MA's internal position from playlog
+        ma_fully_played = False
+        ma_position_ms = 0
+        if db_entry := await self.database.get_row(
             DB_TABLE_PLAYLOG,
             {
                 "media_type": media_item.media_type.value,
@@ -1092,12 +1105,14 @@ class MusicController(CoreController):
                 "provider": media_item.provider,
             },
         ):
-            resume_position_ms = (
-                db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
-            )
-            return (db_entry["fully_played"], resume_position_ms)
+            ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
+            ma_fully_played = db_entry["fully_played"]
 
-        return (False, 0)
+        # Return the higher position to ensure users never lose progress
+        if ma_position_ms >= provider_position_ms:
+            return ma_fully_played, ma_position_ms
+        else:
+            return provider_fully_played, provider_position_ms
 
     def get_controller(
         self, media_type: MediaType

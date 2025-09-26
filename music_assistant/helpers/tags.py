@@ -20,7 +20,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import try_parse_int
+from music_assistant.helpers.util import infer_album_type, try_parse_int
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 
@@ -314,25 +314,29 @@ class AudioTags:
         """Return albumtype tag if present."""
         if self.tags.get("compilation", "") == "1":
             return AlbumType.COMPILATION
+
         tag = (
             self.tags.get("musicbrainzalbumtype")
             or self.tags.get("albumtype")
             or self.tags.get("releasetype")
         )
-        if tag is None:
-            return AlbumType.UNKNOWN
-        # the album type tag is messy within id3 and may even contain multiple types
-        # try to parse one in order of preference
-        for album_type in (
-            AlbumType.COMPILATION,
-            AlbumType.EP,
-            AlbumType.SINGLE,
-            AlbumType.ALBUM,
-        ):
-            if album_type.value in tag.lower():
-                return album_type
 
-        return AlbumType.UNKNOWN
+        if tag is not None:
+            # try to parse one in order of preference
+            for album_type in (
+                AlbumType.LIVE,
+                AlbumType.SOUNDTRACK,
+                AlbumType.COMPILATION,
+                AlbumType.EP,
+                AlbumType.SINGLE,
+                AlbumType.ALBUM,
+            ):
+                if album_type.value in tag.lower():
+                    return album_type
+
+        # No valid tag found, try inference from album title
+        album_title = self.tags.get("album", "")
+        return infer_album_type(album_title, "")
 
     @property
     def isrc(self) -> tuple[str, ...]:
@@ -437,7 +441,9 @@ class AudioTags:
             if stream.get("codec_type") == "video":
                 continue
             for key, value in stream.get("tags", {}).items():
-                alt_key = key.lower().replace(" ", "").replace("_", "").replace("-", "")
+                alt_key = key.lower()
+                for char in [" ", "_", "-", "/"]:
+                    alt_key = alt_key.replace(char, "")
                 if alt_key in tags:
                     continue
                 tags[alt_key] = value

@@ -52,6 +52,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CACHE_CATEGORY_DEFAULT, CACHE_CATEGORY_RECOMMENDATIONS
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.helpers.util import infer_album_type
 from music_assistant.models.music_provider import MusicProvider
 
 from .auth_manager import ManualAuthenticationHelper, TidalAuthManager
@@ -1726,6 +1727,11 @@ class TidalProvider(MusicProvider):
             album.album_type = AlbumType.EP
         elif album_type == "SINGLE":
             album.album_type = AlbumType.SINGLE
+
+        # Try inference - override if it finds something more specific
+        inferred_type = infer_album_type(name, version)
+        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+            album.album_type = inferred_type
 
         # Safely parse year
         if release_date := album_obj.get("releaseDate", ""):
