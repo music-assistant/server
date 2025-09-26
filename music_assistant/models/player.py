@@ -1416,10 +1416,9 @@ class SyncGroupPlayer(GroupPlayer):
     async def on_registered(self) -> None:
         """Complete the initialization once the player was registered."""
         # Config is only available after the player was registered
-        # Copy the list so not every added player becomes a static member
-        self._attr_group_members = list(
-            cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        )
+        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        self._attr_static_group_members = static_members.copy()
+        self._attr_group_members = static_members.copy()
         # Uses self.config
         if self.is_dynamic:
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
@@ -1604,9 +1603,7 @@ class SyncGroupPlayer(GroupPlayer):
 
         if not powered:
             # reset the original group members when powered off and clear leader
-            self._attr_group_members = list(
-                cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-            )
+            self._attr_group_members = self._attr_static_group_members.copy()
             self.sync_leader = None
 
     async def _dissolve_syncgroup(self) -> None:
