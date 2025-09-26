@@ -1335,28 +1335,7 @@ class PlayerController(CoreController):
         player = self._players.get(player_id)
         if player is None:
             return
-        if (
-            player.active_group
-            and (group := self.get(player.active_group))
-            and group.supports_feature(PlayerFeature.SET_MEMBERS)
-        ):
-            # Ungroup the player if its part of an active group, this will ignore
-            # static_group_members since that is only checked when using cmd_set_members
-            try:
-                await group.set_members(player_ids_to_remove=[player_id])
-            except Exception:
-                self.logger.exception(
-                    "Failed to ungroup player %s before unregistering it", player.name
-                )
-        elif player.synced_to and player.supports_feature(PlayerFeature.SET_MEMBERS):
-            # Remove the player if it was synced, otherwise it will still show as
-            # synced to the other player after it gets registered again
-            try:
-                await player.ungroup()
-            except Exception:
-                self.logger.exception(
-                    "Failed to ungroup player %s before unregistering it", player.name
-                )
+        await self._cleanup_player_memberships(player_id)
         del self._players[player_id]
         self.logger.info("Player removed: %s", player.name)
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
@@ -1773,6 +1752,33 @@ class PlayerController(CoreController):
             # if the player is not using a queue, we need to stop and start playback
             await self.cmd_stop(player_id)
             await self.cmd_play(player_id)
+
+    async def _cleanup_player_memberships(self, player_id: str) -> None:
+        """Ensure a player is detached from any groups or syncgroups."""
+        if not (player := self.get(player_id)):
+            return
+
+        if (
+            player.active_group
+            and (group := self.get(player.active_group))
+            and group.supports_feature(PlayerFeature.SET_MEMBERS)
+        ):
+            # Ungroup the player if its part of an active group, this will ignore
+            # static_group_members since that is only checked when using cmd_set_members
+            try:
+                await group.set_members(player_ids_to_remove=[player_id])
+            except Exception:
+                self.logger.exception("Failed to ungroup now unavailable player %s", player.name)
+        elif player.synced_to and player.supports_feature(PlayerFeature.SET_MEMBERS):
+            # Remove the player if it was synced, otherwise it will still show as
+            # synced to the other player after it gets registered again
+            try:
+                await player.ungroup()
+            except Exception:
+                self.logger.exception(
+                    "Failed to ungroup now unavailable player %s from sync leader",
+                    player.name,
+                )
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
