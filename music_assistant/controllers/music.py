@@ -89,7 +89,7 @@ CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 DB_SCHEMA_VERSION: Final[int] = 20
 
-CACHE_CATEGORY_LAST_SYNC: Final[str] = "last_sync"
+CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 
 
 class MusicController(CoreController):
