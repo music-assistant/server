@@ -3,7 +3,7 @@
   "domain": "jellyfin",
   "stage": "stable",
   "name": "Jellyfin Media Server Library",
-  "description": "Stream music and podcasts from your own Jellyfin server.",
+  "description": "Stream music from your self-hosted Jellyfin server.",
   "codeowners": ["@lokiberra", "@Jc2k"],
   "requirements": ["aiojellyfin==0.14.1"],
   "documentation": "https://music-assistant.io/music-providers/jellyfin/",
