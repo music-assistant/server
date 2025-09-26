@@ -999,7 +999,7 @@ class SpotifyProvider(MusicProvider):
             cache_key_parts.append(f"{key}{kwargs[key]}")
         cache_key = ".".join(map(str, cache_key_parts))
         if cached := await self.mass.cache.get(
-            cache_key, provider=self.instance_id, checksum=cache_checksum
+            cache_key, provider=self.instance_id, checksum=cache_checksum, allow_bypass=False
         ):
             return cached
         result = await self._get_data(endpoint, **kwargs)
@@ -1008,7 +1008,7 @@ class SpotifyProvider(MusicProvider):
         )
         return result
 
-    @use_cache(30, allow_bypass=False)  # short cache for etags (subsequent calls use cached data)
+    @use_cache(120, allow_bypass=False)  # short cache for etags (subsequent calls use cached data)
     async def _get_etag(self, endpoint: str, **kwargs: Any) -> str | None:
         """Get etag for api endpoint."""
         _res = await self._get_data(endpoint, **kwargs)
