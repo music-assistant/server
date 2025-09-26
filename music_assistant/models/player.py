@@ -132,6 +132,7 @@ class Player(ABC):
     _attr_type: PlayerType = PlayerType.PLAYER
     _attr_supported_features: set[PlayerFeature]
     _attr_group_members: list[str]
+    _attr_static_group_members: list[str]
     _attr_device_info: DeviceInfo
     _attr_can_group_with: set[str]
     _attr_source_list: list[PlayerSource]
@@ -159,6 +160,7 @@ class Player(ABC):
         # initialize mutable attributes
         self._attr_supported_features = set()
         self._attr_group_members = []
+        self._attr_static_group_members = []
         self._attr_device_info = DeviceInfo()
         self._attr_can_group_with = set()
         self._attr_source_list = []
@@ -316,6 +318,17 @@ class Player(ABC):
         elif self._attr_group_members == [self.player_id]:
             return []
         return self._attr_group_members
+
+    @property
+    def static_group_members(self) -> list[str]:
+        """
+        Return the static group members for a player group.
+
+        For PlayerType.GROUP return the player_ids of members that must not be removed by
+        the user.
+        For all other player types return an empty list.
+        """
+        return self._attr_static_group_members
 
     @property
     def can_group_with(self) -> set[str]:
@@ -1233,6 +1246,7 @@ class Player(ABC):
         self._state.volume_level = self.volume_state
         self._state.volume_muted = self.volume_muted_state
         self._state.group_members = UniqueList(self.group_members)
+        self._state.static_group_members = UniqueList(self.static_group_members)
         self._state.can_group_with = self.can_group_with
         self._state.synced_to = self.synced_to
         self._state.active_source = self.active_source_state
