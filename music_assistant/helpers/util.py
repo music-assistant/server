@@ -775,11 +775,6 @@ class TimedAsyncGenerator:
         return self._factory()
 
 
-# _ProviderT = TypeVar("_ProviderT", bound="Provider | CoreController")
-# _R = TypeVar("_R")
-# _P = ParamSpec("_P")
-
-
 def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
     func: Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
 ) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
