@@ -1435,6 +1435,14 @@ class PlayerController(CoreController):
                 if removed_player := self.get(player_id):
                     removed_player.update_state()
 
+        became_inactive = False
+        if "available" in changed_values:
+            became_inactive = changed_values["available"][1] is False
+        if not became_inactive and "enabled" in changed_values:
+            became_inactive = changed_values["enabled"][1] is False
+        if became_inactive and (player.active_group or player.synced_to):
+            self.mass.create_task(self._cleanup_player_memberships(player.player_id))
+
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
 
