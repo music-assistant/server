@@ -1418,10 +1418,12 @@ class SyncGroupPlayer(GroupPlayer):
         # Config is only available after the player was registered
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         self._attr_static_group_members = static_members.copy()
-        self._attr_group_members = static_members.copy()
-        # Uses self.config
+        if not self.powered:
+            self._attr_group_members = static_members.copy()
         if self.is_dynamic:
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
