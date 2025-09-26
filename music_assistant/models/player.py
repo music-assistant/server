@@ -1613,7 +1613,10 @@ class SyncGroupPlayer(GroupPlayer):
                     await member.power(False)
 
         if not powered:
-            # clear leader on power off
+            # Reset to unfiltered static members list when powered off
+            # (the frontend will hide unavailable members)
+            self._attr_group_members = self._attr_static_group_members.copy()
+            # and clear the sync leader
             self.sync_leader = None
 
     async def _dissolve_syncgroup(self) -> None:
