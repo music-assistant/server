@@ -1334,9 +1334,19 @@ class PlayerController(CoreController):
 
         If the player is not registered, this will silently be ignored.
         """
-        player = self._players.pop(player_id, None)
+        player = self._players.get(player_id)
         if player is None:
             return
+        if player.synced_to:
+            # Remove the player if it was synced, otherwise it will still show as
+            # synced to the other player after it gets registered again
+            try:
+                await player.ungroup()
+            except Exception:
+                self.logger.exception(
+                    "Failed to ungroup player %s before unregistering it", player.name
+                )
+        del self._players[player_id]
         self.logger.info("Player removed: %s", player.name)
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
