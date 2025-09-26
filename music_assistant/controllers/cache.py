@@ -94,6 +94,7 @@ class CacheController(CoreController):
         category: int = 0,
         checksum: str | None = None,
         default: Any = None,
+        allow_bypass: bool = True,
     ) -> Any:
         """Get object from cache and return the results.
 
@@ -105,7 +106,7 @@ class CacheController(CoreController):
         - default: value to return if no cache object is found
         """
         assert key, "No key provided"
-        if BYPASS_CACHE.get():
+        if allow_bypass and BYPASS_CACHE.get():
             return default
         cur_time = int(time.time())
         if checksum is not None and not isinstance(checksum, str):
@@ -242,12 +243,9 @@ class CacheController(CoreController):
 
     @asynccontextmanager
     async def handle_refresh(self, bypass: bool) -> AsyncGenerator[None, None]:
-        """Bypass the throttler."""
-        if not bypass:
-            yield None
-            return
+        """Handle the cache bypass."""
         try:
-            token = BYPASS_CACHE.set(True)
+            token = BYPASS_CACHE.set(bypass)
             yield None
         finally:
             BYPASS_CACHE.reset(token)
@@ -374,6 +372,7 @@ def use_cache(
     category: int = 0,
     persistent: bool = False,
     cache_checksum: str | None = None,
+    allow_bypass: bool = True,
 ) -> Callable[
     [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
     Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
@@ -399,6 +398,7 @@ def use_cache(
                 provider=provider_id,
                 checksum=cache_checksum,
                 category=category,
+                allow_bypass=allow_bypass,
             )
             if cachedata is not None:
                 type_hints = get_type_hints(func)

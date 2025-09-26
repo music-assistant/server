@@ -69,6 +69,10 @@ from .parsers import (
 from .streaming import LibrespotStreamer
 
 
+class NotModifiedError(Exception):
+    """Exception raised when a resource has not been modified."""
+
+
 class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
 
@@ -517,7 +521,7 @@ class SpotifyProvider(MusicProvider):
             if item["id"]
         ]
 
-    @use_cache(86400)  # 24 hours
+    @use_cache(2600 * 3)  # 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -526,9 +530,14 @@ class SpotifyProvider(MusicProvider):
             if prov_playlist_id == self._get_liked_songs_playlist_id()
             else f"playlists/{prov_playlist_id}/tracks"
         )
+        # do single request to get the etag (which we use as checksum for caching)
+        cache_checksum = await self._get_etag(uri, limit=1, offset=0)
+
         page_size = 50
         offset = page * page_size
-        spotify_result = await self._get_data(uri, limit=page_size, offset=offset)
+        spotify_result = await self._get_data_with_caching(
+            uri, cache_checksum, limit=page_size, offset=offset
+        )
         for index, item in enumerate(spotify_result["items"], 1):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
@@ -967,10 +976,12 @@ class SpotifyProvider(MusicProvider):
         """Get all items from a paged list."""
         limit = 50
         offset = 0
+        # do single request to get the etag (which we use as checksum for caching)
+        cache_checksum = await self._get_etag(endpoint, limit=1, offset=0, **kwargs)
         while True:
-            kwargs["limit"] = limit
-            kwargs["offset"] = offset
-            result = await self._get_data(endpoint, **kwargs)
+            result = await self._get_data_with_caching(
+                endpoint, cache_checksum=cache_checksum, limit=limit, offset=offset, **kwargs
+            )
             offset += limit
             if not result or key not in result or not result[key]:
                 break
@@ -978,6 +989,30 @@ class SpotifyProvider(MusicProvider):
                 yield item
             if len(result[key]) < limit:
                 break
+
+    async def _get_data_with_caching(
+        self, endpoint: str, cache_checksum: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        """Get data from api with caching."""
+        cache_key_parts = [endpoint]
+        for key in sorted(kwargs.keys()):
+            cache_key_parts.append(f"{key}{kwargs[key]}")
+        cache_key = ".".join(map(str, cache_key_parts))
+        if cached := await self.mass.cache.get(
+            cache_key, provider=self.instance_id, checksum=cache_checksum
+        ):
+            return cached
+        result = await self._get_data(endpoint, **kwargs)
+        await self.mass.cache.set(
+            cache_key, result, provider=self.instance_id, checksum=cache_checksum
+        )
+        return result
+
+    @use_cache(30, allow_bypass=False)  # short cache for etags (subsequent calls use cached data)
+    async def _get_etag(self, endpoint: str, **kwargs: Any) -> str | None:
+        """Get etag for api endpoint."""
+        _res = await self._get_data(endpoint, **kwargs)
+        return _res.get("etag")
 
     @throttle_with_retries
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
@@ -1021,6 +1056,8 @@ class SpotifyProvider(MusicProvider):
                 raise MediaNotFoundError(f"{endpoint} not found")
             response.raise_for_status()
             result: dict[str, Any] = await response.json(loads=json_loads)
+            if etag := response.headers.get("ETag"):
+                result["etag"] = etag
             return result
 
     @throttle_with_retries
