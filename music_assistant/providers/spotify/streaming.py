@@ -29,14 +29,27 @@ class LibrespotStreamer:
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        # Ensure librespot binary is available
-        assert self.provider._librespot_bin
-
+        # Regular track/episode streaming - audiobooks are handled in the provider
         media_type = "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
         spotify_uri = f"spotify://{media_type}:{streamdetails.item_id}"
+
         self.provider.logger.log(
             VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot"
         )
+
+        async for chunk in self.stream_spotify_uri(spotify_uri, seek_position):
+            yield chunk
+
+    async def stream_spotify_uri(
+        self, spotify_uri: str, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream a Spotify URI using librespot.
+
+        This internal method handles the entire process, from authentication to playback.
+        """
+        # Validate that librespot binary is available
+        if not self.provider._librespot_bin:
+            raise AudioError("Librespot binary not available")
 
         args = [
             self.provider._librespot_bin,

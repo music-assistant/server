@@ -18,9 +18,9 @@ from .constants import (
     CONF_ACTION_AUTH,
     CONF_ACTION_CLEAR_AUTH,
     CONF_CLIENT_ID,
-    CONF_PLAYED_THRESHOLD,
     CONF_REFRESH_TOKEN,
-    CONF_SYNC_PLAYED_STATUS,
+    CONF_SYNC_AUDIOBOOK_PROGRESS,
+    CONF_SYNC_PODCAST_PROGRESS,
     SCOPE,
 )
 from .provider import SpotifyProvider
@@ -65,7 +65,12 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # ruff: noqa: ARG001
+    # Check if audiobooks are supported by existing provider instance
+    audiobooks_supported = (
+        instance_id
+        and (prov_instance := mass.get_provider(instance_id))
+        and getattr(prov_instance, "audiobooks_supported", False)
+    )
 
     if action == CONF_ACTION_AUTH:
         # spotify PKCE auth flow
@@ -145,8 +150,8 @@ async def get_config_entries(
             description="By default, a generic client ID is used which is (heavy) rate limited. "
             "To speedup performance, it is advised that you create your own Spotify Developer "
             "account and use that client ID here, but this comes at the cost of some features "
-            "due to Spotify policies. For example Radio mode/recommendations and featured playlists"
-            "will not work with a custom client ID. \n\n"
+            "due to Spotify policies. For example, Radio mode/recommendations and featured "
+            "playlists will not work with a custom client ID. \n\n"
             f"Use {CALLBACK_REDIRECT_URL} as callback URL.",
             required=False,
             value=values.get(CONF_CLIENT_ID) if values else None,
@@ -171,28 +176,29 @@ async def get_config_entries(
             hidden=auth_required,
         ),
         ConfigEntry(
-            key=CONF_SYNC_PLAYED_STATUS,
+            key=CONF_SYNC_PODCAST_PROGRESS,
             type=ConfigEntryType.BOOLEAN,
-            label="Sync Played Status from Spotify",
+            label="Sync Podcast Status from Spotify",
             description="Automatically sync episode played status from Spotify to Music Assistant. "
             "Episodes marked as played in Spotify will be marked as played in MA."
             "Only enable this if you use both the Spotify app and Music Assistant "
             "for podcast playback.",
             default_value=False,
-            value=values.get(CONF_SYNC_PLAYED_STATUS, True) if values else True,
+            value=values.get(CONF_SYNC_PODCAST_PROGRESS, True) if values else True,
             category="sync_options",
         ),
         ConfigEntry(
-            key=CONF_PLAYED_THRESHOLD,
-            type=ConfigEntryType.INTEGER,
-            label="Played Threshold (%)",
-            description="Percentage of episode completion to consider it 'played' "
-            "when not explicitly marked by Spotify (50 = 50%, 90 = 90%).",
-            default_value=90,
-            value=values.get(CONF_PLAYED_THRESHOLD, 90) if values else 90,
-            range=(1, 100),
-            depends_on=CONF_SYNC_PLAYED_STATUS,
+            key=CONF_SYNC_AUDIOBOOK_PROGRESS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Sync Audiobook Progress from Spotify",
+            description="Automatically sync audiobook progress from Spotify to Music Assistant. "
+            "Progress from Spotify app will sync to MA when audiobooks are accessed. "
+            "Only enable this if you use both the Spotify app and Music Assistant "
+            "for audiobook playback.",
+            default_value=False,
+            value=values.get(CONF_SYNC_AUDIOBOOK_PROGRESS, False) if values else False,
             category="sync_options",
+            hidden=not audiobooks_supported,
         ),
     )
 
