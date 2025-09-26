@@ -115,7 +115,7 @@ class ResonatePlayer(Player):
 
         match event:
             case GroupCommandEvent(command=command, volume=volume, mute=mute):
-                self.logger.info("Group command received: %s", command)
+                self.logger.debug("Group command received: %s", command)
                 match command:
                     case MediaCommand.PLAY:
                         await self.mass.players.cmd_play(self.player_id)
@@ -139,7 +139,7 @@ class ResonatePlayer(Player):
                         ):
                             await member.volume_mute(mute)
             case GroupStateChangedEvent(state=state):
-                self.logger.info("Group state changed to: %s", state)
+                self.logger.debug("Group state changed to: %s", state)
                 match state:
                     case PlaybackStateType.PLAYING:
                         self._attr_playback_state = PlaybackState.PLAYING
@@ -173,13 +173,13 @@ class ResonatePlayer(Player):
 
     async def stop(self) -> None:
         """Stop command."""
-        self.logger.info("Received STOP command on player %s", self.display_name)
+        self.logger.debug("Received STOP command on player %s", self.display_name)
         # We don't care if we stopped the stream or it was already stopped
-        _ = self.api.group.stop()
+        self.api.group.stop()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
-        self.logger.info(
+        self.logger.debug(
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
@@ -237,12 +237,7 @@ class ResonatePlayer(Player):
         output_codec = cast("str", self.config.get_value(CONF_OUTPUT_CODEC, "pcm"))
 
         # Convert string codec to AudioCodec enum
-        codec_mapping = {
-            "pcm": AudioCodec.PCM,
-            "flac": AudioCodec.FLAC,
-            "opus": AudioCodec.OPUS,
-        }
-        audio_codec = codec_mapping.get(output_codec, AudioCodec.PCM)
+        audio_codec = AudioCodec(output_codec)
 
         await self.api.group.play_media(
             audio_source,
@@ -366,11 +361,6 @@ class ResonatePlayer(Player):
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        # OPTIONAL
-        # this method is optional and should be implemented if you need player specific
-        # configuration entries. If you do not need player specific configuration entries,
-        # you can leave this method out completely to accept the default implementation.
-        # Please note that you need to call the super() method to get the default entries.
         default_entries = await super().get_config_entries()
 
         return [

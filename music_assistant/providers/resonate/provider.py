@@ -45,10 +45,10 @@ class ResonateProvider(PlayerProvider):
         match event:
             case ClientAddedEvent(client_id):
                 player = ResonatePlayer(self, client_id)
-                self.logger.info("Client %s connected", client_id)
+                self.logger.debug("Client %s connected", client_id)
                 await self.mass.players.register(player)
             case ClientRemovedEvent(client_id):
-                self.logger.info("Client %s disconnected", client_id)
+                self.logger.debug("Client %s disconnected", client_id)
                 await self.mass.players.unregister(client_id)
             case _:
                 self.logger.error("Unknown resonate event: %s", event)
