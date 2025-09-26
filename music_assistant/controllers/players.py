@@ -1691,7 +1691,6 @@ class PlayerController(CoreController):
             elif player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
             player.available = False
-            await self._cleanup_player_memberships(player.player_id)
         # if the PlayerQueue was playing, restart playback
         # TODO: add property to ConfigEntry if it requires a restart of playback on change
         elif not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
