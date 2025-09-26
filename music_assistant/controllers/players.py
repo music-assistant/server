@@ -1724,19 +1724,13 @@ class PlayerController(CoreController):
             elif player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
             player.available = False
+            await self._cleanup_player_memberships(player.player_id)
         # if the PlayerQueue was playing, restart playback
         # TODO: add property to ConfigEntry if it requires a restart of playback on change
         elif not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
             # always stop first to ensure the player uses the new config
             await self.mass.player_queues.stop(resume_queue.queue_id)
             self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
-        # check for group memberships that need to be updated
-        if player_disabled and player.active_group and player_provider:
-            # try to remove from the group
-            group_player = self.get(player.active_group)
-            assert group_player is not None  # for type checking
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await group_player.set_members(player_ids_to_remove=[player.player_id])
 
     async def on_player_dsp_change(self, player_id: str) -> None:
         """Call (by config manager) when the DSP settings of a player change."""
