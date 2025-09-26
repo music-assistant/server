@@ -1107,11 +1107,6 @@ class PlayerController(CoreController):
             self.logger.warning("Player %s is not available", player_id)
             return
 
-        if player.synced_to and (synced_player := self.get(player.synced_to)):
-            # player is a sync member
-            await synced_player.set_members(player_ids_to_remove=[player_id])
-            return
-
         if (
             player.active_group
             and (group_player := self.get(player.active_group))
@@ -1124,6 +1119,11 @@ class PlayerController(CoreController):
                     "and cannot be removed from that group!"
                 )
             await group_player.set_members(player_ids_to_remove=[player_id])
+            return
+
+        if player.synced_to and (synced_player := self.get(player.synced_to)):
+            # player is a sync member
+            await synced_player.set_members(player_ids_to_remove=[player_id])
             return
 
         if not (player.synced_to or player.group_members):
