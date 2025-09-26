@@ -41,6 +41,11 @@ CONF_FEED_URL = "feed_url"
 
 CACHE_CATEGORY_PODCASTS = 0
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_PODCASTS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -49,7 +54,7 @@ async def setup(
     if not config.get_value(CONF_FEED_URL):
         msg = "No podcast feed set"
         raise InvalidProviderURI(msg)
-    return PodcastMusicprovider(mass, manifest, config)
+    return PodcastMusicprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -78,14 +83,6 @@ async def get_config_entries(
 
 class PodcastMusicprovider(MusicProvider):
     """Podcast RSS Feed Music Provider."""
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_PODCASTS,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -580,6 +580,7 @@ class MusicAssistant:
 
     async def unload_provider(self, instance_id: str, is_removed: bool = False) -> None:
         """Unload a provider."""
+        self.music.unschedule_provider_sync(instance_id)
         if provider := self._providers.get(instance_id):
             # remove mdns discovery if needed
             if provider.manifest.mdns_discovery:
@@ -715,6 +716,8 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         await self._update_available_providers_cache()
+        if isinstance(provider, MusicProvider):
+            await self.music.schedule_provider_sync(provider.instance_id)
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""

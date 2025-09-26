@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
@@ -33,19 +32,6 @@ class DemoPlayerprovider(PlayerProvider):
     In most cases its not needed to override any of the builtin methods and you only
     implement the abc methods with your actual implementation.
     """
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        # MANDATORY
-        # you should return a set of provider-level (optional) features
-        # here that your player provider supports or an empty set if none.
-        # for example 'ProviderFeature.SYNC_PLAYERS' if you can sync players.
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-            ProviderFeature.CREATE_GROUP_PLAYER,
-            ProviderFeature.REMOVE_GROUP_PLAYER,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

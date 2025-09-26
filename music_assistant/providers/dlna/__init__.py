@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from .constants import CONF_NETWORK_SCAN
 from .provider import DLNAPlayerProvider
@@ -23,12 +23,16 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES: set[ProviderFeature] = (
+    set()
+)  # we don't have any special supported features (yet)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return DLNAPlayerProvider(mass, manifest, config)
+    return DLNAPlayerProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(

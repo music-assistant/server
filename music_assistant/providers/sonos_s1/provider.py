@@ -8,7 +8,6 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from music_assistant_models.enums import ProviderFeature
 from soco import SoCo
 from soco import config as soco_config
 from soco.discovery import discover, scan_network
@@ -35,16 +34,6 @@ class SonosPlayerProvider(PlayerProvider):
         super().__init__(*args, **kwargs)
         self.sonosplayers: dict[str, SonosPlayer] = {}
         self._discovered_players: dict[str, DiscoveredPlayer] = {}
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-            # support sync groups by reporting create/remove player group support
-            ProviderFeature.CREATE_GROUP_PLAYER,
-            ProviderFeature.REMOVE_GROUP_PLAYER,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -148,7 +148,7 @@ class Player(ABC):
     _attr_needs_poll: bool = False
     _attr_poll_interval: int = 30
     _attr_hidden_by_default: bool = False
-    _attr_expose_to_ha_by_default: bool = False
+    _attr_expose_to_ha_by_default: bool = True
     _attr_enabled_by_default: bool = True
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:

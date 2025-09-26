@@ -39,6 +39,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.util import infer_album_type
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -48,14 +49,20 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.ARTIST_ALBUMS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = NugsProvider(mass, manifest, config)
-    await prov.handle_async_init()
-    return prov
+    return NugsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -93,17 +100,6 @@ class NugsProvider(MusicProvider):
 
     _auth_token: str | None = None
     _token_expiry: float = 0
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.ARTIST_ALBUMS,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -280,6 +276,9 @@ class NugsProvider(MusicProvider):
                 year = date.split("-")[0]
         if year:
             album.year = int(year)
+
+        # No album type info in this provider so try and infer it
+        album.album_type = infer_album_type(album.name, "")
 
         return album
 

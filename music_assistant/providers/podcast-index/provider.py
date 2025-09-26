@@ -4,15 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import aiohttp
-from music_assistant_models.enums import (
-    ContentType,
-    MediaType,
-    ProviderFeature,
-    StreamType,
-)
+from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -44,36 +39,12 @@ from .constants import (
 )
 from .helpers import make_api_request, parse_episode_from_data, parse_podcast_from_feed
 
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.provider import ProviderManifest
-
-    from music_assistant.mass import MusicAssistant
-
 
 class PodcastIndexProvider(MusicProvider):
     """Podcast Index provider for Music Assistant."""
 
-    def __init__(
-        self,
-        mass: MusicAssistant,
-        manifest: ProviderManifest,
-        config: ProviderConfig,
-    ) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, manifest, config)
-        self.api_key: str = ""
-        self.api_secret: str = ""
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SEARCH,
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_PODCASTS,
-            ProviderFeature.LIBRARY_PODCASTS_EDIT,
-        }
+    api_key: str = ""
+    api_secret: str = ""
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

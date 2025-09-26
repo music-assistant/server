@@ -20,6 +20,7 @@ from .player import ChromecastPlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
     from pychromecast.models import CastInfo
 
@@ -34,10 +35,14 @@ class ChromecastProvider(PlayerProvider):
     _discover_lock: threading.Lock
 
     def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature],
     ) -> None:
         """Handle async initialization of the provider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, supported_features)
         self._discover_lock = threading.Lock()
         self.mz_mgr = MultizoneManager()
         # Handle config option for manual IP's

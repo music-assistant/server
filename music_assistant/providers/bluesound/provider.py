@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, TypedDict
 
-from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import (
@@ -34,15 +33,6 @@ class BluesoundPlayerProvider(PlayerProvider):
     """Bluos compatible player provider, providing support for bluesound speakers."""
 
     player_map: dict[(str, str), str] = {}
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-            ProviderFeature.CREATE_GROUP_PLAYER,
-            ProviderFeature.REMOVE_GROUP_PLAYER,
-        }
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
