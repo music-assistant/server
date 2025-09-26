@@ -1281,8 +1281,8 @@ class PlayerController(CoreController):
         # ensure we fetch and set the latest/full config for the player
         player_config = await self.mass.config.get_player_config(player_id)
         player.set_config(player_config)
-        # call on_registered hook after the player is registered and config is set
-        await player.on_registered()
+        # call hook after the player is registered and config is set
+        await player.on_config_updated()
         # always call update to fix special attributes like display name, group volume etc.
         player.update_state()
 
@@ -1731,6 +1731,7 @@ class PlayerController(CoreController):
         if not (player := self.get(config.player_id)):
             return  # guard against player not being registered (yet)
         player.set_config(config)
+        await player.on_config_updated()
         player.update_state()
         resume_queue: PlayerQueue | None = (
             self.mass.player_queues.get(player.active_source) if player.active_source else None

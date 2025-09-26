@@ -619,13 +619,13 @@ class Player(ABC):
             ),
         ]
 
-    async def on_registered(self) -> None:
+    async def on_config_updated(self) -> None:
         """
-        Handle logic when the player is registered and config is set.
+        Handle logic when the player is loaded or updated.
 
         Override this method in your player implementation if you need
         to perform any additional setup logic after the player is registered and
-        the self.config was loaded.
+        the self.config was loaded, and whenever the config changes.
         """
         return
 
@@ -1413,8 +1413,8 @@ class SyncGroupPlayer(GroupPlayer):
             PlayerFeature.VOLUME_SET,
         }
 
-    async def on_registered(self) -> None:
-        """Complete the initialization once the player was registered."""
+    async def on_config_updated(self) -> None:
+        """Handle logic when the player is loaded or updated."""
         # Config is only available after the player was registered
         static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         self._attr_static_group_members = static_members.copy()
