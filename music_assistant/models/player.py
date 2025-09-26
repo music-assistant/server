@@ -1686,15 +1686,9 @@ class SyncGroupPlayer(GroupPlayer):
             final_players_to_add.append(player_id)
         # handle removals
         final_players_to_remove: list[str] = []
-        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         for player_id in player_ids_to_remove or []:
             if player_id not in self._attr_group_members:
                 continue
-            if player_id in static_members:
-                raise UnsupportedFeaturedException(
-                    f"Cannot remove {player_id} from {self.display_name} "
-                    "as it is a static member of this group"
-                )
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
                     f"Cannot remove {self.display_name} from itself as a member!"

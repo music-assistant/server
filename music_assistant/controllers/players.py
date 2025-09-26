@@ -1007,16 +1007,16 @@ class PlayerController(CoreController):
                         child_player.name,
                         child_player.active_group,
                     )
-                    try:
-                        await other_group.set_members(player_ids_to_remove=[child_player.player_id])
-                    except UnsupportedFeaturedException as err:
+                    if child_player.player_id in other_group.static_group_members:
                         self.logger.warning(
-                            "Failed to remove player %s from group %s: %s, powering it off instead",
+                            "Player %s is a static member of group %s: removing is not possible, "
+                            "powering the group off instead",
                             child_player.name,
                             child_player.active_group,
-                            err,
                         )
                         await self.cmd_power(child_player.active_group, False)
+                    else:
+                        await other_group.set_members(player_ids_to_remove=[child_player.player_id])
                 else:
                     self.logger.warning(
                         "Player %s is already part of another group (%s), powering it off first",
@@ -1037,10 +1037,22 @@ class PlayerController(CoreController):
             # if we reach here, all checks passed
             final_player_ids_to_add.append(child_player_id)
 
+        final_player_ids_to_remove: list[str] = []
+        if player_ids_to_remove:
+            static_members = set(parent_player.static_group_members)
+            for child_player_id in player_ids_to_remove:
+                if child_player_id in static_members:
+                    raise UnsupportedFeaturedException(
+                        f"Cannot remove {child_player_id} from {parent_player.name} "
+                        "as it is a static member of this group"
+                    )
+                final_player_ids_to_remove.append(child_player_id)
+
         # forward command to the player after all (base) sanity checks
         async with self._player_throttlers[target_player]:
             await parent_player.set_members(
-                player_ids_to_add=final_player_ids_to_add, player_ids_to_remove=player_ids_to_remove
+                player_ids_to_add=final_player_ids_to_add or None,
+                player_ids_to_remove=final_player_ids_to_remove or None,
             )
 
     @api_command("players/cmd/group")
