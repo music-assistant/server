@@ -1045,9 +1045,7 @@ class PlayerController(CoreController):
                     raise UnsupportedFeaturedException(
                         f"Cannot remove {parent_player.name} from itself as a member!"
                     )
-                if (child_player_id not in parent_player.group_members) or (
-                    child_player_id not in static_members
-                ):
+                if child_player_id not in parent_player.group_members:
                     continue
                 if child_player_id in static_members:
                     raise UnsupportedFeaturedException(
