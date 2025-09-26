@@ -11,12 +11,13 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterator, MutableMapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, get_type_hints
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, MASS_LOGGER_NAME
+from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.core_controller import CoreController
@@ -167,7 +168,7 @@ class CacheController(CoreController):
         expires = int(time.time() + expiration)
         memory_key = f"{provider}/{category}/{key}"
         self._mem_cache[memory_key] = (data, checksum, expires)
-        if (expires - time.time()) < 3600 * 12:
+        if (expires - time.time()) < 1800:
             # do not cache items in db with short expiration
             return
         data = await asyncio.to_thread(json_dumps, data)
@@ -386,6 +387,7 @@ def use_cache(
         async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
             cache = self.mass.cache
             provider_id = getattr(self, "provider_id", self.domain)
+
             # create a cache key dynamically based on the (remaining) args/kwargs
             cache_key_parts = [func.__name__, *args]
             for key in sorted(kwargs.keys()):
@@ -399,7 +401,8 @@ def use_cache(
                 category=category,
             )
             if cachedata is not None:
-                return cachedata
+                type_hints = get_type_hints(func)
+                return parse_value(func.__name__, cachedata, type_hints["return"])
             # get data from method/provider
             result = await func(self, *args, **kwargs)
             # store result in cache (but don't await)
