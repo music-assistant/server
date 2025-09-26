@@ -60,6 +60,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.audio import get_multi_file_stream
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
@@ -404,6 +405,7 @@ for more details.
 
         return abs_podcast
 
+    @use_cache(3600)
     @handle_refresh_token
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get single podcast."""
@@ -520,6 +522,7 @@ for more details.
 
         return abs_audiobook
 
+    @use_cache(3600)
     @handle_refresh_token
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get a single audiobook.

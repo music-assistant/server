@@ -19,6 +19,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from . import parsers
@@ -39,6 +40,7 @@ class RadioParadiseProvider(MusicProvider):
         for channel_id in RADIO_PARADISE_CHANNELS:
             yield self._parse_radio(channel_id)
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         if prov_radio_id not in RADIO_PARADISE_CHANNELS:

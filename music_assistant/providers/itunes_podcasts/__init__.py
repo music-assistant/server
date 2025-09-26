@@ -32,6 +32,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
@@ -131,6 +132,7 @@ class ITunesPodcastsProvider(MusicProvider):
         # 20 requests per minute, be a bit below
         self.throttler = ThrottlerManager(rate_limit=18, period=60)
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:

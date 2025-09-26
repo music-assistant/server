@@ -25,6 +25,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
@@ -38,7 +39,7 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 
-CACHE_CATEGORY_STREAMS = "tunein_streams"
+CACHE_CATEGORY_STREAMS = 1
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_RADIOS,
@@ -136,6 +137,7 @@ class TuneInProvider(MusicProvider):
             async for item in parse_items(data["body"]):
                 yield item
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         if not prov_radio_id.startswith("http"):
@@ -277,6 +279,7 @@ class TuneInProvider(MusicProvider):
         msg = f"Unable to retrieve stream details for {item_id}"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:

@@ -59,6 +59,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
@@ -693,6 +694,7 @@ class LocalFileSystemProvider(MusicProvider):
             if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
         ]
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []

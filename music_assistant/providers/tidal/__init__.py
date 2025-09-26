@@ -50,6 +50,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import infer_album_type
 from music_assistant.models.music_provider import MusicProvider
@@ -648,6 +649,7 @@ class TidalProvider(MusicProvider):
         api_result = await self._get_data(f"users/{prov_user_id}")
         return self._extract_data(api_result)
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def search(
         self,
         search_query: str,
@@ -730,6 +732,7 @@ class TidalProvider(MusicProvider):
 
         return parsed_results
 
+    @use_cache(3600 * 24)  # Cache for 1 day
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks for given track id."""
         try:
@@ -747,6 +750,7 @@ class TidalProvider(MusicProvider):
     # ITEM RETRIEVAL METHODS
     #
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details for given artist id."""
         try:
@@ -758,6 +762,7 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details for given album id."""
         try:
@@ -769,6 +774,7 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details for given track id."""
         try:
@@ -788,6 +794,7 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details for given playlist id."""
         # Check if this is a mix by ID prefix
@@ -878,6 +885,7 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Mix {prov_mix_id} not found") from err
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         try:
@@ -891,6 +899,7 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         try:
@@ -904,6 +913,7 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         try:
@@ -919,6 +929,7 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks for either regular playlists or Tidal mixes."""
         page_size = 200
