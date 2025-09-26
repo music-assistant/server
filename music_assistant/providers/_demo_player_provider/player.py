@@ -35,7 +35,7 @@ class DemoPlayer(Player):
         """Handle logic when the player is loaded or updated."""
         # OPTIONAL
         # This method is optional and should be implemented if you need to handle
-        # any initialization logic after the config was intitialy loaded or updated.
+        # any initialization logic after the config was initially loaded or updated.
         # This is called after the player is registered and self.config was loaded.
         # And also when the config was updated.
         # You don't need to call update_state() here.
