@@ -3,7 +3,7 @@
   "domain": "ibroadcast",
   "stage": "stable",
   "name": "iBroadcast",
-  "description": "Stream your personal music collection from anywhere.",
+  "description": "Stream your personal iBroadcast music collection from anywhere.",
   "codeowners": ["@robsonke"],
   "requirements": ["ibroadcastaio==0.4.0"],
   "documentation": "https://music-assistant.io/music-providers/ibroadcast/",
