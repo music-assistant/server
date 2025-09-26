@@ -370,7 +370,7 @@ class MusicAssistant:
 
     def create_task(
         self,
-        target: Callable[[MassEvent], Coroutine[Any, Any, None]] | Awaitable[_R],
+        target: Callable[..., Coroutine[Any, Any, _R]] | Awaitable[_R],
         *args: Any,
         task_id: str | None = None,
         abort_existing: bool = False,

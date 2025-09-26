@@ -16,6 +16,7 @@ from music_assistant_models.media_items import ItemMapping, MediaItemType, Provi
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
 from music_assistant.helpers.compare import compare_media_item, create_safe_string
 from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.util import guard_single_request
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
@@ -494,6 +495,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         library_item = await self.get_library_item(db_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
+    @guard_single_request
     async def get_provider_item(
         self,
         item_id: str,

@@ -17,6 +17,7 @@ from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.uri import create_uri, parse_uri
+from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
@@ -50,19 +51,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
         force_refresh: bool = False,
     ) -> AsyncGenerator[Track, None]:
         """Return playlist tracks for the given provider playlist id."""
-        playlist = await self.get(
-            item_id,
-            provider_instance_id_or_domain,
-        )
-        # a playlist can only have one provider so simply pick the first one
-        prov_map = next(x for x in playlist.provider_mappings)
+        if provider_instance_id_or_domain == "library":
+            library_item = await self.get_library_item(item_id)
+            # a playlist can only have one provider so simply pick the first one
+            prov_map = next(x for x in library_item.provider_mappings)
+            item_id = prov_map.item_id
+            provider_instance_id_or_domain = prov_map.provider_instance
         # playlist tracks are not stored in the db,
         # we always fetched them (cached) from the provider
         page = 0
         while True:
             tracks = await self._get_provider_playlist_tracks(
-                prov_map.item_id,
-                prov_map.provider_instance,
+                item_id,
+                provider_instance_id_or_domain,
                 page=page,
                 force_refresh=force_refresh,
             )
@@ -355,6 +356,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
+    @guard_single_request
     async def _get_provider_playlist_tracks(
         self,
         item_id: str,
