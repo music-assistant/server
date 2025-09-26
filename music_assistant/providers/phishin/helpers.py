@@ -22,8 +22,6 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.controllers.cache import use_cache
-
 from .constants import (
     API_BASE_URL,
     FALLBACK_ALBUM_IMAGE,
@@ -39,7 +37,6 @@ if TYPE_CHECKING:
     from music_assistant.models.music_provider import MusicProvider
 
 
-@use_cache(expiration=3600)  # 1 hour
 async def api_request(
     provider: MusicProvider,
     endpoint: str,

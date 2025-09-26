@@ -49,32 +49,11 @@ from .helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import MediaItemType
-    from music_assistant_models.provider import ProviderManifest
-
-    from music_assistant.mass import MusicAssistant
 
 
 class PhishInProvider(MusicProvider):
     """Phish.in music provider."""
-
-    def __init__(
-        self,
-        mass: MusicAssistant,
-        manifest: ProviderManifest,
-        config: ProviderConfig,
-        supported_features: set[ProviderFeature],
-    ) -> None:
-        """Initialize the provider."""
-        super().__init__(mass, manifest, config)
-        self._supported_features = supported_features
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this provider."""
-        return self._supported_features
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -102,32 +81,26 @@ class PhishInProvider(MusicProvider):
                 venue_shows: list[dict[str, Any]] = []
                 for venue in search_data.get("venues", []):
                     venue_slug = venue["slug"]
-                    try:
-                        page = 1
-                        while len(venue_shows) < limit:
-                            shows_data = await api_request(
-                                self, "/shows", params={"venue_slug": venue_slug, "page": page}
-                            )
-
-                            shows_on_page = shows_data.get("shows", [])
-                            if not shows_on_page:
-                                break
-
-                            remaining_slots = limit - len(venue_shows)
-                            venue_shows.extend(shows_on_page[:remaining_slots])
-
-                            current_page = shows_data.get("current_page", 1)
-                            total_pages = shows_data.get("total_pages", 1)
-
-                            if current_page >= total_pages or len(venue_shows) >= limit:
-                                break
-
-                            page += 1
-
-                    except ProviderUnavailableError:
-                        self.logger.warning(
-                            "Failed to fetch shows for venue %s: API unavailable", venue_slug
+                    page = 1
+                    while len(venue_shows) < limit:
+                        shows_data = await api_request(
+                            self, "/shows", params={"venue_slug": venue_slug, "page": page}
                         )
+
+                        shows_on_page = shows_data.get("shows", [])
+                        if not shows_on_page:
+                            break
+
+                        remaining_slots = limit - len(venue_shows)
+                        venue_shows.extend(shows_on_page[:remaining_slots])
+
+                        current_page = shows_data.get("current_page", 1)
+                        total_pages = shows_data.get("total_pages", 1)
+
+                        if current_page >= total_pages or len(venue_shows) >= limit:
+                            break
+
+                        page += 1
 
                 if venue_shows:
                     search_data["venue_shows"] = venue_shows
@@ -142,7 +115,9 @@ class PhishInProvider(MusicProvider):
                 tracks=tracks[:limit] if MediaType.TRACK in media_types else [],
                 playlists=playlists[:limit] if MediaType.PLAYLIST in media_types else [],
             )
-        except  (MediaNotFoundError, ProviderUnavailableError, aiohttp.ClientError) as err:
+        except MediaNotFoundError:
+            raise
+        except Exception as err:
             self.logger.error("Search failed for query '%s': %s", search_query, err)
             raise ProviderUnavailableError(f"Search error: {err}") from err
 
@@ -156,6 +131,7 @@ class PhishInProvider(MusicProvider):
             return await get_phish_artist(self)
         raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
+    @use_cache(expiration=86400)  # 24 hours - albums (ie. shows) could update daily
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         if prov_artist_id != PHISH_ARTIST_ID:
@@ -198,6 +174,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get artist albums: %s", err)
             raise ProviderUnavailableError(f"Artist albums error: {err}") from err
 
+    @use_cache(expiration=2592000)  # 30 days - Top tracks won't change that often as its voted on
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         if prov_artist_id != PHISH_ARTIST_ID:
@@ -404,7 +381,7 @@ class PhishInProvider(MusicProvider):
         """Get years data with caching."""
         return await api_request(self, ENDPOINTS["years"])
 
-    @use_cache(expiration=604800)  # 24 hours - recent shows could update daily
+    @use_cache(expiration=86400)  # 24 hours - recent shows could update daily
     async def _get_recent_shows(self) -> Any:
         """Get recent shows with caching."""
         return await api_request(
@@ -695,6 +672,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get random show: %s", err)
             raise ProviderUnavailableError(f"Random show error: {err}") from err
 
+    @use_cache(expiration=21600)  # 6 hours - today's shows are historical but queried daily
     async def _browse_today(self) -> list[Album]:
         """Get shows that happened on this day in history."""
         try:
@@ -726,6 +704,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get today's shows: %s", err)
             raise ProviderUnavailableError(f"Today's shows error: {err}") from err
 
+    @use_cache(expiration=604800)  # 7 days - venue list changes rarely
     async def _browse_venues(self, path: str, subsubpath: str) -> list[BrowseFolder | Album]:
         """Browse shows by venue."""
         if not subsubpath:
@@ -757,6 +736,7 @@ class PhishInProvider(MusicProvider):
         else:
             return await self._get_shows_for_venue(subsubpath)
 
+    @use_cache(expiration=604800)  # 7 days - tags list changes rarely
     async def _browse_tags(self, path: str, subsubpath: str) -> list[BrowseFolder | Album | Track]:
         """Browse shows and tracks by tag."""
         if not subsubpath:
@@ -922,6 +902,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get top tracks: %s", err)
             raise ProviderUnavailableError(f"Top tracks error: {err}") from err
 
+    @use_cache(expiration=86400)  # 24 hours - Shows can be added to the current year
     async def _get_shows_for_period(self, period: str) -> list[BrowseFolder | Album]:
         """Get shows for a specific year or period."""
         try:
