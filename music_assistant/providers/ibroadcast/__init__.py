@@ -8,7 +8,6 @@ from aiohttp import ClientSession
 from ibroadcastaio import IBroadcastClient
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    AlbumType,
     ConfigEntryType,
     ContentType,
     ImageType,
@@ -37,7 +36,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = {
@@ -333,8 +332,9 @@ class IBroadcastProvider(MusicProvider):
 
         if "rating" in album_obj and album_obj["rating"] == 5:
             album.favorite = True
-        # iBroadcast doesn't seem to know album type
-        album.album_type = AlbumType.UNKNOWN
+        # iBroadcast doesn't seem to know album type - try inference
+        album.album_type = infer_album_type(name, version)
+
         # There is only an artwork in the tracks, lets get the first track one
         artwork_url = await self._client.get_album_artwork_url(album_id)
         if artwork_url:

@@ -39,6 +39,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.util import infer_album_type
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -275,6 +276,9 @@ class NugsProvider(MusicProvider):
                 year = date.split("-")[0]
         if year:
             album.year = int(year)
+
+        # No album type info in this provider so try and infer it
+        album.album_type = infer_album_type(album.name, "")
 
         return album
 

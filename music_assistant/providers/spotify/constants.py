@@ -7,9 +7,8 @@ CONF_CLIENT_ID = "client_id"
 CONF_ACTION_AUTH = "auth"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_ACTION_CLEAR_AUTH = "clear_auth"
-CONF_ENABLE_PODCASTS = "enable_podcasts"
-CONF_SYNC_PLAYED_STATUS = "sync_played_status"
-CONF_PLAYED_THRESHOLD = "played_threshold"
+CONF_SYNC_PODCAST_PROGRESS = "sync_podcast_progress"
+CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
 
 # OAuth Settings
 SCOPE = [

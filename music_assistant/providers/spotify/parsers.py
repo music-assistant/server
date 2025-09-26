@@ -10,6 +10,7 @@ from music_assistant_models.enums import AlbumType, ContentType, ExternalID, Ima
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     AudioFormat,
     MediaItemImage,
     Playlist,
@@ -335,3 +336,74 @@ def parse_podcast_episode(
         episode.metadata.preview = episode_obj["audio_preview_url"]
 
     return episode
+
+
+def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) -> Audiobook:
+    """Parse spotify audiobook object to generic layout."""
+    audiobook = Audiobook(
+        item_id=audiobook_obj["id"],
+        provider=provider.lookup_key,
+        name=audiobook_obj["name"],
+        provider_mappings={
+            ProviderMapping(
+                item_id=audiobook_obj["id"],
+                provider_domain=provider.domain,
+                provider_instance=provider.instance_id,
+                audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
+                url=audiobook_obj["external_urls"]["spotify"],
+            )
+        },
+    )
+
+    if "duration_ms" in audiobook_obj:
+        provider.logger.debug(
+            f"Found duration_ms in audiobook object: {audiobook_obj['duration_ms']}"
+        )
+        audiobook.duration = audiobook_obj["duration_ms"] // 1000
+    else:
+        provider.logger.debug(
+            "No duration_ms found in main audiobook object - will calculate from chapters"
+        )
+        # Don't set duration here - let get_audiobook calculate it from chapters
+        audiobook.duration = 0
+
+    # Set authors
+    if "authors" in audiobook_obj:
+        for author_obj in audiobook_obj["authors"]:
+            if author_obj.get("name"):
+                audiobook.authors.append(author_obj["name"])
+
+    # Set narrators
+    if "narrators" in audiobook_obj:
+        for narrator_obj in audiobook_obj["narrators"]:
+            if narrator_obj.get("name"):
+                audiobook.narrators.append(narrator_obj["name"])
+
+    # Set metadata
+    if audiobook_obj.get("description"):
+        audiobook.metadata.description = audiobook_obj["description"]
+
+    if audiobook_obj.get("publisher"):
+        audiobook.publisher = audiobook_obj["publisher"]
+
+    audiobook.metadata.images = parse_images(audiobook_obj.get("images", []), provider.lookup_key)
+
+    if audiobook_obj.get("explicit"):
+        audiobook.metadata.explicit = audiobook_obj["explicit"]
+
+    if audiobook_obj.get("languages"):
+        audiobook.metadata.languages = audiobook_obj["languages"][0]
+
+    # Set publication date if available
+    if audiobook_obj.get("publication_date"):
+        with contextlib.suppress(ValueError, TypeError):
+            date_str = audiobook_obj["publication_date"].strip()
+            if len(date_str) == 4:
+                # Year only: "2023" -> "2023-01-01T00:00:00+00:00"
+                date_str = f"{date_str}-01-01T00:00:00+00:00"
+            elif len(date_str) == 10:
+                # Date only: "2023-12-25" -> "2023-12-25T00:00:00+00:00"
+                date_str = f"{date_str}T00:00:00+00:00"
+            audiobook.metadata.release_date = datetime.fromisoformat(date_str)
+
+    return audiobook
