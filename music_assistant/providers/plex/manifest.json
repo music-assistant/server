@@ -3,7 +3,7 @@
   "domain": "plex",
   "stage": "unmaintained",
   "name": "Plex Media Server Library",
-  "description": "Stream your personal music, podcasts, and radio via your Plex media server.",
+  "description": "Stream your personal music, podcasts, and radio via your Plex media server.[Unmaintained]",
   "codeowners": ["@micha91"],
   "requirements": ["plexapi==4.17.1"],
   "documentation": "https://music-assistant.io/music-providers/plex/",
