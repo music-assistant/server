@@ -1759,20 +1759,13 @@ class PlayerController(CoreController):
         ):
             # Ungroup the player if its part of an active group, this will ignore
             # static_group_members since that is only checked when using cmd_set_members
-            try:
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
                 await group.set_members(player_ids_to_remove=[player_id])
-            except Exception:
-                self.logger.exception("Failed to ungroup now unavailable player %s", player.name)
         elif player.synced_to and player.supports_feature(PlayerFeature.SET_MEMBERS):
             # Remove the player if it was synced, otherwise it will still show as
             # synced to the other player after it gets registered again
-            try:
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
                 await player.ungroup()
-            except Exception:
-                self.logger.exception(
-                    "Failed to ungroup now unavailable player %s from sync leader",
-                    player.name,
-                )
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
