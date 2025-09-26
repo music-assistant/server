@@ -3,7 +3,7 @@
   "domain": "apple_music",
   "stage": "beta",
   "name": "Apple Music",
-  "description": "Stream Apple Music’s full catalogue and playlists — seamless integration with your Apple ecosystem.",
+  "description": "Stream Apple Music’s full catalogue and playlists.",
   "codeowners": ["@MarvinSchenkel"],
   "requirements": ["pywidevine==1.8.0"],
   "documentation": "https://music-assistant.io/music-providers/apple-music/",
