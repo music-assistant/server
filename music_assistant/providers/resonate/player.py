@@ -89,7 +89,9 @@ class ResonatePlayer(Player):
         self._attr_volume_level = resonate_client.volume
         self._attr_volume_muted = resonate_client.muted
         self._attr_available = True
-        self._attr_poll_interval = 5  # For metadata updates
+        # For metadata updates
+        self._attr_poll_interval = 5
+        # But only start polling once we are playing media
         self._attr_needs_poll = False
 
     async def event_cb(self, event: ClientEvent) -> None:
