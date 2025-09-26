@@ -362,7 +362,6 @@ class ResonatePlayer(Player):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         default_entries = await super().get_config_entries()
-
         return [
             *default_entries,
             ConfigEntry.from_dict(
