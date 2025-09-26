@@ -352,8 +352,8 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     range=(1, 15),
     default_value=8,
     label="Fallback crossfade duration",
-    description="Duration in seconds of the fallback crossfade between tracks in case"
-    " Smart Fade Mode = 'Defaul Crossfade' or when a Smart Fade fails",
+    description="Duration in seconds of the standard crossfade between tracks when"
+    " 'Enable Smart Fade' has been set to 'Standard Crossfade' or when a Smart Fade fails",
     depends_on=CONF_SMART_FADES_MODE,
     category="audio",
 )

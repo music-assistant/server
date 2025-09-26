@@ -39,6 +39,8 @@ ANALYSIS_FPS = 100
 ANALYSIS_PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=1
 )
+# Only apply time stretching if BPM difference is < this %
+TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD = 3.0
 
 
 class SmartFadesAnalyzer:
@@ -708,7 +710,7 @@ class SmartFadesMixer:
         bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
 
         # If no time stretching needed, return passthrough filter and no tempo change
-        if not (0.1 < bpm_diff_percent < 3.0):
+        if not (0.1 < bpm_diff_percent < TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD):
             return ["[0]anull[fadeout_stretched]"], 1.0  # codespell:ignore anull
 
         # Log that we're applying time stretching

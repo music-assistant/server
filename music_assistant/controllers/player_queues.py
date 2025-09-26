@@ -59,7 +59,6 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-    CONF_DEPRECATED_CROSSFADE,
     CONF_FLOW_MODE,
     CONF_SMART_FADES_MODE,
     MASS_LOGO_ONLINE,
@@ -1151,9 +1150,7 @@ class PlayerQueuesController(CoreController):
         )
         # allow stripping silence from the begin/end of the track if crossfade is enabled
         # this will allow for (much) smoother crossfades
-        if self.mass.config.get_raw_player_config_value(
-            queue_id, CONF_DEPRECATED_CROSSFADE, False
-        ) or await self.mass.config.get_player_config_value(queue_id, CONF_SMART_FADES_MODE) in (
+        if await self.mass.config.get_player_config_value(queue_id, CONF_SMART_FADES_MODE) in (
             SmartFadesMode.STANDARD_CROSSFADE,
             SmartFadesMode.SMART_FADES,
         ):

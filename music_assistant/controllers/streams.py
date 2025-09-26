@@ -37,7 +37,6 @@ from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE_DURATION,
-    CONF_DEPRECATED_CROSSFADE,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
@@ -1416,14 +1415,9 @@ class StreamsController(CoreController):
         self, player_id: int
     ) -> tuple[SmartFadesMode, int, SmartFadesDJStyleMode]:
         """Get the smart fades config for a player."""
-        deprecated_crossfade = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_DEPRECATED_CROSSFADE, False
-        )
         smart_fades_mode = await self.mass.config.get_player_config_value(
             player_id, CONF_SMART_FADES_MODE
         )
-        if smart_fades_mode == SmartFadesMode.DISABLED and deprecated_crossfade:
-            smart_fades_mode = SmartFadesMode.STANDARD_CROSSFADE
         crossfade_duration = self.mass.config.get_raw_player_config_value(
             player_id, CONF_CROSSFADE_DURATION, 10
         )
