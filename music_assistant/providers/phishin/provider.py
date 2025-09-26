@@ -248,7 +248,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get artist top tracks: %s", err)
             raise ProviderUnavailableError(f"Top tracks error: {err}") from err
 
-    @use_cache(expiration=2592000)  # 30 days - historical show data rarely changes
+    @use_cache(expiration=2592000)  # 30 days - Show details from specific dates never change
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id (show date)."""
         try:
@@ -266,7 +266,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get album %s: %s", prov_album_id, err)
             raise ProviderUnavailableError(f"Album error: {err}") from err
 
-    @use_cache(expiration=2592000)  # 30 days - historical track data rarely changes
+    @use_cache(expiration=2592000)  # 30 days - Individual tracks never change once recorded
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         try:
@@ -284,7 +284,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get track %s: %s", prov_track_id, err)
             raise ProviderUnavailableError(f"Track error: {err}") from err
 
-    @use_cache(expiration=2592000)  # 30 days - historical album tracks rarely change
+    @use_cache(expiration=2592000)  # 30 days - Track listings for historical shows never change
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id (show date)."""
         try:
@@ -307,7 +307,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get album tracks for %s: %s", prov_album_id, err)
             raise ProviderUnavailableError(f"Album tracks error: {err}") from err
 
-    @use_cache(expiration=604800)  # 7 days - shows containing a song rarely change
+    @use_cache(expiration=2592000)  # 30 days - once recorded the tracks won't change
     async def get_track_albums(
         self,
         prov_track_id: str,
@@ -401,12 +401,12 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get stream details for %s: %s", item_id, err)
             raise ProviderUnavailableError(f"Stream error: {err}") from err
 
-    @use_cache(expiration=86400)  # 24 hours - current year data needs to update
+    @use_cache(expiration=86400)  # 24 hours - Current year gets new shows added throughout the year
     async def _get_years_data(self) -> Any:
         """Get years data with caching."""
         return await api_request(self, ENDPOINTS["years"])
 
-    @use_cache(expiration=86400)  # 24 hours - recent shows update daily
+    @use_cache(expiration=604800)  # 24 hours - recent shows could update daily
     async def _get_recent_shows(self) -> Any:
         """Get recent shows with caching."""
         return await api_request(
@@ -462,7 +462,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get library playlists: %s", err)
             raise ProviderUnavailableError(f"Library playlists error: {err}") from err
 
-    @use_cache(expiration=86400)  # 24 hours - playlist metadata changes infrequently
+    @use_cache(expiration=86400)  # 24 hours - Playlist metadata might be updated by users
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         try:
@@ -841,7 +841,7 @@ class PhishInProvider(MusicProvider):
             else:
                 return []
 
-    @use_cache(expiration=86400)  # 24 hours - historical tag track data is stable
+    @use_cache(expiration=86400)  # 24 hours - Tag associations could change as new shows are tagged
     async def _get_tracks_for_tag(self, tag_slug: str) -> list[BrowseFolder | Album | Track]:
         """Get tracks for a specific tag."""
         try:
@@ -956,7 +956,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to browse period %s: %s", period, err)
             raise ProviderUnavailableError(f"Browse period error: {err}") from err
 
-    @use_cache(expiration=86400)  # 24 hours - historical venue data is stable
+    @use_cache(expiration=86400)  # 24 hours - Venues might get new shows added
     async def _get_shows_for_venue(self, venue_slug: str) -> list[BrowseFolder | Album]:
         """Get shows for a specific venue."""
         try:
@@ -985,7 +985,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Failed to get shows for venue %s: %s", venue_slug, err)
             raise ProviderUnavailableError(f"Venue shows error: {err}") from err
 
-    @use_cache(expiration=86400)  # 24 hours - historical tag data is stable
+    @use_cache(expiration=86400)  # 24 hours - Tag associations could change as new shows are tagged
     async def _get_shows_for_tag(self, tag_slug: str) -> list[BrowseFolder | Album | Track]:
         """Get shows for a specific tag."""
         try:
