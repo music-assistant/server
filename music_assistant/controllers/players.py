@@ -1118,6 +1118,11 @@ class PlayerController(CoreController):
             and (PlayerFeature.SET_MEMBERS in group_player.supported_features)
         ):
             # the player is part of a (permanent) groupplayer and the user tries to ungroup
+            if player_id in group_player.static_group_members:
+                raise UnsupportedFeaturedException(
+                    f"Player {player.name}  is a static member of group {group_player.name} "
+                    "and cannot be removed from that group!"
+                )
             await group_player.set_members(player_ids_to_remove=[player_id])
             return
 
