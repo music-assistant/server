@@ -1580,6 +1580,15 @@ class SyncGroupPlayer(GroupPlayer):
         self.update_state()
 
         if powered:
+            # reset the group members to the available static members when powering on
+            self._attr_group_members = []
+            for static_group_member in self._attr_static_group_members:
+                if (
+                    (member_player := self.mass.players.get(static_group_member))
+                    and member_player.available
+                    and member_player.enabled
+                ):
+                    self._attr_group_members.append(static_group_member)
             # Select sync leader and handle turn on
             new_leader = self._select_sync_leader()
             # handle TURN_ON of the group player by turning on all members
@@ -1602,8 +1611,7 @@ class SyncGroupPlayer(GroupPlayer):
                     await member.power(False)
 
         if not powered:
-            # reset the original group members when powered off and clear leader
-            self._attr_group_members = self._attr_static_group_members.copy()
+            # clear leader on power off
             self.sync_leader = None
 
     async def _dissolve_syncgroup(self) -> None:
