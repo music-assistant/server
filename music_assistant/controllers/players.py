@@ -1335,7 +1335,11 @@ class PlayerController(CoreController):
         player = self._players.get(player_id)
         if player is None:
             return
-        if player.active_group and (group := self.get(player.active_group)):
+        if (
+            player.active_group
+            and (group := self.get(player.active_group))
+            and group.supports_feature(PlayerFeature.SET_MEMBERS)
+        ):
             # Ungroup the player if its part of an active group, this will ignore
             # static_group_members since that is only checked when using cmd_set_members
             try:
@@ -1344,7 +1348,7 @@ class PlayerController(CoreController):
                 self.logger.exception(
                     "Failed to ungroup player %s before unregistering it", player.name
                 )
-        elif player.synced_to:
+        elif player.synced_to and player.supports_feature(PlayerFeature.SET_MEMBERS):
             # Remove the player if it was synced, otherwise it will still show as
             # synced to the other player after it gets registered again
             try:
