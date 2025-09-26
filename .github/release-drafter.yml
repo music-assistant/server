@@ -1,7 +1,7 @@
 name-template: '$RESOLVED_VERSION'
 tag-template: '$RESOLVED_VERSION'
 change-template: '- #$NUMBER - $TITLE (@$AUTHOR)'
-filter-by-commitish: true
+filter-by-committish: true
 commitish: dev
 prerelease: true
 categories:
