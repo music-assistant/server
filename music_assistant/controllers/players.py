@@ -1041,6 +1041,14 @@ class PlayerController(CoreController):
         if player_ids_to_remove:
             static_members = set(parent_player.static_group_members)
             for child_player_id in player_ids_to_remove:
+                if child_player_id == target_player:
+                    raise UnsupportedFeaturedException(
+                        f"Cannot remove {parent_player.name} from itself as a member!"
+                    )
+                if (child_player_id not in parent_player.group_members) or (
+                    child_player_id not in static_members
+                ):
+                    continue
                 if child_player_id in static_members:
                     raise UnsupportedFeaturedException(
                         f"Cannot remove {child_player_id} from {parent_player.name} "
