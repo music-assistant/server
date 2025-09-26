@@ -473,7 +473,6 @@ class LocalFileSystemProvider(MusicProvider):
                 async def process_playlist() -> None:
                     playlist = await self.get_playlist(item.relative_path)
                     # add/update] playlist to db
-                    playlist.cache_checksum = item.checksum
                     playlist.favorite = import_as_favorite
                     await self.mass.music.playlists.add_item_to_library(
                         playlist,
@@ -657,8 +656,6 @@ class LocalFileSystemProvider(MusicProvider):
         if file_item.ext == "pls":
             playlist.is_editable = False
         playlist.owner = self.name
-        checksum = str(file_item.checksum)
-        playlist.cache_checksum = checksum
         return playlist
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:

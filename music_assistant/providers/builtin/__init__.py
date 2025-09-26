@@ -228,7 +228,6 @@ class BuiltinProvider(MusicProvider):
                 },
                 owner="Music Assistant",
                 is_editable=False,
-                cache_checksum=str(int(time.time())),
                 metadata=MediaItemMetadata(
                     images=UniqueList([DEFAULT_THUMB])
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
@@ -254,7 +253,6 @@ class BuiltinProvider(MusicProvider):
             owner="Music Assistant",
             is_editable=True,
         )
-        playlist.cache_checksum = str(stored_item.get("last_updated"))
         if image_url := stored_item.get("image_url"):
             playlist.metadata.add_image(
                 MediaItemImage(

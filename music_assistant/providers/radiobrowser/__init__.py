@@ -148,6 +148,7 @@ class RadioBrowserProvider(MusicProvider):
             ):
                 await self.library_add(await self.get_radio(db_row["provider_item_id"]))
 
+    @use_cache()
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:

@@ -509,7 +509,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if provider := self.mass.get_provider(provider_instance_id_or_domain):
             provider = cast("MusicProvider", provider)
             with suppress(MediaNotFoundError):
-                return await provider.get_item(self.media_type, item_id)
+                async with self.mass.cache.handle_refresh(force_refresh):
+                    return await provider.get_item(self.media_type, item_id)
         # if we reach this point all possibilities failed and the item could not be found.
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so

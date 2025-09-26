@@ -645,7 +645,6 @@ class DeezerProvider(MusicProvider):
             ),
             is_editable=is_editable,
             owner=creator.name,
-            cache_checksum=playlist.checksum,
         )
 
     def get_playlist_creator(self, playlist: deezer.Playlist) -> deezer.User:

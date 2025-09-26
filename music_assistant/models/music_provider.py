@@ -828,11 +828,6 @@ class MusicProvider(Provider):
                     if import_as_favorite:
                         prov_item.favorite = True
                     library_item = await self.mass.music.playlists.add_item_to_library(prov_item)
-                elif library_item.cache_checksum != prov_item.cache_checksum:
-                    # existing dbitem checksum changed (used to determine if a playlist has changed)
-                    library_item = await self.mass.music.playlists.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.playlists.set_favorite(library_item.item_id, True)

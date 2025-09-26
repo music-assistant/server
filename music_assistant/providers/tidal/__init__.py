@@ -1880,12 +1880,6 @@ class TidalProvider(MusicProvider):
         )
 
         # Metadata - different fields based on type
-        if is_mix:
-            playlist.cache_checksum = str(playlist_obj.get("updated", ""))
-        else:
-            playlist.cache_checksum = str(playlist_obj.get("lastUpdated", ""))
-            if "popularity" in playlist_obj:
-                playlist.metadata.popularity = playlist_obj.get("popularity", 0)
 
         # Add the description from the subtitle for mixes
         if is_mix:

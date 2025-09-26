@@ -87,7 +87,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 19
+DB_SCHEMA_VERSION: Final[int] = 20
 
 CACHE_CATEGORY_LAST_SYNC: Final[str] = "last_sync"
 
@@ -1576,86 +1576,12 @@ class MusicController(CoreController):
 
     async def __migrate_database(self, prev_version: int) -> None:
         """Perform a database migration."""
-        # ruff: noqa: PLR0915
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
 
-        if prev_version < 7:
+        if prev_version < 15:
             raise MusicAssistantError("Database schema version too old to migrate")
-
-        if prev_version <= 7:
-            # remove redundant artists and provider_mappings columns
-            for table in (
-                DB_TABLE_TRACKS,
-                DB_TABLE_ALBUMS,
-                DB_TABLE_ARTISTS,
-                DB_TABLE_RADIOS,
-                DB_TABLE_PLAYLISTS,
-            ):
-                for column in ("artists", "provider_mappings"):
-                    try:
-                        await self.database.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-                    except Exception as err:
-                        if "no such column" in str(err):
-                            continue
-                        raise
-            # add cache_checksum column to playlists
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN cache_checksum TEXT DEFAULT ''"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-
-        if prev_version <= 8:
-            # migrate track_loudness --> loudness_measurements
-            async for db_row in self.database.iter_items("track_loudness"):
-                if db_row["integrated"] == inf or db_row["integrated"] == -inf:
-                    continue
-                if db_row["provider"] in ("radiobrowser", "tunein"):
-                    continue
-                await self.database.insert_or_replace(
-                    DB_TABLE_LOUDNESS_MEASUREMENTS,
-                    {
-                        "item_id": db_row["item_id"],
-                        "media_type": "track",
-                        "provider": db_row["provider"],
-                        "loudness": db_row["integrated"],
-                    },
-                )
-            await self.database.execute("DROP TABLE IF EXISTS track_loudness")
-
-        if prev_version <= 10:
-            # Recreate playlog table due to complete new layout
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLOG}")
-            await self.__create_database_tables()
-
-        if prev_version <= 12:
-            # Need to drop the NOT NULL requirement on podcasts.publisher and audiobooks.publisher
-            # However, because there is no ALTER COLUMN support in sqlite, we will need
-            # to create the tables again.
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_AUDIOBOOKS}")
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PODCASTS}")
-            await self.__create_database_tables()
-
-        if prev_version <= 13:
-            # migrate chapters in metadata
-            # this is leftover mess from the old chapters implementation
-            for db_row in await self.database.search(DB_TABLE_TRACKS, "position_start", "metadata"):
-                metadata = json_loads(db_row["metadata"])
-                metadata["chapters"] = None
-                await self.database.update(
-                    DB_TABLE_TRACKS,
-                    {"item_id": db_row["item_id"]},
-                    {"metadata": serialize_to_json(metadata)},
-                )
-
-        if prev_version <= 14:
-            # Recreate playlog table due to complete new layout
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLOG}")
-            await self.__create_database_tables()
 
         if prev_version <= 15:
             # add search_name and search_sort_name columns to all tables
@@ -1740,6 +1666,13 @@ class MusicController(CoreController):
             await self.database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain in ('filesystem_local', 'filesystem_smb');"
+            )
+
+        if prev_version <= 20:
+            # drop column cache_checksum from playlists table
+            # this is no longer used and is a leftover from previous designs
+            await self.database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLISTS} DROP COLUMN cache_checksum"
             )
 
         # save changes
@@ -1842,7 +1775,6 @@ class MusicController(CoreController):
             [sort_name] TEXT NOT NULL,
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
-            [cache_checksum] TEXT DEFAULT '',
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,

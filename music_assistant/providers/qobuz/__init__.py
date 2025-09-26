@@ -706,7 +706,6 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             ]
-        playlist.cache_checksum = str(playlist_obj["updated_at"])
         return playlist
 
     @lock

@@ -8,8 +8,10 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterator, MutableMapping
-from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Iterator, MutableMapping
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
@@ -22,9 +24,15 @@ from music_assistant.models.core_controller import CoreController
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
+    from music_assistant.models.provider import Provider
+
+
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
+DEFAULT_CACHE_EXPIRATION = 86400 * 30  # 30 days
 DB_SCHEMA_VERSION = 6
+
+BYPASS_CACHE: ContextVar[bool] = ContextVar("BYPASS_CACHE", default=False)
 
 
 class CacheController(CoreController):
@@ -95,12 +103,12 @@ class CacheController(CoreController):
                     cache object matches the checksum provided
         - default: value to return if no cache object is found
         """
-        if not key:
-            return None
+        assert key, "No key provided"
+        if BYPASS_CACHE.get():
+            return default
         cur_time = int(time.time())
         if checksum is not None and not isinstance(checksum, str):
             checksum = str(checksum)
-
         # try memory cache first
         memory_key = f"{provider}/{category}/{key}"
         cache_data = self._mem_cache.get(memory_key)
@@ -135,7 +143,7 @@ class CacheController(CoreController):
         self,
         key: str,
         data: Any,
-        expiration: int = (86400 * 30),
+        expiration: int = DEFAULT_CACHE_EXPIRATION,
         provider: str = "default",
         category: int = 0,
         checksum: str | None = None,
@@ -230,6 +238,18 @@ class CacheController(CoreController):
                 cleaned_records += 1
             await asyncio.sleep(0)  # yield to eventloop
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
+
+    @asynccontextmanager
+    async def handle_refresh(self, bypass: bool) -> AsyncGenerator[None, None]:
+        """Bypass the throttler."""
+        if not bypass:
+            yield None
+            return
+        try:
+            token = BYPASS_CACHE.set(True)
+            yield None
+        finally:
+            BYPASS_CACHE.reset(token)
 
     async def _setup_database(self) -> None:
         """Initialize database."""
@@ -343,51 +363,62 @@ Param = ParamSpec("Param")
 RetType = TypeVar("RetType")
 
 
+ProviderT = TypeVar("ProviderT", bound="Provider | CoreController")
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
 def use_cache(
-    expiration: int = (86400 * 30),
+    expiration: int = DEFAULT_CACHE_EXPIRATION,
     category: int = 0,
-    provider: str | None = None,
-) -> Callable[[Callable[Param, RetType]], Callable[Param, RetType]]:
+    persistent: bool = False,
+    cache_checksum: str | None = None,
+) -> Callable[
+    [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
+    Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
+]:
     """Return decorator that can be used to cache a method's result."""
 
-    def wrapper(func: Callable[Param, RetType]) -> Callable[Param, RetType]:
+    def _decorator(
+        func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
+    ) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
         @functools.wraps(func)
-        async def wrapped(*args: Param.args, **kwargs: Param.kwargs):
-            method_class = args[0]
-            method_class_name = method_class.__class__.__name__
-            cache_key_parts = [method_class_name, func.__name__]
-            skip_cache = kwargs.pop("skip_cache", False)
-            cache_checksum = kwargs.pop("cache_checksum", "")
-            provider_alt = getattr(method_class, "instance_id", None)
-            if len(args) > 1:
-                cache_key_parts += args[1:]
+        async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+            cache = self.mass.cache
+            provider_id = getattr(self, "provider_id", self.domain)
+            # create a cache key dynamically based on the (remaining) args/kwargs
+            cache_key_parts = [func.__name__, *args]
             for key in sorted(kwargs.keys()):
                 cache_key_parts.append(f"{key}{kwargs[key]}")
-            cache_key = ".".join(cache_key_parts)
-            cachedata = await method_class.cache.get(
+            cache_key = ".".join(map(str, cache_key_parts))
+            # try to retrieve data from the cache
+            cachedata = await cache.get(
                 cache_key,
-                provider=provider or provider_alt or "default",
+                provider=provider_id,
                 checksum=cache_checksum,
                 category=category,
             )
-            if not skip_cache and cachedata is not None:
+            if cachedata is not None:
                 return cachedata
-            result = await func(*args, **kwargs)
-            asyncio.create_task(
-                method_class.cache.set(
-                    cache_key,
-                    result,
+            # get data from method/provider
+            result = await func(self, *args, **kwargs)
+            # store result in cache (but don't await)
+            self.mass.create_task(
+                cache.set(
+                    key=cache_key,
+                    data=result,
                     expiration=expiration,
-                    checksum=cache_checksum,
+                    provider=provider_id,
                     category=category,
-                    provider=provider or provider_alt or "default",
+                    checksum=cache_checksum,
+                    persistent=persistent,
                 )
             )
             return result
 
-        return wrapped
+        return wrapper
 
-    return wrapper
+    return _decorator
 
 
 class MemoryCache(MutableMapping):

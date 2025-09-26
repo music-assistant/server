@@ -660,8 +660,6 @@ class PlexProvider(MusicProvider):
                 ]
             )
         playlist.is_editable = not plex_playlist.smart
-        playlist.cache_checksum = str(plex_playlist.updatedAt.timestamp())
-
         return playlist
 
     async def _parse_track(self, plex_track: PlexTrack) -> Track:
