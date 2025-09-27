@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
-from .constants import CONF_AUDIO_QUALITY, CONF_PASSWORD, CONF_USERNAME
+from .constants import CONF_PASSWORD, CONF_USERNAME
 from .provider import PandoraProvider
 
 if TYPE_CHECKING:
@@ -17,6 +17,12 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
+# Supported Features - Pandora is primarily a radio service
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_RADIOS,
+}
 
 
 async def setup(
@@ -37,7 +43,7 @@ async def setup(
     ):
         raise SetupFailedError("Username and password are required")
 
-    return PandoraProvider(mass, manifest, config)
+    return PandoraProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -62,17 +68,5 @@ async def get_config_entries(
             label="Password",
             description="Your Pandora password",
             required=True,
-        ),
-        ConfigEntry(
-            key=CONF_AUDIO_QUALITY,
-            type=ConfigEntryType.STRING,
-            label="Audio Quality",
-            description="Preferred audio quality (requires Premium subscription for high quality)",
-            default_value="high",
-            options=[
-                ConfigValueOption("Low (64 kbps AAC+)", "low"),
-                ConfigValueOption("Medium (128 kbps MP3)", "medium"),
-                ConfigValueOption("High (192 kbps AAC+) - Premium only", "high"),
-            ],
         ),
     )
