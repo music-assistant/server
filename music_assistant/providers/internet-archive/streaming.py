@@ -10,26 +10,19 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 if TYPE_CHECKING:
-    from .helpers import InternetArchiveClient
-    from .provider import InternetArchiveProvider
+    from . import InternetArchiveProvider
 
 
 class InternetArchiveStreaming:
     """Handles stream details and multi-file streaming for Internet Archive."""
 
-    def __init__(
-        self, client: InternetArchiveClient, instance_id: str, provider: InternetArchiveProvider
-    ) -> None:
+    def __init__(self, provider: InternetArchiveProvider) -> None:
         """
         Initialize the streaming handler.
 
         Args:
-            client: Internet Archive API client
-            instance_id: Provider instance identifier
-            provider: Reference to the provider for accessing helper methods
+            provider: The Internet Archive provider instance
         """
-        self.client = client
-        self.instance_id = instance_id
         self.provider = provider
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
@@ -37,7 +30,7 @@ class InternetArchiveStreaming:
         if "#" in item_id:
             return self._get_single_file_stream(item_id, {}, media_type)
         else:
-            audio_files = await self.client.get_audio_files(item_id)
+            audio_files = await self.provider.client.get_audio_files(item_id)
             if not audio_files:
                 raise MediaNotFoundError(f"No audio files found for {item_id}")
 
@@ -58,13 +51,13 @@ class InternetArchiveStreaming:
 
         for file_info in audio_files:
             filename = file_info["name"]
-            download_url = self.client.get_download_url(item_id, filename)
+            download_url = self.provider.client.get_download_url(item_id, filename)
             chapter_urls.append(download_url)
 
         duration_to_set = total_duration if total_duration > 0 else None
 
         return StreamDetails(
-            provider=self.instance_id,
+            provider=self.provider.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
             media_type=MediaType.AUDIOBOOK,
@@ -82,14 +75,14 @@ class InternetArchiveStreaming:
         if "#" in item_id:
             # This is a track from an album - extract parent_id and filename
             parent_id, filename = item_id.split("#", 1)
-            download_url = self.client.get_download_url(parent_id, filename)
+            download_url = self.provider.client.get_download_url(parent_id, filename)
         else:
             # This is a single item
             filename = file_info["name"]
-            download_url = self.client.get_download_url(item_id, filename)
+            download_url = self.provider.client.get_download_url(item_id, filename)
 
         return StreamDetails(
-            provider=self.instance_id,
+            provider=self.provider.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.UNKNOWN,  # Let ffmpeg detect format

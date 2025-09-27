@@ -64,7 +64,8 @@ class InternetArchiveProvider(MusicProvider):
         self.parsers = InternetArchiveParsers(
             self.domain, self.instance_id, self.client.get_item_url
         )
-        self.streaming = InternetArchiveStreaming(self.client, self.instance_id, self)
+        # Pass only the provider reference to streaming handler
+        self.streaming = InternetArchiveStreaming(self)
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
