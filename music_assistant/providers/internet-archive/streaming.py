@@ -10,7 +10,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 if TYPE_CHECKING:
-    from . import InternetArchiveProvider
+    from .provider import InternetArchiveProvider
 
 
 class InternetArchiveStreaming:
