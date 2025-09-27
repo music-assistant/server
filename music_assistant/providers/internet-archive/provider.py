@@ -363,7 +363,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return track
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week - album catalogs change infrequently
+    @use_cache(expiration=86400 * 60)  # Cache for 60 days - album catalogs change infrequently
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         metadata = await self._get_metadata(prov_album_id)
