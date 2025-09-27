@@ -26,7 +26,6 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
 
-from .constants import AUDIOBOOK_COLLECTIONS
 from .helpers import (
     InternetArchiveClient,
     clean_text,
@@ -42,6 +41,7 @@ from .parsers import (
     doc_to_album,
     doc_to_audiobook,
     doc_to_track,
+    is_audiobook_content,
     is_likely_album,
 )
 from .streaming import InternetArchiveStreaming
@@ -100,6 +100,7 @@ class InternetArchiveProvider(MusicProvider):
         """Throttled audio files wrapper."""
         return await self.client.get_audio_files(identifier)
 
+    # @use_cache(expiration=3600 * 24)  # 1 day as the IA is largely static
     async def search(
         self,
         search_query: str,
@@ -109,8 +110,8 @@ class InternetArchiveProvider(MusicProvider):
         """
         Perform search on Internet Archive.
 
-        Uses multiple search strategies to maximize result coverage and includes
-        detailed logging for debugging search performance.
+        Uses multiple search strategies to maximize result coverage with
+        proper result accumulation and broader search patterns.
 
         Args:
             search_query: The search term to look for
@@ -120,7 +121,8 @@ class InternetArchiveProvider(MusicProvider):
         Returns:
             SearchResults object containing found items
         """
-        effective_limit = min(limit * 5, 100)  # Get more results to filter, but cap at 100
+        if not search_query.strip():
+            return SearchResults()
 
         # Collect results in separate lists
         tracks: list[Track] = []
@@ -128,87 +130,122 @@ class InternetArchiveProvider(MusicProvider):
         artists: list[Artist] = []
         audiobooks: list[Audiobook] = []
 
-        if not search_query.strip():
-            return SearchResults()
+        # Track processed identifiers to avoid duplicates across strategies
+        processed_ids: set[str] = set()
 
-        # Try multiple search strategies for better coverage
+        # Search strategies balancing precision and coverage
         search_strategies = [
-            # Basic search - most common case
-            (search_query, "downloads desc"),
-            # Title-specific search if basic search fails
+            # Most precise searches first
+            (f"creator:({search_query})", "downloads desc"),
             (f"title:({search_query})", "downloads desc"),
+            # Subject search for thematic content (books, topics)
+            (f"subject:({search_query})", "downloads desc"),
+            # Collection-specific with broader matching for discovery
+            (f"{search_query} AND collection:oldtimeradio", "downloads desc"),
+            (f"{search_query} AND collection:(etree OR netlabels)", "downloads desc"),
         ]
 
         # Add audiobook-specific search if audiobooks requested
         if MediaType.AUDIOBOOK in media_types:
             search_strategies.append(
                 (
-                    f"{search_query} AND (collection:librivoxaudio OR mediatype:audio)",
+                    f"{search_query} AND collection:(librivoxaudio OR audio_bookspoetry)",
                     "downloads desc",
                 )
             )
 
-        for strategy_query, sort_order in search_strategies:
-            self.logger.debug("Trying search strategy: %s", strategy_query)
+        # Add podcast search if we decide to support podcasts
+        # Commented out until we decide on podcast support
+        # search_strategies.append(
+        #     (f"{search_query} AND collection:podcasts", "downloads desc")
+        # )
 
-            search_response = await self._search(
-                query=strategy_query,
-                rows=effective_limit,
-                sort=sort_order,
-            )
+        for strategy_idx, (strategy_query, sort_order) in enumerate(search_strategies):
+            self.logger.debug("Trying search strategy %d: %s", strategy_idx + 1, strategy_query)
 
-            response_data = search_response.get("response", {})
-            docs = response_data.get("docs", [])
-            self.logger.debug("Strategy '%s' found %d raw results", strategy_query, len(docs))
+            try:
+                search_response = await self._search(
+                    query=strategy_query,
+                    rows=min(limit * 3, 100),  # Get more results to filter
+                    sort=sort_order,
+                )
 
-            # Process results and extract different media types
-            processed_count = 0
-            skipped_count = 0
+                response_data = search_response.get("response", {})
+                docs = response_data.get("docs", [])
+                self.logger.debug(
+                    "Strategy %d '%s' found %d raw results",
+                    strategy_idx + 1,
+                    strategy_query,
+                    len(docs),
+                )
 
-            for doc in docs:
-                try:
-                    await self._process_search_result(
-                        doc, tracks, albums, artists, audiobooks, media_types
-                    )
-                    processed_count += 1
+                # Process results and extract different media types
+                strategy_processed = 0
+                strategy_skipped = 0
 
-                    # Check if we have enough results across all types
-                    if self._has_sufficient_results(
-                        tracks, albums, artists, audiobooks, media_types, limit
-                    ):
-                        break
+                for doc in docs:
+                    try:
+                        identifier = doc.get("identifier")
+                        if not identifier or identifier in processed_ids:
+                            strategy_skipped += 1
+                            continue
 
-                except (InvalidDataError, KeyError) as err:
-                    self.logger.debug("Skipping invalid search result: %s", err)
-                    skipped_count += 1
-                    continue
+                        # Track this identifier to avoid duplicates
+                        processed_ids.add(identifier)
 
-            self.logger.debug(
-                "Strategy '%s': processed %d items, skipped %d items. "
-                "Current totals - tracks: %d, albums: %d, artists: %d, audiobooks: %d",
-                strategy_query,
-                processed_count,
-                skipped_count,
-                len(tracks),
-                len(albums),
-                len(artists),
-                len(audiobooks),
-            )
+                        await self._process_search_result(
+                            doc, tracks, albums, artists, audiobooks, media_types
+                        )
+                        strategy_processed += 1
 
-            # If we got good results from this strategy, we can stop
-            total_results = len(tracks) + len(albums) + len(artists) + len(audiobooks)
-            if total_results >= limit:
-                break
+                        # Check if we have enough results across all types
+                        if self._has_sufficient_results(
+                            tracks, albums, artists, audiobooks, media_types, limit
+                        ):
+                            self.logger.debug(
+                                "Sufficient results found after strategy %d, stopping search",
+                                strategy_idx + 1,
+                            )
+                            break
+
+                    except (InvalidDataError, KeyError) as err:
+                        self.logger.debug("Skipping invalid search result: %s", err)
+                        strategy_skipped += 1
+                        continue
+
+                self.logger.debug(
+                    "Strategy %d '%s': processed %d new items, skipped %d items. "
+                    "Running totals - tracks: %d, albums: %d, artists: %d, audiobooks: %d",
+                    strategy_idx + 1,
+                    strategy_query,
+                    strategy_processed,
+                    strategy_skipped,
+                    len(tracks),
+                    len(albums),
+                    len(artists),
+                    len(audiobooks),
+                )
+
+                # If we have sufficient results, stop trying more strategies
+                if self._has_sufficient_results(
+                    tracks, albums, artists, audiobooks, media_types, limit
+                ):
+                    break
+
+            except Exception as err:
+                self.logger.warning("Search strategy %d failed: %s", strategy_idx + 1, err)
+                continue
 
         # Log final results for debugging
         self.logger.debug(
             "Search for '%s' completed. Final results - tracks: %d, albums: %d, "
-            "artists: %d, audiobooks: %d",
+            "artists: %d, audiobooks: %d (processed %d unique items)",
             search_query,
             len(tracks),
             len(albums),
             len(artists),
             len(audiobooks),
+            len(processed_ids),
         )
 
         return SearchResults(
@@ -248,7 +285,7 @@ class InternetArchiveProvider(MusicProvider):
         Process a single search result document from Internet Archive.
 
         Determines the appropriate media type and creates corresponding objects.
-        Uses heuristics to classify items as tracks, albums, or audiobooks.
+        Uses improved heuristics to classify items as tracks, albums, or audiobooks.
         """
         identifier = doc.get("identifier")
         if not identifier:
@@ -271,18 +308,17 @@ class InternetArchiveProvider(MusicProvider):
         if isinstance(collection, str):
             collection = [collection]
 
-        # Check if this is audiobook content
-        is_audiobook = any(coll in AUDIOBOOK_COLLECTIONS for coll in collection)
-
-        if is_audiobook and MediaType.AUDIOBOOK in media_types:
+        # Check if this is audiobook content using improved detection
+        if is_audiobook_content(doc) and MediaType.AUDIOBOOK in media_types:
             audiobook = doc_to_audiobook(
                 doc, self.domain, self.instance_id, self.client.get_item_url
             )
             if audiobook:
                 audiobooks.append(audiobook)
+            return  # Don't process as other media types
 
         # For etree items, usually each item is an album (concert)
-        elif mediatype == "etree" or "etree" in collection:
+        if mediatype == "etree" or "etree" in collection:
             if MediaType.ALBUM in media_types:
                 album = doc_to_album(doc, self.domain, self.instance_id, self.client.get_item_url)
                 if album:
@@ -638,8 +674,7 @@ class InternetArchiveProvider(MusicProvider):
         """
         Get top tracks for a specific artist.
 
-        Prioritizes single track items and first tracks from popular albums
-        to avoid expensive file enumeration while providing meaningful results.
+        Uses the same search as get_artist_albums but filters for single tracks.
 
         Args:
             prov_artist_id: Provider-specific artist identifier (artist name)
@@ -662,9 +697,8 @@ class InternetArchiveProvider(MusicProvider):
 
         for doc in docs:
             try:
-                # For top tracks, prioritize single track items or first tracks
-                # from popular albums to avoid expensive file enumeration
-                if not is_likely_album(doc):  # Prefer actual single tracks
+                # Only include items that are NOT classified as albums
+                if not is_likely_album(doc):
                     track = doc_to_track(
                         doc, self.domain, self.instance_id, self.client.get_item_url
                     )

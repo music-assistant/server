@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -24,9 +25,8 @@ def is_likely_album(doc: dict[str, Any]) -> bool:
     """
     Determine if an Internet Archive item is likely an album using metadata heuristics.
 
-    This method uses collection types, media types, and title analysis to classify items
-    without making expensive API calls to check individual file counts. This optimization
-    significantly improves performance for artist browsing and search operations.
+    Uses collection types, media types, title analysis, and file count hints to classify items
+    without making expensive API calls to check individual file counts.
 
     Args:
         doc: Internet Archive document metadata
@@ -45,22 +45,90 @@ def is_likely_album(doc: dict[str, Any]) -> bool:
     if "etree" in collection:
         return True
 
-    # Skip obvious audiobook/speech collections
+    # Skip obvious audiobook/speech collections - these are handled separately
     if any(coll in AUDIOBOOK_COLLECTIONS for coll in collection):
         return False
 
-    # Use title keywords to identify likely albums vs singles
-    album_indicators = ["album", "live", "concert", "session", "collection", "compilation"]
-    single_indicators = ["single", "track", "song"]
+    # Check for hints in the metadata that suggest multiple files
+    # Some IA items include file count information
+    if "files" in doc:
+        # If we have file info and it's more than 2-3 files, likely an album
+        # (accounting for derivative files like thumbnails)
+        try:
+            file_count = len(doc["files"]) if isinstance(doc["files"], list) else 0
+            if file_count > 3:  # More than just 1-2 audio files + derivatives
+                return True
+        except (TypeError, KeyError):
+            pass
 
+    # Use title keywords to identify likely albums vs singles
+    album_indicators = [
+        "album",
+        "live",
+        "concert",
+        "session",
+        "collection",
+        "compilation",
+        "complete",
+        "anthology",
+        "best of",
+        "greatest hits",
+        "discography",
+        "vol ",
+        "volume",
+        "part ",
+        "disc ",
+        "cd ",
+        "lp ",
+    ]
+
+    single_indicators = [
+        "single",
+        "track",
+        "song",
+        "remix",
+        "edit",
+        "version",
+        "demo",
+        "instrumental",
+        "acoustic version",
+    ]
+
+    # Strong album indicators in title
     if any(indicator in title for indicator in album_indicators):
         return True
+
+    # Strong single indicators in title
     if any(indicator in title for indicator in single_indicators):
         return False
 
-    # Default to treating audio items as albums - better user experience
-    # Individual tracks will still be accessible through album track listings
-    return bool(mediatype == "audio")
+    # Collection-specific logic
+    if "netlabels" in collection:
+        # Netlabel releases are usually albums/EPs
+        return True
+
+    if "78rpm" in collection:
+        # 78 RPM records are usually single tracks (A-side/B-side)
+        return False
+
+    if "oldtimeradio" in collection:
+        # Radio shows are usually single episodes, treat as tracks
+        return False
+
+    if "audio_music" in collection:
+        # General music uploads - check for multi-track indicators in title
+        multi_track_indicators = ["ep", "album", "mixtape", "playlist"]
+        return any(indicator in title for indicator in multi_track_indicators)
+
+    # For unknown collections with audio mediatype, be conservative
+    # Default to single track unless we have strong evidence of multiple tracks
+    if mediatype == "audio":
+        # Look for numbering that suggests multiple parts/tracks
+        if re.search(r"\b(track|part|chapter)\s*\d+", title):
+            return True  # Likely part of a larger work
+        return bool(re.search(r"\b\d+\s*of\s*\d+\b", title))
+
+    return False
 
 
 def doc_to_audiobook(
@@ -249,3 +317,22 @@ def add_item_image(item: Track | Album | Audiobook, identifier: str, instance_id
                 remotely_accessible=True,
             )
         )
+
+
+def is_audiobook_content(doc: dict[str, Any]) -> bool:
+    """
+    Determine if an Internet Archive item is audiobook content.
+
+    Checks if the item is from a known audiobook collection.
+
+    Args:
+        doc: Internet Archive document metadata
+
+    Returns:
+        True if the item is from a known audiobook collection
+    """
+    collection = doc.get("collection", [])
+    if isinstance(collection, str):
+        collection = [collection]
+
+    return any(coll in AUDIOBOOK_COLLECTIONS for coll in collection)
