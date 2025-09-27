@@ -80,12 +80,12 @@ from music_assistant.helpers.util import (
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.plugin import PluginProvider
-from music_assistant.models.smart_fades import SmartFadesAnalysis
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
@@ -109,11 +109,11 @@ def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
 class CrossfadeData:
     """Data class to hold crossfade data."""
 
+    streamdetails: StreamDetails
     fadeout_part: bytes = b""
     pcm_format: AudioFormat = field(default_factory=AudioFormat)
     queue_item_id: str | None = None
     session_id: str | None = None
-    smart_fades_analysis: SmartFadesAnalysis | None = None
 
 
 class AnnounceData(TypedDict):
@@ -812,10 +812,7 @@ class StreamsController(CoreController):
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
         queue_track = None
-        last_fadeout_part = b""
-        last_fadeout_analysis = (
-            None  # Smart fades analysis for the track that created last_fadeout_part
-        )
+        last_crossfade_data: CrossfadeData | None = None
         queue.flow_mode = True
         if not start_queue_item:
             # this can happen in some (edge case) race conditions
@@ -889,7 +886,7 @@ class StreamsController(CoreController):
                     continue
 
                 ####  HANDLE CROSSFADE OF PREVIOUS TRACK AND NEW TRACK
-                if last_fadeout_part:
+                if last_crossfade_data and last_crossfade_data.fadeout_part:
                     # perform crossfade
                     fadein_part = buffer[:crossfade_size]
                     remaining_bytes = buffer[crossfade_size:]
@@ -897,9 +894,9 @@ class StreamsController(CoreController):
                     # Use the mixer to handle all crossfade logic
                     crossfade_part = await self._smart_fades_mixer.mix(
                         fade_in_part=fadein_part,
-                        fade_out_part=last_fadeout_part,
-                        fade_in_analysis=queue_track.streamdetails.smart_fades,
-                        fade_out_analysis=last_fadeout_analysis,
+                        fade_out_part=last_crossfade_data.fadeout_part,
+                        fade_in_streamdetails=queue_track.streamdetails,
+                        fade_out_streamdetails=last_crossfade_data.streamdetails,
                         pcm_format=pcm_format,
                         standard_crossfade_duration=standard_crossfade_duration,
                         mode=smart_fades_mode,
@@ -915,8 +912,7 @@ class StreamsController(CoreController):
                         bytes_written += len(remaining_bytes)
                         del remaining_bytes
                     # clear vars
-                    last_fadeout_part = b""
-                    last_fadeout_analysis = None
+                    last_crossfade_data = None
                     buffer = b""
 
                 #### OTHER: enough data in buffer, feed to output
@@ -926,17 +922,19 @@ class StreamsController(CoreController):
                     buffer = buffer[pcm_sample_size:]
 
             #### HANDLE END OF TRACK
-            if last_fadeout_part:
+            if last_crossfade_data and last_crossfade_data.fadeout_part:
                 # edge case: we did not get enough data to make the crossfade
-                yield last_fadeout_part
-                bytes_written += len(last_fadeout_part)
-                last_fadeout_part = b""
-                last_fadeout_analysis = None
+                yield last_crossfade_data.fadeout_part
+                bytes_written += len(last_crossfade_data.fadeout_part)
+                last_crossfade_data = None
             if self._crossfade_allowed(queue_track, flow_mode=True):
                 # if crossfade is enabled, save fadeout part to pickup for next track
-                last_fadeout_part = buffer[-crossfade_size:]
-                # Also save the smart fades analysis
-                last_fadeout_analysis = queue_track.streamdetails.smart_fades
+                last_crossfade_data = CrossfadeData(
+                    fadeout_part=buffer[-crossfade_size:],
+                    pcm_format=pcm_format,
+                    queue_item_id=queue_track.queue_item_id,
+                    streamdetails=queue_track.streamdetails,
+                )
                 remaining_bytes = buffer[:-crossfade_size]
                 if remaining_bytes:
                     yield remaining_bytes
@@ -966,14 +964,14 @@ class StreamsController(CoreController):
                 queue.display_name,
             )
         #### HANDLE END OF QUEUE FLOW STREAM
-        # end of queue flow: make sure we yield the last_fadeout_part
-        if last_fadeout_part:
-            yield last_fadeout_part
+        # end of queue flow: make sure we yield the last_crossfade_data
+        if last_crossfade_data and last_crossfade_data.fadeout_part:
+            yield last_crossfade_data.fadeout_part
             # correct seconds streamed/duration
-            last_part_seconds = len(last_fadeout_part) / pcm_sample_size
+            last_part_seconds = len(last_crossfade_data.fadeout_part) / pcm_sample_size
             queue_track.streamdetails.seconds_streamed += last_part_seconds
             queue_track.streamdetails.duration += last_part_seconds
-            del last_fadeout_part
+            del last_crossfade_data
         total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
