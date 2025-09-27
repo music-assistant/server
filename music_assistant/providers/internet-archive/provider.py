@@ -406,7 +406,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return album
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist catalogs change infrequently
+    @use_cache(expiration=86400 * 60)  # Cache for 60 days - artist catalogs change infrequently
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """
         Get full artist details by id.
