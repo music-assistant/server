@@ -67,7 +67,6 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.smart_fades import (
     MAX_SMART_CROSSFADE_DURATION,
-    SmartFadesDJStyleMode,
     SmartFadesMixer,
     SmartFadesMode,
 )
@@ -1136,7 +1135,6 @@ class StreamsController(CoreController):
         pcm_format: AudioFormat,
         session_id: str | None = None,
         smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
-        dj_style_mode: SmartFadesDJStyleMode = SmartFadesDJStyleMode.AUTO,
         standard_crossfade_duration: int = 10,
     ) -> AsyncGenerator[bytes, None]:
         """Get the audio stream for a single queue item with crossfade to the next item."""
@@ -1189,7 +1187,6 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     standard_crossfade_duration=standard_crossfade_duration,
                     mode=smart_fades_mode,
-                    dj_style_mode=dj_style_mode,
                 )
                 # send crossfade_part (as one big chunk)
                 bytes_written += len(crossfade_part)

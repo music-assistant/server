@@ -654,9 +654,10 @@ class SmartFadesMixer:
                 f"{fadein_input_label}anull[fadein_beatalign]",  # codespell:ignore anull
             ]
 
-        # When time stretching is applied, adjust the fadein start position
-        # The fadein needs to start later to sync with the stretched fadeout beats
-        adjusted_fadein_start_pos = fadein_start_pos * tempo_factor
+        # When time stretching is applied, we need to compensate for the timing change
+        # If tempo_factor < 1.0 (slowing down), beats in fadeout take longer to reach
+        # If tempo_factor > 1.0 (speeding up), beats in fadeout arrive sooner
+        adjusted_fadein_start_pos = fadein_start_pos / tempo_factor
 
         # Apply beat alignment: fadeout passes through, fadein trims to adjusted position
         return [
