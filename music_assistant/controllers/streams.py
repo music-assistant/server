@@ -114,6 +114,7 @@ class CrossfadeData:
     pcm_format: AudioFormat = field(default_factory=AudioFormat)
     queue_item_id: str | None = None
     session_id: str | None = None
+    play_log_entry: PlayLogEntry | None = None
 
 
 class AnnounceData(TypedDict):
@@ -902,9 +903,21 @@ class StreamsController(CoreController):
                         mode=smart_fades_mode,
                     )
 
+                    # because the crossfade exists of both the fadein and fadeout part
+                    # we need to correct the bytes_written accordingly so the duration
+                    # calculations at the end of the track are correct
+                    crossfade_part_len = len(crossfade_part)
+                    bytes_written += crossfade_part_len / 2
+                    last_crossfade_data.streamdetails.seconds_streamed += (
+                        crossfade_part_len / 2 / pcm_sample_size
+                    )
+                    last_crossfade_data.play_log_entry.seconds_streamed += (
+                        crossfade_part_len / 2 / pcm_sample_size
+                    )
                     # send crossfade_part (as one big chunk)
-                    bytes_written += len(crossfade_part)
                     yield crossfade_part
+
+                    del crossfade_part
 
                     # also write the leftover bytes from the crossfade action
                     if remaining_bytes:
@@ -934,6 +947,7 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     queue_item_id=queue_track.queue_item_id,
                     streamdetails=queue_track.streamdetails,
+                    play_log_entry=play_log_entry,
                 )
                 remaining_bytes = buffer[:-crossfade_size]
                 if remaining_bytes:
