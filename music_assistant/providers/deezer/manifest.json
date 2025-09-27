@@ -3,7 +3,7 @@
   "domain": "deezer",
   "stage": "stable",
   "name": "Deezer",
-  "description": "Support for the Deezer streaming provider in Music Assistant.",
+  "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio.",
   "codeowners": ["@arctixdev", "@micha91"],
   "documentation": "https://music-assistant.io/music-providers/deezer/",
   "requirements": ["deezer-python-async==0.3.0", "pycryptodome==3.23.0"],

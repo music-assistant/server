@@ -3,7 +3,7 @@
   "domain": "audiobookshelf",
   "stage": "stable",
   "name": "Audiobookshelf",
-  "description": "Audiobookshelf (audiobookshelf.org) as audiobook and podcast provider",
+  "description": "Stream audiobooks and podcasts from your personal Audiobookshelf server.",
   "codeowners": ["@fmunkes"],
   "requirements": ["aioaudiobookshelf==0.1.8"],
   "documentation": "https://music-assistant.io/music-providers/audiobookshelf",

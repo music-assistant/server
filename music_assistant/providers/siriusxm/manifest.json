@@ -3,7 +3,7 @@
   "domain": "siriusxm",
   "stage": "stable",
   "name": "SiriusXM",
-  "description": "Support for the SiriusXM streaming radio provider in Music Assistant.",
+  "description": "Stream SiriusXM’s radio, talk, and curated music channels.",
   "codeowners": ["@btoconnor"],
   "requirements": ["sxm==0.2.8"],
   "documentation": "https://music-assistant.io/music-providers/siriusxm/",

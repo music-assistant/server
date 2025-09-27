@@ -3,7 +3,7 @@
   "domain": "genius_lyrics",
   "stage": "alpha",
   "name": "Genius Lyrics",
-  "description": "Genius.com is a free service for finding song lyrics and annotations.",
+  "description": "Alternative lyrics source, pulling song lyrics from Genius to supplement other providers.",
   "codeowners": ["@robert-alfaro"],
   "requirements": ["lyricsgenius==3.7.2"],
   "documentation": "https://www.music-assistant.io/metadata/",

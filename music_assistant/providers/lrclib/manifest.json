@@ -3,7 +3,7 @@
   "domain": "lrclib",
   "stage": "beta",
   "name": "LRCLIB",
-  "description": "LRCLIB is a completely free service for finding and contributing synchronized lyrics, with an easy-to-use and machine-friendly API.",
+  "description": "Primary lyrics provider, delivering synced and unsynced lyrics from the LrcLib database.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "",

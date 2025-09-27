@@ -3,7 +3,7 @@
   "domain": "dlna",
   "stage": "stable",
   "name": "UPnP/DLNA Player provider",
-  "description": "Support for players that are compatible with the UPnP/DLNA (DMR) standard.",
+  "description": "Stream music to supported DLNA-compatible devices.",
   "codeowners": ["@music-assistant"],
   "requirements": ["async-upnp-client==0.45.0"],
   "documentation": "https://music-assistant.io/player-support/dlna/",
