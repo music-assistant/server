@@ -94,7 +94,6 @@ CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
-CONF_SMART_FADES_DJ_MODE: Final[str] = "smart_fades_dj_mode"
 
 
 # config default values
@@ -320,29 +319,6 @@ CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     " between tracks.\n"
     "- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a "
     "track.",
-    category="audio",
-)
-
-CONF_ENTRY_SMART_FADES_DJ_MODE = ConfigEntry(
-    key=CONF_SMART_FADES_DJ_MODE,
-    type=ConfigEntryType.STRING,
-    label="Smart Fades DJ Mode",
-    default_value="auto",
-    options=[
-        # TODO: Question: Should we move the enum to models and import it from there ?
-        ConfigValueOption("Auto", "auto"),
-        ConfigValueOption("Classic", "classic"),
-        ConfigValueOption("Modern", "modern"),
-        ConfigValueOption("Disabled", "disabled"),
-    ],
-    description="Configure the EQ filter mode that gets applied during Smart Fade transitions:\n\n"
-    "- 'Auto': Will automatically select the best mode based on BPM compatibility of the tracks "
-    "(default).\n"
-    "- 'Classic': Traditional high-pass/low-pass complementary filters.\n"
-    "- 'Modern': Swapped low-pass/high-pass filters (club style).\n"
-    "- 'Off': No frequency filtering, volume crossfade only.",
-    depends_on=CONF_SMART_FADES_MODE,
-    depends_on_value="smart_fades",
     category="audio",
 )
 

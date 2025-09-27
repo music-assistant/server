@@ -17,15 +17,6 @@ class SmartFadesMode(StrEnum):
     DISABLED = "disabled"  # No crossfade
 
 
-class SmartFadesDJStyleMode(StrEnum):
-    """DJ transition style modes for Smartg."""
-
-    AUTO = "auto"  # Automatically select based on BPM compatibility
-    CLASSIC = "classic"  # Traditional HP/LP complementary filters
-    MODERN = "modern"  # Swapped LP/HP filters
-    DISABLED = "disabled"  # No frequency filtering, volume crossfade only
-
-
 @dataclass
 class SmartFadesAnalysis(DataClassDictMixin):
     """Beat tracking analysis data for BPM matching crossfade."""

@@ -25,7 +25,6 @@ from music_assistant.helpers.process import communicate
 from music_assistant.helpers.util import remove_file
 from music_assistant.models.smart_fades import (
     SmartFadesAnalysis,
-    SmartFadesDJStyleMode,
     SmartFadesMode,
 )
 
@@ -40,7 +39,7 @@ ANALYSIS_PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=1
 )
 # Only apply time stretching if BPM difference is < this %
-TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD = 3.0
+TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD = 8.0
 
 
 class SmartFadesAnalyzer:
@@ -249,8 +248,7 @@ class SmartFadesMixer:
         fade_in_analysis: SmartFadesAnalysis,
         fade_out_analysis: SmartFadesAnalysis,
         pcm_format: AudioFormat,
-        fallback_crossfade_duration: int = 10,
-        dj_style_mode: SmartFadesDJStyleMode = SmartFadesDJStyleMode.AUTO,
+        standard_crossfade_duration: int = 10,
         mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
     ) -> bytes:
         """Apply crossfade with internal state management and smart/standard fallback logic."""
@@ -268,7 +266,6 @@ class SmartFadesMixer:
                     fade_out_part,
                     fade_in_part,
                     pcm_format,
-                    dj_style_mode,
                 )
             except Exception as e:
                 self.logger.warning(
@@ -279,7 +276,7 @@ class SmartFadesMixer:
             fade_in_part,
             fade_out_part,
             pcm_format,
-            fallback_crossfade_duration,
+            standard_crossfade_duration,
         )
 
     async def _apply_smart_crossfade(
@@ -289,7 +286,6 @@ class SmartFadesMixer:
         fade_out_part: bytes,
         fade_in_part: bytes,
         pcm_format: AudioFormat,
-        dj_style_mode: SmartFadesDJStyleMode = SmartFadesDJStyleMode.AUTO,
     ) -> bytes:
         """Apply smart crossfade with beat-perfect timing and adaptive filtering."""
         # Write the fade_out_part to a temporary file
@@ -332,7 +328,6 @@ class SmartFadesMixer:
         smart_fade_filters = self._create_enhanced_smart_fade_filters(
             fade_out_analysis,
             fade_in_analysis,
-            dj_style_mode,
         )
         args.extend(
             [
@@ -370,7 +365,6 @@ class SmartFadesMixer:
         self,
         fade_out_analysis: SmartFadesAnalysis,
         fade_in_analysis: SmartFadesAnalysis,
-        dj_style_mode: SmartFadesDJStyleMode = SmartFadesDJStyleMode.AUTO,
     ) -> list[str]:
         """Create smart fade filters with perfect timing and adaptive filtering."""
         # Calculate optimal crossfade bars that fit in available buffer
@@ -427,46 +421,23 @@ class SmartFadesMixer:
         filters.extend(beat_align_filters)
 
         self.logger.debug(
-            "Smart fade: out_bpm=%.1f, in_bpm=%.1f, %d bars, crossfade: %.2fs, dj_mode=%s%s",
+            "Smart fade: out_bpm=%.1f, in_bpm=%.1f, %d bars, crossfade: %.2fs%s",
             fade_out_analysis.bpm,
             fade_in_analysis.bpm,
             crossfade_bars,
             crossfade_duration,
-            dj_style_mode,
             ", beat-aligned" if fadein_start_pos else "",
         )
+        frequency_filters = self._apply_eq_filters(
+            fade_out_analysis=fade_out_analysis,
+            fade_in_analysis=fade_in_analysis,
+            fade_out_label="[fadeout_beatalign]",
+            fade_in_label="[fadein_beatalign]",
+            crossfade_duration=crossfade_duration,
+        )
+        filters.extend(frequency_filters)
 
-        if dj_style_mode == SmartFadesDJStyleMode.AUTO:
-            dj_style_mode = self._determine_dj_style_mode(fade_out_analysis, fade_in_analysis)
-
-        if dj_style_mode == SmartFadesDJStyleMode.DISABLED:
-            # No frequency filtering, just pass through
-            filters.extend(
-                [
-                    "[fadeout_beatalign]anull[fadeout_eq]",  # codespell:ignore anull
-                    "[fadein_beatalign]anull[fadein_eq]",  # codespell:ignore anull
-                ]
-            )
-        elif dj_style_mode == SmartFadesDJStyleMode.MODERN:
-            frequency_filters = self._dj_modern(
-                fade_out_analysis=fade_out_analysis,
-                fade_in_analysis=fade_in_analysis,
-                fade_out_label="[fadeout_beatalign]",
-                fade_in_label="[fadein_beatalign]",
-                crossfade_duration=crossfade_duration,
-            )
-            filters.extend(frequency_filters)
-        else:
-            frequency_filters = self._dj_classic(
-                fade_out_analysis=fade_out_analysis,
-                fade_in_analysis=fade_in_analysis,
-                fade_out_label="[fadeout_beatalign]",
-                fade_in_label="[fadein_beatalign]",
-                crossfade_duration=crossfade_duration,
-            )
-            filters.extend(frequency_filters)
-
-        # Apply linear crossfade for now since we use EQ sweeps for smoothness
+        # Apply linear crossfade for now since we already use EQ sweeps for smoothness
         filters.append(f"[fadeout_eq][fadein_eq]acrossfade=d={crossfade_duration}")
 
         return filters
@@ -504,13 +475,10 @@ class SmartFadesMixer:
         bpm_out = fade_out_analysis.bpm
         bpm_diff_percent = abs(1.0 - bpm_in / bpm_out) * 100
 
-        # Calculate ideal bars based on BPM compatibility
-        if bpm_diff_percent < 1.5:
-            ideal_bars = 16
-        elif bpm_diff_percent < 3.0:
+        # Calculate ideal bars based on BPM compatibility. We link this to time stretching
+        # so we avoid extreme tempo changes over short fades.
+        if bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
             ideal_bars = 8
-        elif bpm_diff_percent < 8.0:
-            ideal_bars = 4
         elif bpm_diff_percent < 25.0:
             ideal_bars = 2
         else:
@@ -518,7 +486,7 @@ class SmartFadesMixer:
 
         # We could encounter songs that have a long athmospheric intro without any downbeats
         # In those cases, we need to reduce the bars until it fits in the fadein buffer.
-        for bars in [ideal_bars, 8, 4, 2, 1]:
+        for bars in [ideal_bars, 4, 2, 1]:
             if bars > ideal_bars:
                 continue  # Skip bars longer than optimal
 
@@ -710,7 +678,9 @@ class SmartFadesMixer:
         bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
 
         # If no time stretching needed, return passthrough filter and no tempo change
-        if not (0.1 < bpm_diff_percent < TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD):
+        if not (
+            0.1 < bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD and crossfade_bars > 4
+        ):
             return ["[0]anull[fadeout_stretched]"], 1.0  # codespell:ignore anull
 
         # Log that we're applying time stretching
@@ -815,23 +785,7 @@ class SmartFadesMixer:
 
         return filters, tempo_factor
 
-    def _determine_dj_style_mode(
-        self, fade_out_analysis: SmartFadesAnalysis, fade_in_analysis: SmartFadesAnalysis
-    ) -> SmartFadesDJStyleMode:
-        """Determine DJ style mode based on user settings or defaults."""
-        avg_bpm = (fade_in_analysis.bpm + fade_out_analysis.bpm) / 2
-        effective_bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
-
-        # Always use CLASSIC for slower tempos
-        if avg_bpm <= 110:
-            return SmartFadesDJStyleMode.CLASSIC
-        # Use MODERN only for similar BPMs at dance music tempos (house, techno, trance)
-        if 110 < avg_bpm <= 145 and abs(effective_bpm_ratio - 1.0) < 0.1:
-            return SmartFadesDJStyleMode.MODERN
-        # Default to CLASSIC for mismatched BPMs to prevent frequency clashing
-        return SmartFadesDJStyleMode.CLASSIC
-
-    def _dj_classic(
+    def _apply_eq_filters(
         self,
         fade_out_analysis: SmartFadesAnalysis,
         fade_in_analysis: SmartFadesAnalysis,
@@ -839,96 +793,30 @@ class SmartFadesMixer:
         fade_in_label: str,
         crossfade_duration: float,
     ) -> list[str]:
-        """Create gradual complementary filters using frequency sweeps for smooth transitions."""
-        # Calculate crossover frequency based on average BPM
-        avg_bpm = (fade_out_analysis.bpm + fade_in_analysis.bpm) / 2
-        bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
-
-        # Linear interpolation: 90 BPM -> 800Hz, 140 BPM -> 1200Hz
-        crossover_freq = int(np.clip(800 + (avg_bpm - 90) * 8, 800, 1200))
-
-        # Reduce frequency for mismatched BPMs
-        if abs(bpm_ratio - 1.0) > 0.3:
-            crossover_freq = int(crossover_freq * 0.8)
-
-        # Gradual high-pass for outgoing
-        fadeout_eq_duration = min(crossfade_duration * 2.0, 8.0)
-        # Quicker low-pass removal for incoming track
-        fadein_eq_duration = min(crossfade_duration * 1.5, 6.0)
-
-        # Calculate when the EQ sweep should start
-        # The crossfade always happens at the END of the buffer, EQ ramps up before it
-        fadeout_eq_start = max(0.0, MAX_SMART_CROSSFADE_DURATION - fadeout_eq_duration)
-
-        self.logger.debug(
-            "DJ Classic: EQ: crossover=%dHz, fadeout=%.1fs, fadein=%.1fs, BPM avg=%.1f ratio=%.2f",
-            crossover_freq,
-            fadeout_eq_duration,
-            fadein_eq_duration,
-            avg_bpm,
-            bpm_ratio,
-        )
-
-        # Use the new frequency sweep method for fadeout (unfiltered → high-pass)
-        fadeout_filters = self._create_frequency_sweep_filter(
-            input_label=fade_out_label,
-            output_label="fadeout_eq",
-            sweep_type="highpass",
-            target_freq=crossover_freq,
-            duration=fadeout_eq_duration,
-            start_time=fadeout_eq_start,
-            sweep_direction="fade_in",
-            poles=1,
-            curve_type="linear",
-        )
-
-        # Use the new frequency sweep method for fadein (low-pass → unfiltered)
-        fadein_filters = self._create_frequency_sweep_filter(
-            input_label=fade_in_label,
-            output_label="fadein_eq",
-            sweep_type="lowpass",
-            target_freq=crossover_freq,
-            duration=fadein_eq_duration,
-            start_time=0,
-            sweep_direction="fade_out",
-            poles=1,
-            curve_type="linear",
-        )
-
-        return fadeout_filters + fadein_filters
-
-    def _dj_modern(
-        self,
-        fade_out_analysis: SmartFadesAnalysis,
-        fade_in_analysis: SmartFadesAnalysis,
-        fade_out_label: str,
-        fade_in_label: str,
-        crossfade_duration: float,
-    ) -> list[str]:
-        """Create DJ-style complementary filters using frequency sweeps for smooth transitions."""
+        """Create LP / HP complementary filters using frequency sweeps for smooth transitions."""
         # Calculate target frequency based on average BPM
         avg_bpm = (fade_out_analysis.bpm + fade_in_analysis.bpm) / 2
         bpm_ratio = fade_in_analysis.bpm / fade_out_analysis.bpm
 
-        # For swapped filters in DJ style: 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
+        # 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
         crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 2500))
 
         # Adjust for BPM mismatch
         if abs(bpm_ratio - 1.0) > 0.3:
             crossover_freq = int(crossover_freq * 0.85)
 
-        # Asymmetric EQ durations for better musical flow
-        # Extended lowpass effect
+        # Extended lowpass effect to gradually remove bass frequencies
         fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), MAX_SMART_CROSSFADE_DURATION)
-        # Quicker highpass removal
-        fadein_eq_duration = crossfade_duration
+
+        # Quicker highpass removal to avoid lingering vocals after crossfade
+        fadein_eq_duration = crossfade_duration / 1.5
 
         # Calculate when the EQ sweep should start
         # The crossfade always happens at the END of the buffer, regardless of beat alignment
         fadeout_eq_start = max(0, MAX_SMART_CROSSFADE_DURATION - fadeout_eq_duration)
 
         self.logger.debug(
-            "DJ Modern: EQ: crossover=%dHz, EQ fadeout duration=%.1fs"
+            "EQ: crossover=%dHz, EQ fadeout duration=%.1fs"
             " EQ fadein duration=%.1fs, BPM=%.1f BPM ratio=%.2f",
             crossover_freq,
             fadeout_eq_duration,
