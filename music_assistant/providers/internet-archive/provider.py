@@ -98,6 +98,7 @@ class InternetArchiveProvider(MusicProvider):
         """Throttled audio files wrapper."""
         return await self.client.get_audio_files(identifier)
 
+    @use_cache(3600 * 24 * 7)
     async def search(
         self,
         search_query: str,
