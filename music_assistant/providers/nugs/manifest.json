@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "nugs",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Nugs.net",
   "description": "Stream official live concert audio & video — new shows added regularly to a rich archive.",
   "codeowners": ["@brian10048"],

@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "ytmusic",
-  "stage": "experimental",
+  "stage": "beta",
   "name": "YouTube Music",
   "description": "Stream songs and podcasts from YouTube Music.",
   "codeowners": ["@MarvinSchenkel"],

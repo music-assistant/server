@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "apple_music",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Apple Music",
   "description": "Stream Apple Music’s full catalogue and playlists.",
   "codeowners": ["@MarvinSchenkel"],

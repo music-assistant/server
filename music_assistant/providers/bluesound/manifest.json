@@ -1,7 +1,7 @@
 {
   "type": "player",
   "domain": "bluesound",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Bluesound",
   "description": "Send high-resolution audio to Bluesound speakers and multiroom systems.",
   "codeowners": ["@cyanogenbot"],

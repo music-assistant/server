@@ -6,5 +6,6 @@
   "type": "music",
   "requirements": [],
   "codeowners": "@ozgav",
-  "multi_instance": false
+  "multi_instance": false,
+  "stage": "beta"
 }
