@@ -112,7 +112,8 @@ jobs:
           echo "patch=${patch}" >> $GITHUB_OUTPUT
           echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
-      - id: lower_owner
+      - name: Generate lower case repository owner
+        id: lower_owner
         uses: ASzc/change-string-case-action@v6
         with:
           string: ${{ github.repository_owner }}
