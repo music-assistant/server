@@ -136,10 +136,9 @@ class InternetArchiveProvider(MusicProvider):
         # Search strategies balancing precision and coverage
         search_strategies = [
             # Most precise searches first
-            (f"creator:({search_query})", "downloads desc"),
-            (f"title:({search_query})", "downloads desc"),
-            # Subject search for thematic content (books, topics)
-            (f"subject:({search_query})", "downloads desc"),
+            (f"creator:({search_query}) AND mediatype:audio", "downloads desc"),
+            (f"title:({search_query}) AND mediatype:audio", "downloads desc"),
+            (f"subject:({search_query}) AND mediatype:audio", "downloads desc"),
             # Collection-specific with broader matching for discovery
             (f"{search_query} AND collection:oldtimeradio", "downloads desc"),
             (f"{search_query} AND collection:(etree OR netlabels)", "downloads desc"),
