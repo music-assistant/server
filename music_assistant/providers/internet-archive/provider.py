@@ -311,7 +311,7 @@ class InternetArchiveProvider(MusicProvider):
                 if artist and not artist_exists(artist, artists):
                     artists.append(artist)
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist "tracks" change infrequently
+    @use_cache(expiration=86400 * 60)  # Cache for 60 days - artist "tracks" change infrequently
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         metadata = await self._get_metadata(prov_track_id)
