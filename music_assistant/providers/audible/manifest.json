@@ -3,7 +3,7 @@
   "domain": "audible",
   "stage": "stable",
   "name": "Audible",
-  "description": "Audible provider",
+  "description": "Access Audible’s extensive audiobook library and podcast catalogue — perfect for spoken-word listening.",
   "codeowners": ["@ztripez"],
   "requirements": ["audible==0.10.0"],
   "documentation": "https://www.music-assistant.io/music-providers/audible"

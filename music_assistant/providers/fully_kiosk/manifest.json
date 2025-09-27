@@ -3,7 +3,7 @@
   "domain": "fully_kiosk",
   "stage": "stable",
   "name": "Fully Kiosk Browser",
-  "description": "Support for media players from the Fully Kiosk app.",
+  "description": "Play audio on Fully Kiosk-enabled displays or Android devices.",
   "codeowners": ["@music-assistant"],
   "requirements": ["python-fullykiosk==0.0.14"],
   "documentation": "https://music-assistant.io/player-support/fully-kiosk/",

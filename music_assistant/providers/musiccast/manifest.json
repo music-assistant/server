@@ -3,7 +3,7 @@
   "domain": "musiccast",
   "stage": "beta",
   "name": "MusicCast",
-  "description": "MusicCast for Music Assistant",
+  "description": "Stream audio to Yamaha MusicCast speakers — supports multiroom playback.",
   "requirements": ["aiomusiccast==0.14.8", "setuptools>=1.0.0"],
   "codeowners": ["@fmunkes"],
   "mdns_discovery": ["_http._tcp.local."],

@@ -3,7 +3,7 @@
   "domain": "filesystem_local",
   "stage": "stable",
   "name": "Filesystem (local disk)",
-  "description": "Support for music files that are present on a local accessible disk/folder.",
+  "description": "Play music and audiobooks stored on locally connected drives.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/filesystem/",

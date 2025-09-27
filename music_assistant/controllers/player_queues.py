@@ -58,7 +58,6 @@ from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    CACHE_CATEGORY_PLAYER_QUEUE_STATE,
     CONF_CROSSFADE,
     CONF_FLOW_MODE,
     MASS_LOGO_ONLINE,
@@ -103,6 +102,8 @@ CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_ep
 CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
 RADIO_TRACK_MAX_DURATION_SECS = 20 * 60  # 20 minutes
+CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
+CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
 
 
 class CompareState(TypedDict):
@@ -921,15 +922,15 @@ class PlayerQueuesController(CoreController):
         queue = None
         # try to restore previous state
         if prev_state := await self.mass.cache.get(
-            "state", category=CACHE_CATEGORY_PLAYER_QUEUE_STATE, base_key=queue_id
+            key=queue_id, provider=self.domain, category=CACHE_CATEGORY_PLAYER_QUEUE_STATE
         ):
             try:
                 queue = PlayerQueue.from_cache(prev_state)
                 prev_items = await self.mass.cache.get(
-                    "items",
+                    key=queue_id,
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                     default=[],
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                    base_key=queue_id,
                 )
                 queue_items = [QueueItem.from_cache(x) for x in prev_items]
             except Exception as err:
@@ -990,8 +991,18 @@ class PlayerQueuesController(CoreController):
         """Call when a player is removed from the registry."""
         if permanent:
             # if the player is permanently removed, we also remove the cached queue data
-            self.mass.create_task(self.mass.cache.delete(f"queue.state.{player_id}"))
-            self.mass.create_task(self.mass.cache.delete(f"queue.items.{player_id}"))
+            self.mass.create_task(
+                self.mass.cache.delete(
+                    key=player_id, provider=self.domain, category=CACHE_CATEGORY_PLAYER_QUEUE_STATE
+                )
+            )
+            self.mass.create_task(
+                self.mass.cache.delete(
+                    key=player_id,
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+                )
+            )
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
@@ -1236,10 +1247,10 @@ class PlayerQueuesController(CoreController):
             # save items in cache
             self.mass.create_task(
                 self.mass.cache.set(
-                    "items",
-                    [x.to_cache() for x in self._queue_items[queue_id]],
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                    base_key=queue_id,
+                    key=queue_id,
+                    data=[x.to_cache() for x in self._queue_items[queue_id]],
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                 )
             )
         # always send the base event
@@ -1247,10 +1258,10 @@ class PlayerQueuesController(CoreController):
         # save state
         self.mass.create_task(
             self.mass.cache.set(
-                "state",
-                queue.to_cache(),
+                key=queue_id,
+                data=queue.to_cache(),
+                provider=self.domain,
                 category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                base_key=queue_id,
             )
         )
 

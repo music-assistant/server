@@ -128,7 +128,6 @@ class MetaDataController(CoreController):
         self._lookup_jobs: MetadataLookupQueue = MetadataLookupQueue(100)
         self._lookup_task: asyncio.Task[None] | None = None
         self._throttler = Throttler(1, 30)
-        self._missing_metadata_scan_task: asyncio.Task[None] | None = None
 
     async def get_config_entries(
         self,
@@ -180,9 +179,9 @@ class MetaDataController(CoreController):
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
         # the lookup task is used to process metadata lookup jobs
         self._lookup_task = self.mass.create_task(self._process_metadata_lookup_jobs())
-        # just tun the scan for missing metadata once at startup
-        # TODO: allows to enable/disable this in the UI and configure interval/time
-        self._missing_metadata_scan_task = self.mass.create_task(self._scan_missing_metadata())
+        # just run the scan for missing metadata once at startup
+        # background scan for missing metadata
+        self.mass.call_later(300, self._scan_missing_metadata)
         # migrate old image path for collage images from absolute to relative
         # TODO: remove this after 2.5+ release
         old_path = f"{self.mass.storage_path}/collage_images/"
@@ -200,8 +199,6 @@ class MetaDataController(CoreController):
         """Handle logic on server stop."""
         if self._lookup_task and not self._lookup_task.done():
             self._lookup_task.cancel()
-        if self._missing_metadata_scan_task and not self._missing_metadata_scan_task.done():
-            self._missing_metadata_scan_task.cancel()
         self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
@@ -261,33 +258,38 @@ class MetaDataController(CoreController):
         self, item: str | MediaItemType, force_refresh: bool = False
     ) -> MediaItemType:
         """Get/update extra/enhanced metadata for/on given MediaItem."""
-        if isinstance(item, str):
-            retrieved_item = await self.mass.music.get_item_by_uri(item)
-            if isinstance(retrieved_item, BrowseFolder):
-                raise TypeError("Cannot update metadata on a BrowseFolder item.")
-            item = retrieved_item
+        async with self.cache.handle_refresh(force_refresh):
+            if isinstance(item, str):
+                retrieved_item = await self.mass.music.get_item_by_uri(item)
+                if isinstance(retrieved_item, BrowseFolder):
+                    raise TypeError("Cannot update metadata on a BrowseFolder item.")
+                item = retrieved_item
 
-        if item.provider != "library":
-            # this shouldn't happen but just in case.
-            raise RuntimeError("Metadata can only be updated for library items")
+            if item.provider != "library":
+                # this shouldn't happen but just in case.
+                raise RuntimeError("Metadata can only be updated for library items")
 
-        # just in case it was in the queue, prevent duplicate lookups
-        if item.uri:
-            self._lookup_jobs.pop(item.uri)
-        async with self._throttler:
-            if item.media_type == MediaType.ARTIST:
-                await self._update_artist_metadata(
-                    cast("Artist", item), force_refresh=force_refresh
-                )
-            if item.media_type == MediaType.ALBUM:
-                await self._update_album_metadata(cast("Album", item), force_refresh=force_refresh)
-            if item.media_type == MediaType.TRACK:
-                await self._update_track_metadata(cast("Track", item), force_refresh=force_refresh)
-            if item.media_type == MediaType.PLAYLIST:
-                await self._update_playlist_metadata(
-                    cast("Playlist", item), force_refresh=force_refresh
-                )
-        return item
+            # just in case it was in the queue, prevent duplicate lookups
+            if item.uri:
+                self._lookup_jobs.pop(item.uri)
+            async with self._throttler:
+                if item.media_type == MediaType.ARTIST:
+                    await self._update_artist_metadata(
+                        cast("Artist", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.ALBUM:
+                    await self._update_album_metadata(
+                        cast("Album", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.TRACK:
+                    await self._update_track_metadata(
+                        cast("Track", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.PLAYLIST:
+                    await self._update_playlist_metadata(
+                        cast("Playlist", item), force_refresh=force_refresh
+                    )
+            return item
 
     def schedule_update_metadata(self, uri: str) -> None:
         """Schedule metadata update for given MediaItem uri."""
@@ -780,6 +782,7 @@ class MetaDataController(CoreController):
         await asyncio.sleep(60)
         while True:
             item_uri = await self._lookup_jobs.get()
+            self.logger.debug(f"Processing metadata lookup for {item_uri}")
             try:
                 item = await self.mass.music.get_item_by_uri(item_uri)
                 # Type check to ensure it's a valid MediaItemType
@@ -810,10 +813,11 @@ class MetaDataController(CoreController):
             f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.images') = '[]')"
         )
         for artist in await self.mass.music.artists.library_items(
-            limit=25, order_by="random", extra_query=query
+            limit=5, order_by="random", extra_query=query
         ):
             if artist.uri:
                 self.schedule_update_metadata(artist.uri)
+            await asyncio.sleep(30)
 
         # Scan for missing album images
         self.logger.debug("Start lookup for missing album images...")
@@ -827,6 +831,7 @@ class MetaDataController(CoreController):
         ):
             if album.uri:
                 self.schedule_update_metadata(album.uri)
+            await asyncio.sleep(30)
 
         # Force refresh playlist metadata every refresh interval
         # this will e.g. update the playlist image and genres if the tracks have changed
@@ -836,10 +841,14 @@ class MetaDataController(CoreController):
             f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {timestamp}"
         )
         for playlist in await self.mass.music.playlists.library_items(
-            limit=10, order_by="random", extra_query=query
+            limit=5, order_by="random", extra_query=query
         ):
             if playlist.uri:
                 self.schedule_update_metadata(playlist.uri)
+            await asyncio.sleep(30)
+
+        # reschedule next scan
+        self.mass.call_later(PERIODIC_SCAN_INTERVAL, self._scan_missing_metadata)
 
 
 class MetadataLookupQueue(asyncio.Queue[str]):

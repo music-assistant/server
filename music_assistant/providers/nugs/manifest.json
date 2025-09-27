@@ -3,7 +3,7 @@
   "domain": "nugs",
   "stage": "beta",
   "name": "Nugs.net",
-  "description": "Nugs.net support for Music Assistant: Live Music provider.",
+  "description": "Stream official live concert audio & video — new shows added regularly to a rich archive.",
   "codeowners": ["@brian10048"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/nugs/",

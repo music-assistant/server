@@ -10,10 +10,10 @@ multiple instances with each one feed must exist.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -26,8 +26,13 @@ from music_assistant_models.errors import InvalidProviderURI, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, Podcast, PodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import create_safe_string
-from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
+from music_assistant.helpers.podcast_parsers import (
+    get_podcastparser_dict,
+    parse_podcast,
+    parse_podcast_episode,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -94,8 +99,8 @@ class PodcastMusicprovider(MusicProvider):
 
         try:
             self.parsed_podcast: dict[str, Any] = await self._cache_get_podcast()
-        except RuntimeError as exc:
-            raise RuntimeError("Invalid URL") from exc
+        except ClientError as exc:
+            raise MediaNotFoundError("Invalid URL") from exc
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -128,12 +133,14 @@ class PodcastMusicprovider(MusicProvider):
         await self._cache_set_podcast()
         yield await self._parse_podcast()
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full artist details by id."""
         if prov_podcast_id != self.podcast_id:
             raise RuntimeError(f"Podcast id not in provider: {prov_podcast_id}")
         return await self._parse_podcast()
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
         for idx, episode in enumerate(self.parsed_podcast["episodes"]):
@@ -157,6 +164,7 @@ class PodcastMusicprovider(MusicProvider):
             if mass_episode := self._parse_episode(episode, idx):
                 yield mass_episode
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         for episode in self.parsed_podcast["episodes"]:
@@ -203,22 +211,13 @@ class PodcastMusicprovider(MusicProvider):
         )
 
     async def _get_podcast(self) -> dict[str, Any]:
-        # without user agent, some feeds can not be retrieved
-        # https://github.com/music-assistant/support/issues/3596
         assert self.feed_url is not None
-        response = await self.mass.http_session.get(
-            self.feed_url, headers={"User-Agent": "Mozilla/5.0"}
-        )
-        if response.status != 200:
-            raise RuntimeError
-        feed_data = await response.read()
-        feed_stream = BytesIO(feed_data)
-        return podcastparser.parse(self.feed_url, feed_stream)  # type:ignore [no-any-return]
+        return await get_podcastparser_dict(session=self.mass.http_session, feed_url=self.feed_url)
 
     async def _cache_get_podcast(self) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
             key=self.podcast_id,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             default=None,
         )
@@ -231,7 +230,7 @@ class PodcastMusicprovider(MusicProvider):
     async def _cache_set_podcast(self) -> None:
         await self.mass.cache.set(
             key=self.podcast_id,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             data=self.parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day

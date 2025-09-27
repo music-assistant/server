@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -15,9 +15,6 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Track, UniqueList
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_MUSIC_ARTIST_ALBUMS,
-    CACHE_CATEGORY_MUSIC_ARTIST_TRACKS,
-    CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ARTISTS,
     DB_TABLE_TRACK_ARTISTS,
@@ -205,63 +202,26 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
     ) -> list[Track]:
         """Return top tracks for an artist on given provider."""
-        items = []
         assert provider_instance_id_or_domain != "library"
-        prov = self.mass.get_provider(provider_instance_id_or_domain)
-        if prov is None:
+        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
-        # prefer cache items (if any) - for streaming providers
-        cache_category = CACHE_CATEGORY_MUSIC_ARTIST_TRACKS
-        cache_base_key = prov.lookup_key
-        cache_key = item_id
-        if (
-            prov.is_streaming_provider
-            and (
-                cache := await self.mass.cache.get(
-                    cache_key, category=cache_category, base_key=cache_base_key
-                )
-            )
-            is not None
-        ):
-            return [Track.from_dict(x) for x in cache]
-        # no items in cache - get listing from provider
+        prov = cast("MusicProvider", prov)
         if ProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
-            items = await prov.get_artist_toptracks(item_id)
-            for item in items:
-                # if this is a complete track object, pre-cache it as
-                # that will save us an (expensive) lookup later
-                if item.image and item.artist_str and item.album and prov.domain != "builtin":
-                    await self.mass.cache.set(
-                        f"track.{item_id}",
-                        item.to_dict(),
-                        category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
-                        base_key=prov.lookup_key,
-                    )
-        else:
-            # fallback implementation using the db
-            if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
-                item_id,
-                provider_instance_id_or_domain,
-            ):
-                artist_id = db_artist.item_id
-                subquery = (
-                    f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {artist_id}"
-                )
-                query = f"tracks.item_id in ({subquery})"
-                return await self.mass.music.tracks._get_library_items_by_query(
-                    extra_query_parts=[query], provider=provider_instance_id_or_domain
-                )
-        # store (serializable items) in cache
-        if prov.is_streaming_provider:
-            self.mass.create_task(
-                self.mass.cache.set(
-                    cache_key,
-                    [x.to_dict() for x in items],
-                    category=cache_category,
-                    base_key=cache_base_key,
-                )
+            return await prov.get_artist_toptracks(item_id)
+        # fallback implementation using the library db
+        if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
+            item_id,
+            provider_instance_id_or_domain,
+        ):
+            artist_id = db_artist.item_id
+            subquery = (
+                f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {artist_id}"
             )
-        return items
+            query = f"tracks.item_id in ({subquery})"
+            return await self.mass.music.tracks._get_library_items_by_query(
+                extra_query_parts=[query], provider=provider_instance_id_or_domain
+            )
+        return []
 
     async def get_library_artist_tracks(
         self,
@@ -278,55 +238,28 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
     ) -> list[Album]:
         """Return albums for an artist on given provider."""
-        items = []
         assert provider_instance_id_or_domain != "library"
-        prov = self.mass.get_provider(provider_instance_id_or_domain)
+        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+            return []
+        prov = cast("MusicProvider", prov)
         if prov is None:
             return []
-        # prefer cache items (if any)
-        cache_category = CACHE_CATEGORY_MUSIC_ARTIST_ALBUMS
-        cache_base_key = prov.lookup_key
-        cache_key = item_id
-        if (
-            prov.is_streaming_provider
-            and (
-                cache := await self.mass.cache.get(
-                    cache_key, category=cache_category, base_key=cache_base_key
-                )
-            )
-            is not None
-        ):
-            return [Album.from_dict(x) for x in cache]
-        # no items in cache - get listing from provider
         if ProviderFeature.ARTIST_ALBUMS in prov.supported_features:
-            items = await prov.get_artist_albums(item_id)
-        else:
-            # fallback implementation using the db
-            # ruff: noqa: PLR5501
-            if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
-                item_id,
-                provider_instance_id_or_domain,
-            ):
-                artist_id = db_artist.item_id
-                subquery = (
-                    f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {artist_id}"
-                )
-                query = f"albums.item_id in ({subquery})"
-                return await self.mass.music.albums._get_library_items_by_query(
-                    extra_query_parts=[query], provider=provider_instance_id_or_domain
-                )
-
-        # store (serializable items) in cache
-        if prov.is_streaming_provider:
-            self.mass.create_task(
-                self.mass.cache.set(
-                    cache_key,
-                    [x.to_dict() for x in items],
-                    category=cache_category,
-                    base_key=cache_base_key,
-                )
+            return await prov.get_artist_albums(item_id)
+        # fallback implementation using the db
+        if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
+            item_id,
+            provider_instance_id_or_domain,
+        ):
+            artist_id = db_artist.item_id
+            subquery = (
+                f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {artist_id}"
             )
-        return items
+            query = f"albums.item_id in ({subquery})"
+            return await self.mass.music.albums._get_library_items_by_query(
+                extra_query_parts=[query], provider=provider_instance_id_or_domain
+            )
+        return []
 
     async def get_library_artist_albums(
         self,

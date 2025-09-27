@@ -227,6 +227,7 @@ class YoutubeMusicProvider(MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types=list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -319,6 +320,7 @@ class YoutubeMusicProvider(MusicProvider):
         for podcast in podcasts_obj:
             yield self._parse_podcast(podcast)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         if album_obj := await get_album(prov_album_id=prov_album_id, language=self.language):
@@ -326,6 +328,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         album_obj = await get_album(prov_album_id=prov_album_id, language=self.language)
@@ -340,6 +343,7 @@ class YoutubeMusicProvider(MusicProvider):
             tracks.append(track)
         return tracks
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         if artist_obj := await get_artist(
@@ -349,6 +353,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         if track_obj := await get_track(
@@ -360,6 +365,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         # Grab the playlist id from the full url in case of personal playlists
@@ -375,6 +381,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
         if page > 0:
@@ -410,6 +417,7 @@ class YoutubeMusicProvider(MusicProvider):
         # YTM doesn't seem to support paging so we ignore offset and limit
         return result
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -424,6 +432,7 @@ class YoutubeMusicProvider(MusicProvider):
             return albums
         return []
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -433,6 +442,7 @@ class YoutubeMusicProvider(MusicProvider):
             return playlist_tracks[:25]
         return []
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get the full details of a Podcast."""
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
@@ -451,6 +461,7 @@ class YoutubeMusicProvider(MusicProvider):
             episode.position = ep_index
             yield episode
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get a single Podcast Episode."""
         podcast_id, episode_id = prov_episode_id.split(PODCAST_EPISODE_SPLITTER)
@@ -546,6 +557,7 @@ class YoutubeMusicProvider(MusicProvider):
             user=self._yt_user,
         )
 
+    @use_cache(3600 * 24)  # Cache for 1 day
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         result = []
@@ -812,7 +824,6 @@ class YoutubeMusicProvider(MusicProvider):
                 playlist.owner = authors["name"]
         else:
             playlist.owner = self.name
-        playlist.cache_checksum = playlist_obj.get("checksum")
         return playlist
 
     def _parse_track(self, track_obj: dict) -> Track:

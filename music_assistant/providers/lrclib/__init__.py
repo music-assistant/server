@@ -14,6 +14,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -77,6 +78,7 @@ class LrclibProvider(MetadataProvider):
             self.throttler = ThrottlerManager(rate_limit=1, period=1)
             self.logger.debug("Using custom API endpoint: %s (throttling disabled)", self.api_url)
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     @throttle_with_retries
     async def _get_data(self, **params: Any) -> dict[str, Any] | None:
         """Get data from LRCLib API with throttling and retries."""

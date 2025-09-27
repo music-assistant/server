@@ -3,7 +3,7 @@
   "domain": "lastfm_scrobble",
   "stage": "beta",
   "name": "LastFM Scrobbler",
-  "description": "Scrobble your music to Last.fm and others with a compatible API like Libre.fm",
+  "description": "Scrobbles your listening history to Last.fm (and others with a compatible API like Libre.fm), building rich listening stats and recommendations.",
   "codeowners": ["@music-assistant"],
   "documentation": "https://music-assistant.io/plugins/lastfm_scrobble/",
   "multi_instance": false,

@@ -3,7 +3,7 @@
   "domain": "subsonic_scrobble",
   "stage": "beta",
   "name": "Subsonic Scrobbler",
-  "description": "Report your music playback back to Subsonic server",
+  "description": "Scrobbles tracks played in Music Assistant to your local Subsonic server for history and stats.",
   "codeowners": ["@clusters"],
   "documentation": "",
   "multi_instance": false,

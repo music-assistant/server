@@ -952,27 +952,6 @@ DEFAULT_PCM_FORMAT = AudioFormat(
     channels=2,
 )
 
-
-# CACHE categories
-
-CACHE_CATEGORY_DEFAULT: Final[int] = 0
-CACHE_CATEGORY_MUSIC_SEARCH: Final[int] = 1
-CACHE_CATEGORY_MUSIC_ALBUM_TRACKS: Final[int] = 2
-CACHE_CATEGORY_MUSIC_ARTIST_TRACKS: Final[int] = 3
-CACHE_CATEGORY_MUSIC_ARTIST_ALBUMS: Final[int] = 4
-CACHE_CATEGORY_MUSIC_PLAYLIST_TRACKS: Final[int] = 5
-CACHE_CATEGORY_MUSIC_PROVIDER_ITEM: Final[int] = 6
-CACHE_CATEGORY_PLAYER_QUEUE_STATE: Final[int] = 7
-CACHE_CATEGORY_MEDIA_INFO: Final[int] = 8
-CACHE_CATEGORY_LIBRARY_ITEMS: Final[int] = 9
-CACHE_CATEGORY_PLAYERS: Final[int] = 10
-CACHE_CATEGORY_RECOMMENDATIONS: Final[int] = 11
-CACHE_CATEGORY_OPEN_SUBSONIC: Final[int] = 12
-
-# CACHE base keys
-CACHE_KEY_PLAYER_POWER: Final[str] = "player_power"
-
-
 # extra data / extra attributes keys
 ATTR_FAKE_POWER: Final[str] = "fake_power"
 ATTR_FAKE_VOLUME: Final[str] = "fake_volume_level"

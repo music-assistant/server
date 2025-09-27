@@ -148,6 +148,7 @@ class RadioBrowserProvider(MusicProvider):
             ):
                 await self.library_add(await self.get_radio(db_row["provider_item_id"]))
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
@@ -293,7 +294,7 @@ class RadioBrowserProvider(MusicProvider):
         self.update_config_value(CONF_STORED_RADIOS, stored_radios)
         return True
 
-    @use_cache(3600)
+    @use_cache(3600 * 6)  # Cache for 6 hours
     async def get_by_popularity(self) -> Sequence[Radio]:
         """Get radio stations by popularity."""
         try:
@@ -307,7 +308,7 @@ class RadioBrowserProvider(MusicProvider):
         except RadioBrowserError as err:
             raise ProviderUnavailableError(f"Failed to fetch popular stations: {err}") from err
 
-    @use_cache(3600)
+    @use_cache(3600 * 6)  # Cache for 6 hours
     async def get_by_votes(self) -> Sequence[Radio]:
         """Get radio stations by votes."""
         try:
@@ -321,7 +322,7 @@ class RadioBrowserProvider(MusicProvider):
         except RadioBrowserError as err:
             raise ProviderUnavailableError(f"Failed to fetch stations by votes: {err}") from err
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_country_folders(self, base_path: str) -> list[BrowseFolder]:
         """Get a list of country names as BrowseFolder."""
         try:
@@ -347,7 +348,7 @@ class RadioBrowserProvider(MusicProvider):
             items.append(folder)
         return items
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_language_folders(self, base_path: str) -> list[BrowseFolder]:
         """Get a list of language names as BrowseFolder."""
         try:
@@ -367,7 +368,7 @@ class RadioBrowserProvider(MusicProvider):
             for language in languages
         ]
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_tag_folders(self, base_path: str) -> list[BrowseFolder]:
         """Get a list of tag names as BrowseFolder."""
         try:
@@ -391,7 +392,7 @@ class RadioBrowserProvider(MusicProvider):
             for tag in tags
         ]
 
-    @use_cache(3600)
+    @use_cache(3600 * 24)  # Cache for 1 day
     async def get_by_country(self, country_code: str) -> list[Radio]:
         """Get radio stations by country."""
         try:
@@ -409,7 +410,7 @@ class RadioBrowserProvider(MusicProvider):
                 f"Failed to fetch stations for country {country_code}: {err}"
             ) from err
 
-    @use_cache(3600)
+    @use_cache(3600 * 24)  # Cache for 1 day
     async def get_by_language(self, language: str) -> list[Radio]:
         """Get radio stations by language."""
         try:
@@ -427,7 +428,7 @@ class RadioBrowserProvider(MusicProvider):
                 f"Failed to fetch stations for language {language}: {err}"
             ) from err
 
-    @use_cache(3600)
+    @use_cache(3600 * 24)  # Cache for 1 day
     async def get_by_tag(self, tag: str) -> list[Radio]:
         """Get radio stations by tag."""
         try:
@@ -445,6 +446,7 @@ class RadioBrowserProvider(MusicProvider):
                 f"Failed to fetch stations for tag {tag}: {err}"
             ) from err
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         try:
