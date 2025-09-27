@@ -12,13 +12,18 @@ RUN set -x \
         jemalloc \
         tzdata \
         dnscache \
-    # cifs utils and libnfs are needed for smb and nfs support (file provider)
+        # cifs utils and libnfs are needed for smb and nfs support (file provider)
         cifs-utils \
         libnfs \
         # openssl-dev is needed for airplay
         openssl-dev  \
         # install snapcast so the snapcast provider can run the builtin snapcast server
-        snapcast
+        snapcast \
+        # build tools and llvm support needed for librosa/numba/llvmlite (smartfades)
+        build-base \
+        llvm15-dev \
+        # libsndfile needed for librosa audio file support (smartfades)
+        libsndfile-dev
 
 # Get static ffmpeg builds from https://hub.docker.com/r/mwader/static-ffmpeg/
 COPY --from=mwader/static-ffmpeg:7.1.1 /ffmpeg /usr/local/bin/
@@ -30,6 +35,9 @@ COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
 
 # JEMalloc for more efficient memory management
 ENV LD_PRELOAD="/usr/lib/libjemalloc.so.2"
+
+# Set LLVM config for llvmlite/numba
+ENV LLVM_CONFIG="/usr/bin/llvm-config-15"
 
 # we need to set (very permissive) permissions to the workdir
 # and /tmp to allow running the container as non-root

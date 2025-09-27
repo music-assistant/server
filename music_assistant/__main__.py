@@ -136,6 +136,7 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
     logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
+    logging.getLogger("numba").setLevel(logging.WARNING)
 
     sys.excepthook = lambda *args: logging.getLogger(None).exception(
         "Uncaught exception",
