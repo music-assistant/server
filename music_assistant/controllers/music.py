@@ -8,6 +8,7 @@ import os
 import shutil
 from collections.abc import Sequence
 from contextlib import suppress
+from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
 from math import inf
@@ -610,7 +611,7 @@ class MusicController(CoreController):
             )
             if conf_export_library != "export_favorite":
                 continue
-            prov_item = full_item
+            prov_item = deepcopy(full_item)
             prov_item.provider = prov_mapping.provider_instance
             prov_item.item_id = prov_mapping.item_id
             self.mass.create_task(provider.library_add(prov_item))
@@ -682,32 +683,33 @@ class MusicController(CoreController):
         self, item: str | MediaItemType, overwrite_existing: bool = False
     ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
+        # ensure we have a full item
         if isinstance(item, str):
-            item = await self.get_item_by_uri(item)
-        if isinstance(item, ItemMapping):
-            item = await self.get_item(
+            full_item = await self.get_item_by_uri(item)
+        else:
+            full_item = await self.get_item(
                 item.media_type,
                 item.item_id,
                 item.provider,
             )
         # add to provider(s) library first
-        for prov_mapping in item.provider_mappings:
+        for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(item.media_type):
+            if not provider.library_edit_supported(full_item.media_type):
                 continue
             conf_export_library = provider.config.get_value(
                 CONF_ENTRY_LIBRARY_EXPORT_ADD.key, CONF_ENTRY_LIBRARY_EXPORT_ADD.default_value
             )
             if conf_export_library != "export_library":
                 continue
-            prov_item = item
+            prov_item = deepcopy(full_item) if full_item.provider == "library" else full_item
             prov_item.provider = prov_mapping.provider_instance
             prov_item.item_id = prov_mapping.item_id
             prov_mapping.in_library = True
             self.mass.create_task(provider.library_add(prov_item))
         # add (or overwrite) to library
-        ctrl = self.get_controller(item.media_type)
-        library_item = await ctrl.add_item_to_library(item, overwrite_existing)
+        ctrl = self.get_controller(full_item.media_type)
+        library_item = await ctrl.add_item_to_library(full_item, overwrite_existing)
         # perform full metadata scan (and provider match)
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item

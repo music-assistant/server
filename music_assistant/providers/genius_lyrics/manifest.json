@@ -1,7 +1,7 @@
 {
   "type": "metadata",
   "domain": "genius_lyrics",
-  "stage": "alpha",
+  "stage": "beta",
   "name": "Genius Lyrics",
   "description": "Alternative lyrics source, pulling song lyrics from Genius to supplement other providers.",
   "codeowners": ["@robert-alfaro"],

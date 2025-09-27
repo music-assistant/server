@@ -1,7 +1,7 @@
 {
   "type": "plugin",
   "domain": "listenbrainz_scrobble",
-  "stage": "beta",
+  "stage": "stable",
   "name": "ListenBrainz Scrobbler",
   "description": "Scrobbles your listening history to ListenBrainz — an open, community-driven alternative to Last.fm.",
   "codeowners": ["@music-assistant"],
