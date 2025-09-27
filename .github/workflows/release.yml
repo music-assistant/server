@@ -112,6 +112,10 @@ jobs:
           echo "patch=${patch}" >> $GITHUB_OUTPUT
           echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
+      - id: lower_owner
+        uses: ASzc/change-string-case-action@v6
+        with:
+          string: ${{ github.repository_owner }}
       - name: Build and Push release
         uses: docker/build-push-action@v6.18.0
         if: ${{ github.event.release.prerelease == false }}
@@ -120,11 +124,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           file: Dockerfile
           tags: |-
-            ghcr.io/${{ github.repository_owner.toLowerCase() }}/server:${{ steps.tags.outputs.patch }},
-            ghcr.io/${{ github.repository_owner.toLowerCase() }}/server:${{ steps.tags.outputs.minor }},
-            ghcr.io/${{ github.repository_owner.toLowerCase() }}/server:${{ steps.tags.outputs.major }},
-            ghcr.io/${{ github.repository_owner.toLowerCase() }}/server:stable,
-            ghcr.io/${{ github.repository_owner.toLowerCase() }}/server:latest
+            ghcr.io/${{ steps.lower_owner.outputs.lowercase }}/server:${{ steps.tags.outputs.patch }},
+            ghcr.io/${{ steps.lower_owner.outputs.lowercase }}/server:${{ steps.tags.outputs.minor }},
+            ghcr.io/${{ steps.lower_owner.outputs.lowercase }}/server:${{ steps.tags.outputs.major }},
+            ghcr.io/${{ steps.lower_owner.outputs.lowercase }}/server:stable,
+            ghcr.io/${{ steps.lower_owner.outputs.lowercase }}/server:latest
           push: true
           build-args: |
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
@@ -137,8 +141,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           file: Dockerfile
           tags: |-
-            ghcr.io/${{ github.repository_owner.toLowerCase() }}/server:${{ steps.tags.outputs.patch }},
-            ghcr.io/${{ github.repository_owner.toLowerCase() }}/server:beta
+            ghcr.io/${{ steps.lower_owner.outputs.lowercase }}/server:${{ steps.tags.outputs.patch }},
+            ghcr.io/${{ steps.lower_owner.outputs.lowercase }}/server:beta
           push: true
           build-args: |
             MASS_VERSION=${{ needs.build-artifact.outputs.version }}
