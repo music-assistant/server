@@ -389,7 +389,7 @@ class AudioDbMetadataProvider(MetadataProvider):
             await self.mass.music.albums.update_item_in_library(track.album.item_id, track.album)
         return metadata
 
-    @use_cache(86400 * 30)
+    @use_cache(86400 * 90, persistent=True)  # Cache for 90 days
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"

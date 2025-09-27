@@ -3,7 +3,7 @@
   "domain": "sonos",
   "stage": "stable",
   "name": "SONOS",
-  "description": "SONOS Player provider for Music Assistant.",
+  "description": "Play music, manage groups, and control SONOS speakers throughout your home.",
   "codeowners": ["@music-assistant"],
   "requirements": ["aiosonos==0.1.9"],
   "documentation": "https://music-assistant.io/player-support/sonos/",

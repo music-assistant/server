@@ -3,7 +3,7 @@
   "domain": "soundcloud",
   "stage": "stable",
   "name": "Soundcloud",
-  "description": "Support for the Soundcloud streaming provider in Music Assistant.",
+  "description": "Stream tracks, remixes, and user-uploaded music from the SoundCloud community.",
   "codeowners": ["@domanchi", "@gieljnssns"],
   "requirements": ["soundcloudpy==0.1.4"],
   "documentation": "https://music-assistant.io/music-providers/soundcloud/",

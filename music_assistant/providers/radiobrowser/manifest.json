@@ -3,7 +3,7 @@
   "domain": "radiobrowser",
   "stage": "stable",
   "name": "RadioBrowser",
-  "description": "Search radio streams from RadioBrowser in Music Assistant.",
+  "description": "Listen to thousands of internet radio stations from across the world.",
   "codeowners": ["@gieljnssns"],
   "requirements": ["radios==0.3.2"],
   "documentation": "https://music-assistant.io/music-providers/radio-browser/",

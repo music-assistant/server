@@ -132,6 +132,7 @@ class Player(ABC):
     _attr_type: PlayerType = PlayerType.PLAYER
     _attr_supported_features: set[PlayerFeature]
     _attr_group_members: list[str]
+    _attr_static_group_members: list[str]
     _attr_device_info: DeviceInfo
     _attr_can_group_with: set[str]
     _attr_source_list: list[PlayerSource]
@@ -159,6 +160,7 @@ class Player(ABC):
         # initialize mutable attributes
         self._attr_supported_features = set()
         self._attr_group_members = []
+        self._attr_static_group_members = []
         self._attr_device_info = DeviceInfo()
         self._attr_can_group_with = set()
         self._attr_source_list = []
@@ -316,6 +318,17 @@ class Player(ABC):
         elif self._attr_group_members == [self.player_id]:
             return []
         return self._attr_group_members
+
+    @property
+    def static_group_members(self) -> list[str]:
+        """
+        Return the static group members for a player group.
+
+        For PlayerType.GROUP return the player_ids of members that must not be removed by
+        the user.
+        For all other player types return an empty list.
+        """
+        return self._attr_static_group_members
 
     @property
     def can_group_with(self) -> set[str]:
@@ -606,13 +619,13 @@ class Player(ABC):
             ),
         ]
 
-    async def on_registered(self) -> None:
+    async def on_config_updated(self) -> None:
         """
-        Handle logic when the player is registered and config is set.
+        Handle logic when the player is loaded or updated.
 
         Override this method in your player implementation if you need
         to perform any additional setup logic after the player is registered and
-        the self.config was loaded.
+        the self.config was loaded, and whenever the config changes.
         """
         return
 
@@ -1233,6 +1246,7 @@ class Player(ABC):
         self._state.volume_level = self.volume_state
         self._state.volume_muted = self.volume_muted_state
         self._state.group_members = UniqueList(self.group_members)
+        self._state.static_group_members = UniqueList(self.static_group_members)
         self._state.can_group_with = self.can_group_with
         self._state.synced_to = self.synced_to
         self._state.active_source = self.active_source_state
@@ -1399,16 +1413,17 @@ class SyncGroupPlayer(GroupPlayer):
             PlayerFeature.VOLUME_SET,
         }
 
-    async def on_registered(self) -> None:
-        """Complete the initialization once the player was registered."""
+    async def on_config_updated(self) -> None:
+        """Handle logic when the player is loaded or updated."""
         # Config is only available after the player was registered
-        # Copy the list so not every added player becomes a static member
-        self._attr_group_members = list(
-            cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        )
-        # Uses self.config
+        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        self._attr_static_group_members = static_members.copy()
+        if not self.powered:
+            self._attr_group_members = static_members.copy()
         if self.is_dynamic:
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
@@ -1538,10 +1553,12 @@ class SyncGroupPlayer(GroupPlayer):
             # collision: child player is part another group that is already active !
             # solve this by trying to leave the group first
             if other_group := self.mass.players.get(group):
-                try:
-                    other_group.check_feature(PlayerFeature.SET_MEMBERS)
+                if (
+                    other_group.supports_feature(PlayerFeature.SET_MEMBERS)
+                    and member.player_id not in other_group.static_group_members
+                ):
                     await other_group.set_members(player_ids_to_remove=[member.player_id])
-                except UnsupportedFeaturedException:
+                else:
                     # if the other group does not support SET_MEMBERS or it is a static
                     # member, we need to power it off to leave the group
                     await other_group.power(False)
@@ -1567,6 +1584,15 @@ class SyncGroupPlayer(GroupPlayer):
         self.update_state()
 
         if powered:
+            # reset the group members to the available static members when powering on
+            self._attr_group_members = []
+            for static_group_member in self._attr_static_group_members:
+                if (
+                    (member_player := self.mass.players.get(static_group_member))
+                    and member_player.available
+                    and member_player.enabled
+                ):
+                    self._attr_group_members.append(static_group_member)
             # Select sync leader and handle turn on
             new_leader = self._select_sync_leader()
             # handle TURN_ON of the group player by turning on all members
@@ -1589,10 +1615,10 @@ class SyncGroupPlayer(GroupPlayer):
                     await member.power(False)
 
         if not powered:
-            # reset the original group members when powered off and clear leader
-            self._attr_group_members = list(
-                cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-            )
+            # Reset to unfiltered static members list when powered off
+            # (the frontend will hide unavailable members)
+            self._attr_group_members = self._attr_static_group_members.copy()
+            # and clear the sync leader
             self.sync_leader = None
 
     async def _dissolve_syncgroup(self) -> None:
@@ -1675,15 +1701,9 @@ class SyncGroupPlayer(GroupPlayer):
             final_players_to_add.append(player_id)
         # handle removals
         final_players_to_remove: list[str] = []
-        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         for player_id in player_ids_to_remove or []:
             if player_id not in self._attr_group_members:
                 continue
-            if player_id in static_members:
-                raise UnsupportedFeaturedException(
-                    f"Cannot remove {player_id} from {self.display_name} "
-                    "as it is a static member of this group"
-                )
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
                     f"Cannot remove {self.display_name} from itself as a member!"

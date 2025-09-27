@@ -41,7 +41,6 @@ from music_assistant_models.provider import SyncTask
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_MUSIC_SEARCH,
     CONF_ENTRY_LIBRARY_EXPORT_ADD,
     CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
     DB_TABLE_ALBUM_ARTISTS,
@@ -88,7 +87,9 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 19
+DB_SCHEMA_VERSION: Final[int] = 20
+
+CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 
 
 class MusicController(CoreController):
@@ -355,37 +356,11 @@ class MusicController(CoreController):
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
-
-        # prefer cache items (if any)
-        media_types_str = ",".join(media_types)
-        cache_category = CACHE_CATEGORY_MUSIC_SEARCH
-        cache_base_key = prov.lookup_key
-        cache_key = f"{search_query}.{limit}.{media_types_str}"
-
-        if prov.is_streaming_provider and (
-            cache := await self.mass.cache.get(
-                cache_key, category=cache_category, base_key=cache_base_key
-            )
-        ):
-            return SearchResults.from_dict(cache)
-        # no items in cache - get listing from provider
-        result = await prov.search(
+        return await prov.search(
             search_query,
             media_types,
             limit,
         )
-        # store (serializable items) in cache
-        if prov.is_streaming_provider:
-            self.mass.create_task(
-                self.mass.cache.set(
-                    cache_key,
-                    result.to_dict(),
-                    expiration=86400 * 7,
-                    category=cache_category,
-                    base_key=cache_base_key,
-                )
-            )
-        return result
 
     async def search_library(
         self,
@@ -1404,8 +1379,14 @@ class MusicController(CoreController):
             else:
                 self.logger.info("Sync task for %s/%ss completed", provider.name, media_type.value)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            cache_key = f"last_library_sync_{provider.instance_id}_{media_type.value}"
-            self.mass.create_task(self.mass.cache.set, cache_key, self.mass.loop.time())
+            self.mass.create_task(
+                self.mass.cache.set(
+                    key=media_type.value,
+                    data=self.mass.loop.time(),
+                    provider=provider.instance_id,
+                    category=CACHE_CATEGORY_LAST_SYNC,
+                )
+            )
             # schedule db cleanup after sync
             if not self.in_progress_syncs:
                 self.mass.create_task(self._cleanup_database())
@@ -1480,9 +1461,12 @@ class MusicController(CoreController):
 
         if is_initial:
             # schedule the first sync run
-            cache_key = f"last_library_sync_{provider.instance_id}_{media_type.value}"
             initial_interval = 10
-            if last_sync := await self.mass.cache.get(cache_key):
+            if last_sync := await self.mass.cache.get(
+                key=media_type.value,
+                provider=provider.instance_id,
+                category=CACHE_CATEGORY_LAST_SYNC,
+            ):
                 initial_interval += max(0, sync_interval - (self.mass.loop.time() - last_sync))
             sync_interval = initial_interval
 
@@ -1592,86 +1576,12 @@ class MusicController(CoreController):
 
     async def __migrate_database(self, prev_version: int) -> None:
         """Perform a database migration."""
-        # ruff: noqa: PLR0915
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
 
-        if prev_version < 7:
+        if prev_version < 15:
             raise MusicAssistantError("Database schema version too old to migrate")
-
-        if prev_version <= 7:
-            # remove redundant artists and provider_mappings columns
-            for table in (
-                DB_TABLE_TRACKS,
-                DB_TABLE_ALBUMS,
-                DB_TABLE_ARTISTS,
-                DB_TABLE_RADIOS,
-                DB_TABLE_PLAYLISTS,
-            ):
-                for column in ("artists", "provider_mappings"):
-                    try:
-                        await self.database.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-                    except Exception as err:
-                        if "no such column" in str(err):
-                            continue
-                        raise
-            # add cache_checksum column to playlists
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN cache_checksum TEXT DEFAULT ''"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-
-        if prev_version <= 8:
-            # migrate track_loudness --> loudness_measurements
-            async for db_row in self.database.iter_items("track_loudness"):
-                if db_row["integrated"] == inf or db_row["integrated"] == -inf:
-                    continue
-                if db_row["provider"] in ("radiobrowser", "tunein"):
-                    continue
-                await self.database.insert_or_replace(
-                    DB_TABLE_LOUDNESS_MEASUREMENTS,
-                    {
-                        "item_id": db_row["item_id"],
-                        "media_type": "track",
-                        "provider": db_row["provider"],
-                        "loudness": db_row["integrated"],
-                    },
-                )
-            await self.database.execute("DROP TABLE IF EXISTS track_loudness")
-
-        if prev_version <= 10:
-            # Recreate playlog table due to complete new layout
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLOG}")
-            await self.__create_database_tables()
-
-        if prev_version <= 12:
-            # Need to drop the NOT NULL requirement on podcasts.publisher and audiobooks.publisher
-            # However, because there is no ALTER COLUMN support in sqlite, we will need
-            # to create the tables again.
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_AUDIOBOOKS}")
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PODCASTS}")
-            await self.__create_database_tables()
-
-        if prev_version <= 13:
-            # migrate chapters in metadata
-            # this is leftover mess from the old chapters implementation
-            for db_row in await self.database.search(DB_TABLE_TRACKS, "position_start", "metadata"):
-                metadata = json_loads(db_row["metadata"])
-                metadata["chapters"] = None
-                await self.database.update(
-                    DB_TABLE_TRACKS,
-                    {"item_id": db_row["item_id"]},
-                    {"metadata": serialize_to_json(metadata)},
-                )
-
-        if prev_version <= 14:
-            # Recreate playlog table due to complete new layout
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLOG}")
-            await self.__create_database_tables()
 
         if prev_version <= 15:
             # add search_name and search_sort_name columns to all tables
@@ -1756,6 +1666,13 @@ class MusicController(CoreController):
             await self.database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain in ('filesystem_local', 'filesystem_smb');"
+            )
+
+        if prev_version <= 20:
+            # drop column cache_checksum from playlists table
+            # this is no longer used and is a leftover from previous designs
+            await self.database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLISTS} DROP COLUMN cache_checksum"
             )
 
         # save changes
@@ -1858,7 +1775,6 @@ class MusicController(CoreController):
             [sort_name] TEXT NOT NULL,
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
-            [cache_checksum] TEXT DEFAULT '',
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,

@@ -31,12 +31,13 @@ class DemoPlayer(Player):
         }
         self._set_attributes()
 
-    async def on_registered(self) -> None:
-        """Complete the initialization once the player was registered."""
+    async def on_config_updated(self) -> None:
+        """Handle logic when the player is loaded or updated."""
         # OPTIONAL
         # This method is optional and should be implemented if you need to handle
-        # any initialization logic after the player was registered with the Player controller.
+        # any initialization logic after the config was initially loaded or updated.
         # This is called after the player is registered and self.config was loaded.
+        # And also when the config was updated.
         # You don't need to call update_state() here.
 
     @property

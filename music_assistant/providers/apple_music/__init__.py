@@ -60,6 +60,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.json import json_loads
@@ -99,6 +100,7 @@ UNKNOWN_PLAYLIST_NAME = "Unknown Apple Music Playlist"
 CONF_MUSIC_APP_TOKEN = "music_app_token"
 CONF_MUSIC_USER_TOKEN = "music_user_token"
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
+CACHE_CATEGORY_DECRYPT_KEY = 1
 
 
 async def setup(
@@ -279,6 +281,7 @@ class AppleMusicProvider(MusicProvider):
         ) as _file:
             self._decrypt_private_key = await _file.read()
 
+    @use_cache()
     async def search(
         self, search_query: str, media_types: list[MediaType] | None, limit: int = 5
     ) -> SearchResults:
@@ -377,24 +380,28 @@ class AppleMusicProvider(MusicProvider):
             elif item and item["id"]:
                 yield self._parse_playlist(item)
 
+    @use_cache()
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         endpoint = f"catalog/{self._storefront}/artists/{prov_artist_id}"
         response = await self._get_data(endpoint, extend="editorialNotes")
         return self._parse_artist(response["data"][0])
 
+    @use_cache()
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         endpoint = f"catalog/{self._storefront}/albums/{prov_album_id}"
         response = await self._get_data(endpoint, include="artists")
         return self._parse_album(response["data"][0])
 
+    @use_cache()
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         endpoint = f"catalog/{self._storefront}/songs/{prov_track_id}"
         response = await self._get_data(endpoint, include="artists,albums")
         return self._parse_track(response["data"][0])
 
+    @use_cache()
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         if self._is_catalog_id(prov_playlist_id):
@@ -405,6 +412,7 @@ class AppleMusicProvider(MusicProvider):
         response = await self._get_data(endpoint)
         return self._parse_playlist(response["data"][0])
 
+    @use_cache()
     async def get_album_tracks(self, prov_album_id) -> list[Track]:
         """Get all album tracks for given album id."""
         endpoint = f"catalog/{self._storefront}/albums/{prov_album_id}/tracks"
@@ -420,6 +428,7 @@ class AppleMusicProvider(MusicProvider):
             tracks.append(track)
         return tracks
 
+    @use_cache(3600 * 3)  # cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
         if self._is_catalog_id(prov_playlist_id):
@@ -441,6 +450,7 @@ class AppleMusicProvider(MusicProvider):
                 result.append(parsed_track)
         return result
 
+    @use_cache(3600 * 24 * 7)  # cache for 7 days
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of all albums for the given artist."""
         endpoint = f"catalog/{self._storefront}/artists/{prov_artist_id}/albums"
@@ -452,6 +462,7 @@ class AppleMusicProvider(MusicProvider):
             return []
         return [self._parse_album(album) for album in response if album["id"]]
 
+    @use_cache(3600 * 24 * 7)  # cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         endpoint = f"catalog/{self._storefront}/artists/{prov_artist_id}/view/top-songs"
@@ -481,6 +492,7 @@ class AppleMusicProvider(MusicProvider):
         """Remove track(s) from playlist."""
         raise NotImplementedError("Not implemented!")
 
+    @use_cache(3600 * 24)  # cache for 24 hours
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         # Note, Apple music does not have an official endpoint for similar tracks.
@@ -770,8 +782,6 @@ class AppleMusicProvider(MusicProvider):
             )
         if description := attributes.get("description"):
             playlist.metadata.description = description.get("standard")
-        if checksum := attributes.get("lastModifiedDate"):
-            playlist.cache_checksum = checksum
         return playlist
 
     async def _get_all_items(self, endpoint, key="data", **kwargs) -> list[dict]:
@@ -928,8 +938,9 @@ class AppleMusicProvider(MusicProvider):
         self, license_url: str, key_id: bytes, uri: str, item_id: str
     ) -> str:
         """Get the decryption key for a song."""
-        cache_key = f"decryption_key.{item_id}"
-        if decryption_key := await self.mass.cache.get(cache_key, base_key=self.instance_id):
+        if decryption_key := await self.mass.cache.get(
+            key=item_id, provider=self.instance_id, category=CACHE_CATEGORY_DECRYPT_KEY
+        ):
             self.logger.debug("Decryption key for %s found in cache.", item_id)
             return decryption_key
         pssh = self._get_pssh(key_id)
@@ -952,7 +963,11 @@ class AppleMusicProvider(MusicProvider):
         decryption_key = key.key.hex()
         self.mass.create_task(
             self.mass.cache.set(
-                cache_key, decryption_key, expiration=7200, base_key=self.instance_id
+                key=item_id,
+                data=decryption_key,
+                expiration=7200,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_DECRYPT_KEY,
             )
         )
         return decryption_key

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -29,7 +29,6 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_LIBRARY_ITEMS,
     CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS,
     CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS,
 )
@@ -40,6 +39,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.streamdetails import StreamDetails
+
+CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 
 
 class MusicProvider(Provider):
@@ -441,7 +442,7 @@ class MusicProvider(Provider):
             return await self.get_podcast_episode(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -453,104 +454,32 @@ class MusicProvider(Provider):
         subpath = path.split("://", 1)[1]
         # this reference implementation can be overridden with a provider specific approach
         if subpath == "artists":
-            library_item_ids = await self.mass.cache.get(
-                "artist",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
-                base_key=self.instance_id,
-            )
-            if not library_item_ids:
-                return [x async for x in self.get_library_artists()]
-            library_items = cast("list[int]", library_item_ids)
-            query = "artists.item_id in :ids"
-            query_params = {"ids": library_items}
             return await self.mass.music.artists.library_items(
                 provider=self.instance_id,
-                extra_query=query,
-                extra_query_params=query_params,
             )
         if subpath == "albums":
-            library_item_ids = await self.mass.cache.get(
-                "album",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
-                base_key=self.instance_id,
-            )
-            if not library_item_ids:
-                return [x async for x in self.get_library_albums()]
-            library_item_ids = cast("list[int]", library_item_ids)
-            query = "albums.item_id in :ids"
-            query_params = {"ids": library_item_ids}
             return await self.mass.music.albums.library_items(
-                extra_query=query, extra_query_params=query_params
+                provider=self.instance_id,
             )
         if subpath == "tracks":
-            library_item_ids = await self.mass.cache.get(
-                "track",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
-                base_key=self.instance_id,
-            )
-            if not library_item_ids:
-                return [x async for x in self.get_library_tracks()]
-            library_item_ids = cast("list[int]", library_item_ids)
-            query = "tracks.item_id in :ids"
-            query_params = {"ids": library_item_ids}
             return await self.mass.music.tracks.library_items(
-                extra_query=query, extra_query_params=query_params
+                provider=self.instance_id,
             )
         if subpath == "radios":
-            library_item_ids = await self.mass.cache.get(
-                "radio",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
-                base_key=self.instance_id,
-            )
-            if not library_item_ids:
-                return [x async for x in self.get_library_radios()]
-            library_item_ids = cast("list[int]", library_item_ids)
-            query = "radios.item_id in :ids"
-            query_params = {"ids": library_item_ids}
             return await self.mass.music.radio.library_items(
-                extra_query=query, extra_query_params=query_params
+                provider=self.instance_id,
             )
         if subpath == "playlists":
-            library_item_ids = await self.mass.cache.get(
-                "playlist",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
-                base_key=self.instance_id,
-            )
-            if not library_item_ids:
-                return [x async for x in self.get_library_playlists()]
-            library_item_ids = cast("list[int]", library_item_ids)
-            query = "playlists.item_id in :ids"
-            query_params = {"ids": library_item_ids}
             return await self.mass.music.playlists.library_items(
-                extra_query=query, extra_query_params=query_params
+                provider=self.instance_id,
             )
         if subpath == "audiobooks":
-            library_item_ids = await self.mass.cache.get(
-                "audiobook",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
-                base_key=self.instance_id,
-            )
-            if not library_item_ids:
-                return [x async for x in self.get_library_audiobooks()]
-            library_item_ids = cast("list[int]", library_item_ids)
-            query = "audiobooks.item_id in :ids"
-            query_params = {"ids": library_item_ids}
             return await self.mass.music.audiobooks.library_items(
-                extra_query=query, extra_query_params=query_params
+                provider=self.instance_id,
             )
         if subpath == "podcasts":
-            library_item_ids = await self.mass.cache.get(
-                "podcast",
-                category=CACHE_CATEGORY_LIBRARY_ITEMS,
-                base_key=self.instance_id,
-            )
-            if not library_item_ids:
-                return [x async for x in self.get_library_podcasts()]
-            library_item_ids = cast("list[int]", library_item_ids)
-            query = "podcasts.item_id in :ids"
-            query_params = {"ids": library_item_ids}
             return await self.mass.music.podcasts.library_items(
-                extra_query=query, extra_query_params=query_params
+                provider=self.instance_id,
             )
         if subpath:
             # unknown path
@@ -676,13 +605,12 @@ class MusicProvider(Provider):
             raise UnsupportedFeaturedException(f"Unexpected media type to sync: {media_type}")
 
         # process deletions (= no longer in library)
-        cache_category = CACHE_CATEGORY_LIBRARY_ITEMS
-        cache_base_key = self.instance_id
-
         prev_library_items: list[int] | None
         controller = self.mass.music.get_controller(media_type)
         if prev_library_items := await self.mass.cache.get(
-            media_type.value, category=cache_category, base_key=cache_base_key
+            key=media_type.value,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
         ):
             for db_id in prev_library_items:
                 if db_id not in cur_db_ids:
@@ -730,10 +658,10 @@ class MusicProvider(Provider):
                     await asyncio.sleep(0)  # yield to eventloop
         # store current list of id's in cache so we can track changes
         await self.mass.cache.set(
-            media_type.value,
-            list(cur_db_ids),
-            category=cache_category,
-            base_key=cache_base_key,
+            key=media_type.value,
+            data=list(cur_db_ids),
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
         )
 
     async def _sync_library_artists(self, import_as_favorite: bool) -> set[int]:
@@ -900,11 +828,6 @@ class MusicProvider(Provider):
                     if import_as_favorite:
                         prov_item.favorite = True
                     library_item = await self.mass.music.playlists.add_item_to_library(prov_item)
-                elif library_item.cache_checksum != prov_item.cache_checksum:
-                    # existing dbitem checksum changed (used to determine if a playlist has changed)
-                    library_item = await self.mass.music.playlists.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
                 elif not library_item.favorite and import_as_favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.playlists.set_favorite(library_item.item_id, True)
@@ -1158,9 +1081,9 @@ class MusicProvider(Provider):
         """Check if provider mapping(s) are consistent between library and provider items."""
         for provider_mapping in provider_item.provider_mappings:
             if provider_mapping.item_id != provider_item.item_id:
-                raise MusicAssistantError("Inconsistent provider mapping item_id's found")
+                raise MusicAssistantError("Inconsistent provider mapping item_id found")
             if provider_mapping.provider_instance != self.instance_id:
-                raise MusicAssistantError("Inconsistent provider mapping instance_id's found")
+                raise MusicAssistantError("Inconsistent provider mapping instance_id found")
             provider_mapping.in_library = in_library
             library_mapping = next(
                 (

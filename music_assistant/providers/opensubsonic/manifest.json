@@ -3,7 +3,7 @@
   "domain": "opensubsonic",
   "stage": "stable",
   "name": "OpenSubsonic Media Server Library",
-  "description": "Support for OpenSubsonic based streaming providers in Music Assistant.",
+  "description": "Stream music from your OpenSubsonic compatible server — your own cloud jukebox.",
   "codeowners": ["@khers"],
   "requirements": ["py-opensonic==7.0.2"],
   "documentation": "https://music-assistant.io/music-providers/subsonic/",

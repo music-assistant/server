@@ -153,7 +153,7 @@ class FanartTvMetadataProvider(MetadataProvider):
                     return metadata
         return None
 
-    @use_cache(86400 * 30)
+    @use_cache(86400 * 60)  # Cache for 60 days
     async def _get_data(self, endpoint: str, **kwargs: str) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
