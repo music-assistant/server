@@ -71,7 +71,6 @@ class InternetArchiveProvider(MusicProvider):
             rate_limit=10, period=60, retry_attempts=5, initial_backoff=5
         )
         self.client = InternetArchiveClient(mass)
-        # Pass only the provider reference to streaming handler
         self.streaming = InternetArchiveStreaming(self)
 
     @property
