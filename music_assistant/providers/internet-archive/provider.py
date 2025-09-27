@@ -689,23 +689,6 @@ class InternetArchiveProvider(MusicProvider):
 
         return tracks
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
-        """Retrieve library audiobooks from the provider."""
-        search_response = await self._search(
-            query="*",
-            collection="librivoxaudio",
-            rows=50,
-            sort="downloads desc",
-        )
-
-        response_data = search_response.get("response", {})
-        for doc in response_data.get("docs", []):
-            audiobook = doc_to_audiobook(
-                doc, self.domain, self.instance_id, self.client.get_item_url
-            )
-            if audiobook:
-                yield audiobook
-
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Get streamdetails for a track or audiobook.
