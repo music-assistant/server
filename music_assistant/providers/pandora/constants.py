@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from music_assistant_models.enums import ProviderFeature
-
 # Configuration Keys
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
@@ -23,14 +21,6 @@ TRACK_FEEDBACK_ENDPOINT = f"{API_BASE_URL}/station/addFeedback"
 DEFAULT_HEADERS = {
     "Content-Type": "application/json;charset=utf-8",
     "User-Agent": "Music Assistant Pandora Provider/1.0",
-}
-
-# Supported Features - Pandora is primarily a radio service
-SUPPORTED_FEATURES = {
-    ProviderFeature.SEARCH,
-    ProviderFeature.BROWSE,
-    # Pandora doesn't support traditional library features
-    # as it's a radio service, but we can implement stations as playlists
 }
 
 # API Limits
