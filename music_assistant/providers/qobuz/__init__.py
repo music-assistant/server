@@ -45,6 +45,7 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
@@ -141,6 +142,7 @@ class QobuzProvider(MusicProvider):
             msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
             raise LoginFailed(msg)
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -224,6 +226,7 @@ class QobuzProvider(MusicProvider):
             if item and item["id"]:
                 yield self._parse_playlist(item)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         params = {"artist_id": prov_artist_id}
@@ -232,6 +235,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         params = {"album_id": prov_album_id}
@@ -240,6 +244,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         params = {"track_id": prov_track_id}
@@ -248,6 +253,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         params = {"playlist_id": prov_playlist_id}
@@ -256,6 +262,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id) -> list[Track]:
         """Get all album tracks for given album id."""
         params = {"album_id": prov_album_id}
@@ -265,6 +272,7 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"])
         ]
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -286,6 +294,7 @@ class QobuzProvider(MusicProvider):
             result.append(track)
         return result
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
         result = await self._get_data(
@@ -301,6 +310,7 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"] and str(item["artist"]["id"]) == prov_artist_id)
         ]
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         result = await self._get_data(
@@ -706,7 +716,6 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             ]
-        playlist.cache_checksum = str(playlist_obj["updated_at"])
         return playlist
 
     @lock

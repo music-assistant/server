@@ -29,6 +29,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from tenacity import RetryError
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import select_free_port
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.music_provider import MusicProvider
@@ -202,6 +203,7 @@ class SiriusXMProvider(MusicProvider):
             if channel.is_favorite:
                 yield self._parse_radio(channel)
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_radio(self, prov_radio_id: str) -> Radio:  # type: ignore[return]
         """Get full radio details by id."""
         if prov_radio_id not in self._channels_by_id:
@@ -241,6 +243,7 @@ class SiriusXMProvider(MusicProvider):
 
         return self._current_stream_details
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
 

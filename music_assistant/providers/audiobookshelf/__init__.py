@@ -60,6 +60,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.audio import get_multi_file_stream
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
@@ -276,11 +277,9 @@ for more details.
                         self._client.server_settings.version,
                     )
 
-        self.cache_base_key = self.instance_id
-
         cached_libraries = await self.mass.cache.get(
             key=CACHE_KEY_LIBRARIES,
-            base_key=self.cache_base_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_LIBRARIES,
             default=None,
         )
@@ -406,6 +405,7 @@ for more details.
 
         return abs_podcast
 
+    @use_cache(3600)
     @handle_refresh_token
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get single podcast."""
@@ -522,6 +522,7 @@ for more details.
 
         return abs_audiobook
 
+    @use_cache(3600)
     @handle_refresh_token
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get a single audiobook.
@@ -1538,7 +1539,7 @@ for more details.
     async def _cache_set_helper_libraries(self) -> None:
         await self.mass.cache.set(
             key=CACHE_KEY_LIBRARIES,
-            base_key=self.cache_base_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_LIBRARIES,
             data=self.libraries.to_dict(),
         )
