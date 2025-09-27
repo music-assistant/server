@@ -45,7 +45,6 @@ from music_assistant.constants import (
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
     CONF_CROSSFADE_DURATION,
-    CONF_DEPRECATED_CROSSFADE,
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_ENABLE_ICY_METADATA,
     CONF_ENTRY_ANNOUNCE_VOLUME,
@@ -81,6 +80,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_SAMPLE_RATES,
+    CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
 )
 from music_assistant.helpers.util import (
@@ -1502,12 +1502,11 @@ class SyncGroupPlayer(GroupPlayer):
             allowed_conf_entries = (
                 CONF_HTTP_PROFILE,
                 CONF_ENABLE_ICY_METADATA,
-                CONF_DEPRECATED_CROSSFADE,
                 CONF_CROSSFADE_DURATION,
                 CONF_OUTPUT_CODEC,
                 CONF_FLOW_MODE,
                 CONF_SAMPLE_RATES,
-                # TODO: Should we allow the Smart Fades Config entry too ?
+                CONF_SMART_FADES_MODE,
             )
             child_config_entries = await child_player.get_config_entries()
             entries.extend(
