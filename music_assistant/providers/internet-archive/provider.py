@@ -431,7 +431,7 @@ class InternetArchiveProvider(MusicProvider):
             },
         )
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist catalogs change infrequently
+    @use_cache(expiration=86400 * 30)  # Cache for 30 days - audiobook catalogs change infrequently
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         metadata = await self._get_metadata(prov_audiobook_id)
