@@ -66,7 +66,6 @@ class InternetArchiveProvider(MusicProvider):
     ) -> None:
         """Initialize the provider."""
         super().__init__(mass, manifest, config)
-        self._supported_features = supported_features
         self.throttler = ThrottlerManager(
             rate_limit=10, period=60, retry_attempts=5, initial_backoff=5
         )
