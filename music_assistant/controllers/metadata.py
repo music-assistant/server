@@ -30,11 +30,13 @@ from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemType,
     Playlist,
+    Podcast,
     Track,
 )
 from music_assistant_models.unique_list import UniqueList
@@ -104,8 +106,10 @@ DEFAULT_LANGUAGE = "en_US"
 REFRESH_INTERVAL_ARTISTS = 60 * 60 * 24 * 90  # 90 days
 REFRESH_INTERVAL_ALBUMS = 60 * 60 * 24 * 90  # 90 days
 REFRESH_INTERVAL_TRACKS = 60 * 60 * 24 * 90  # 90 days
-REFRESH_INTERVAL_PLAYLISTS = 60 * 60 * 24 * 7  # 7 days
-PERIODIC_SCAN_INTERVAL = 60 * 60 * 24  # 1 day
+REFRESH_INTERVAL_AUDIOBOOKS = 60 * 60 * 24 * 90  # 90 days
+REFRESH_INTERVAL_PODCASTS = 60 * 60 * 24 * 90  # 90 days
+REFRESH_INTERVAL_PLAYLISTS = 60 * 60 * 24 * 14  # 14 days
+PERIODIC_SCAN_INTERVAL = 60 * 60 * 6  # 6 hours
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 
 
@@ -288,6 +292,14 @@ class MetaDataController(CoreController):
                 if item.media_type == MediaType.PLAYLIST:
                     await self._update_playlist_metadata(
                         cast("Playlist", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.AUDIOBOOK:
+                    await self._update_audiobook_metadata(
+                        cast("Audiobook", item), force_refresh=force_refresh
+                    )
+                if item.media_type == MediaType.PODCAST:
+                    await self._update_podcast_metadata(
+                        cast("Podcast", item), force_refresh=force_refresh
                     )
             return item
 
@@ -715,6 +727,102 @@ class MetaDataController(CoreController):
         # update final item in library database
         await self.mass.music.playlists.update_item_in_library(playlist.item_id, playlist)
 
+    async def _update_audiobook_metadata(
+        self, audiobook: Audiobook, force_refresh: bool = False
+    ) -> None:
+        """Get/update rich metadata for an audiobook."""
+        # collect metadata from all (online) music + metadata providers
+        # NOTE: we only do/allow this every REFRESH_INTERVAL
+        needs_refresh = (
+            time() - (audiobook.metadata.last_refresh or 0)
+        ) > REFRESH_INTERVAL_AUDIOBOOKS
+        if not (force_refresh or needs_refresh):
+            return
+
+        self.logger.debug("Updating metadata for Audiobook %s", audiobook.name)
+
+        # ensure the item is matched to all providers (will also get other quality versions)
+        await self.mass.music.audiobooks.match_providers(audiobook)
+
+        # collect metadata from all [music] providers
+        # note that we sort the providers by priority so that we always
+        # prefer local providers over online providers
+        unique_keys: set[str] = set()
+        local_provs = get_global_cache_value("non_streaming_providers")
+        if TYPE_CHECKING:
+            local_provs = cast("set[str]", local_provs)
+        for prov_mapping in sorted(
+            audiobook.provider_mappings, key=lambda x: x.priority, reverse=True
+        ):
+            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+                continue
+            if prov.lookup_key in unique_keys:
+                continue
+            if prov.lookup_key not in local_provs:
+                unique_keys.add(prov.lookup_key)
+            with suppress(MediaNotFoundError):
+                prov_item = await self.mass.music.audiobooks.get_provider_item(
+                    prov_mapping.item_id, prov_mapping.provider_instance
+                )
+                audiobook.metadata.update(prov_item.metadata)
+                if audiobook.publisher is None and prov_item.publisher:
+                    audiobook.publisher = prov_item.publisher
+                if not audiobook.authors and prov_item.authors:
+                    audiobook.authors = prov_item.authors
+                if not audiobook.narrators and prov_item.narrators:
+                    audiobook.narrators = prov_item.narrators
+                if not audiobook.duration and prov_item.duration:
+                    audiobook.duration = prov_item.duration
+
+        # update final item in library database
+        # set timestamp, used to determine when this function was last called
+        audiobook.metadata.last_refresh = int(time())
+        await self.mass.music.audiobooks.update_item_in_library(audiobook.item_id, audiobook)
+
+    async def _update_podcast_metadata(self, podcast: Podcast, force_refresh: bool = False) -> None:
+        """Get/update rich metadata for a podcast."""
+        # collect metadata from all (online) music + metadata providers
+        # NOTE: we only do/allow this every REFRESH_INTERVAL
+        needs_refresh = (time() - (podcast.metadata.last_refresh or 0)) > REFRESH_INTERVAL_PODCASTS
+        if not (force_refresh or needs_refresh):
+            return
+
+        self.logger.debug("Updating metadata for Podcast %s", podcast.name)
+
+        # ensure the item is matched to all providers (will also get other quality versions)
+        await self.mass.music.podcasts.match_providers(podcast)
+
+        # collect metadata from all [music] providers
+        # note that we sort the providers by priority so that we always
+        # prefer local providers over online providers
+        unique_keys: set[str] = set()
+        local_provs = get_global_cache_value("non_streaming_providers")
+        if TYPE_CHECKING:
+            local_provs = cast("set[str]", local_provs)
+        for prov_mapping in sorted(
+            podcast.provider_mappings, key=lambda x: x.priority, reverse=True
+        ):
+            if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
+                continue
+            if prov.lookup_key in unique_keys:
+                continue
+            if prov.lookup_key not in local_provs:
+                unique_keys.add(prov.lookup_key)
+            with suppress(MediaNotFoundError):
+                prov_item = await self.mass.music.podcasts.get_provider_item(
+                    prov_mapping.item_id, prov_mapping.provider_instance
+                )
+                podcast.metadata.update(prov_item.metadata)
+                if podcast.publisher is None and prov_item.publisher:
+                    podcast.publisher = prov_item.publisher
+                if not podcast.total_episodes and prov_item.total_episodes:
+                    podcast.total_episodes = prov_item.total_episodes
+
+        # update final item in library database
+        # set timestamp, used to determine when this function was last called
+        podcast.metadata.last_refresh = int(time())
+        await self.mass.music.podcasts.update_item_in_library(podcast.item_id, podcast)
+
     async def _get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         if artist.mbid:
@@ -785,13 +893,7 @@ class MetaDataController(CoreController):
             self.logger.debug(f"Processing metadata lookup for {item_uri}")
             try:
                 item = await self.mass.music.get_item_by_uri(item_uri)
-                # Type check to ensure it's a valid MediaItemType
-                if hasattr(item, "provider") and hasattr(item, "media_type"):
-                    await self.update_metadata(cast("MediaItemType", item))
-                else:
-                    self.logger.warning(
-                        "Retrieved item is not a valid MediaItemType: %s", type(item)
-                    )
+                await self.update_metadata(cast("MediaItemType", item))
             except MediaNotFoundError:
                 # this can happen when the item is removed from the library
                 pass
