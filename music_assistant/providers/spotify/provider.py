@@ -583,42 +583,7 @@ class SpotifyProvider(MusicProvider):
         elif item.media_type == MediaType.PODCAST:
             await self._put_data("me/shows", ids=item.item_id)
         elif item.media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
-            # For audiobooks, we need special handling to ensure chapter metadata is included
-            self.logger.info(f"Adding audiobook {item.item_id} to library with chapter metadata")
-
-            # First add to Spotify library
             await self._put_data("me/audiobooks", ids=item.item_id)
-
-            # Then get the full audiobook metadata with chapters by calling our get_audiobook method
-            try:
-                full_audiobook = await self.get_audiobook(item.item_id)
-
-                # Update the audiobook in MA's database with the full metadata including chapters
-                # This ensures when the user plays it from library, it has chapter information
-                await self.mass.music.audiobooks.add_item_to_library(full_audiobook)
-                self.logger.info(
-                    f"Updated audiobook {item.item_id} in MA database with chapter metadata"
-                )
-
-            except MediaNotFoundError as e:
-                self.logger.warning(
-                    f"Audiobook {item.item_id} not found when fetching chapter metadata: {e}"
-                )
-            except ResourceTemporarilyUnavailable as e:
-                self.logger.warning(
-                    "Spotify temporarily unavailable when "
-                    f"fetching audiobook {item.item_id} metadata: {e}"
-                )
-            except ProviderUnavailableError as e:
-                self.logger.warning(
-                    f"Provider unavailable when fetching audiobook {item.item_id} metadata: {e}"
-                )
-            except Exception as e:
-                # Catch any other unexpected errors
-                self.logger.warning(
-                    f"Unexpected error fetching audiobook {item.item_id} metadata: {e}"
-                )
-                self.logger.debug(f"Full error details: {e}", exc_info=True)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:

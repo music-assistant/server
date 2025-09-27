@@ -81,12 +81,16 @@ class UniversalGroupPlayer(GroupPlayer):
         }
         self._set_attributes()
 
-    async def on_registered(self) -> None:
-        """Complete the initialization once the player was registered."""
-        # Config entries are only fully available after the player was registered
-        self._attr_group_members = list(
-            cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        )
+    async def on_config_updated(self) -> None:
+        """Handle logic when the player is loaded or updated."""
+        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+        self._attr_static_group_members = static_members.copy()
+        if not self.powered:
+            self._attr_group_members = static_members.copy()
+        if self.is_dynamic:
+            self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        elif PlayerFeature.SET_MEMBERS in self._attr_supported_features:
+            self._attr_supported_features.remove(PlayerFeature.SET_MEMBERS)
 
     @cached_property
     def is_dynamic(self) -> bool:
@@ -148,6 +152,15 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_powered = powered
 
         if powered:
+            # reset the group members to the available static members when powering on
+            self._attr_group_members = []
+            for static_group_member in self._attr_static_group_members:
+                if (
+                    (member_player := self.mass.players.get(static_group_member))
+                    and member_player.available
+                    and member_player.enabled
+                ):
+                    self._attr_group_members.append(static_group_member)
             # handle TURN_ON of the group player by turning on all members
             for member in self.mass.players.iter_group_members(
                 self, only_powered=False, active_only=False
@@ -162,15 +175,17 @@ class UniversalGroupPlayer(GroupPlayer):
                     # collision: child player is part of multiple groups
                     # and another group already active !
                     # solve this by trying to leave the group first
-                    if (
-                        other_group := self.mass.players.get(member.active_group)
-                    ) and PlayerFeature.SET_MEMBERS in other_group.supported_features:
-                        await other_group.set_members(player_ids_to_remove=[member.player_id])
-                    else:
-                        # if the other group does not support SET_MEMBERS,
-                        # we need to power it off to leave the group
-                        await self.mass.players.cmd_power(member.active_group, False)
-                        await asyncio.sleep(1)
+                    if other_group := self.mass.players.get(member.active_group):
+                        if (
+                            other_group.supports_feature(PlayerFeature.SET_MEMBERS)
+                            and member.player_id not in other_group.static_group_members
+                        ):
+                            await other_group.set_members(player_ids_to_remove=[member.player_id])
+                        else:
+                            # if the other group does not support SET_MEMBERS or it is a static
+                            # member, we need to power it off to leave the group
+                            await other_group.power(False)
+                            await asyncio.sleep(1)
                     await asyncio.sleep(1)
                 if member.synced_to:
                     # edge case: the member is part of a syncgroup - ungroup it first
@@ -188,9 +203,7 @@ class UniversalGroupPlayer(GroupPlayer):
 
         if not powered:
             # reset the original group members when powered off
-            self._attr_group_members = cast(
-                "list[str]", self.config.get_value(CONF_GROUP_MEMBERS, [])
-            )
+            self._attr_group_members = self._attr_static_group_members.copy()
         self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
@@ -308,15 +321,9 @@ class UniversalGroupPlayer(GroupPlayer):
                     ),
                 )
         # handle removals
-        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         for player_id in player_ids_to_remove or []:
             if player_id not in self._attr_group_members:
                 continue
-            if player_id in static_members:
-                raise UnsupportedFeaturedException(
-                    f"Cannot remove {player_id} from {self.display_name} "
-                    "as it is a static member of this group"
-                )
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
                     f"Cannot remove {self.display_name} from itself as a member!"

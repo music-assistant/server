@@ -5,5 +5,6 @@
   "description": "Support for Roku's running Media Assistant.",
   "codeowners": ["@medievalapple"],
   "requirements": ["async-upnp-client==0.45.0","rokuecp==0.19.5"],
-  "documentation": "https://music-assistant.io/player-support/roku-media-assistant/"
+  "documentation": "https://music-assistant.io/player-support/roku-media-assistant/",
+  "stage": "beta"
 }

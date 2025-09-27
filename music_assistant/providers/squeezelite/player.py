@@ -14,7 +14,7 @@ from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import Preset as SlimPreset
 from aioslimproto.models import SlimEvent
 from aioslimproto.models import VisualisationType as SlimVisualisationType
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, PlayerConfig
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -97,13 +97,16 @@ class SqueezelitePlayer(Player):
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
 
+    async def on_config_updated(self) -> None:
+        """Handle logic when the player is registered or the config was updated."""
+        # set presets and display
+        await self._set_preset_items()
+        await self._set_display()
+
     async def setup(self) -> None:
         """Set up the player."""
         player_id = self.client.player_id
         self.logger.info("Player %s connected", self.client.name or player_id)
-        # set presets and display
-        await self._set_preset_items()
-        await self._set_display()
         # update all dynamic attributes
         self.update_attributes()
         # restore volume and power state
@@ -348,13 +351,6 @@ class SqueezelitePlayer(Player):
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
             self.mass.create_task(self.play_media(self.current_media))
-
-    def set_config(self, config: PlayerConfig) -> None:
-        """Set/update the player config."""
-        super().set_config(config)
-        # update preset and display when config changes
-        self.mass.create_task(self._set_preset_items())
-        self.mass.create_task(self._set_display())
 
     def handle_slim_event(self, event: SlimEvent) -> None:
         """Handle player event from slimproto server."""

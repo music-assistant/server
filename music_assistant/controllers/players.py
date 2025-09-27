@@ -1010,16 +1010,16 @@ class PlayerController(CoreController):
                         child_player.name,
                         child_player.active_group,
                     )
-                    try:
-                        await other_group.set_members(player_ids_to_remove=[child_player.player_id])
-                    except UnsupportedFeaturedException as err:
+                    if child_player.player_id in other_group.static_group_members:
                         self.logger.warning(
-                            "Failed to remove player %s from group %s: %s, powering it off instead",
+                            "Player %s is a static member of group %s: removing is not possible, "
+                            "powering the group off instead",
                             child_player.name,
                             child_player.active_group,
-                            err,
                         )
                         await self.cmd_power(child_player.active_group, False)
+                    else:
+                        await other_group.set_members(player_ids_to_remove=[child_player.player_id])
                 else:
                     self.logger.warning(
                         "Player %s is already part of another group (%s), powering it off first",
@@ -1040,10 +1040,28 @@ class PlayerController(CoreController):
             # if we reach here, all checks passed
             final_player_ids_to_add.append(child_player_id)
 
+        final_player_ids_to_remove: list[str] = []
+        if player_ids_to_remove:
+            static_members = set(parent_player.static_group_members)
+            for child_player_id in player_ids_to_remove:
+                if child_player_id == target_player:
+                    raise UnsupportedFeaturedException(
+                        f"Cannot remove {parent_player.name} from itself as a member!"
+                    )
+                if child_player_id not in parent_player.group_members:
+                    continue
+                if child_player_id in static_members:
+                    raise UnsupportedFeaturedException(
+                        f"Cannot remove {child_player_id} from {parent_player.name} "
+                        "as it is a static member of this group"
+                    )
+                final_player_ids_to_remove.append(child_player_id)
+
         # forward command to the player after all (base) sanity checks
         async with self._player_throttlers[target_player]:
             await parent_player.set_members(
-                player_ids_to_add=final_player_ids_to_add, player_ids_to_remove=player_ids_to_remove
+                player_ids_to_add=final_player_ids_to_add or None,
+                player_ids_to_remove=final_player_ids_to_remove or None,
             )
 
     @api_command("players/cmd/group")
@@ -1090,18 +1108,23 @@ class PlayerController(CoreController):
             self.logger.warning("Player %s is not available", player_id)
             return
 
-        if player.synced_to and (synced_player := self.get(player.synced_to)):
-            # player is a sync member
-            await synced_player.set_members(player_ids_to_remove=[player_id])
-            return
-
         if (
             player.active_group
             and (group_player := self.get(player.active_group))
             and (PlayerFeature.SET_MEMBERS in group_player.supported_features)
         ):
             # the player is part of a (permanent) groupplayer and the user tries to ungroup
+            if player_id in group_player.static_group_members:
+                raise UnsupportedFeaturedException(
+                    f"Player {player.name}  is a static member of group {group_player.name} "
+                    "and cannot be removed from that group!"
+                )
             await group_player.set_members(player_ids_to_remove=[player_id])
+            return
+
+        if player.synced_to and (synced_player := self.get(player.synced_to)):
+            # player is a sync member
+            await synced_player.set_members(player_ids_to_remove=[player_id])
             return
 
         if not (player.synced_to or player.group_members):
@@ -1259,8 +1282,8 @@ class PlayerController(CoreController):
         # ensure we fetch and set the latest/full config for the player
         player_config = await self.mass.config.get_player_config(player_id)
         player.set_config(player_config)
-        # call on_registered hook after the player is registered and config is set
-        await player.on_registered()
+        # call hook after the player is registered and config is set
+        await player.on_config_updated()
         # always call update to fix special attributes like display name, group volume etc.
         player.update_state()
 
@@ -1312,9 +1335,11 @@ class PlayerController(CoreController):
 
         If the player is not registered, this will silently be ignored.
         """
-        player = self._players.pop(player_id, None)
+        player = self._players.get(player_id)
         if player is None:
             return
+        await self._cleanup_player_memberships(player_id)
+        del self._players[player_id]
         self.logger.info("Player removed: %s", player.name)
         self.mass.player_queues.on_player_remove(player_id, permanent=permanent)
         await player.on_unload()
@@ -1400,49 +1425,8 @@ class PlayerController(CoreController):
 
         # handle DSP reload of the leader when grouping/ungrouping
         if ATTR_GROUP_MEMBERS in changed_values:
-            new_group_members: list[str] = changed_values[ATTR_GROUP_MEMBERS][1]
-            prev_group_members: list[str] = changed_values[ATTR_GROUP_MEMBERS][0] or []
-            prev_child_count = len(prev_group_members)
-            new_child_count = len(new_group_members)
-            is_player_group = player.type == PlayerType.GROUP
-
-            # handle special case for PlayerGroups: since there are no leaders,
-            # DSP still always work with a single player in the group.
-            multi_device_dsp_threshold = 1 if is_player_group else 0
-
-            prev_is_multiple_devices = prev_child_count > multi_device_dsp_threshold
-            new_is_multiple_devices = new_child_count > multi_device_dsp_threshold
-
-            if prev_is_multiple_devices != new_is_multiple_devices:
-                supports_multi_device_dsp = (
-                    PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
-                )
-                dsp_enabled: bool
-                if player.type == PlayerType.GROUP:
-                    # Since player groups do not have leaders, we will use the only child
-                    # that was in the group before and after the change
-                    if prev_is_multiple_devices:
-                        if childs := new_group_members:
-                            # We shrank the group from multiple players to a single player
-                            # So the now only child will control the DSP
-                            dsp_enabled = self.mass.config.get_player_dsp_config(childs[0]).enabled
-                        else:
-                            dsp_enabled = False
-                    elif childs := prev_group_members:
-                        # We grew the group from a single player to multiple players,
-                        # let's see if the previous single player had DSP enabled
-                        dsp_enabled = self.mass.config.get_player_dsp_config(childs[0]).enabled
-                    else:
-                        dsp_enabled = False
-                else:
-                    dsp_enabled = self.mass.config.get_player_dsp_config(player_id).enabled
-                if dsp_enabled and not supports_multi_device_dsp:
-                    # We now know that that the group configuration has changed so:
-                    # - multi-device DSP is not supported
-                    # - we switched from a group with multiple players to a single player
-                    #   (or vice versa)
-                    # - the leader has DSP enabled
-                    self.mass.create_task(self.mass.players.on_player_dsp_change(player_id))
+            prev_group_members, new_group_members = changed_values[ATTR_GROUP_MEMBERS]
+            self._handle_group_dsp_change(player, prev_group_members or [], new_group_members)
 
         if ATTR_GROUP_MEMBERS in changed_values:
             # Removed group members also need to be updated since they are no longer part
@@ -1453,6 +1437,14 @@ class PlayerController(CoreController):
             for player_id in removed_members:
                 if removed_player := self.get(player_id):
                     removed_player.update_state()
+
+        became_inactive = False
+        if "available" in changed_values:
+            became_inactive = changed_values["available"][1] is False
+        if not became_inactive and "enabled" in changed_values:
+            became_inactive = changed_values["enabled"][1] is False
+        if became_inactive and (player.active_group or player.synced_to):
+            self.mass.create_task(self._cleanup_player_memberships(player.player_id))
 
         # signal player update on the eventbus
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
@@ -1690,6 +1682,7 @@ class PlayerController(CoreController):
         if not (player := self.get(config.player_id)):
             return  # guard against player not being registered (yet)
         player.set_config(config)
+        await player.on_config_updated()
         player.update_state()
         resume_queue: PlayerQueue | None = (
             self.mass.player_queues.get(player.active_source) if player.active_source else None
@@ -1707,13 +1700,6 @@ class PlayerController(CoreController):
             # always stop first to ensure the player uses the new config
             await self.mass.player_queues.stop(resume_queue.queue_id)
             self.mass.call_later(1, self.mass.player_queues.resume, resume_queue.queue_id, False)
-        # check for group memberships that need to be updated
-        if player_disabled and player.active_group and player_provider:
-            # try to remove from the group
-            group_player = self.get(player.active_group)
-            assert group_player is not None  # for type checking
-            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
-                await group_player.set_members(player_ids_to_remove=[player.player_id])
 
     async def on_player_dsp_change(self, player_id: str) -> None:
         """Call (by config manager) when the DSP settings of a player change."""
@@ -1729,6 +1715,26 @@ class PlayerController(CoreController):
             # if the player is not using a queue, we need to stop and start playback
             await self.cmd_stop(player_id)
             await self.cmd_play(player_id)
+
+    async def _cleanup_player_memberships(self, player_id: str) -> None:
+        """Ensure a player is detached from any groups or syncgroups."""
+        if not (player := self.get(player_id)):
+            return
+
+        if (
+            player.active_group
+            and (group := self.get(player.active_group))
+            and group.supports_feature(PlayerFeature.SET_MEMBERS)
+        ):
+            # Ungroup the player if its part of an active group, this will ignore
+            # static_group_members since that is only checked when using cmd_set_members
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+                await group.set_members(player_ids_to_remove=[player_id])
+        elif player.synced_to and player.supports_feature(PlayerFeature.SET_MEMBERS):
+            # Remove the player if it was synced, otherwise it will still show as
+            # synced to the other player after it gets registered again
+            with suppress(UnsupportedFeaturedException, PlayerCommandFailed):
+                await player.ungroup()
 
     def _get_player_with_redirect(self, player_id: str) -> Player:
         """Get player with check if playback related command should be redirected."""
@@ -2000,6 +2006,54 @@ class PlayerController(CoreController):
         )
         # trigger player update to ensure the source is set
         self.trigger_player_update(player.player_id)
+
+    def _handle_group_dsp_change(
+        self, player: Player, prev_group_members: list[str], new_group_members: list[str]
+    ) -> None:
+        """Handle DSP reload when group membership changes."""
+        prev_child_count = len(prev_group_members)
+        new_child_count = len(new_group_members)
+        is_player_group = player.type == PlayerType.GROUP
+
+        # handle special case for PlayerGroups: since there are no leaders,
+        # DSP still always work with a single player in the group.
+        multi_device_dsp_threshold = 1 if is_player_group else 0
+
+        prev_is_multiple_devices = prev_child_count > multi_device_dsp_threshold
+        new_is_multiple_devices = new_child_count > multi_device_dsp_threshold
+
+        if prev_is_multiple_devices == new_is_multiple_devices:
+            return  # no change in multi-device status
+
+        supports_multi_device_dsp = PlayerFeature.MULTI_DEVICE_DSP in player.supported_features
+
+        dsp_enabled: bool
+        if player.type == PlayerType.GROUP:
+            # Since player groups do not have leaders, we will use the only child
+            # that was in the group before and after the change
+            if prev_is_multiple_devices:
+                if childs := new_group_members:
+                    # We shrank the group from multiple players to a single player
+                    # So the now only child will control the DSP
+                    dsp_enabled = self.mass.config.get_player_dsp_config(childs[0]).enabled
+                else:
+                    dsp_enabled = False
+            elif childs := prev_group_members:
+                # We grew the group from a single player to multiple players,
+                # let's see if the previous single player had DSP enabled
+                dsp_enabled = self.mass.config.get_player_dsp_config(childs[0]).enabled
+            else:
+                dsp_enabled = False
+        else:
+            dsp_enabled = self.mass.config.get_player_dsp_config(player.player_id).enabled
+
+        if dsp_enabled and not supports_multi_device_dsp:
+            # We now know that the group configuration has changed so:
+            # - multi-device DSP is not supported
+            # - we switched from a group with multiple players to a single player
+            #   (or vice versa)
+            # - the leader has DSP enabled
+            self.mass.create_task(self.mass.players.on_player_dsp_change(player.player_id))
 
     def __iter__(self) -> Iterator[Player]:
         """Iterate over all players."""
