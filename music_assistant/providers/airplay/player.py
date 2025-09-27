@@ -33,7 +33,7 @@ from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from .constants import (
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_PCM_FORMAT,
-    CACHE_KEY_PREV_VOLUME,
+    CACHE_CATEGORY_PREV_VOLUME,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
@@ -290,7 +290,12 @@ class AirPlayPlayer(Player):
         self._attr_volume_level = volume_level
         self.update_state()
         # store last state in cache
-        await self.mass.cache.set(self.player_id, volume_level, base_key=CACHE_KEY_PREV_VOLUME)
+        await self.mass.cache.set(
+            key=self.player_id,
+            data=volume_level,
+            provider=self.provider.lookup_key,
+            category=CACHE_CATEGORY_PREV_VOLUME,
+        )
 
     async def set_members(
         self,

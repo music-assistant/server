@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
@@ -179,3 +181,10 @@ SUPPORTED_FEATURES = {
 
 class IsChapterFile(Exception):
     """Exception to indicate that a file is part of a multi-part media (e.g. audiobook chapter)."""
+
+
+CACHE_CATEGORY_ARTIST_INFO: Final[int] = 1
+CACHE_CATEGORY_ALBUM_INFO: Final[int] = 2
+CACHE_CATEGORY_FOLDER_IMAGES: Final[int] = 3
+CACHE_CATEGORY_AUDIOBOOK_CHAPTERS: Final[int] = 4
+CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5

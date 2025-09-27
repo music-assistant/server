@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
@@ -79,7 +80,7 @@ class GeniusProvider(MetadataProvider):
             )
             return None
 
-        song_lyrics = await asyncio.to_thread(self._fetch_lyrics, artist_name, track.name)
+        song_lyrics = await self.fetch_lyrics(artist_name, track.name)
 
         if song_lyrics:
             metadata = MediaItemMetadata()
@@ -91,34 +92,45 @@ class GeniusProvider(MetadataProvider):
         self.logger.debug("No lyrics found for %s by %s", track.name, artist_name)
         return None
 
-    def _fetch_lyrics(self, artist: str, title: str) -> str | None:
-        """Fetch lyrics - NOTE: not async friendly."""
-        # blank artist / title?
-        if artist is None or len(artist.strip()) == 0 or title is None or len(title.strip()) == 0:
-            self.logger.error("Cannot fetch lyrics without artist and title")
-            return None
+    @use_cache(86400 * 7)  # Cache for 7 days
+    async def fetch_lyrics(self, artist: str, title: str) -> str | None:
+        """Fetch lyrics for a given artist and title."""
 
-        # clean song title to increase chance and accuracy of a result
-        cleaned_title = clean_song_title(title)
-        if cleaned_title != title:
-            self.logger.debug(f'Song title was cleaned: "{title}"  ->  "{cleaned_title}"')
+        def _fetch_lyrics(artist: str, title: str) -> str | None:
+            """Fetch lyrics - NOTE: not async friendly."""
+            # blank artist / title?
+            if (
+                artist is None
+                or len(artist.strip()) == 0
+                or title is None
+                or len(title.strip()) == 0
+            ):
+                self.logger.error("Cannot fetch lyrics without artist and title")
+                return None
 
-        self.logger.info(f"Searching lyrics for artist='{artist}' and title='{cleaned_title}'")
+            # clean song title to increase chance and accuracy of a result
+            cleaned_title = clean_song_title(title)
+            if cleaned_title != title:
+                self.logger.debug(f'Song title was cleaned: "{title}"  ->  "{cleaned_title}"')
 
-        # perform search
-        song = self._genius.search_song(cleaned_title, artist, get_full_info=False)
-
-        # second search needed?
-        if not song and " - " in cleaned_title:
-            # aggressively truncate title from the first hyphen
-            cleaned_title = cleaned_title.split(" - ", 1)[0]
-            self.logger.info(f"Second attempt, aggressively cleaned title='{cleaned_title}'")
+            self.logger.info(f"Searching lyrics for artist='{artist}' and title='{cleaned_title}'")
 
             # perform search
             song = self._genius.search_song(cleaned_title, artist, get_full_info=False)
 
-        if song:
-            # attempts to clean lyrics of erroneous text
-            return cleanup_lyrics(song)
+            # second search needed?
+            if not song and " - " in cleaned_title:
+                # aggressively truncate title from the first hyphen
+                cleaned_title = cleaned_title.split(" - ", 1)[0]
+                self.logger.info(f"Second attempt, aggressively cleaned title='{cleaned_title}'")
 
-        return None
+                # perform search
+                song = self._genius.search_song(cleaned_title, artist, get_full_info=False)
+
+            if song:
+                # attempts to clean lyrics of erroneous text
+                return cleanup_lyrics(song)
+
+            return None
+
+        return await asyncio.to_thread(_fetch_lyrics, artist, title)

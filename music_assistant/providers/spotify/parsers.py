@@ -221,7 +221,6 @@ def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> P
     )
 
     playlist.metadata.images = parse_images(playlist_obj.get("images", []), provider.lookup_key)
-    playlist.cache_checksum = str(playlist_obj["snapshot_id"])
     return playlist
 
 

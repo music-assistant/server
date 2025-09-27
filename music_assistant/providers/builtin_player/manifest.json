@@ -3,7 +3,7 @@
   "domain": "builtin_player",
   "stage": "alpha",
   "name": "Music Assistant",
-  "description": "Support for playing to the Music Assistant Web Interface",
+  "description": "Control playback and listen directly through the Music Assistant web interface.",
   "codeowners": ["@music-assistant"],
   "documentation": "https://music-assistant.io/player-support/builtin/",
   "multi_instance": false,

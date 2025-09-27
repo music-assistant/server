@@ -42,7 +42,6 @@ from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
-    CACHE_KEY_PREV_STATE,
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
     DEFAULT_PLAYER_VOLUME,
@@ -62,6 +61,9 @@ if TYPE_CHECKING:
     from music_assistant.providers.universal_group import UniversalGroupPlayer
 
     from .provider import SqueezelitePlayerProvider
+
+
+CACHE_CATEGORY_PREV_STATE = 0  # category for caching previous player state
 
 
 class SqueezelitePlayer(Player):
@@ -105,7 +107,9 @@ class SqueezelitePlayer(Player):
         # update all dynamic attributes
         self.update_attributes()
         # restore volume and power state
-        if last_state := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_STATE):
+        if last_state := await self.mass.cache.get(
+            key=player_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_PREV_STATE
+        ):
             init_power = last_state[0]
             init_volume = last_state[1]
         else:
@@ -161,7 +165,10 @@ class SqueezelitePlayer(Player):
         await self.client.power(powered)
         # store last state in cache
         await self.mass.cache.set(
-            self.player_id, (powered, self.client.volume_level), base_key=CACHE_KEY_PREV_STATE
+            key=self.player_id,
+            data=(powered, self.client.volume_level),
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
         )
 
     async def volume_set(self, volume_level: int) -> None:
@@ -169,7 +176,10 @@ class SqueezelitePlayer(Player):
         await self.client.volume_set(volume_level)
         # store last state in cache
         await self.mass.cache.set(
-            self.player_id, (self.client.powered, volume_level), base_key=CACHE_KEY_PREV_STATE
+            key=self.player_id,
+            data=(self.client.powered, volume_level),
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
         )
 
     async def volume_mute(self, muted: bool) -> None:

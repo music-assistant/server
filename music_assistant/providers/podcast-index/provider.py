@@ -272,7 +272,7 @@ class PodcastIndexProvider(MusicProvider):
         self.update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
         return True
 
-    @use_cache(86400)  # Cache for 24 hours
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast details."""
         try:
@@ -292,7 +292,6 @@ class PodcastIndexProvider(MusicProvider):
 
         raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
 
-    @use_cache(43200)  # Cache for 12 hours
     async def get_podcast_episodes(
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:

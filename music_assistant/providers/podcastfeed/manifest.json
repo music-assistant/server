@@ -3,7 +3,7 @@
   "domain": "podcastfeed",
   "stage": "stable",
   "name": "Podcast RSS Feed",
-  "description": "A parser for podcast rss feeds",
+  "description": "Subscribe to and play any podcast via its RSS feed.",
   "codeowners": ["@saeugetier"],
   "documentation": "https://music-assistant.io/music-providers/podcastfeed/",
   "multi_instance": true

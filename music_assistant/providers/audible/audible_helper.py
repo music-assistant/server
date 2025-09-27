@@ -89,7 +89,10 @@ class AudibleHelper:
         cached_book = None
         if asin:
             cached_book = await self.mass.cache.get(
-                key=asin, base_key=CACHE_DOMAIN, category=CACHE_CATEGORY_AUDIOBOOK, default=None
+                key=asin,
+                provider=self.provider_instance,
+                category=CACHE_CATEGORY_AUDIOBOOK,
+                default=None,
             )
 
         try:
@@ -198,7 +201,10 @@ class AudibleHelper:
         """Fetch the audiobook by asin."""
         if use_cache:
             cached_book = await self.mass.cache.get(
-                key=asin, base_key=CACHE_DOMAIN, category=CACHE_CATEGORY_AUDIOBOOK, default=None
+                key=asin,
+                provider=self.provider_instance,
+                category=CACHE_CATEGORY_AUDIOBOOK,
+                default=None,
             )
             if cached_book is not None:
                 return await self._parse_audiobook(cached_book)
@@ -219,7 +225,7 @@ class AudibleHelper:
 
         await self.mass.cache.set(
             key=asin,
-            base_key=CACHE_DOMAIN,
+            provider=self.provider_instance,
             category=CACHE_CATEGORY_AUDIOBOOK,
             data=item_data,
         )
@@ -300,7 +306,7 @@ class AudibleHelper:
             return []
 
         chapters_data: list[Any] = await self.mass.cache.get(
-            base_key=CACHE_DOMAIN, category=CACHE_CATEGORY_CHAPTERS, key=asin, default=[]
+            key=asin, provider=self.provider_instance, category=CACHE_CATEGORY_CHAPTERS, default=[]
         )
 
         if not chapters_data:
@@ -328,10 +334,10 @@ class AudibleHelper:
                 chapters_data = chapter_info.get("chapters") or []
 
                 await self.mass.cache.set(
-                    base_key=CACHE_DOMAIN,
-                    category=CACHE_CATEGORY_CHAPTERS,
                     key=asin,
                     data=chapters_data,
+                    provider=self.provider_instance,
+                    category=CACHE_CATEGORY_CHAPTERS,
                 )
             except Exception as exc:
                 self.logger.error(f"Error fetching chapters for ASIN {asin}: {exc}")
@@ -418,12 +424,14 @@ class AudibleHelper:
         cache_key_with_params = f"{path}:{params_hash}"
         if use_cache:
             response = await self.mass.cache.get(
-                key=cache_key_with_params, base_key=CACHE_DOMAIN, category=CACHE_CATEGORY_API
+                key=cache_key_with_params,
+                provider=self.provider_instance,
+                category=CACHE_CATEGORY_API,
             )
         if not response:
             response = await self.client.get(path, **kwargs)
             await self.mass.cache.set(
-                key=cache_key_with_params, base_key=CACHE_DOMAIN, data=response
+                key=cache_key_with_params, provider=self.provider_instance, data=response
             )
         return response
 

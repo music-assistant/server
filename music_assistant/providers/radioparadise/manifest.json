@@ -1,7 +1,7 @@
 {
   "domain": "radioparadise",
   "name": "Radio Paradise",
-  "description": "Stream high-quality FLAC radio from Radio Paradise's curated channels",
+  "description": "Stream an eclectic, human-curated radio mix (always ad-free) — listener supported and globally loved.",
   "documentation": "https://music-assistant.io/music-providers/radioparadise/",
   "type": "music",
   "requirements": [],

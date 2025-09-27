@@ -1384,7 +1384,6 @@
 # ---
 # name: test_parse_playlist[gonic-sample.playlist]
   dict({
-    'cache_checksum': None,
     'external_ids': list([
     ]),
     'favorite': False,

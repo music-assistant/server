@@ -3,7 +3,7 @@
   "domain": "spotify_connect",
   "stage": "alpha",
   "name": "Spotify Connect",
-  "description": "Add Spotify Connect support to ANY Music Assistant player.",
+  "description": "Makes a Music Assistant player appear as a device in the official Spotify app via Spotify Connect.",
   "codeowners": ["@music-assistant"],
   "documentation": "https://music-assistant.io/plugins/spotify-connect/",
   "multi_instance": true

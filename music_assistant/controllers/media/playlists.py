@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import cast
 
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import (
@@ -14,14 +13,11 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Playlist, Track
 
-from music_assistant.constants import (
-    CACHE_CATEGORY_MUSIC_PLAYLIST_TRACKS,
-    CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
-    DB_TABLE_PLAYLISTS,
-)
+from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.uri import create_uri, parse_uri
+from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
@@ -55,21 +51,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
         force_refresh: bool = False,
     ) -> AsyncGenerator[Track, None]:
         """Return playlist tracks for the given provider playlist id."""
-        playlist = await self.get(
-            item_id,
-            provider_instance_id_or_domain,
-        )
-        # a playlist can only have one provider so simply pick the first one
-        prov_map = next(x for x in playlist.provider_mappings)
-        cache_checksum = playlist.cache_checksum
+        if provider_instance_id_or_domain == "library":
+            library_item = await self.get_library_item(item_id)
+            # a playlist can only have one provider so simply pick the first one
+            prov_map = next(x for x in library_item.provider_mappings)
+            item_id = prov_map.item_id
+            provider_instance_id_or_domain = prov_map.provider_instance
         # playlist tracks are not stored in the db,
         # we always fetched them (cached) from the provider
         page = 0
         while True:
             tracks = await self._get_provider_playlist_tracks(
-                prov_map.item_id,
-                prov_map.provider_instance,
-                cache_checksum=cache_checksum,
+                item_id,
+                provider_instance_id_or_domain,
                 page=page,
                 force_refresh=force_refresh,
             )
@@ -274,7 +268,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # actually add the tracks to the playlist on the provider
         await playlist_prov.add_playlist_tracks(playlist_prov_map.item_id, list(ids_to_add))
         # invalidate cache so tracks get refreshed
-        playlist.cache_checksum = str(time.time())
+        self._refresh_playlist_tracks(playlist)
         await self.update_item_in_library(db_playlist_id, playlist)
 
     async def add_playlist_track(self, db_playlist_id: str | int, track_uri: str) -> None:
@@ -302,8 +296,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 )
                 continue
             await provider.remove_playlist_tracks(prov_mapping.item_id, positions_to_remove)
-        # invalidate cache so tracks get refreshed
-        playlist.cache_checksum = str(time.time())
+
         await self.update_item_in_library(db_playlist_id, playlist)
 
     async def _add_library_item(self, item: Playlist) -> int:
@@ -318,7 +311,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "external_ids": serialize_to_json(item.external_ids),
-                "cache_checksum": item.cache_checksum,
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name, True, True),
             },
@@ -351,7 +343,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
-                "cache_checksum": update.cache_checksum or cur_item.cache_checksum,
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name, True, True),
             },
@@ -365,59 +356,21 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
+    @guard_single_request
     async def _get_provider_playlist_tracks(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        cache_checksum: Any = None,
         page: int = 0,
         force_refresh: bool = False,
     ) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
-        provider: MusicProvider = self.mass.get_provider(provider_instance_id_or_domain)
-        if not provider:
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return []
-        # prefer cache items (if any)
-        cache_category = CACHE_CATEGORY_MUSIC_PLAYLIST_TRACKS
-        cache_base_key = provider.lookup_key
-        cache_key = f"{item_id}.{page}"
-        if (
-            not force_refresh
-            and (
-                cache := await self.mass.cache.get(
-                    cache_key,
-                    checksum=cache_checksum,
-                    category=cache_category,
-                    base_key=cache_base_key,
-                )
-            )
-            is not None
-        ):
-            return [Track.from_dict(x) for x in cache]
-        # no items in cache (or force_refresh) - get listing from provider
-        items = await provider.get_playlist_tracks(item_id, page=page)
-        # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(
-                cache_key,
-                [x.to_dict() for x in items],
-                checksum=cache_checksum,
-                category=cache_category,
-                base_key=cache_base_key,
-            )
-        )
-        for item in items:
-            # if this is a complete track object, pre-cache it as
-            # that will save us an (expensive) lookup later
-            if item.image and item.artist_str and item.album and provider.domain != "builtin":
-                await self.mass.cache.set(
-                    f"track.{item_id}",
-                    item.to_dict(),
-                    category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
-                    base_key=provider.lookup_key,
-                )
-        return items
+        provider = cast("MusicProvider", provider)
+        async with self.mass.cache.handle_refresh(force_refresh):
+            return await provider.get_playlist_tracks(item_id, page=page)
 
     async def radio_mode_base_tracks(
         self,
@@ -438,3 +391,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         This is used to link objects of different providers/qualities together.
         """
         raise NotImplementedError
+
+    def _refresh_playlist_tracks(self, playlist: Playlist) -> None:
+        """Refresh playlist tracks by forcing a cache refresh."""
+
+        async def _refresh(self, playlist: Playlist):
+            # simply iterate all tracks with force_refresh=True to refresh the cache
+            async for _ in self.tracks(playlist.item_id, playlist.provider, force_refresh=True):
+                pass
+
+        task_id = f"refresh_playlist_tracks_{playlist.item_id}"
+        self.mass.call_later(5, _refresh, playlist, task_id=task_id)  # debounce multiple calls

@@ -114,6 +114,7 @@ class SoundcloudMusicProvider(MusicProvider):
         self._me = await self._soundcloud.get_account_details()
         self._user_id = self._me["id"]
 
+    @use_cache(3600 * 48)  # Cache for 48 hours
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
@@ -222,7 +223,7 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
 
-    @use_cache(3600)
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get available recommendations."""
         # Part 1, the mixed selections
@@ -265,6 +266,7 @@ class SoundcloudMusicProvider(MusicProvider):
             folders.append(folder)
         return folders
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._soundcloud.get_user_details(prov_artist_id)
@@ -275,6 +277,7 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse artist failed: %s", artist_obj, exc_info=error)
         return artist
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         track_obj = await self._soundcloud.get_track_details(prov_track_id)
@@ -284,6 +287,7 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse track failed: %s", track_obj, exc_info=error)
         return track
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         playlist_obj = await self._get_playlist_object(prov_playlist_id)
@@ -302,6 +306,7 @@ class SoundcloudMusicProvider(MusicProvider):
             # Handle regular playlists
             return await self._soundcloud.get_playlist_details(prov_playlist_id)
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -328,6 +333,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 continue
         return result
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of (max 500) tracks for the given artist."""
         tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 500)
@@ -343,6 +349,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 continue
         return tracks
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         tracks_obj = await self._soundcloud.get_recommended(prov_track_id, limit)
@@ -358,6 +365,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return tracks
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         url: str = await self._soundcloud.get_stream_url(track_id=item_id, presets=["mp3"])
