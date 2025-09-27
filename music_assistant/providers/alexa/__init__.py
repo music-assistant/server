@@ -336,7 +336,10 @@ class AlexaPlayer(Player):
         ask_command_key = f"play_audio_{alexa_locale if alexa_locale else "default"}"
 
         if ask_command_key not in ALEXA_LANGUAGE_COMMANDS:
+            _LOGGER.debug(f"Ask command key {ask_command_key} not found in ALEXA_LANGUAGE_COMMANDS.")
             ask_command_key = "play_audio_default"
+
+        _LOGGER.debug(f"Using ask command key: {ask_command_key} -> {ALEXA_LANGUAGE_COMMANDS[ask_command_key]}")
 
         await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
 
