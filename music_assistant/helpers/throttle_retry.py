@@ -97,12 +97,10 @@ class ThrottlerManager:
     async def bypass(self) -> AsyncGenerator[None, None]:
         """Bypass the throttler."""
         try:
-            BYPASS_THROTTLER.set(True)
+            token = BYPASS_THROTTLER.set(True)
             yield None
         finally:
-            # TODO: token is unbound here
-            # BYPASS_THROTTLER.reset(token)
-            ...
+            BYPASS_THROTTLER.reset(token)
 
 
 def throttle_with_retries[ProviderT: "Provider", **P, R](

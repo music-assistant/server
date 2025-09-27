@@ -55,8 +55,6 @@ from music_assistant.constants import (
     ATTR_GROUP_MEMBERS,
     ATTR_LAST_POLL,
     ATTR_PREVIOUS_VOLUME,
-    CACHE_CATEGORY_PLAYERS,
-    CACHE_KEY_PLAYER_POWER,
     CONF_AUTO_PLAY,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -82,6 +80,8 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import CoreConfig, PlayerConfig
     from music_assistant_models.player_queue import PlayerQueue
+
+CACHE_CATEGORY_PLAYER_POWER = 1
 
 
 _PlayerControllerT = TypeVar("_PlayerControllerT", bound="PlayerController")
@@ -513,7 +513,10 @@ class PlayerController(CoreController):
             # and store the state in the cache
             player.extra_data[ATTR_FAKE_POWER] = powered
             await self.mass.cache.set(
-                player_id, powered, category=CACHE_CATEGORY_PLAYERS, base_key=CACHE_KEY_PLAYER_POWER
+                key=player_id,
+                data=powered,
+                provider=self.domain,
+                category=CACHE_CATEGORY_PLAYER_POWER,
             )
         else:
             # handle external player control
@@ -1242,10 +1245,10 @@ class PlayerController(CoreController):
 
         # restore 'fake' power state from cache if available
         cached_value = await self.mass.cache.get(
-            player.player_id,
+            key=player.player_id,
+            provider=self.domain,
+            category=CACHE_CATEGORY_PLAYER_POWER,
             default=False,
-            category=CACHE_CATEGORY_PLAYERS,
-            base_key=CACHE_KEY_PLAYER_POWER,
         )
         if cached_value is not None:
             player.extra_data[ATTR_FAKE_POWER] = cached_value

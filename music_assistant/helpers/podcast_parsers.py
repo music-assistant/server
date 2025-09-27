@@ -1,8 +1,11 @@
 """Podcastfeed -> Mass."""
 
 from datetime import datetime
+from io import BytesIO
 from typing import Any
 
+import aiohttp
+import podcastparser
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -14,6 +17,26 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     UniqueList,
 )
+
+
+async def get_podcastparser_dict(
+    *, session: aiohttp.ClientSession, feed_url: str, max_episodes: int = 0
+) -> dict[str, Any]:
+    """Get feed parsed by podcastparser by providing the url.
+
+    max_episodes = 0 does not limit the returned episodes.
+    """
+    response: aiohttp.ClientResponse | None = None
+    # without user agent, some feeds can not be retrieved
+    # https://github.com/music-assistant/support/issues/3596
+    # but, reports on discord show, that also the opposite may be true
+    for headers in [{"User-Agent": "Mozilla/5.0"}, {}]:
+        # raises ClientError on status failure
+        response = await session.get(feed_url, headers=headers, raise_for_status=True)
+    assert response is not None  # for type checking
+    feed_data = await response.read()
+    feed_stream = BytesIO(feed_data)
+    return podcastparser.parse(feed_url, feed_stream, max_episodes=max_episodes)  # type: ignore[no-any-return]
 
 
 def parse_podcast(

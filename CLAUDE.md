@@ -3,6 +3,13 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 This guidance is aimed at Claude Code but may as well be suitable for other AI tooling, such as Github CoPilot.
 
+Instructions for an LLM (such as Claude) working with the code:
+
+- Take these instructions in mind
+- Look at existing provider implementations, type hints, docstrings and comments
+- Propose changes to extend this document with new learnings.
+
+
 ## Project Overview
 
 Music Assistant is a (async) Python 3 based music library manager that connects to streaming services and supports various connected speakers. It's designed to run as a server on always-on devices and integrates with Home Assistant.
@@ -71,7 +78,8 @@ Each provider has (at least):
 - `manifest.json` - Provider metadata and configuration schema
 - many providers choose to split up the code into several smaller files for readability and maintenance.
 
-Template providers are available in `_template_*_provider` directories.
+Template providers are available in `_demo_*_provider` directories.
+These demo/example implementations have a lot of docstrings and comments to help you setup a new provider.
 
 ### Data Flow
 

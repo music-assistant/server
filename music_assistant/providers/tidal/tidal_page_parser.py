@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import MediaType
 
-from music_assistant.constants import CACHE_CATEGORY_RECOMMENDATIONS
+from .constants import CACHE_CATEGORY_RECOMMENDATIONS
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
@@ -391,11 +391,10 @@ class TidalPageParser:
     @classmethod
     async def from_cache(cls, provider: TidalProvider, page_path: str) -> TidalPageParser | None:
         """Create a parser instance from cached data if available and valid."""
-        cache_key = f"tidal_page_{page_path}"
         cached_data = await provider.mass.cache.get(
-            cache_key,
+            page_path,
+            provider=provider.instance_id,
             category=CACHE_CATEGORY_RECOMMENDATIONS,
-            base_key=provider.lookup_key,
         )
         if not cached_data:
             return None

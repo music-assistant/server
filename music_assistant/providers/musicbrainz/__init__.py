@@ -426,7 +426,7 @@ class MusicbrainzProvider(MetadataProvider):
                 return MusicBrainzArtist.from_raw(artist)
         return None
 
-    @use_cache(86400 * 30)
+    @use_cache(86400 * 30)  # Cache for 30 days
     @throttle_with_retries
     async def get_data(self, endpoint: str, **kwargs: str) -> Any:
         """Get data from api."""

@@ -354,6 +354,7 @@ class ARDAudiothek(MusicProvider):
         """Search and lookup always search remote."""
         return True
 
+    @use_cache(3600 * 24 * 7)  # cache for 7 days
     async def search(
         self,
         search_query: str,
@@ -409,6 +410,7 @@ class ARDAudiothek(MusicProvider):
 
         return SearchResults(podcasts=podcasts, radio=radios)
 
+    @use_cache(3600 * 24 * 7)  # cache for 7 days
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         # Get full details of a single Radio station.
@@ -463,6 +465,7 @@ class ARDAudiothek(MusicProvider):
 
         return []
 
+    @use_cache(3600 * 24 * 7)  # cache for 7 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast."""
         async with await self.get_client() as session:
@@ -515,6 +518,7 @@ class ARDAudiothek(MusicProvider):
                         progress,
                     )
 
+    @use_cache(3600 * 24)  # cache for 24 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get single podcast episode."""
         await self._update_progress()
@@ -574,7 +578,7 @@ class ARDAudiothek(MusicProvider):
             allow_seek=seek,
         )
 
-    @use_cache(3600)
+    @use_cache(3600 * 24 * 7)  # cache for 7 days
     async def get_organizations(self, path: str) -> list[BrowseFolder]:
         """Create a list of all available organizations."""
         async with await self.get_client() as session:
@@ -607,7 +611,7 @@ class ARDAudiothek(MusicProvider):
 
         return organizations
 
-    @use_cache(3600)
+    @use_cache(3600 * 24 * 7)  # cache for 7 days
     async def get_publication_services(self, path: str, core_id: str) -> list[BrowseFolder]:
         """Create a list of publications for a given organization."""
         async with await self.get_client() as session:
@@ -632,7 +636,7 @@ class ARDAudiothek(MusicProvider):
 
         return publications
 
-    @use_cache(3600)
+    @use_cache(3600 * 24 * 7)  # cache for 7 days
     async def get_publications_list(self, core_id: str) -> list[Radio | Podcast]:
         """Create list of available radio stations and shows for a publication service."""
         async with await self.get_client() as session:

@@ -1,0 +1,9 @@
+{
+  "type": "player",
+  "domain": "resonate",
+  "stage": "alpha",
+  "name": "Resonate",
+  "description": "Resonate provider for Music Assistant.",
+  "codeowners": ["@music-assistant"],
+  "requirements": ["aioresonate==0.9.1"]
+}
