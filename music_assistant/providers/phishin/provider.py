@@ -420,7 +420,6 @@ class PhishInProvider(MusicProvider):
                         name=playlist_data.get("name", ""),
                         owner=playlist_data.get("username", ""),
                         is_editable=False,
-                        cache_checksum=str(playlist_data.get("id")),
                         metadata=metadata,
                         provider_mappings={
                             ProviderMapping(

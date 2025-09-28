@@ -296,7 +296,6 @@ def playlist_to_ma_playlist(provider: MusicProvider, playlist_data: dict[str, An
         name=playlist_data.get("name", ""),
         owner=playlist_data.get("username", ""),
         is_editable=False,
-        cache_checksum=str(playlist_data.get("id")),
         metadata=metadata,
         provider_mappings={
             ProviderMapping(
