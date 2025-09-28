@@ -22,8 +22,8 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_DEPRECATED_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_DEPRECATED_CROSSFADE,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_PASSWORD,
