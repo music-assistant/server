@@ -1413,6 +1413,26 @@ async def get_silence(
             yield chunk
 
 
+async def resample_pcm_audio(
+    input_audio: bytes | AsyncGenerator[bytes, None],
+    input_format: AudioFormat,
+    output_format: AudioFormat,
+) -> AsyncGenerator[bytes, None]:
+    """Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg."""
+    LOGGER.debug(f"Resampling audio from {input_format} to {output_format}")
+
+    async def _yielder() -> AsyncGenerator[bytes, None]:
+        yield input_audio  # type: ignore[misc]
+
+    async for chunk in get_ffmpeg_stream(
+        audio_input=_yielder() if isinstance(input_audio, bytes) else input_audio,
+        input_format=input_format,
+        output_format=output_format,
+        raise_ffmpeg_exception=True,
+    ):
+        yield chunk
+
+
 def get_chunksize(
     fmt: AudioFormat,
     seconds: int = 1,

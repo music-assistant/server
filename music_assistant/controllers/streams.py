@@ -61,12 +61,13 @@ from music_assistant.helpers.audio import (
     get_player_filter_params,
     get_silence,
     get_stream_details,
+    resample_pcm_audio,
 )
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.smart_fades import (
-    MAX_SMART_CROSSFADE_DURATION,
+    SMART_CROSSFADE_DURATION,
     SmartFadesMixer,
     SmartFadesMode,
 )
@@ -865,7 +866,10 @@ class StreamsController(CoreController):
             # append to play log so the queue controller can work out which track is playing
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
             queue.flow_mode_stream_log.append(play_log_entry)
-            crossfade_size = int(pcm_format.pcm_sample_size * MAX_SMART_CROSSFADE_DURATION)
+            if smart_fades_mode == SmartFadesMode.SMART_FADES:
+                crossfade_size = int(pcm_format.pcm_sample_size * SMART_CROSSFADE_DURATION)
+            else:
+                crossfade_size = int(pcm_format.pcm_sample_size * standard_crossfade_duration + 4)
             bytes_written = 0
             buffer = b""
             # handle incoming audio chunks
@@ -898,8 +902,7 @@ class StreamsController(CoreController):
                         fade_out_part=last_fadeout_part,
                         fade_in_streamdetails=queue_track.streamdetails,
                         fade_out_streamdetails=last_streamdetails,
-                        fade_in_pcm_format=pcm_format,
-                        fade_out_pcm_format=pcm_format,
+                        pcm_format=pcm_format,
                         standard_crossfade_duration=standard_crossfade_duration,
                         mode=smart_fades_mode,
                     )
@@ -923,7 +926,7 @@ class StreamsController(CoreController):
                         bytes_written += len(remaining_bytes)
                         del remaining_bytes
                     # clear vars
-                    last_fadeout_part = None
+                    last_fadeout_part = b""
                     last_streamdetails = None
                     buffer = b""
 
@@ -938,7 +941,7 @@ class StreamsController(CoreController):
                 # edge case: we did not get enough data to make the crossfade
                 yield last_fadeout_part
                 bytes_written += len(last_fadeout_part)
-                last_fadeout_part = None
+                last_fadeout_part = b""
             if self._crossfade_allowed(queue_track, flow_mode=True):
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_size:]
@@ -980,7 +983,7 @@ class StreamsController(CoreController):
             last_part_seconds = len(last_fadeout_part) / pcm_sample_size
             queue_track.streamdetails.seconds_streamed += last_part_seconds
             queue_track.streamdetails.duration += last_part_seconds
-            last_fadeout_part = None
+            last_fadeout_part = b""
         total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
@@ -1158,7 +1161,7 @@ class StreamsController(CoreController):
             queue_item.streamdetails.uri if queue_item.streamdetails else "Unknown URI",
             queue_item.name,
             queue.display_name,
-            f"{standard_crossfade_duration} seconds",
+            smart_fades_mode,
         )
 
         if crossfade_data and crossfade_data.session_id != session_id:
@@ -1167,7 +1170,10 @@ class StreamsController(CoreController):
 
         buffer = b""
         bytes_written = 0
-        crossfade_size = int(pcm_format.pcm_sample_size * MAX_SMART_CROSSFADE_DURATION)
+        if smart_fades_mode == SmartFadesMode.SMART_FADES:
+            crossfade_size = int(pcm_format.pcm_sample_size * SMART_CROSSFADE_DURATION)
+        else:
+            crossfade_size = int(pcm_format.pcm_sample_size * standard_crossfade_duration + 4)
         fade_out_data: bytes | None = None
 
         async for chunk in self.get_queue_item_stream(queue_item, pcm_format):
@@ -1182,9 +1188,18 @@ class StreamsController(CoreController):
             if crossfade_data:
                 # discard the fade_in_part from the crossfade data
                 buffer = buffer[crossfade_data.fade_in_size :]
-                # TODO: resample on pcm format mismatch ?!
-                yield crossfade_data.data
-                bytes_written += len(crossfade_data.data)
+                # send the (second half of the) crossfade data
+                if crossfade_data.pcm_format != pcm_format:
+                    # pcm format mismatch, we need to resample the crossfade data
+                    async for _crossfade_chunk in resample_pcm_audio(
+                        crossfade_data.data, crossfade_data.pcm_format, pcm_format
+                    ):
+                        yield _crossfade_chunk
+                        bytes_written += len(_crossfade_chunk)
+                        del _crossfade_chunk
+                else:
+                    yield crossfade_data.data
+                    bytes_written += len(crossfade_data.data)
                 # clear vars
                 crossfade_data = None
 
@@ -1227,8 +1242,7 @@ class StreamsController(CoreController):
                         fade_out_part=fade_out_data,
                         fade_in_streamdetails=next_queue_item.streamdetails,
                         fade_out_streamdetails=queue_item.streamdetails,
-                        fade_in_pcm_format=pcm_format,
-                        fade_out_pcm_format=pcm_format,
+                        pcm_format=pcm_format,
                         standard_crossfade_duration=standard_crossfade_duration,
                         mode=smart_fades_mode,
                     )
@@ -1255,7 +1269,7 @@ class StreamsController(CoreController):
                 # end of queue reached or crossfade failed - no crossfade possible
                 yield fade_out_data
                 bytes_written += len(fade_out_data)
-                fade_out_data = None
+                del fade_out_data
         # make sure the buffer gets cleaned up
         del buffer
         # update duration details based on the actual pcm data we sent

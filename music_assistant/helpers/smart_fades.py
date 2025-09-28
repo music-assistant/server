@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
 
-MAX_SMART_CROSSFADE_DURATION = 45
+SMART_CROSSFADE_DURATION = 45
 ANALYSIS_FPS = 100
 # Only apply time stretching if BPM difference is < this %
 TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD = 8.0
@@ -248,8 +248,7 @@ class SmartFadesMixer:
         fade_out_part: bytes,
         fade_in_streamdetails: StreamDetails,
         fade_out_streamdetails: StreamDetails,
-        fade_in_pcm_format: AudioFormat,
-        fade_out_pcm_format: AudioFormat,
+        pcm_format: AudioFormat,
         standard_crossfade_duration: int = 10,
         mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
     ) -> bytes:
@@ -267,7 +266,7 @@ class SmartFadesMixer:
                 fade_out_streamdetails.provider,
                 SmartFadesAnalysisFragment.OUTRO,
                 fade_out_part,
-                fade_out_pcm_format,
+                pcm_format,
             )
 
         fade_in_analysis: SmartFadesAnalysis | None
@@ -283,7 +282,7 @@ class SmartFadesMixer:
                 fade_in_streamdetails.provider,
                 SmartFadesAnalysisFragment.INTRO,
                 fade_in_part,
-                fade_in_pcm_format,
+                pcm_format,
             )
         if (
             fade_out_analysis
@@ -298,8 +297,7 @@ class SmartFadesMixer:
                     fade_in_analysis,
                     fade_out_part,
                     fade_in_part,
-                    fade_in_pcm_format,
-                    fade_out_pcm_format,
+                    pcm_format,
                 )
             except Exception as e:
                 self.logger.warning(
@@ -309,8 +307,7 @@ class SmartFadesMixer:
         return await self._default_crossfade(
             fade_in_part,
             fade_out_part,
-            fade_in_pcm_format,
-            fade_out_pcm_format,
+            pcm_format,
             standard_crossfade_duration,
         )
 
@@ -320,8 +317,7 @@ class SmartFadesMixer:
         fade_in_analysis: SmartFadesAnalysis,
         fade_out_part: bytes,
         fade_in_part: bytes,
-        fade_in_pcm_format: AudioFormat,
-        fade_out_pcm_format: AudioFormat,
+        pcm_format: AudioFormat,
     ) -> bytes:
         """Apply smart crossfade with beat-perfect timing and adaptive filtering."""
         # Write the fade_out_part to a temporary file
@@ -335,28 +331,28 @@ class SmartFadesMixer:
             "error",
             # Input 1: fadeout part (as file)
             "-acodec",
-            fade_out_pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
+            pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
             "-ac",
-            str(fade_out_pcm_format.channels),
+            str(pcm_format.channels),
             "-ar",
-            str(fade_out_pcm_format.sample_rate),
+            str(pcm_format.sample_rate),
             "-channel_layout",
-            "mono" if fade_out_pcm_format.channels == 1 else "stereo",
+            "mono" if pcm_format.channels == 1 else "stereo",
             "-f",
-            fade_out_pcm_format.content_type.value,
+            pcm_format.content_type.value,
             "-i",
             fadeout_filename,
             # Input 2: fade_in part (stdin)
             "-acodec",
-            fade_in_pcm_format.content_type.name.lower(),
+            pcm_format.content_type.name.lower(),
             "-ac",
-            str(fade_in_pcm_format.channels),
+            str(pcm_format.channels),
             "-ar",
-            str(fade_in_pcm_format.sample_rate),
+            str(pcm_format.sample_rate),
             "-channel_layout",
-            "mono" if fade_in_pcm_format.channels == 1 else "stereo",
+            "mono" if pcm_format.channels == 1 else "stereo",
             "-f",
-            fade_in_pcm_format.content_type.value,
+            pcm_format.content_type.value,
             "-i",
             "-",
         ]
@@ -371,15 +367,15 @@ class SmartFadesMixer:
                 ";".join(smart_fade_filters),
                 # Output format specification - must match input codec format
                 "-acodec",
-                fade_in_pcm_format.content_type.name.lower(),
+                pcm_format.content_type.name.lower(),
                 "-ac",
-                str(fade_in_pcm_format.channels),
+                str(pcm_format.channels),
                 "-ar",
-                str(fade_in_pcm_format.sample_rate),
+                str(pcm_format.sample_rate),
                 "-channel_layout",
-                "mono" if fade_in_pcm_format.channels == 1 else "stereo",
+                "mono" if pcm_format.channels == 1 else "stereo",
                 "-f",
-                fade_in_pcm_format.content_type.value,
+                pcm_format.content_type.value,
                 "-",
             ]
         )
@@ -437,13 +433,13 @@ class SmartFadesMixer:
         # Check if we would have enough audio after beat alignment for the crossfade
         if (
             fadein_start_pos is not None
-            and fadein_start_pos + crossfade_duration > MAX_SMART_CROSSFADE_DURATION
+            and fadein_start_pos + crossfade_duration > SMART_CROSSFADE_DURATION
         ):
             self.logger.debug(
                 "Skipping beat alignment: not enough audio after trim (%.1fs + %.1fs > %.1fs)",
                 fadein_start_pos,
                 crossfade_duration,
-                MAX_SMART_CROSSFADE_DURATION,
+                SMART_CROSSFADE_DURATION,
             )
             # Skip beat alignment
             fadein_start_pos = None
@@ -491,10 +487,10 @@ class SmartFadesMixer:
         musical_duration = crossfade_bars * beats_per_bar * seconds_per_beat
 
         # Apply buffer constraint
-        actual_duration = min(musical_duration, MAX_SMART_CROSSFADE_DURATION)
+        actual_duration = min(musical_duration, SMART_CROSSFADE_DURATION)
 
         # Log if we had to constrain the duration
-        if musical_duration > MAX_SMART_CROSSFADE_DURATION:
+        if musical_duration > SMART_CROSSFADE_DURATION:
             self.logger.debug(
                 "Constraining crossfade duration from %.1fs to %.1fs (buffer limit)",
                 musical_duration,
@@ -539,7 +535,7 @@ class SmartFadesMixer:
             )
 
             # Check if it fits in fadein buffer
-            fadein_buffer = MAX_SMART_CROSSFADE_DURATION - fadein_start_pos
+            fadein_buffer = SMART_CROSSFADE_DURATION - fadein_start_pos
             if test_duration <= fadein_buffer:
                 if bars < ideal_bars:
                     self.logger.debug(
@@ -733,7 +729,7 @@ class SmartFadesMixer:
         # Calculate the tempo change factor
         # atempo accepts values between 0.5 and 2.0 (can be chained for larger changes)
         tempo_factor = bpm_ratio
-        buffer_duration = MAX_SMART_CROSSFADE_DURATION  # 45 seconds
+        buffer_duration = SMART_CROSSFADE_DURATION  # 45 seconds
 
         # Calculate expected crossfade duration from bars for comparison
         beats_per_bar = 4
@@ -845,14 +841,14 @@ class SmartFadesMixer:
             crossover_freq = int(crossover_freq * 0.85)
 
         # Extended lowpass effect to gradually remove bass frequencies
-        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), MAX_SMART_CROSSFADE_DURATION)
+        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), SMART_CROSSFADE_DURATION)
 
         # Quicker highpass removal to avoid lingering vocals after crossfade
         fadein_eq_duration = crossfade_duration / 1.5
 
         # Calculate when the EQ sweep should start
         # The crossfade always happens at the END of the buffer, regardless of beat alignment
-        fadeout_eq_start = max(0, MAX_SMART_CROSSFADE_DURATION - fadeout_eq_duration)
+        fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
 
         self.logger.debug(
             "EQ: crossover=%dHz, EQ fadeout duration=%.1fs"
@@ -897,21 +893,20 @@ class SmartFadesMixer:
         self,
         fade_in_part: bytes,
         fade_out_part: bytes,
-        fade_in_pcm_format: AudioFormat,
-        fade_out_pcm_format: AudioFormat,
+        pcm_format: AudioFormat,
         crossfade_duration: int = 10,
     ) -> bytes:
         """Apply a standard crossfade without smart analysis."""
         self.logger.debug("Applying standard crossfade of %ds", crossfade_duration)
-        crossfade_size = int(fade_out_pcm_format.pcm_sample_size * crossfade_duration)
+        crossfade_size = int(pcm_format.pcm_sample_size * crossfade_duration)
         # Pre-crossfade: outgoing track minus the crossfaded portion
         pre_crossfade = fade_out_part[:-crossfade_size]
         # Crossfaded portion: user's configured duration
         crossfaded_section = await crossfade_pcm_parts(
             fade_in_part[:crossfade_size],
             fade_out_part[-crossfade_size:],
-            pcm_format=fade_in_pcm_format,
-            fade_out_pcm_format=fade_out_pcm_format,
+            pcm_format=pcm_format,
+            fade_out_pcm_format=pcm_format,
         )
         # Post-crossfade: incoming track minus the crossfaded portion
         post_crossfade = fade_in_part[crossfade_size:]
