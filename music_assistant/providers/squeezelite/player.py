@@ -14,7 +14,7 @@ from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import Preset as SlimPreset
 from aioslimproto.models import SlimEvent
 from aioslimproto.models import VisualisationType as SlimVisualisationType
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, PlayerConfig
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -42,7 +42,6 @@ from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
-    CACHE_KEY_PREV_STATE,
     CONF_ENTRY_DISPLAY,
     CONF_ENTRY_VISUALIZATION,
     DEFAULT_PLAYER_VOLUME,
@@ -62,6 +61,9 @@ if TYPE_CHECKING:
     from music_assistant.providers.universal_group import UniversalGroupPlayer
 
     from .provider import SqueezelitePlayerProvider
+
+
+CACHE_CATEGORY_PREV_STATE = 0  # category for caching previous player state
 
 
 class SqueezelitePlayer(Player):
@@ -95,17 +97,22 @@ class SqueezelitePlayer(Player):
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
 
+    async def on_config_updated(self) -> None:
+        """Handle logic when the player is registered or the config was updated."""
+        # set presets and display
+        await self._set_preset_items()
+        await self._set_display()
+
     async def setup(self) -> None:
         """Set up the player."""
         player_id = self.client.player_id
         self.logger.info("Player %s connected", self.client.name or player_id)
-        # set presets and display
-        await self._set_preset_items()
-        await self._set_display()
         # update all dynamic attributes
         self.update_attributes()
         # restore volume and power state
-        if last_state := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_STATE):
+        if last_state := await self.mass.cache.get(
+            key=player_id, provider=self.provider.instance_id, category=CACHE_CATEGORY_PREV_STATE
+        ):
             init_power = last_state[0]
             init_volume = last_state[1]
         else:
@@ -161,7 +168,10 @@ class SqueezelitePlayer(Player):
         await self.client.power(powered)
         # store last state in cache
         await self.mass.cache.set(
-            self.player_id, (powered, self.client.volume_level), base_key=CACHE_KEY_PREV_STATE
+            key=self.player_id,
+            data=(powered, self.client.volume_level),
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
         )
 
     async def volume_set(self, volume_level: int) -> None:
@@ -169,7 +179,10 @@ class SqueezelitePlayer(Player):
         await self.client.volume_set(volume_level)
         # store last state in cache
         await self.mass.cache.set(
-            self.player_id, (self.client.powered, volume_level), base_key=CACHE_KEY_PREV_STATE
+            key=self.player_id,
+            data=(self.client.powered, volume_level),
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
         )
 
     async def volume_mute(self, muted: bool) -> None:
@@ -338,13 +351,6 @@ class SqueezelitePlayer(Player):
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
             self.mass.create_task(self.play_media(self.current_media))
-
-    def set_config(self, config: PlayerConfig) -> None:
-        """Set/update the player config."""
-        super().set_config(config)
-        # update preset and display when config changes
-        self.mass.create_task(self._set_preset_items())
-        self.mass.create_task(self._set_display())
 
     def handle_slim_event(self, event: SlimEvent) -> None:
         """Handle player event from slimproto server."""

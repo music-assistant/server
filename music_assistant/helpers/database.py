@@ -235,7 +235,7 @@ class DatabaseConnection:
         self, table: str, match: dict[str, Any] | None = None, query: str | None = None
     ) -> None:
         """Delete data in given table."""
-        assert not (query and "where" in query.lower())
+        assert not (match and query), "Cannot use both match and query"
         sql_query = f"DELETE FROM {table} "
         if match:
             sql_query += " WHERE " + " AND ".join(f"{x} = :{x}" for x in match)

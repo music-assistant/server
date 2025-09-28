@@ -3,7 +3,7 @@
   "domain": "fanarttv",
   "stage": "stable",
   "name": "fanart.tv",
-  "description": "fanart.tv is a community database of artwork for movies, tv series and music.",
+  "description": "Provides high-quality artist and album artwork from Fanart.tv, used throughout the Music Assistant UI.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "",

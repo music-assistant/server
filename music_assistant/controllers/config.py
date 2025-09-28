@@ -32,6 +32,7 @@ from music_assistant_models.helpers import get_global_cache_value
 
 from music_assistant.constants import (
     CONF_CORE,
+    CONF_DEPRECATED_CROSSFADE,
     CONF_DEPRECATED_EQ_BASS,
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
@@ -59,6 +60,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
+    CONF_SMART_FADES_MODE,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
@@ -1000,6 +1002,17 @@ class ConfigController:
             provider_config["domain"] = "universal_group"
             provider_config["instance_id"] = "universal_group"
             self._data[CONF_PROVIDERS]["universal_group"] = provider_config
+
+        # Migrate the crossfade setting into Smart Fade Mode = 'crossfade'
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            # Check if player has old crossfade enabled but no smart fades mode set
+            if (
+                player_config.get(CONF_DEPRECATED_CROSSFADE) is True
+                and CONF_SMART_FADES_MODE not in player_config
+            ):
+                # Set smart fades mode to standard_crossfade
+                player_config[CONF_SMART_FADES_MODE] = "standard_crossfade"
+                changed = True
 
         if changed:
             await self._async_save()

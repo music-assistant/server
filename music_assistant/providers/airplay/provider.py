@@ -15,7 +15,7 @@ from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import get_ip_pton, select_free_port
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CACHE_KEY_PREV_VOLUME, CONF_IGNORE_VOLUME, FALLBACK_VOLUME
+from .constants import CACHE_CATEGORY_PREV_VOLUME, CONF_IGNORE_VOLUME, FALLBACK_VOLUME
 from .helpers import (
     convert_airplay_volume,
     get_cliraop_binary,
@@ -153,7 +153,11 @@ class AirPlayProvider(PlayerProvider):
             display_name += " (AirPlay)"
 
         # Get volume from cache
-        if not (volume := await self.mass.cache.get(player_id, base_key=CACHE_KEY_PREV_VOLUME)):
+        if not (
+            volume := await self.mass.cache.get(
+                key=player_id, provider=self.lookup_key, category=CACHE_CATEGORY_PREV_VOLUME
+            )
+        ):
             volume = FALLBACK_VOLUME
 
         player = AirPlayPlayer(

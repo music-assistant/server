@@ -3,7 +3,7 @@
   "domain": "chromecast",
   "stage": "stable",
   "name": "Chromecast",
-  "description": "Support for Chromecast based players.",
+  "description": "Cast music and podcasts to Chromecast or Google Cast devices.",
   "codeowners": ["@music-assistant"],
   "requirements": ["PyChromecast==14.0.7"],
   "documentation": "https://music-assistant.io/player-support/google-cast/",

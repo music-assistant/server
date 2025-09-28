@@ -38,7 +38,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_OPEN_SUBSONIC,
     CONF_PASSWORD,
     CONF_PATH,
     CONF_PORT,
@@ -66,7 +65,7 @@ if TYPE_CHECKING:
     from libopensonic.media import ArtistID3 as SonicArtist
     from libopensonic.media import Bookmark as SonicBookmark
     from libopensonic.media import Child as SonicSong
-    from libopensonic.media import OpenSubsonicExtension
+    from libopensonic.media import OpenSubsonicExtension, PodcastChannel
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
@@ -80,6 +79,8 @@ CONF_NEW_ALBUMS = "recommend_new"
 CONF_PLAYED_ALBUMS = "recommend_played"
 CONF_RECO_SIZE = "recommendation_count"
 
+CACHE_CATEGORY_PODCAST_CHANNEL = 1
+CACHE_CATEGORY_PODCAST_EPISODES = 2
 
 Param = ParamSpec("Param")
 RetType = TypeVar("RetType")
@@ -96,7 +97,6 @@ class OpenSonicProvider(MusicProvider):
     _show_new: bool = True
     _show_played: bool = True
     _reco_limit: int = 10
-    _cache_base_key: str = ""
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
@@ -139,7 +139,6 @@ class OpenSonicProvider(MusicProvider):
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
         self._reco_limit = int(str(self.config.get_value(CONF_RECO_SIZE)))
-        self._cache_base_key = f"{self.instance_id}/"
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -755,17 +754,26 @@ class OpenSonicProvider(MusicProvider):
 
         self.logger.debug("Done streaming %s", streamdetails.item_id)
 
-    async def _get_podcast_channel_async(self, chan_id: str, base_key: str) -> None:
-        chan = await self._run_async(self.conn.get_podcasts, inc_episodes=True, pid=chan_id)
-        if not chan:
-            return
-        await self.mass.cache.set(
+    async def _get_podcast_channel_async(self, chan_id: str) -> PodcastChannel | None:
+        if cache := await self.mass.cache.get(
             key=chan_id,
-            data=chan[0],
-            base_key=base_key,
-            expiration=600,
-            category=CACHE_CATEGORY_OPEN_SUBSONIC,
-        )
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PODCAST_CHANNEL,
+        ):
+            return cache
+        if channels := await self._run_async(
+            self.conn.get_podcasts, inc_episodes=True, pid=chan_id
+        ):
+            channel = channels[0]
+            await self.mass.cache.set(
+                key=chan_id,
+                data=channel,
+                provider=self.instance_id,
+                expiration=600,
+                category=CACHE_CATEGORY_PODCAST_CHANNEL,
+            )
+            return channel
+        return None
 
     async def _podcast_recommendations(self) -> RecommendationFolder:
         podcasts: RecommendationFolder = RecommendationFolder(
@@ -776,22 +784,9 @@ class OpenSonicProvider(MusicProvider):
         sonic_episodes = await self._run_async(
             self.conn.get_newest_podcasts, count=self._reco_limit
         )
-        chan_ids = set()
-        chan_base_key = f"{self._cache_base_key}/podcast_channels/"
-        async with TaskGroup() as tg:
-            for ep in sonic_episodes:
-                if ep.channel_id in chan_ids:
-                    continue
-                tg.create_task(self._get_podcast_channel_async(ep.channel_id, chan_base_key))
-                chan_ids.add(ep.channel_id)
-
         for ep in sonic_episodes:
-            chan = await self.mass.cache.get(
-                key=ep.channel_id, base_key=chan_base_key, category=CACHE_CATEGORY_OPEN_SUBSONIC
-            )
-            if not chan:
-                continue
-            podcasts.items.append(parse_epsiode(self.instance_id, ep, chan))
+            if channel_info := await self._get_podcast_channel_async(ep.channel_id):
+                podcasts.items.append(parse_epsiode(self.instance_id, ep, channel_info))
         return podcasts
 
     async def _favorites_recommendation(self) -> RecommendationFolder:

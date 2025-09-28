@@ -6,7 +6,7 @@ import datetime
 import hashlib
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import client_exceptions
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -45,10 +45,16 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
-from music_assistant.helpers.util import lock, parse_title_and_version, try_parse_int
+from music_assistant.helpers.util import (
+    infer_album_type,
+    lock,
+    parse_title_and_version,
+    try_parse_int,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -136,8 +142,9 @@ class QobuzProvider(MusicProvider):
             msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
             raise LoginFailed(msg)
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def search(
-        self, search_query: str, media_types=list[MediaType], limit: int = 5
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -219,6 +226,7 @@ class QobuzProvider(MusicProvider):
             if item and item["id"]:
                 yield self._parse_playlist(item)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         params = {"artist_id": prov_artist_id}
@@ -227,6 +235,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         params = {"album_id": prov_album_id}
@@ -235,6 +244,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         params = {"track_id": prov_track_id}
@@ -243,6 +253,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         params = {"playlist_id": prov_playlist_id}
@@ -251,6 +262,7 @@ class QobuzProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id) -> list[Track]:
         """Get all album tracks for given album id."""
         params = {"album_id": prov_album_id}
@@ -260,6 +272,7 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"])
         ]
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -281,6 +294,7 @@ class QobuzProvider(MusicProvider):
             result.append(track)
         return result
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
         result = await self._get_data(
@@ -296,6 +310,7 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"] and str(item["artist"]["id"]) == prov_artist_id)
         ]
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         result = await self._get_data(
@@ -513,7 +528,9 @@ class QobuzProvider(MusicProvider):
             artist.metadata.description = artist_obj["biography"].get("content")
         return artist
 
-    async def _parse_album(self, album_obj: dict, artist_obj: dict | None = None):
+    async def _parse_album(
+        self, album_obj: dict[str, Any], artist_obj: dict[str, Any] | None = None
+    ) -> Album:
         """Parse qobuz album object to generic layout."""
         if not artist_obj and "artist" not in album_obj:
             # artist missing in album info, return full abum instead
@@ -555,17 +572,23 @@ class QobuzProvider(MusicProvider):
             or album_obj.get("release_type", "") == "album"
         ):
             album.album_type = AlbumType.ALBUM
+
+        # Try inference - override if it finds something more specific
+        inferred_type = infer_album_type(name, version)
+        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+            album.album_type = inferred_type
+
         if "genre" in album_obj:
             album.metadata.genres = {album_obj["genre"]["name"]}
         if img := self.__get_image(album_obj):
-            album.metadata.images = [
+            album.metadata.add_image(
                 MediaItemImage(
+                    provider=self.lookup_key,
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
-            ]
+            )
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]["name"]
         if released_at := album_obj.get("released_at"):
@@ -693,7 +716,6 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             ]
-        playlist.cache_checksum = str(playlist_obj["updated_at"])
         return playlist
 
     @lock

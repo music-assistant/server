@@ -74,7 +74,9 @@ HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 
 SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 
-CACHE_BASE_KEY: Final[str] = "audio_cache_path"
+CACHE_CATEGORY_AUDIO_CACHE: Final[int] = 99
+CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
+CACHE_PROVIDER: Final[str] = "audio"
 CACHE_FILES_IN_USE: set[str] = set()
 
 
@@ -119,7 +121,9 @@ class StreamCache:
         """Create the cache file (if needed)."""
         if self._cache_file is None:
             if cached_cache_path := await self.mass.cache.get(
-                self.streamdetails.uri, base_key=CACHE_BASE_KEY
+                key=self.streamdetails.uri,
+                provider=CACHE_PROVIDER,
+                category=CACHE_CATEGORY_AUDIO_CACHE,
             ):
                 # we have a mapping stored for this uri, prefer that
                 self._cache_file = cached_cache_path
@@ -137,7 +141,10 @@ class StreamCache:
                     self.mass.streams.audio_cache_dir, cache_id
                 )
                 await self.mass.cache.set(
-                    self.streamdetails.uri, cache_file, base_key=CACHE_BASE_KEY
+                    key=self.streamdetails.uri,
+                    data=cache_file,
+                    provider=CACHE_PROVIDER,
+                    category=CACHE_CATEGORY_AUDIO_CACHE,
                 )
         # mark file as in-use to prevent it being deleted
         CACHE_FILES_IN_USE.add(self._cache_file)
@@ -620,6 +627,15 @@ async def get_stream_details(
         streamdetails.loudness = result[0]
         streamdetails.loudness_album = result[1]
     streamdetails.prefer_album_loudness = prefer_album_loudness
+
+    # handle smart fades analysis details
+    if queue_item.media_type == MediaType.TRACK:
+        if smart_fades_analysis := await mass.music.get_smart_fades_analysis(
+            streamdetails.item_id,
+            streamdetails.provider,
+        ):
+            LOGGER.debug("Found smart fades analysis in the database for %s", queue_item.uri)
+            streamdetails.smart_fades = smart_fades_analysis
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
     streamdetails.target_loudness = float(
@@ -1030,8 +1046,9 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
     - unfolded URL as string
     - StreamType to determine ICY (radio) or HLS stream.
     """
-    cache_base_key = "resolved_radio_info"
-    if cache := await mass.cache.get(url, base_key=cache_base_key):
+    if cache := await mass.cache.get(
+        key=url, provider=CACHE_PROVIDER, category=CACHE_CATEGORY_RESOLVED_RADIO_URL
+    ):
         return cast("tuple[str, StreamType]", cache)
     stream_type = StreamType.HTTP
     resolved_url = url
@@ -1073,7 +1090,13 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
 
     result = (resolved_url, stream_type)
     cache_expiration = 3600 * 3
-    await mass.cache.set(url, result, expiration=cache_expiration, base_key=cache_base_key)
+    await mass.cache.set(
+        url,
+        result,
+        expiration=cache_expiration,
+        provider=CACHE_PROVIDER,
+        category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
+    )
     return result
 
 

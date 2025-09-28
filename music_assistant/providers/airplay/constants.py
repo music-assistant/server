@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
@@ -9,19 +11,20 @@ from music_assistant.constants import DEFAULT_PCM_FORMAT
 
 DOMAIN = "airplay"
 
-CONF_ENCRYPTION = "encryption"
-CONF_ALAC_ENCODE = "alac_encode"
-CONF_VOLUME_START = "volume_start"
-CONF_PASSWORD = "password"
-CONF_READ_AHEAD_BUFFER = "read_ahead_buffer"
-CONF_IGNORE_VOLUME = "ignore_volume"
+CACHE_CATEGORY_PREV_VOLUME: Final[int] = 1
 
-BACKOFF_TIME_LOWER_LIMIT = 15  # seconds
-BACKOFF_TIME_UPPER_LIMIT = 300  # Five minutes
+CONF_ENCRYPTION: Final[str] = "encryption"
+CONF_ALAC_ENCODE: Final[str] = "alac_encode"
+CONF_VOLUME_START: Final[str] = "volume_start"
+CONF_PASSWORD: Final[str] = "password"
+CONF_READ_AHEAD_BUFFER: Final[str] = "read_ahead_buffer"
+CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
+CONF_CREDENTIALS: Final[str] = "credentials"
 
-CONF_CREDENTIALS = "credentials"
-CACHE_KEY_PREV_VOLUME = "airplay_prev_volume"
-FALLBACK_VOLUME = 20
+BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
+BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
+
+FALLBACK_VOLUME: Final[int] = 20
 
 AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
     content_type=DEFAULT_PCM_FORMAT.content_type,

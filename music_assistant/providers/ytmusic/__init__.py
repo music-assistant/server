@@ -45,6 +45,7 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
@@ -53,7 +54,7 @@ from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.util import install_package
+from music_assistant.helpers.util import infer_album_type, install_package
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -226,6 +227,7 @@ class YoutubeMusicProvider(MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types=list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -318,6 +320,7 @@ class YoutubeMusicProvider(MusicProvider):
         for podcast in podcasts_obj:
             yield self._parse_podcast(podcast)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         if album_obj := await get_album(prov_album_id=prov_album_id, language=self.language):
@@ -325,6 +328,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         album_obj = await get_album(prov_album_id=prov_album_id, language=self.language)
@@ -339,6 +343,7 @@ class YoutubeMusicProvider(MusicProvider):
             tracks.append(track)
         return tracks
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         if artist_obj := await get_artist(
@@ -348,6 +353,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         if track_obj := await get_track(
@@ -359,6 +365,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         # Grab the playlist id from the full url in case of personal playlists
@@ -374,6 +381,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
         if page > 0:
@@ -409,6 +417,7 @@ class YoutubeMusicProvider(MusicProvider):
         # YTM doesn't seem to support paging so we ignore offset and limit
         return result
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -423,6 +432,7 @@ class YoutubeMusicProvider(MusicProvider):
             return albums
         return []
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -432,6 +442,7 @@ class YoutubeMusicProvider(MusicProvider):
             return playlist_tracks[:25]
         return []
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get the full details of a Podcast."""
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
@@ -450,6 +461,7 @@ class YoutubeMusicProvider(MusicProvider):
             episode.position = ep_index
             yield episode
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get a single Podcast Episode."""
         podcast_id, episode_id = prov_episode_id.split(PODCAST_EPISODE_SPLITTER)
@@ -545,6 +557,7 @@ class YoutubeMusicProvider(MusicProvider):
             user=self._yt_user,
         )
 
+    @use_cache(3600 * 24)  # Cache for 1 day
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         result = []
@@ -685,6 +698,10 @@ class YoutubeMusicProvider(MusicProvider):
     def _parse_album(self, album_obj: dict, album_id: str | None = None) -> Album:
         """Parse a YT Album response to an Album model object."""
         album_id = album_id or album_obj.get("id") or album_obj.get("browseId")
+
+        if not album_id:
+            raise InvalidDataError("Album ID is required but not found")
+
         if "title" in album_obj:
             name = album_obj["title"]
         elif "name" in album_obj:
@@ -705,19 +722,21 @@ class YoutubeMusicProvider(MusicProvider):
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
         if "thumbnails" in album_obj:
-            album.metadata.images = self._parse_thumbnails(album_obj["thumbnails"])
+            album.metadata.images = UniqueList(self._parse_thumbnails(album_obj["thumbnails"]))
         if description := album_obj.get("description"):
             album.metadata.description = unquote(description)
         if "isExplicit" in album_obj:
             album.metadata.explicit = album_obj["isExplicit"]
         if "artists" in album_obj:
-            album.artists = [
-                self._get_artist_item_mapping(artist)
-                for artist in album_obj["artists"]
-                if artist.get("id")
-                or artist.get("channelId")
-                or artist.get("name") == "Various Artists"
-            ]
+            album.artists = UniqueList(
+                [
+                    self._get_artist_item_mapping(artist)
+                    for artist in album_obj["artists"]
+                    if artist.get("id")
+                    or artist.get("channelId")
+                    or artist.get("name") == "Various Artists"
+                ]
+            )
         if "type" in album_obj:
             if album_obj["type"] == "Single":
                 album_type = AlbumType.SINGLE
@@ -728,6 +747,12 @@ class YoutubeMusicProvider(MusicProvider):
             else:
                 album_type = AlbumType.UNKNOWN
             album.album_type = album_type
+
+        # Try inference - override if it finds something more specific
+        inferred_type = infer_album_type(name, "")  # YouTube doesn't seem to have version field
+        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+            album.album_type = inferred_type
+
         return album
 
     def _parse_artist(self, artist_obj: dict) -> Artist:
@@ -799,7 +824,6 @@ class YoutubeMusicProvider(MusicProvider):
                 playlist.owner = authors["name"]
         else:
             playlist.owner = self.name
-        playlist.cache_checksum = playlist_obj.get("checksum")
         return playlist
 
     def _parse_track(self, track_obj: dict) -> Track:

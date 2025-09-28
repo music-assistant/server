@@ -66,7 +66,7 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
-CONF_CROSSFADE: Final[str] = "crossfade"
+CONF_DEPRECATED_CROSSFADE: Final[str] = "crossfade"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
 CONF_HIDE_PLAYER_IN_UI: Final[str] = "hide_player_in_ui"
@@ -93,6 +93,7 @@ CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
+CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
 
 
 # config default values
@@ -117,6 +118,7 @@ DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
+DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
 
 
 # all other
@@ -281,17 +283,18 @@ CONF_ENTRY_DEPRECATED_EQ_TREBLE = ConfigEntry(
 )
 
 
-CONF_ENTRY_CROSSFADE = ConfigEntry(
-    key=CONF_CROSSFADE,
+CONF_ENTRY_DEPRECATED_CROSSFADE = ConfigEntry(
+    key=CONF_DEPRECATED_CROSSFADE,
     type=ConfigEntryType.BOOLEAN,
     label="Enable crossfade",
     default_value=False,
     description="Enable a crossfade transition between (queue) tracks.",
     category="audio",
+    hidden=True,  # Hidden, use Smart Fades instead
 )
 
 CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED = ConfigEntry(
-    key=CONF_CROSSFADE,
+    key=CONF_DEPRECATED_CROSSFADE,
     type=ConfigEntryType.BOOLEAN,
     label="Enable crossfade",
     default_value=False,
@@ -301,15 +304,34 @@ CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED = ConfigEntry(
     depends_on=CONF_FLOW_MODE,
 )
 
+CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
+    key=CONF_SMART_FADES_MODE,
+    type=ConfigEntryType.STRING,
+    label="Enable Smart Fades",
+    options=[
+        ConfigValueOption("Disabled", "disabled"),
+        ConfigValueOption("Smart Fades", "smart_fades"),
+        ConfigValueOption("Standard Crossfade", "standard_crossfade"),
+    ],
+    default_value="disabled",
+    description="Select the crossfade mode to use when transitioning between tracks.\n\n"
+    "- 'Smart Fades': Uses beat matching and DJ-like EQ filters to create smooth transitions"
+    " between tracks.\n"
+    "- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a "
+    "track.",
+    category="audio",
+)
+
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     key=CONF_CROSSFADE_DURATION,
     type=ConfigEntryType.INTEGER,
     range=(1, 15),
     default_value=8,
-    label="Crossfade duration",
-    description="Duration in seconds of the crossfade between tracks (if enabled)",
-    depends_on=CONF_CROSSFADE,
-    category="advanced",
+    label="Fallback crossfade duration",
+    description="Duration in seconds of the standard crossfade between tracks when"
+    " 'Enable Smart Fade' has been set to 'Standard Crossfade' or when a Smart Fade fails",
+    depends_on=CONF_SMART_FADES_MODE,
+    category="audio",
 )
 
 CONF_ENTRY_HIDE_PLAYER_IN_UI = ConfigEntry(
@@ -951,27 +973,6 @@ DEFAULT_PCM_FORMAT = AudioFormat(
     bit_depth=32,
     channels=2,
 )
-
-
-# CACHE categories
-
-CACHE_CATEGORY_DEFAULT: Final[int] = 0
-CACHE_CATEGORY_MUSIC_SEARCH: Final[int] = 1
-CACHE_CATEGORY_MUSIC_ALBUM_TRACKS: Final[int] = 2
-CACHE_CATEGORY_MUSIC_ARTIST_TRACKS: Final[int] = 3
-CACHE_CATEGORY_MUSIC_ARTIST_ALBUMS: Final[int] = 4
-CACHE_CATEGORY_MUSIC_PLAYLIST_TRACKS: Final[int] = 5
-CACHE_CATEGORY_MUSIC_PROVIDER_ITEM: Final[int] = 6
-CACHE_CATEGORY_PLAYER_QUEUE_STATE: Final[int] = 7
-CACHE_CATEGORY_MEDIA_INFO: Final[int] = 8
-CACHE_CATEGORY_LIBRARY_ITEMS: Final[int] = 9
-CACHE_CATEGORY_PLAYERS: Final[int] = 10
-CACHE_CATEGORY_RECOMMENDATIONS: Final[int] = 11
-CACHE_CATEGORY_OPEN_SUBSONIC: Final[int] = 12
-
-# CACHE base keys
-CACHE_KEY_PLAYER_POWER: Final[str] = "player_power"
-
 
 # extra data / extra attributes keys
 ATTR_FAKE_POWER: Final[str] = "fake_power"

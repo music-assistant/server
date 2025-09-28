@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 from collections.abc import Sequence
 from contextlib import suppress
+from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
 from math import inf
 from typing import TYPE_CHECKING, Final, cast
 
+import numpy as np
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -41,7 +44,6 @@ from music_assistant_models.provider import SyncTask
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
-    CACHE_CATEGORY_MUSIC_SEARCH,
     CONF_ENTRY_LIBRARY_EXPORT_ADD,
     CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
     DB_TABLE_ALBUM_ARTISTS,
@@ -56,6 +58,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
+    DB_TABLE_SMART_FADES_ANALYSIS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
@@ -70,6 +73,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.smart_fades import SmartFadesAnalysis
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -88,7 +92,9 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 19
+DB_SCHEMA_VERSION: Final[int] = 20
+
+CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 
 
 class MusicController(CoreController):
@@ -355,37 +361,11 @@ class MusicController(CoreController):
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
-
-        # prefer cache items (if any)
-        media_types_str = ",".join(media_types)
-        cache_category = CACHE_CATEGORY_MUSIC_SEARCH
-        cache_base_key = prov.lookup_key
-        cache_key = f"{search_query}.{limit}.{media_types_str}"
-
-        if prov.is_streaming_provider and (
-            cache := await self.mass.cache.get(
-                cache_key, category=cache_category, base_key=cache_base_key
-            )
-        ):
-            return SearchResults.from_dict(cache)
-        # no items in cache - get listing from provider
-        result = await prov.search(
+        return await prov.search(
             search_query,
             media_types,
             limit,
         )
-        # store (serializable items) in cache
-        if prov.is_streaming_provider:
-            self.mass.create_task(
-                self.mass.cache.set(
-                    cache_key,
-                    result.to_dict(),
-                    expiration=86400 * 7,
-                    category=cache_category,
-                    base_key=cache_base_key,
-                )
-            )
-        return result
 
     async def search_library(
         self,
@@ -635,7 +615,7 @@ class MusicController(CoreController):
             )
             if conf_export_library != "export_favorite":
                 continue
-            prov_item = full_item
+            prov_item = deepcopy(full_item)
             prov_item.provider = prov_mapping.provider_instance
             prov_item.item_id = prov_mapping.item_id
             self.mass.create_task(provider.library_add(prov_item))
@@ -707,32 +687,33 @@ class MusicController(CoreController):
         self, item: str | MediaItemType, overwrite_existing: bool = False
     ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
+        # ensure we have a full item
         if isinstance(item, str):
-            item = await self.get_item_by_uri(item)
-        if isinstance(item, ItemMapping):
-            item = await self.get_item(
+            full_item = await self.get_item_by_uri(item)
+        else:
+            full_item = await self.get_item(
                 item.media_type,
                 item.item_id,
                 item.provider,
             )
         # add to provider(s) library first
-        for prov_mapping in item.provider_mappings:
+        for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(item.media_type):
+            if not provider.library_edit_supported(full_item.media_type):
                 continue
             conf_export_library = provider.config.get_value(
                 CONF_ENTRY_LIBRARY_EXPORT_ADD.key, CONF_ENTRY_LIBRARY_EXPORT_ADD.default_value
             )
             if conf_export_library != "export_library":
                 continue
-            prov_item = item
+            prov_item = deepcopy(full_item) if full_item.provider == "library" else full_item
             prov_item.provider = prov_mapping.provider_instance
             prov_item.item_id = prov_mapping.item_id
             prov_mapping.in_library = True
             self.mass.create_task(provider.library_add(prov_item))
         # add (or overwrite) to library
-        ctrl = self.get_controller(item.media_type)
-        library_item = await ctrl.add_item_to_library(item, overwrite_existing)
+        ctrl = self.get_controller(full_item.media_type)
+        library_item = await ctrl.add_item_to_library(full_item, overwrite_existing)
         # perform full metadata scan (and provider match)
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
@@ -855,6 +836,54 @@ class MusicController(CoreController):
         if album_loudness not in (None, inf, -inf):
             values["loudness_album"] = album_loudness
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
+
+    async def set_smart_fades_analysis(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        analysis: SmartFadesAnalysis,
+    ) -> None:
+        """Store Smart Fades BPM analysis for a track in db."""
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return
+        if analysis.bpm <= 0 or analysis.confidence < 0:
+            # skip invalid values
+            return
+        values = {
+            "item_id": item_id,
+            "provider": provider.lookup_key,
+            "bpm": analysis.bpm,
+            "beats": json.dumps(analysis.beats.tolist()),
+            "downbeats": json.dumps(analysis.downbeats.tolist()),
+            "confidence": analysis.confidence,
+            "duration": analysis.duration,
+        }
+        await self.database.insert_or_replace(DB_TABLE_SMART_FADES_ANALYSIS, values)
+
+    async def get_smart_fades_analysis(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> SmartFadesAnalysis | None:
+        """Get Smart Fades BPM analysis for a track from db."""
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return None
+        db_row = await self.database.get_row(
+            DB_TABLE_SMART_FADES_ANALYSIS,
+            {
+                "item_id": item_id,
+                "provider": provider.lookup_key,
+            },
+        )
+        if db_row and db_row["bpm"] > 0:
+            return SmartFadesAnalysis(
+                bpm=float(db_row["bpm"]),
+                beats=np.array(json.loads(db_row["beats"])),
+                downbeats=np.array(json.loads(db_row["downbeats"])),
+                confidence=float(db_row["confidence"]),
+                duration=float(db_row["duration"]),
+            )
+        return None
 
     async def get_loudness(
         self,
@@ -1404,8 +1433,14 @@ class MusicController(CoreController):
             else:
                 self.logger.info("Sync task for %s/%ss completed", provider.name, media_type.value)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            cache_key = f"last_library_sync_{provider.instance_id}_{media_type.value}"
-            self.mass.create_task(self.mass.cache.set, cache_key, self.mass.loop.time())
+            self.mass.create_task(
+                self.mass.cache.set(
+                    key=media_type.value,
+                    data=self.mass.loop.time(),
+                    provider=provider.instance_id,
+                    category=CACHE_CATEGORY_LAST_SYNC,
+                )
+            )
             # schedule db cleanup after sync
             if not self.in_progress_syncs:
                 self.mass.create_task(self._cleanup_database())
@@ -1480,9 +1515,12 @@ class MusicController(CoreController):
 
         if is_initial:
             # schedule the first sync run
-            cache_key = f"last_library_sync_{provider.instance_id}_{media_type.value}"
             initial_interval = 10
-            if last_sync := await self.mass.cache.get(cache_key):
+            if last_sync := await self.mass.cache.get(
+                key=media_type.value,
+                provider=provider.instance_id,
+                category=CACHE_CATEGORY_LAST_SYNC,
+            ):
                 initial_interval += max(0, sync_interval - (self.mass.loop.time() - last_sync))
             sync_interval = initial_interval
 
@@ -1592,86 +1630,12 @@ class MusicController(CoreController):
 
     async def __migrate_database(self, prev_version: int) -> None:
         """Perform a database migration."""
-        # ruff: noqa: PLR0915
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
 
-        if prev_version < 7:
+        if prev_version < 15:
             raise MusicAssistantError("Database schema version too old to migrate")
-
-        if prev_version <= 7:
-            # remove redundant artists and provider_mappings columns
-            for table in (
-                DB_TABLE_TRACKS,
-                DB_TABLE_ALBUMS,
-                DB_TABLE_ARTISTS,
-                DB_TABLE_RADIOS,
-                DB_TABLE_PLAYLISTS,
-            ):
-                for column in ("artists", "provider_mappings"):
-                    try:
-                        await self.database.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-                    except Exception as err:
-                        if "no such column" in str(err):
-                            continue
-                        raise
-            # add cache_checksum column to playlists
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN cache_checksum TEXT DEFAULT ''"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-
-        if prev_version <= 8:
-            # migrate track_loudness --> loudness_measurements
-            async for db_row in self.database.iter_items("track_loudness"):
-                if db_row["integrated"] == inf or db_row["integrated"] == -inf:
-                    continue
-                if db_row["provider"] in ("radiobrowser", "tunein"):
-                    continue
-                await self.database.insert_or_replace(
-                    DB_TABLE_LOUDNESS_MEASUREMENTS,
-                    {
-                        "item_id": db_row["item_id"],
-                        "media_type": "track",
-                        "provider": db_row["provider"],
-                        "loudness": db_row["integrated"],
-                    },
-                )
-            await self.database.execute("DROP TABLE IF EXISTS track_loudness")
-
-        if prev_version <= 10:
-            # Recreate playlog table due to complete new layout
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLOG}")
-            await self.__create_database_tables()
-
-        if prev_version <= 12:
-            # Need to drop the NOT NULL requirement on podcasts.publisher and audiobooks.publisher
-            # However, because there is no ALTER COLUMN support in sqlite, we will need
-            # to create the tables again.
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_AUDIOBOOKS}")
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PODCASTS}")
-            await self.__create_database_tables()
-
-        if prev_version <= 13:
-            # migrate chapters in metadata
-            # this is leftover mess from the old chapters implementation
-            for db_row in await self.database.search(DB_TABLE_TRACKS, "position_start", "metadata"):
-                metadata = json_loads(db_row["metadata"])
-                metadata["chapters"] = None
-                await self.database.update(
-                    DB_TABLE_TRACKS,
-                    {"item_id": db_row["item_id"]},
-                    {"metadata": serialize_to_json(metadata)},
-                )
-
-        if prev_version <= 14:
-            # Recreate playlog table due to complete new layout
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLOG}")
-            await self.__create_database_tables()
 
         if prev_version <= 15:
             # add search_name and search_sort_name columns to all tables
@@ -1756,6 +1720,13 @@ class MusicController(CoreController):
             await self.database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain in ('filesystem_local', 'filesystem_smb');"
+            )
+
+        if prev_version <= 20:
+            # drop column cache_checksum from playlists table
+            # this is no longer used and is a leftover from previous designs
+            await self.database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLISTS} DROP COLUMN cache_checksum"
             )
 
         # save changes
@@ -1858,7 +1829,6 @@ class MusicController(CoreController):
             [sort_name] TEXT NOT NULL,
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
-            [cache_checksum] TEXT DEFAULT '',
             [favorite] BOOLEAN NOT NULL DEFAULT 0,
             [metadata] json NOT NULL,
             [external_ids] json NOT NULL,
@@ -1988,6 +1958,21 @@ class MusicController(CoreController):
                     UNIQUE(media_type,item_id,provider));"""
         )
 
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [bpm] REAL NOT NULL,
+                    [beats] TEXT NOT NULL,
+                    [downbeats] TEXT NOT NULL,
+                    [confidence] REAL NOT NULL,
+                    [duration] REAL,
+                    [analysis_version] INTEGER DEFAULT 1,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider));"""
+        )
+
         await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
@@ -2092,6 +2077,11 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}_idx "
             f"on {DB_TABLE_LOUDNESS_MEASUREMENTS}(media_type,item_id,provider);"
+        )
+        # index on smart fades analysis table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}_idx "
+            f"on {DB_TABLE_SMART_FADES_ANALYSIS}(item_id,provider);"
         )
         await self.database.commit()
 

@@ -159,6 +159,7 @@ class SpotifyConnectProvider(PluginProvider):
                 self._handle_custom_webservice,
             ),
         ]
+        self._runner_error_count = 0
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -245,8 +246,11 @@ class SpotifyConnectProvider(PluginProvider):
             if not self._librespot_started.is_set():
                 self.unload_with_error("Unable to initialize librespot daemon.")
             # auto restart if not stopped manually
-            if not self._stop_called and self._librespot_started.is_set():
-                self._setup_player_daemon()
+            elif not self._stop_called and self._runner_error_count >= 5:
+                self.unload_with_error("Librespot daemon failed to start multiple times.")
+            elif not self._stop_called:
+                self._runner_error_count += 1
+                self.mass.call_later(2, self._setup_player_daemon)
 
     def _setup_player_daemon(self) -> None:
         """Handle setup of the spotify connect daemon for a player."""

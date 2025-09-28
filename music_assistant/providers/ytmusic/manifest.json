@@ -1,9 +1,9 @@
 {
   "type": "music",
   "domain": "ytmusic",
-  "stage": "experimental",
+  "stage": "beta",
   "name": "YouTube Music",
-  "description": "Support for the YouTube Music streaming provider in Music Assistant.",
+  "description": "Stream songs and podcasts from YouTube Music.",
   "codeowners": ["@MarvinSchenkel"],
   "requirements": [
     "ytmusicapi==1.11.1",
