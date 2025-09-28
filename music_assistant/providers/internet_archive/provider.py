@@ -15,6 +15,8 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     MediaItemChapter,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     SearchResults,
     Track,
@@ -40,9 +42,11 @@ from .parsers import (
     create_title_from_identifier,
     doc_to_album,
     doc_to_audiobook,
+    doc_to_podcast,
     doc_to_track,
     is_audiobook_content,
     is_likely_album,
+    is_podcast_content,
 )
 from .streaming import InternetArchiveStreaming
 
@@ -93,12 +97,12 @@ class InternetArchiveProvider(MusicProvider):
         return await self.client.get_metadata(identifier)
 
     @throttle_with_retries
-    @use_cache(expiration=86400)  # 24 hours - file listings are static
+    @use_cache(expiration=86400 * 30)  # 30 days - file listings are static
     async def _get_audio_files(self, identifier: str) -> list[dict[str, Any]]:
         """Throttled audio files wrapper."""
         return await self.client.get_audio_files(identifier)
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(86400 * 7)  # 7 days
     async def search(
         self,
         search_query: str,
@@ -130,6 +134,7 @@ class InternetArchiveProvider(MusicProvider):
         albums: list[Album] = []
         artists: list[Artist] = []
         audiobooks: list[Audiobook] = []
+        podcasts: list[Podcast] = []
 
         # Track processed identifiers to avoid duplicates across strategies
         processed_ids: set[str] = set()
@@ -151,6 +156,11 @@ class InternetArchiveProvider(MusicProvider):
         if MediaType.AUDIOBOOK in media_types:
             audiobook_query = f"{search_query} AND collection:(librivoxaudio OR audio_bookspoetry) AND mediatype:audio"  # noqa: E501
             search_strategies.append((audiobook_query, "downloads desc"))
+
+        # For podcasts: search within podcast collections
+        if MediaType.PODCAST in media_types:
+            podcast_query = f"{search_query} AND collection:podcasts AND mediatype:audio"
+            search_strategies.append((podcast_query, "downloads desc"))
 
         for strategy_idx, (strategy_query, sort_order) in enumerate(search_strategies):
             self.logger.debug("Trying search strategy %d: %s", strategy_idx + 1, strategy_query)
@@ -186,13 +196,13 @@ class InternetArchiveProvider(MusicProvider):
                         processed_ids.add(identifier)
 
                         await self._process_search_result(
-                            doc, tracks, albums, artists, audiobooks, media_types
+                            doc, tracks, albums, artists, audiobooks, podcasts, media_types
                         )
                         strategy_processed += 1
 
                         # Check if we have enough results across all types
                         if self._has_sufficient_results(
-                            tracks, albums, artists, audiobooks, media_types, limit
+                            tracks, albums, artists, audiobooks, podcasts, media_types, limit
                         ):
                             self.logger.debug(
                                 "Sufficient results found after strategy %d, stopping search",
@@ -207,7 +217,8 @@ class InternetArchiveProvider(MusicProvider):
 
                 self.logger.debug(
                     "Strategy %d '%s': processed %d new items, skipped %d items. "
-                    "Running totals - tracks: %d, albums: %d, artists: %d, audiobooks: %d",
+                    "Running totals - tracks: %d, albums: %d, artists: %d, "
+                    "audiobooks: %d, podcasts: %d",
                     strategy_idx + 1,
                     strategy_query,
                     strategy_processed,
@@ -216,11 +227,12 @@ class InternetArchiveProvider(MusicProvider):
                     len(albums),
                     len(artists),
                     len(audiobooks),
+                    len(podcasts),
                 )
 
                 # If we have sufficient results, stop trying more strategies
                 if self._has_sufficient_results(
-                    tracks, albums, artists, audiobooks, media_types, limit
+                    tracks, albums, artists, audiobooks, podcasts, media_types, limit
                 ):
                     break
 
@@ -231,12 +243,13 @@ class InternetArchiveProvider(MusicProvider):
         # Log final results for debugging
         self.logger.debug(
             "Search for '%s' completed. Final results - tracks: %d, albums: %d, "
-            "artists: %d, audiobooks: %d (processed %d unique items)",
+            "artists: %d, audiobooks: %d, podcasts: %d (processed %d unique items)",
             search_query,
             len(tracks),
             len(albums),
             len(artists),
             len(audiobooks),
+            len(podcasts),
             len(processed_ids),
         )
 
@@ -245,6 +258,7 @@ class InternetArchiveProvider(MusicProvider):
             albums=albums[:limit] if MediaType.ALBUM in media_types else [],
             artists=artists[:limit] if MediaType.ARTIST in media_types else [],
             audiobooks=audiobooks[:limit] if MediaType.AUDIOBOOK in media_types else [],
+            podcasts=podcasts[:limit] if MediaType.PODCAST in media_types else [],
         )
 
     def _has_sufficient_results(
@@ -253,6 +267,7 @@ class InternetArchiveProvider(MusicProvider):
         albums: list[Album],
         artists: list[Artist],
         audiobooks: list[Audiobook],
+        podcasts: list[Podcast],
         media_types: list[MediaType],
         limit: int,
     ) -> bool:
@@ -262,6 +277,7 @@ class InternetArchiveProvider(MusicProvider):
             and (MediaType.ALBUM not in media_types or len(albums) >= limit)
             and (MediaType.ARTIST not in media_types or len(artists) >= limit)
             and (MediaType.AUDIOBOOK not in media_types or len(audiobooks) >= limit)
+            and (MediaType.PODCAST not in media_types or len(podcasts) >= limit)
         )
 
     async def _process_search_result(
@@ -271,6 +287,7 @@ class InternetArchiveProvider(MusicProvider):
         albums: list[Album],
         artists: list[Artist],
         audiobooks: list[Audiobook],
+        podcasts: list[Podcast],
         media_types: list[MediaType],
     ) -> None:
         """
@@ -307,6 +324,13 @@ class InternetArchiveProvider(MusicProvider):
             )
             if audiobook:
                 audiobooks.append(audiobook)
+            return  # Don't process as other media types
+
+        # Check if this is podcast content
+        if is_podcast_content(doc) and MediaType.PODCAST in media_types:
+            podcast = doc_to_podcast(doc, self.domain, self.instance_id, self.client.get_item_url)
+            if podcast:
+                podcasts.append(podcast)
             return  # Don't process as other media types
 
         # For etree items, usually each item is an album (concert)
@@ -818,3 +842,119 @@ class InternetArchiveProvider(MusicProvider):
                     response.raise_for_status()
                     async for chunk in response.content.iter_chunked(8192):
                         yield chunk
+
+    @use_cache(expiration=86400 * 7)  # Cache for 1 week
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get full podcast details by id."""
+        metadata = await self._get_metadata(prov_podcast_id)
+        item_metadata = metadata.get("metadata", {})
+
+        title = clean_text(item_metadata.get("title"))
+        creator = clean_text(item_metadata.get("creator"))
+
+        if not title:
+            raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found or invalid")
+
+        podcast = Podcast(
+            item_id=prov_podcast_id,
+            provider=self.instance_id,
+            name=title,
+            provider_mappings={
+                create_provider_mapping(
+                    prov_podcast_id, self.domain, self.instance_id, self.client.get_item_url
+                )
+            },
+        )
+
+        # Add publisher/creator
+        if creator:
+            podcast.publisher = creator
+
+        # Add metadata
+        if description := clean_text(item_metadata.get("description")):
+            podcast.metadata.description = description
+
+        # Add thumbnail
+        add_item_image(podcast, prov_podcast_id, self.instance_id)
+
+        # Calculate total episodes
+        try:
+            audio_files = await self._get_audio_files(prov_podcast_id)
+            podcast.total_episodes = len(audio_files)
+        except Exception as err:
+            self.logger.warning(f"Could not get episode count for podcast {prov_podcast_id}: {err}")
+            podcast.total_episodes = None
+
+        return podcast
+
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str
+    ) -> AsyncGenerator[PodcastEpisode, None]:
+        """Get podcast episodes for given podcast id."""
+        metadata = await self._get_metadata(prov_podcast_id)
+        item_metadata = metadata.get("metadata", {})
+        audio_files = await self._get_audio_files(prov_podcast_id)
+
+        # Create podcast reference for episodes
+        podcast = Podcast(
+            item_id=prov_podcast_id,
+            provider=self.instance_id,
+            name=clean_text(item_metadata.get("title", prov_podcast_id)),
+            provider_mappings={
+                create_provider_mapping(
+                    prov_podcast_id, self.domain, self.instance_id, self.client.get_item_url
+                )
+            },
+        )
+
+        for i, file_info in enumerate(audio_files, 1):
+            filename = file_info.get("name", "")
+
+            # Use file's title if available, otherwise clean up filename
+            episode_name = file_info.get("title", filename)
+            if not episode_name or episode_name == filename:
+                episode_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+            # Try to extract episode number from file metadata first, then filename
+            episode_number = self._extract_track_number(file_info, episode_name, i)
+
+            episode = PodcastEpisode(
+                item_id=f"{prov_podcast_id}#{filename}",
+                provider=self.instance_id,
+                name=episode_name,
+                position=episode_number,
+                podcast=podcast,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=f"{prov_podcast_id}#{filename}",
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        url=self.client.get_download_url(prov_podcast_id, filename),
+                        available=True,
+                    )
+                },
+            )
+
+            # Add duration if available
+            if duration_str := file_info.get("length"):
+                if duration := parse_duration(duration_str):
+                    episode.duration = duration
+
+            # Add episode metadata
+            if description := file_info.get("description"):
+                episode.metadata.description = clean_text(description)
+
+            yield episode
+
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get single podcast episode by id."""
+        if "#" not in prov_episode_id:
+            raise MediaNotFoundError(f"Invalid episode ID format: {prov_episode_id}")
+
+        podcast_id, filename = prov_episode_id.split("#", 1)
+
+        async for episode in self.get_podcast_episodes(podcast_id):
+            if episode.item_id == prov_episode_id:
+                return episode
+
+        raise MediaNotFoundError(f"Episode {prov_episode_id} not found")

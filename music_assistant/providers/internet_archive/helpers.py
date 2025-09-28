@@ -163,8 +163,27 @@ class InternetArchiveClient:
         )
 
     def _get_base_filename(self, filename: str) -> str:
-        """Extract base filename without extension for deduplication."""
-        return filename.rsplit(".", 1)[0] if "." in filename else filename
+        """Extract base filename without extension and quality indicators for deduplication."""
+        # Remove extension first
+        base = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+        # Remove common quality indicators from Internet Archive files
+        quality_patterns = [
+            r"_320kb$",
+            r"_256kb$",
+            r"_192kb$",
+            r"_128kb$",
+            r"_64kb$",
+            r"_vbr$",
+            r"_original$",
+            r"_sample$",
+            r"_preview$",
+        ]
+
+        for pattern in quality_patterns:
+            base = re.sub(pattern, "", base, flags=re.IGNORECASE)
+
+        return base
 
     def _select_best_audio_format(
         self, format_versions: list[dict[str, Any]]

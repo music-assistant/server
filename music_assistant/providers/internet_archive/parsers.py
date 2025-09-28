@@ -12,6 +12,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     MediaItemImage,
+    Podcast,
     ProviderMapping,
     Track,
 )
@@ -306,7 +307,9 @@ def create_artist(creator_name: str, domain: str, instance_id: str) -> Artist:
     )
 
 
-def add_item_image(item: Track | Album | Audiobook, identifier: str, instance_id: str) -> None:
+def add_item_image(
+    item: Track | Album | Audiobook | Podcast, identifier: str, instance_id: str
+) -> None:
     """Add thumbnail image to a media item if available."""
     if thumb_url := get_image_url(identifier):
         item.metadata.add_image(
@@ -336,3 +339,63 @@ def is_audiobook_content(doc: dict[str, Any]) -> bool:
         collection = [collection]
 
     return any(coll in AUDIOBOOK_COLLECTIONS for coll in collection)
+
+
+def doc_to_podcast(
+    doc: dict[str, Any], domain: str, instance_id: str, item_url_func: Callable[[str], str]
+) -> Podcast | None:
+    """
+    Convert Internet Archive document to Podcast object.
+
+    Args:
+        doc: Internet Archive document metadata
+        domain: Provider domain
+        instance_id: Provider instance identifier
+        item_url_func: Function to generate item URLs
+
+    Returns:
+        Podcast object or None if conversion fails
+    """
+    identifier = doc.get("identifier")
+    title = clean_text(doc.get("title"))
+    creator = clean_text(doc.get("creator"))
+
+    if not identifier or not title:
+        return None
+
+    podcast = Podcast(
+        item_id=identifier,
+        provider=instance_id,
+        name=title,
+        provider_mappings={create_provider_mapping(identifier, domain, instance_id, item_url_func)},
+    )
+
+    # Add publisher/creator
+    if creator:
+        podcast.publisher = creator
+
+    # Add metadata
+    if description := clean_text(doc.get("description")):
+        podcast.metadata.description = description
+
+    # Add thumbnail
+    add_item_image(podcast, identifier, instance_id)
+
+    return podcast
+
+
+def is_podcast_content(doc: dict[str, Any]) -> bool:
+    """
+    Determine if an Internet Archive item is podcast content.
+
+    Args:
+        doc: Internet Archive document metadata
+
+    Returns:
+        True if the item is from a podcast collection
+    """
+    collection = doc.get("collection", [])
+    if isinstance(collection, str):
+        collection = [collection]
+
+    return "podcasts" in collection
