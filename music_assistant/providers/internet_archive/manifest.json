@@ -2,7 +2,7 @@
   "domain": "internet_archive",
   "name": "Internet Archive",
   "description": "Browse and stream millions of free audio files — concerts, historical broadcasts, and audiobooks.",
-  "documentation": "https://music-assistant.io/music-providers/inter-archive/",
+  "documentation": "https://music-assistant.io/music-providers/internet-archive/",
   "type": "music",
   "requirements": [],
   "codeowners": "@ozgav",

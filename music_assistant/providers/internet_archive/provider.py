@@ -122,6 +122,9 @@ class InternetArchiveProvider(MusicProvider):
         if not search_query.strip():
             return SearchResults()
 
+        # Adjust search intensity based on what's being requested
+        rows_per_strategy = min(limit * 2, 16) if len(media_types) > 1 else min(limit * 2, 100)
+
         # Collect results in separate lists
         tracks: list[Track] = []
         albums: list[Album] = []
@@ -131,31 +134,23 @@ class InternetArchiveProvider(MusicProvider):
         # Track processed identifiers to avoid duplicates across strategies
         processed_ids: set[str] = set()
 
-        # Search strategies balancing precision and coverage
-        search_strategies = [
-            # Most precise searches first
-            (f"creator:({search_query}) AND mediatype:audio", "downloads desc"),
-            (f"title:({search_query}) AND mediatype:audio", "downloads desc"),
-            (f"subject:({search_query}) AND mediatype:audio", "downloads desc"),
-            # Collection-specific with broader matching for discovery
-            (f"{search_query} AND collection:oldtimeradio", "downloads desc"),
-            (f"{search_query} AND collection:(etree OR netlabels)", "downloads desc"),
-        ]
+        # Build search strategies based on requested media types
+        search_strategies = []
 
-        # Add audiobook-specific search if audiobooks requested
-        if MediaType.AUDIOBOOK in media_types:
-            search_strategies.append(
-                (
-                    f"{search_query} AND collection:(librivoxaudio OR audio_bookspoetry)",
-                    "downloads desc",
-                )
+        # For music searches: focus on title and creator
+        if any(mt in media_types for mt in [MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST]):
+            search_strategies.extend(
+                [
+                    (f"creator:({search_query}) AND mediatype:audio", "downloads desc"),
+                    (f"title:({search_query}) AND mediatype:audio", "downloads desc"),
+                    (f"subject:({search_query}) AND mediatype:audio", "downloads desc"),
+                ]
             )
 
-        # Add podcast search if we decide to support podcasts
-        # Commented out until we decide on podcast support
-        # search_strategies.append(
-        #     (f"{search_query} AND collection:podcasts", "downloads desc")
-        # )
+        # For audiobooks: search within audiobook collections, still limit to audio
+        if MediaType.AUDIOBOOK in media_types:
+            audiobook_query = f"{search_query} AND collection:(librivoxaudio OR audio_bookspoetry) AND mediatype:audio"  # noqa: E501
+            search_strategies.append((audiobook_query, "downloads desc"))
 
         for strategy_idx, (strategy_query, sort_order) in enumerate(search_strategies):
             self.logger.debug("Trying search strategy %d: %s", strategy_idx + 1, strategy_query)
@@ -163,7 +158,7 @@ class InternetArchiveProvider(MusicProvider):
             try:
                 search_response = await self._search(
                     query=strategy_query,
-                    rows=min(limit * 3, 100),  # Get more results to filter
+                    rows=rows_per_strategy,
                     sort=sort_order,
                 )
 
