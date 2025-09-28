@@ -518,6 +518,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return audiobook
 
+    @use_cache()
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         metadata = await self._get_metadata(prov_album_id)
