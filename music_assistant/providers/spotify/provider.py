@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -532,6 +532,8 @@ class SpotifyProvider(MusicProvider):
         )
         # do single request to get the etag (which we use as checksum for caching)
         cache_checksum = await self._get_etag(uri, limit=1, offset=0)
+        if cache_checksum is None:
+            cache_checksum = ""
 
         page_size = 50
         offset = page * page_size
@@ -943,6 +945,10 @@ class SpotifyProvider(MusicProvider):
         offset = 0
         # do single request to get the etag (which we use as checksum for caching)
         cache_checksum = await self._get_etag(endpoint, limit=1, offset=0, **kwargs)
+        # Handle None case - use empty string as fallback
+        if cache_checksum is None:
+            cache_checksum = ""
+
         while True:
             result = await self._get_data_with_caching(
                 endpoint, cache_checksum=cache_checksum, limit=limit, offset=offset, **kwargs
@@ -966,7 +972,7 @@ class SpotifyProvider(MusicProvider):
         if cached := await self.mass.cache.get(
             cache_key, provider=self.instance_id, checksum=cache_checksum, allow_bypass=False
         ):
-            return cached
+            return cast("dict[str, Any]", cached)
         result = await self._get_data(endpoint, **kwargs)
         await self.mass.cache.set(
             cache_key, result, provider=self.instance_id, checksum=cache_checksum
