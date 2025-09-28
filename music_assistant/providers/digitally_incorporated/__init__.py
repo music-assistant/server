@@ -343,7 +343,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 content_type=ContentType.UNKNOWN,  # Let ffmpeg auto-detect
             ),
             media_type=MediaType.RADIO,
-            stream_type=StreamType.HTTP,
+            stream_type=StreamType.ICY,
             path=stream_url,
             allow_seek=False,
             can_seek=False,
