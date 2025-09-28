@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncGenerator, Sequence
 from typing import Any
 
@@ -140,81 +141,154 @@ class PandoraProvider(MusicProvider):
             stream_metadata=stream_metadata,
         )
 
-    async def get_audio_stream(
+    async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Stream a single track from the radio station."""
+        """Stream continuous radio with proper timing."""
         station_id = streamdetails.item_id
 
-        # Get current fragment and position
-        fragment_data = self._station_fragments.get(station_id)
-        current_position = self._station_track_positions.get(station_id, 0)
+        # Calculate streaming parameters for HIGH quality (192 kbps AAC+)
+        target_bitrate = 192  # kbps
+        bytes_per_second = (target_bitrate * 1000) / 8  # Convert to bytes/second
 
-        # Get new fragment if needed
-        if not fragment_data or not fragment_data.get("tracks"):
-            fragment_data = await self._get_station_fragment(station_id, is_start=True)
-            current_position = 0
-
-        # Check if we need a new fragment (position beyond current tracks)
-        if fragment_data and current_position >= len(fragment_data.get("tracks", [])):
-            fragment_data = await self._get_station_fragment(station_id, is_start=False)
-            current_position = 0
-
-        if not fragment_data or not fragment_data.get("tracks"):
-            self.logger.error("No tracks available for station %s", station_id)
-            return
-
-        tracks = fragment_data["tracks"]
-        if current_position >= len(tracks):
-            self.logger.error(
-                "Track position %s beyond available tracks for station %s",
-                current_position,
-                station_id,
-            )
-            return
-
-        # Get the current track
-        track_data = tracks[current_position]
-        audio_url = track_data.get("audioURL")
-
-        if not audio_url:
-            self.logger.warning(
-                "No audio URL for track at position %s in station %s", current_position, station_id
-            )
-            return
-
-        track_info = (
-            f"{track_data.get('artistName', 'Unknown')} - {track_data.get('songTitle', 'Unknown')}"
-        )
-        track_length = track_data.get("trackLength", 0)
-
-        self.logger.info("Streaming single track: %s (%.1f seconds)", track_info, track_length)
-
-        # Update position for next call
-        self._station_track_positions[station_id] = current_position + 1
+        self.logger.info("Starting continuous radio stream for station %s", station_id)
 
         try:
-            # Stream the single track's audio
-            async with self.mass.http_session.get(audio_url) as response:
-                if response.status != 200:
+            while True:  # Infinite radio loop
+                # Get current fragment and position
+                fragment_data = self._station_fragments.get(station_id)
+                current_position = self._station_track_positions.get(station_id, 0)
+
+                # Get new fragment if needed
+                if not fragment_data or not fragment_data.get("tracks"):
+                    fragment_data = await self._get_station_fragment(station_id, is_start=True)
+                    current_position = 0
+                    self._station_track_positions[station_id] = 0
+
+                # Check if we need a new fragment (position beyond current tracks)
+                if fragment_data and current_position >= len(fragment_data.get("tracks", [])):
+                    fragment_data = await self._get_station_fragment(station_id, is_start=False)
+                    current_position = 0
+                    self._station_track_positions[station_id] = 0
+
+                if not fragment_data or not fragment_data.get("tracks"):
+                    self.logger.error("No tracks available for station %s", station_id)
+                    await asyncio.sleep(5)
+                    continue
+
+                tracks = fragment_data["tracks"]
+                if current_position >= len(tracks):
                     self.logger.error(
-                        "Failed to get audio for %s, status: %s", track_info, response.status
+                        "Track position %s beyond available tracks for station %s",
+                        current_position,
+                        station_id,
                     )
-                    return
+                    await asyncio.sleep(5)
+                    continue
 
-                # Stream the audio data
-                async for chunk in response.content.iter_chunked(8192):
-                    if not chunk:
-                        break
-                    yield chunk
+                # Get the current track
+                track_data = tracks[current_position]
+                audio_url = track_data.get("audioURL")
 
-            self.logger.info("Completed streaming track: %s", track_info)
+                if not audio_url:
+                    self.logger.warning(
+                        "No audio URL for track at position %s in station %s",
+                        current_position,
+                        station_id,
+                    )
+                    # Add silence for missing tracks
+                    silence_duration = 10  # seconds
+                    silence_bytes_total = int(bytes_per_second * silence_duration)
+                    chunk_size = 8192
+
+                    for i in range(0, silence_bytes_total, chunk_size):
+                        chunk = b"\x00" * min(chunk_size, silence_bytes_total - i)
+                        yield chunk
+                        await asyncio.sleep(chunk_size / bytes_per_second)
+
+                    self._station_track_positions[station_id] = current_position + 1
+                    continue
+
+                track_info = (
+                    f"{track_data.get('artistName', 'Unknown')} - "
+                    f"{track_data.get('songTitle', 'Unknown')}"
+                )
+                track_duration = track_data.get("trackLength", 0)  # seconds
+
+                self.logger.info("Now streaming: %s (%.1f seconds)", track_info, track_duration)
+
+                try:
+                    track_start_time = time.time()
+
+                    async with self.mass.http_session.get(audio_url) as response:
+                        if response.status != 200:
+                            self.logger.error(
+                                "Failed to get audio for %s, status: %s",
+                                track_info,
+                                response.status,
+                            )
+                            # Add silence for failed tracks
+                            silence_duration = 10
+                            silence_bytes_total = int(bytes_per_second * silence_duration)
+                            chunk_size = 8192
+
+                            for i in range(0, silence_bytes_total, chunk_size):
+                                chunk = b"\x00" * min(chunk_size, silence_bytes_total - i)
+                                yield chunk
+                                await asyncio.sleep(chunk_size / bytes_per_second)
+
+                            self._station_track_positions[station_id] = current_position + 1
+                            continue
+
+                        # Stream with simple chunk-based timing
+                        async for chunk in response.content.iter_chunked(8192):
+                            if not chunk:
+                                break
+
+                            yield chunk
+
+                            # Sleep for the time this chunk should take to play
+                            chunk_play_time = len(chunk) / bytes_per_second
+                            await asyncio.sleep(chunk_play_time)
+
+                            # Check if we've been streaming long enough
+                            elapsed = time.time() - track_start_time
+                            if elapsed >= (track_duration - 0.1):
+                                self.logger.debug("Ending track after %.1f seconds", elapsed)
+                                break
+
+                    # Track completed
+                    actual_duration = time.time() - track_start_time
+                    self.logger.info(
+                        "Completed streaming %s in %.1f seconds (expected: %.1f)",
+                        track_info,
+                        actual_duration,
+                        track_duration,
+                    )
+
+                except asyncio.CancelledError:
+                    self.logger.info("Stream cancelled for %s", track_info)
+                    raise
+                except Exception as e:
+                    self.logger.error("Error streaming %s: %s", track_info, e)
+                    # Add silence for error recovery
+                    silence_duration = 5
+                    silence_bytes_total = int(bytes_per_second * silence_duration)
+                    chunk_size = 8192
+
+                    for i in range(0, silence_bytes_total, chunk_size):
+                        chunk = b"\x00" * min(chunk_size, silence_bytes_total - i)
+                        yield chunk
+                        await asyncio.sleep(chunk_size / bytes_per_second)
+
+                # Move to next track
+                self._station_track_positions[station_id] = current_position + 1
 
         except asyncio.CancelledError:
-            self.logger.info("Stream cancelled for track: %s", track_info)
+            self.logger.info("Radio stream cancelled for station %s", station_id)
             raise
         except Exception as e:
-            self.logger.error("Error streaming track %s: %s", track_info, e)
+            self.logger.error("Error in radio stream for station %s: %s", station_id, e)
             raise
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:

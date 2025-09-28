@@ -28,15 +28,6 @@ MAX_SEARCH_RESULTS = 50
 MAX_STATION_TRACKS = 100
 DEFAULT_PAGE_SIZE = 50
 
-# Audio Quality Settings
-AUDIO_QUALITIES = {
-    "low": {"bitrate": 64, "format": "AAC+"},  # Free tier
-    "medium": {"bitrate": 128, "format": "MP3"},  # In-home devices
-    "high": {"bitrate": 192, "format": "AAC+"},  # Premium web/desktop
-}
-
-DEFAULT_AUDIO_QUALITY = "high"  # Assume premium subscription
-
 # Error Codes from Pandora API
 PANDORA_ERROR_CODES = {
     0: "INVALID_REQUEST",

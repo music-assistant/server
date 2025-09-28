@@ -20,10 +20,6 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.util import parse_title_and_version
 
-from .constants import (
-    AUDIO_QUALITIES,
-    DEFAULT_AUDIO_QUALITY,
-)
 from .helpers import safe_get
 
 if TYPE_CHECKING:
@@ -214,10 +210,6 @@ def parse_station(station_data: dict[str, Any], provider: PandoraProvider) -> Pl
             )
         )
 
-    # Use station creation date as cache checksum if available
-    if date_created := station_data.get("dateCreated"):
-        station.cache_checksum = str(date_created)
-
     return station
 
 
@@ -270,29 +262,12 @@ def parse_search_results(search_data: dict[str, Any], provider: PandoraProvider)
 
 def create_stream_details(track_id: str, provider: PandoraProvider) -> StreamDetails:
     """Create StreamDetails for a Pandora track."""
-    # Get audio quality from provider config with proper type handling
-    quality_setting = provider.config.get_value("audio_quality", DEFAULT_AUDIO_QUALITY)
-    if not isinstance(quality_setting, str):
-        quality_setting = DEFAULT_AUDIO_QUALITY
-
-    audio_quality = AUDIO_QUALITIES.get(quality_setting, AUDIO_QUALITIES[DEFAULT_AUDIO_QUALITY])
-    content_type = ContentType.AAC if audio_quality["format"] == "AAC+" else ContentType.MP3
-
-    # Safely extract bitrate with type checking
-    bitrate_value = audio_quality["bitrate"]
-    if isinstance(bitrate_value, int):
-        bit_rate = bitrate_value
-    elif isinstance(bitrate_value, (float, str)):
-        bit_rate = int(bitrate_value)
-    else:
-        bit_rate = 128  # fallback default
-
     return StreamDetails(
         item_id=track_id,
         provider=provider.lookup_key,
         audio_format=AudioFormat(
-            content_type=content_type,
-            bit_rate=bit_rate,
+            content_type=ContentType.AAC,
+            bit_rate=192,
         ),
         stream_type=StreamType.HTTP,
         allow_seek=False,  # Pandora radio doesn't typically allow seeking
