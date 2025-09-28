@@ -1007,13 +1007,13 @@ class PlayerQueuesController(CoreController):
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
-    async def preload_next_queue_item(
+    async def load_next_queue_item(
         self,
         queue_id: str,
         current_item_id: str,
     ) -> QueueItem:
         """
-        Call when a player wants (to preload) the next queue item to play.
+        Call when a player wants the next queue item to play.
 
         Raises QueueEmpty if there are no more tracks left.
         """
@@ -1589,7 +1589,7 @@ class PlayerQueuesController(CoreController):
                     retries -= 1
                     await asyncio.sleep(1)
 
-                if next_item := await self.preload_next_queue_item(queue_id, item_id_in_buffer):
+                if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
                     self._enqueue_next_item(queue_id, next_item)
 
             except QueueEmpty:
