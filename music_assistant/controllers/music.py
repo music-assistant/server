@@ -1984,7 +1984,7 @@ class MusicController(CoreController):
                     [duration] REAL,
                     [analysis_version] INTEGER DEFAULT 1,
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider));"""
+                    UNIQUE(item_id,provider,fragment));"""
         )
 
         await self.database.commit()
