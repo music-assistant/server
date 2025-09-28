@@ -235,3 +235,29 @@ class PodcastMusicprovider(MusicProvider):
             data=self.parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day
         )
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Resolve image for RSS provider with fallback to podcast cover."""
+        if not path.startswith("http"):
+            return path
+
+        try:
+            async with self.mass.http_session.get(
+                path, raise_for_status=True, allow_redirects=False
+            ) as response:
+                # Check for redirect status codes (3xx)
+                if 300 <= response.status < 400:
+                    raise ClientError(f"Redirect status: {response.status}")
+
+                return await response.read()
+
+        except (ClientError, Exception):
+            # Try podcast cover fallback
+            podcast_cover = self.parsed_podcast.get("cover_url")
+            if podcast_cover and isinstance(podcast_cover, str) and podcast_cover != path:
+                async with self.mass.http_session.get(
+                    podcast_cover, raise_for_status=True
+                ) as response:
+                    return await response.read()
+
+            raise MediaNotFoundError(f"Episode image not found: {path}")
