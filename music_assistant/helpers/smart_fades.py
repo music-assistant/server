@@ -248,7 +248,8 @@ class SmartFadesMixer:
         fade_out_part: bytes,
         fade_in_streamdetails: StreamDetails,
         fade_out_streamdetails: StreamDetails,
-        pcm_format: AudioFormat,
+        fade_in_pcm_format: AudioFormat,
+        fade_out_pcm_format: AudioFormat,
         standard_crossfade_duration: int = 10,
         mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
     ) -> bytes:
@@ -266,7 +267,7 @@ class SmartFadesMixer:
                 fade_out_streamdetails.provider,
                 SmartFadesAnalysisFragment.OUTRO,
                 fade_out_part,
-                pcm_format,
+                fade_out_pcm_format,
             )
 
         fade_in_analysis: SmartFadesAnalysis | None
@@ -282,7 +283,7 @@ class SmartFadesMixer:
                 fade_in_streamdetails.provider,
                 SmartFadesAnalysisFragment.INTRO,
                 fade_in_part,
-                pcm_format,
+                fade_in_pcm_format,
             )
         if (
             fade_out_analysis
@@ -297,7 +298,8 @@ class SmartFadesMixer:
                     fade_in_analysis,
                     fade_out_part,
                     fade_in_part,
-                    pcm_format,
+                    fade_in_pcm_format,
+                    fade_out_pcm_format,
                 )
             except Exception as e:
                 self.logger.warning(
@@ -307,7 +309,8 @@ class SmartFadesMixer:
         return await self._default_crossfade(
             fade_in_part,
             fade_out_part,
-            pcm_format,
+            fade_in_pcm_format,
+            fade_out_pcm_format,
             standard_crossfade_duration,
         )
 
@@ -317,7 +320,8 @@ class SmartFadesMixer:
         fade_in_analysis: SmartFadesAnalysis,
         fade_out_part: bytes,
         fade_in_part: bytes,
-        pcm_format: AudioFormat,
+        fade_in_pcm_format: AudioFormat,
+        fade_out_pcm_format: AudioFormat,
     ) -> bytes:
         """Apply smart crossfade with beat-perfect timing and adaptive filtering."""
         # Write the fade_out_part to a temporary file
@@ -331,28 +335,28 @@ class SmartFadesMixer:
             "error",
             # Input 1: fadeout part (as file)
             "-acodec",
-            pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
+            fade_out_pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
             "-ac",
-            str(pcm_format.channels),
+            str(fade_out_pcm_format.channels),
             "-ar",
-            str(pcm_format.sample_rate),
+            str(fade_out_pcm_format.sample_rate),
             "-channel_layout",
-            "mono" if pcm_format.channels == 1 else "stereo",
+            "mono" if fade_out_pcm_format.channels == 1 else "stereo",
             "-f",
-            pcm_format.content_type.value,
+            fade_out_pcm_format.content_type.value,
             "-i",
             fadeout_filename,
             # Input 2: fade_in part (stdin)
             "-acodec",
-            pcm_format.content_type.name.lower(),
+            fade_in_pcm_format.content_type.name.lower(),
             "-ac",
-            str(pcm_format.channels),
+            str(fade_in_pcm_format.channels),
             "-ar",
-            str(pcm_format.sample_rate),
+            str(fade_in_pcm_format.sample_rate),
             "-channel_layout",
-            "mono" if pcm_format.channels == 1 else "stereo",
+            "mono" if fade_in_pcm_format.channels == 1 else "stereo",
             "-f",
-            pcm_format.content_type.value,
+            fade_in_pcm_format.content_type.value,
             "-i",
             "-",
         ]
@@ -367,15 +371,15 @@ class SmartFadesMixer:
                 ";".join(smart_fade_filters),
                 # Output format specification - must match input codec format
                 "-acodec",
-                pcm_format.content_type.name.lower(),
+                fade_in_pcm_format.content_type.name.lower(),
                 "-ac",
-                str(pcm_format.channels),
+                str(fade_in_pcm_format.channels),
                 "-ar",
-                str(pcm_format.sample_rate),
+                str(fade_in_pcm_format.sample_rate),
                 "-channel_layout",
-                "mono" if pcm_format.channels == 1 else "stereo",
+                "mono" if fade_in_pcm_format.channels == 1 else "stereo",
                 "-f",
-                pcm_format.content_type.value,
+                fade_in_pcm_format.content_type.value,
                 "-",
             ]
         )
@@ -893,19 +897,21 @@ class SmartFadesMixer:
         self,
         fade_in_part: bytes,
         fade_out_part: bytes,
-        pcm_format: AudioFormat,
+        fade_in_pcm_format: AudioFormat,
+        fade_out_pcm_format: AudioFormat,
         crossfade_duration: int = 10,
     ) -> bytes:
         """Apply a standard crossfade without smart analysis."""
         self.logger.debug("Applying standard crossfade of %ds", crossfade_duration)
-        crossfade_size = int(pcm_format.pcm_sample_size * crossfade_duration)
+        crossfade_size = int(fade_out_pcm_format.pcm_sample_size * crossfade_duration)
         # Pre-crossfade: outgoing track minus the crossfaded portion
         pre_crossfade = fade_out_part[:-crossfade_size]
         # Crossfaded portion: user's configured duration
         crossfaded_section = await crossfade_pcm_parts(
             fade_in_part[:crossfade_size],
             fade_out_part[-crossfade_size:],
-            pcm_format=pcm_format,
+            pcm_format=fade_in_pcm_format,
+            fade_out_pcm_format=fade_out_pcm_format,
         )
         # Post-crossfade: incoming track minus the crossfaded portion
         post_crossfade = fade_in_part[crossfade_size:]
