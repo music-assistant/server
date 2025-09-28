@@ -1,7 +1,7 @@
 """
-AudioAddict Music Provider for Music Assistant.
+Digitally Incorporated Music Provider for Music Assistant.
 
-This provider supports the AudioAddict network of streaming radio services:
+This provider supports the Digitally Incorporated network of streaming radio services:
 - DI.FM (Digitally Imported)
 - RadioTunes
 - RockRadio
@@ -9,7 +9,7 @@ This provider supports the AudioAddict network of streaming radio services:
 - ClassicalRadio
 - ZenRadio
 
-The provider requires a premium AudioAddict account and listen key for authentication.
+The provider requires a premium account and listen key for authentication.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ RATE_PERIOD = 1  # second
 MIN_LISTEN_KEY_LENGTH = 10
 HTTPS_SCHEME_PREFIX = "//"
 
-# AudioAddict networks configuration
+# Digitally Incorporated radio services configuration
 NETWORKS = {
     "di": {
         "domain": "di.fm",
@@ -115,18 +115,12 @@ NETWORKS = {
     },
 }
 
-QUALITY_SETTINGS = {
-    "low": "premium_medium",  # 64k AAC-HE
-    "medium": "premium",  # 128k AAC
-    "high": "premium_high",  # 320k MP3 (Ultra)
-}
-
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return AudioAddictProvider(mass, manifest, config, SUPPORTED_FEATURES)
+    return DigitallyIncorporatedProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 # ruff: noqa: ARG001
@@ -145,25 +139,8 @@ async def get_config_entries(
             key="listen_key",
             type=ConfigEntryType.STRING,
             label="Listen Key",
-            description="Your AudioAddict premium listen key. Get this from your account settings.",
+            description="Your premium listen key. Get this from your account settings.",
             required=True,
-        )
-    )
-
-    # Quality setting
-    entries.append(
-        ConfigEntry(
-            key="quality",
-            type=ConfigEntryType.STRING,
-            label="Stream Quality",
-            description="Audio quality preference for streams",
-            default_value="medium",
-            required=True,
-            options=[
-                ConfigValueOption("Low - 64k AAC-HE", "low"),
-                ConfigValueOption("Medium - 128k AAC", "medium"),
-                ConfigValueOption("High - 320k MP3", "high"),
-            ],
         )
     )
 
@@ -178,7 +155,7 @@ async def get_config_entries(
             key="enabled_networks",
             type=ConfigEntryType.STRING,
             label="Enabled Networks",
-            description="Select which AudioAddict networks to enable",
+            description="Select which networks to enable",
             default_value=list(NETWORKS.keys()),  # Enable all by default
             required=True,
             options=network_options,
@@ -189,8 +166,8 @@ async def get_config_entries(
     return tuple(entries)
 
 
-class AudioAddictProvider(MusicProvider):
-    """AudioAddict Music Provider."""
+class DigitallyIncorporatedProvider(MusicProvider):
+    """Digitally Incorporated Music Provider."""
 
     _throttler: Throttler
 
@@ -201,7 +178,7 @@ class AudioAddictProvider(MusicProvider):
         config: ProviderConfig,
         supported_features: set[ProviderFeature],
     ) -> None:
-        """Initialize AudioAddict provider."""
+        """Initialize Digitally Incorporated provider."""
         super().__init__(mass, manifest, config, supported_features)
         self._throttler = Throttler(rate_limit=RATE_LIMIT, period=RATE_PERIOD)
 
@@ -226,9 +203,16 @@ class AudioAddictProvider(MusicProvider):
         try:
             first_network = enabled_networks[0]
             await self._get_channels(first_network)
-            self.logger.info("%s: Successfully connected to AudioAddict API", self.domain)
-        except Exception as err:
-            self.logger.error("%s: Failed to connect to AudioAddict API: %s", self.domain, err)
+            self.logger.info(
+                "%s: Successfully connected to Digitally Incorporated API", self.domain
+            )
+        except (ProviderUnavailableError, MediaNotFoundError):
+            # Re-raise provider/media errors as-is (they already have domain prefix)
+            raise
+        except (aiohttp.ClientError, aiohttp.ServerTimeoutError) as err:
+            self.logger.error(
+                "%s: Failed to connect to Digitally Incorporated API: %s", self.domain, err
+            )
             msg = f"{self.domain}: API unavailable: {err}"
             raise ProviderUnavailableError(msg) from err
 
@@ -243,7 +227,7 @@ class AudioAddictProvider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on AudioAddict channels."""
+        """Perform search on Digitally Incorporated channels."""
         results = SearchResults()
 
         if MediaType.RADIO not in media_types:
@@ -269,7 +253,13 @@ class AudioAddictProvider(MusicProvider):
                         if len(radios) >= limit:
                             break
 
-            except Exception as err:
+            except (
+                ProviderUnavailableError,
+                MediaNotFoundError,
+                aiohttp.ClientError,
+                ValueError,
+                KeyError,
+            ) as err:
                 self.logger.debug(
                     "%s: Search failed for network %s: %s", self.domain, network_key, err
                 )
@@ -290,7 +280,13 @@ class AudioAddictProvider(MusicProvider):
                 for channel_data in channels:
                     yield self._channel_to_radio(channel_data, network_key)
 
-            except Exception as err:
+            except (
+                ProviderUnavailableError,
+                MediaNotFoundError,
+                aiohttp.ClientError,
+                ValueError,
+                KeyError,
+            ) as err:
                 self.logger.debug(
                     "%s: Failed to get channels for network %s: %s", self.domain, network_key, err
                 )
@@ -318,7 +314,9 @@ class AudioAddictProvider(MusicProvider):
             msg = f"{self.domain}: Invalid item ID format: {item_id} (expected 'network:channel')"
             raise MediaNotFoundError(msg) from err
 
-        self._validate_network_key(network_key)
+        if network_key not in NETWORKS:
+            msg = f"{self.domain}: Invalid network key: {network_key}"
+            raise MediaNotFoundError(msg)
 
         if not channel_key.strip():
             msg = f"{self.domain}: Empty channel key in item ID: {item_id}"
@@ -353,7 +351,7 @@ class AudioAddictProvider(MusicProvider):
         )
 
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
-        """Browse AudioAddict networks and channels."""
+        """Browse Digitally Incorporated radio services and channels."""
         self.logger.debug("%s: Browse called with path: %s", self.domain, path)
 
         # Extract meaningful path component
@@ -416,7 +414,13 @@ class AudioAddictProvider(MusicProvider):
             ]
             self.logger.debug("%s: Converted to %d radio items", self.domain, len(radio_items))
             return radio_items
-        except Exception as err:
+        except (
+            ProviderUnavailableError,
+            MediaNotFoundError,
+            aiohttp.ClientError,
+            ValueError,
+            KeyError,
+        ) as err:
             self.logger.warning(
                 "%s: Failed to browse network %s: %s", self.domain, network_key, err
             )
@@ -456,10 +460,7 @@ class AudioAddictProvider(MusicProvider):
         use_https: bool = True,
         **params: Any,
     ) -> Any:
-        """Make a generic API request to AudioAddict."""
-        # Network validation happens in _validate_network_key
-        self._validate_network_key(network_key)
-
+        """Make a generic API request to Digitally Incorporated."""
         scheme = "https" if use_https else "http"
         base_url = f"{scheme}://{API_BASE_URL}/{network_key}"
         url = f"{base_url}/{endpoint}"
@@ -483,12 +484,6 @@ class AudioAddictProvider(MusicProvider):
             resp.raise_for_status()
             return await resp.json()
 
-    def _validate_network_key(self, network_key: str) -> None:
-        """Validate a network key."""
-        if network_key not in NETWORKS:
-            msg = f"{self.domain}: Invalid network key: {network_key}"
-            raise MediaNotFoundError(msg)
-
     @use_cache(CACHE_CHANNELS)
     async def _get_channels(self, network_key: str) -> list[dict[str, Any]]:
         """Get listenable channels for a specific network (optimized single call)."""
@@ -506,7 +501,7 @@ class AudioAddictProvider(MusicProvider):
             ]
             return channels
 
-        except Exception as err:
+        except (ProviderUnavailableError, MediaNotFoundError, aiohttp.ClientError) as err:
             self.logger.error("Failed to get channels for network %s: %s", network_key, err)
             raise
 
@@ -520,32 +515,25 @@ class AudioAddictProvider(MusicProvider):
             msg = f"{self.domain}: Listen key not configured"
             raise ProviderUnavailableError(msg)
 
-        quality = str(self.config.get_value("quality", "medium"))
-        stream_key = QUALITY_SETTINGS.get(quality, "premium")
-        self.logger.debug(
-            "%s: Using quality setting: %s -> stream_key: %s", self.domain, quality, stream_key
-        )
-
         try:
-            # Get playlist with stream URLs using the new API method
             params = {"listen_key": listen_key}
             playlist = await self._api_request(
-                network_key, f"listen/{stream_key}/{channel_key}", use_https=True, **params
+                network_key, f"listen/premium_high/{channel_key}", use_https=True, **params
             )
 
             # Use the first stream URL from the playlist
             self.logger.debug(
-                "%s: AudioAddict playlist returned %d URLs", self.domain, len(playlist)
+                "%s: Digitally Incorporated playlist returned %d URLs", self.domain, len(playlist)
             )
             if not playlist or not isinstance(playlist, list):
-                msg = f"{self.domain}: No stream URLs returned from AudioAddict API"
+                msg = f"{self.domain}: No stream URLs returned from Digitally Incorporated API"
                 raise MediaNotFoundError(msg)
 
             # Log all available URLs for debugging
             for i, url in enumerate(playlist):
                 self.logger.debug("%s: Available stream URL %d: %s", self.domain, i + 1, url)
 
-            # Use the first URL - AudioAddict typically returns them in priority order
+            # Use the first URL - Digitally Incorporated typically returns them in priority order
             stream_url: str = str(playlist[0])
             self.logger.debug("%s: Selected stream URL: %s", self.domain, stream_url)
 
@@ -556,10 +544,10 @@ class AudioAddictProvider(MusicProvider):
 
             return stream_url
 
-        except ProviderUnavailableError:
-            # Re-raise provider errors as-is
+        except (ProviderUnavailableError, MediaNotFoundError):
+            # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
-        except Exception as err:
+        except (aiohttp.ClientError, ValueError, KeyError, IndexError) as err:
             self.logger.error(
                 "%s: Failed to get stream URL for %s:%s: %s",
                 self.domain,

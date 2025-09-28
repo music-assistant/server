@@ -3,7 +3,7 @@
   "domain": "audioaddict",
   "stage": "beta",
   "name": "AudioAddict",
-  "description": "AudioAddict Network Radio provider for Music Assistant. Supports DI.FM, RadioTunes, RockRadio, JazzRadio, ClassicalRadio, and ZenRadio streaming services.",
+  "description": "Stream curated internet radio from DI.FM, RadioTunes, RockRadio, JazzRadio, ClassicalRadio, and ZenRadio.",
   "codeowners": ["@benklop"],
   "requirements": [],
   "documentation": "https://audioaddict.com/",
