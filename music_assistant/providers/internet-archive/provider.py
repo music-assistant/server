@@ -65,13 +65,11 @@ class InternetArchiveProvider(MusicProvider):
         supported_features: set[ProviderFeature],
     ) -> None:
         """Initialize the provider."""
-        super().__init__(mass, manifest, config)
-        self._supported_features = supported_features
+        super().__init__(mass, manifest, config, supported_features)
         self.throttler = ThrottlerManager(
             rate_limit=10, period=60, retry_attempts=5, initial_backoff=5
         )
         self.client = InternetArchiveClient(mass)
-        # Pass only the provider reference to streaming handler
         self.streaming = InternetArchiveStreaming(self)
 
     @property
@@ -100,7 +98,7 @@ class InternetArchiveProvider(MusicProvider):
         """Throttled audio files wrapper."""
         return await self.client.get_audio_files(identifier)
 
-    # @use_cache(expiration=3600 * 24)  # 1 day as the IA is largely static
+    @use_cache(3600 * 24 * 7)
     async def search(
         self,
         search_query: str,
@@ -347,7 +345,7 @@ class InternetArchiveProvider(MusicProvider):
                 if artist and not artist_exists(artist, artists):
                     artists.append(artist)
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist "tracks" change infrequently
+    @use_cache(expiration=86400 * 60)  # Cache for 60 days - artist "tracks" change infrequently
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         metadata = await self._get_metadata(prov_track_id)
@@ -399,7 +397,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return track
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week - album catalogs change infrequently
+    @use_cache(expiration=86400 * 60)  # Cache for 60 days - album catalogs change infrequently
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         metadata = await self._get_metadata(prov_album_id)
@@ -442,7 +440,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return album
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist catalogs change infrequently
+    @use_cache(expiration=86400 * 60)  # Cache for 60 days - artist catalogs change infrequently
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """
         Get full artist details by id.
@@ -467,7 +465,7 @@ class InternetArchiveProvider(MusicProvider):
             },
         )
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist catalogs change infrequently
+    @use_cache(expiration=86400 * 30)  # Cache for 30 days - audiobook catalogs change infrequently
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         metadata = await self._get_metadata(prov_audiobook_id)
@@ -609,7 +607,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return track_number
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week - artist catalogs change infrequently
+    @use_cache(expiration=86400 * 30)  # Cache for 30 days - artist catalogs change infrequently
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
         Get albums for a specific artist.
