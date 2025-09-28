@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
 from collections.abc import Sequence
 from contextlib import suppress
+from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
 from math import inf
 from typing import TYPE_CHECKING, Final, cast
 
+import numpy as np
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -55,6 +58,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
+    DB_TABLE_SMART_FADES_ANALYSIS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
@@ -69,6 +73,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.smart_fades import SmartFadesAnalysis
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -610,7 +615,7 @@ class MusicController(CoreController):
             )
             if conf_export_library != "export_favorite":
                 continue
-            prov_item = full_item
+            prov_item = deepcopy(full_item)
             prov_item.provider = prov_mapping.provider_instance
             prov_item.item_id = prov_mapping.item_id
             self.mass.create_task(provider.library_add(prov_item))
@@ -682,32 +687,33 @@ class MusicController(CoreController):
         self, item: str | MediaItemType, overwrite_existing: bool = False
     ) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
+        # ensure we have a full item
         if isinstance(item, str):
-            item = await self.get_item_by_uri(item)
-        if isinstance(item, ItemMapping):
-            item = await self.get_item(
+            full_item = await self.get_item_by_uri(item)
+        else:
+            full_item = await self.get_item(
                 item.media_type,
                 item.item_id,
                 item.provider,
             )
         # add to provider(s) library first
-        for prov_mapping in item.provider_mappings:
+        for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(item.media_type):
+            if not provider.library_edit_supported(full_item.media_type):
                 continue
             conf_export_library = provider.config.get_value(
                 CONF_ENTRY_LIBRARY_EXPORT_ADD.key, CONF_ENTRY_LIBRARY_EXPORT_ADD.default_value
             )
             if conf_export_library != "export_library":
                 continue
-            prov_item = item
+            prov_item = deepcopy(full_item) if full_item.provider == "library" else full_item
             prov_item.provider = prov_mapping.provider_instance
             prov_item.item_id = prov_mapping.item_id
             prov_mapping.in_library = True
             self.mass.create_task(provider.library_add(prov_item))
         # add (or overwrite) to library
-        ctrl = self.get_controller(item.media_type)
-        library_item = await ctrl.add_item_to_library(item, overwrite_existing)
+        ctrl = self.get_controller(full_item.media_type)
+        library_item = await ctrl.add_item_to_library(full_item, overwrite_existing)
         # perform full metadata scan (and provider match)
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
@@ -830,6 +836,54 @@ class MusicController(CoreController):
         if album_loudness not in (None, inf, -inf):
             values["loudness_album"] = album_loudness
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
+
+    async def set_smart_fades_analysis(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        analysis: SmartFadesAnalysis,
+    ) -> None:
+        """Store Smart Fades BPM analysis for a track in db."""
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return
+        if analysis.bpm <= 0 or analysis.confidence < 0:
+            # skip invalid values
+            return
+        values = {
+            "item_id": item_id,
+            "provider": provider.lookup_key,
+            "bpm": analysis.bpm,
+            "beats": json.dumps(analysis.beats.tolist()),
+            "downbeats": json.dumps(analysis.downbeats.tolist()),
+            "confidence": analysis.confidence,
+            "duration": analysis.duration,
+        }
+        await self.database.insert_or_replace(DB_TABLE_SMART_FADES_ANALYSIS, values)
+
+    async def get_smart_fades_analysis(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> SmartFadesAnalysis | None:
+        """Get Smart Fades BPM analysis for a track from db."""
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            return None
+        db_row = await self.database.get_row(
+            DB_TABLE_SMART_FADES_ANALYSIS,
+            {
+                "item_id": item_id,
+                "provider": provider.lookup_key,
+            },
+        )
+        if db_row and db_row["bpm"] > 0:
+            return SmartFadesAnalysis(
+                bpm=float(db_row["bpm"]),
+                beats=np.array(json.loads(db_row["beats"])),
+                downbeats=np.array(json.loads(db_row["downbeats"])),
+                confidence=float(db_row["confidence"]),
+                duration=float(db_row["duration"]),
+            )
+        return None
 
     async def get_loudness(
         self,
@@ -1904,6 +1958,21 @@ class MusicController(CoreController):
                     UNIQUE(media_type,item_id,provider));"""
         )
 
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [bpm] REAL NOT NULL,
+                    [beats] TEXT NOT NULL,
+                    [downbeats] TEXT NOT NULL,
+                    [confidence] REAL NOT NULL,
+                    [duration] REAL,
+                    [analysis_version] INTEGER DEFAULT 1,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider));"""
+        )
+
         await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
@@ -2008,6 +2077,11 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}_idx "
             f"on {DB_TABLE_LOUDNESS_MEASUREMENTS}(media_type,item_id,provider);"
+        )
+        # index on smart fades analysis table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}_idx "
+            f"on {DB_TABLE_SMART_FADES_ANALYSIS}(item_id,provider);"
         )
         await self.database.commit()
 
