@@ -956,7 +956,7 @@ class SpotifyProvider(MusicProvider):
                 break
 
     async def _get_data_with_caching(
-        self, endpoint: str, cache_checksum: str, **kwargs: Any
+        self, endpoint: str, cache_checksum: str | None, **kwargs: Any
     ) -> dict[str, Any]:
         """Get data from api with caching."""
         cache_key_parts = [endpoint]
