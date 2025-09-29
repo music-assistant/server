@@ -361,20 +361,28 @@ class DeezerProvider(MusicProvider):
         """Add an item to the provider's library/favorites."""
         result = False
         if item.media_type == MediaType.ARTIST:
-            result = await self.client.add_user_artist(
-                artist_id=int(item.item_id),
+            result = bool(
+                await self.client.add_user_artist(
+                    artist_id=int(item.item_id),
+                )
             )
         elif item.media_type == MediaType.ALBUM:
-            result = await self.client.add_user_album(
-                album_id=int(item.item_id),
+            result = bool(
+                await self.client.add_user_album(
+                    album_id=int(item.item_id),
+                )
             )
         elif item.media_type == MediaType.TRACK:
-            result = await self.client.add_user_track(
-                track_id=int(item.item_id),
+            result = bool(
+                await self.client.add_user_track(
+                    track_id=int(item.item_id),
+                )
             )
         elif item.media_type == MediaType.PLAYLIST:
-            result = await self.client.add_user_playlist(
-                playlist_id=int(item.item_id),
+            result = bool(
+                await self.client.add_user_playlist(
+                    playlist_id=int(item.item_id),
+                )
             )
         else:
             raise NotImplementedError
@@ -384,20 +392,28 @@ class DeezerProvider(MusicProvider):
         """Remove an item from the provider's library/favorites."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await self.client.remove_user_artist(
-                artist_id=int(prov_item_id),
+            result = bool(
+                await self.client.remove_user_artist(
+                    artist_id=int(prov_item_id),
+                )
             )
         elif media_type == MediaType.ALBUM:
-            result = await self.client.remove_user_album(
-                album_id=int(prov_item_id),
+            result = bool(
+                await self.client.remove_user_album(
+                    album_id=int(prov_item_id),
+                )
             )
         elif media_type == MediaType.TRACK:
-            result = await self.client.remove_user_track(
-                track_id=int(prov_item_id),
+            result = bool(
+                await self.client.remove_user_track(
+                    track_id=int(prov_item_id),
+                )
             )
         elif media_type == MediaType.PLAYLIST:
-            result = await self.client.remove_user_playlist(
-                playlist_id=int(prov_item_id),
+            result = bool(
+                await self.client.remove_user_playlist(
+                    playlist_id=int(prov_item_id),
+                )
             )
         else:
             raise NotImplementedError
@@ -826,4 +842,4 @@ class DeezerProvider(MusicProvider):
             Blowfish.MODE_CBC,
             b"\x00\x01\x02\x03\x04\x05\x06\x07",
         )
-        return cipher.decrypt(chunk)
+        return cipher.decrypt(chunk)  # type: ignore[no-any-return]
