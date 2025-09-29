@@ -183,7 +183,7 @@ class PhishInProvider(MusicProvider):
         try:
             all_tracks: list[Track] = []
             page = 1
-            max_pages = 2  # 1000 tracks max for UI performance
+            max_pages = 5  # 2500 tracks max for UI performance
 
             while len(all_tracks) < (max_pages * 500) and page <= max_pages:
                 tracks_data = await api_request(
@@ -251,7 +251,10 @@ class PhishInProvider(MusicProvider):
             if not track_data:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
-            return track_to_ma_track(self, track_data)
+            # Extract show data from the track response
+            show_data = track_data.get("show")
+
+            return track_to_ma_track(self, track_data, show_data)
 
         except MediaNotFoundError:
             raise
@@ -311,17 +314,8 @@ class PhishInProvider(MusicProvider):
             for track in tracks_data.get("tracks", []):
                 show_date = track.get("show_date")
                 if show_date and show_date not in unique_shows:
-                    show_data = {
-                        "id": track["show"]["id"],
-                        "date": show_date,
-                        "venue_name": track.get("venue_name"),
-                        "audio_status": track["show"]["audio_status"],
-                        "cover_art_urls": track["show"]["cover_art_urls"],
-                        "album_cover_url": track["show"]["album_cover_url"],
-                        "tour_name": track["show"].get("tour_name"),
-                        "venue": track["show"]["venue"],
-                    }
-                    unique_shows[show_date] = show_data
+                    # Just use the show object directly - it has everything needed
+                    unique_shows[show_date] = track["show"]
 
             albums = []
             for show_data in unique_shows.values():
@@ -336,6 +330,55 @@ class PhishInProvider(MusicProvider):
         except Exception as err:
             self.logger.error("Failed to get track albums for %s: %s", prov_track_id, err)
             raise ProviderUnavailableError(f"Track albums error: {err}") from err
+
+    # @use_cache(86400)  # 24 hours
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Get other performances of the same song."""
+        try:
+            # Get the track to find its song slug
+            track_data = await api_request(self, f"/tracks/{prov_track_id}")
+
+            if not track_data or not track_data.get("songs"):
+                return []
+
+            song_slug = track_data["songs"][0]["slug"]
+
+            # Find other performances of this song
+            tracks_data = await api_request(
+                self,
+                "/tracks",
+                params={
+                    "song_slug": song_slug,
+                    "audio_status": "complete_or_partial",
+                    "per_page": limit,
+                    "sort": "likes_count:desc",  # Get most popular versions
+                },
+            )
+            self.logger.error(
+                f"Found {len(tracks_data.get('tracks', []))} tracks for song {song_slug}"
+            )
+
+            similar_tracks = []
+            for track in tracks_data.get("tracks", []):
+                # Skip the original track
+                if str(track.get("id")) == prov_track_id:
+                    continue
+
+                if track.get("mp3_url"):
+                    # track_to_ma_track will extract show data from track["show"]
+                    similar_track = track_to_ma_track(self, track)
+                    similar_tracks.append(similar_track)
+
+                    if len(similar_tracks) >= limit:
+                        break
+
+            return similar_tracks
+
+        except (MediaNotFoundError, ProviderUnavailableError):
+            raise
+        except Exception as err:
+            self.logger.error("Failed to get similar tracks for %s: %s", prov_track_id, err)
+            raise ProviderUnavailableError(f"Similar tracks error: {err}") from err
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track."""

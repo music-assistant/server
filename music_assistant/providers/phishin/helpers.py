@@ -172,7 +172,32 @@ def track_to_ma_track(
     # Get song data from songs array
     songs = track_data.get("songs", [])
     song_data = songs[0] if songs else {}
-    song_title = track_data.get("title", "Unknown Song")
+    full_title = track_data.get("title", "Unknown Song")
+
+    # Extract base song name and version info from title
+    # Phish.in adds prefixes/suffixes like (Check), (Set1), (Soundcheck), etc.
+    song_title = full_title
+    version = None
+
+    performance_indicators = ["set", "soundcheck", "check", "encore"]
+
+    # Check for prefix first: "(Check) Song Name"
+    if full_title.startswith("(") and ") " in full_title:
+        end_paren = full_title.index(") ")
+        prefix = full_title[1:end_paren]
+
+        if any(indicator in prefix.lower() for indicator in performance_indicators):
+            version = prefix
+            song_title = full_title[end_paren + 2 :]  # Skip ") "
+
+    # Check for suffix: "Song Name (Soundcheck)"
+    if " (" in song_title and song_title.endswith(")"):
+        base_title, suffix = song_title.rsplit(" (", 1)
+        suffix = suffix.rstrip(")")
+
+        if any(indicator in suffix.lower() for indicator in performance_indicators):
+            version = f"{version}, {suffix}" if version else suffix
+            song_title = base_title
 
     # Duration in milliseconds, convert to seconds
     duration_ms = track_data.get("duration")
@@ -189,11 +214,6 @@ def track_to_ma_track(
 
     show_date = show_data.get("date", "")
     venue_name = show_data.get("venue", {}).get("name", "")
-
-    # Create track title with set info if available
-    track_title = song_title
-    if set_name and position:
-        track_title = f"{song_title} ({set_name})"
 
     # Create ItemMapping for Phish artist
     phish_artist = ItemMapping(
@@ -252,7 +272,8 @@ def track_to_ma_track(
     return Track(
         item_id=track_id,
         provider=provider.instance_id,
-        name=track_title,
+        name=song_title,  # Clean title without prefix/suffix
+        version=version or "",  # Set version on Track object
         artists=UniqueList([phish_artist]),
         album=album_mapping,
         duration=duration,
