@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import shutil
@@ -67,7 +66,7 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
-from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.smart_fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
@@ -855,8 +854,8 @@ class MusicController(CoreController):
             # skip invalid values, we skip analysis that were performed on
             # a short amount of audio as those are often unreliable
             return
-        beats_json = await asyncio.to_thread(lambda: json.dumps(analysis.beats.tolist()))
-        downbeats_json = await asyncio.to_thread(lambda: json.dumps(analysis.downbeats.tolist()))
+        beats_json = await asyncio.to_thread(lambda: json_dumps(analysis.beats.tolist()))
+        downbeats_json = await asyncio.to_thread(lambda: json_dumps(analysis.downbeats.tolist()))
         values = {
             "fragment": analysis.fragment.value,
             "item_id": item_id,
@@ -887,8 +886,8 @@ class MusicController(CoreController):
             },
         )
         if db_row and db_row["bpm"] > 0:
-            beats = await asyncio.to_thread(lambda: np.array(json.loads(db_row["beats"])))
-            downbeats = await asyncio.to_thread(lambda: np.array(json.loads(db_row["downbeats"])))
+            beats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["beats"])))
+            downbeats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["downbeats"])))
             return SmartFadesAnalysis(
                 fragment=SmartFadesAnalysisFragment(db_row["fragment"]),
                 bpm=float(db_row["bpm"]),
