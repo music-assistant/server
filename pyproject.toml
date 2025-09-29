@@ -132,12 +132,10 @@ enable_error_code = [
 exclude = [
   '^music_assistant/controllers/.*$',
   '^music_assistant/helpers/app_vars.py',
-  '^music_assistant/helpers/webserver.py',
   '^music_assistant/models/player_provider.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
   '^music_assistant/providers/chromecast/.*$',
-  '^music_assistant/providers/deezer/.*$',
   '^music_assistant/providers/dlna/.*$',
   '^music_assistant/providers/hass_players/.*$',
   '^music_assistant/providers/player_group/.*$',
@@ -147,7 +145,6 @@ exclude = [
   '^music_assistant/providers/sonos/.*$',
   '^music_assistant/providers/soundcloud/.*$',
   '^music_assistant/providers/snapcast/.*$',
-  '^music_assistant/providers/spotify/.*$',
   '^music_assistant/providers/tunein/.*$',
   '^music_assistant/providers/ytmusic/.*$',
 ]
