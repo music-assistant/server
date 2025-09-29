@@ -943,10 +943,6 @@ class SpotifyProvider(MusicProvider):
         offset = 0
         # do single request to get the etag (which we use as checksum for caching)
         cache_checksum = await self._get_etag(endpoint, limit=1, offset=0, **kwargs)
-        # Handle None case - use empty string as fallback
-        if cache_checksum is None:
-            cache_checksum = ""
-
         while True:
             result = await self._get_data_with_caching(
                 endpoint, cache_checksum=cache_checksum, limit=limit, offset=offset, **kwargs
