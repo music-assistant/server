@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import web
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Callable
 
     from aiohttp.typedefs import Handler
 
 
 MAX_CLIENT_SIZE: Final = 1024**2 * 16
 MAX_LINE_SIZE: Final = 24570
+
+# Type alias for dynamic route handlers
+DynamicRouteHandler = Callable[
+    [web.Request], Coroutine[Any, Any, web.Response | web.StreamResponse]
+]
 
 
 class Webserver:
@@ -33,12 +37,9 @@ class Webserver:
         self._webapp: web.Application | None = None
         self._tcp_site: web.TCPSite | None = None
         self._static_routes: list[tuple[str, str, Handler]] | None = None
-        self._dynamic_routes: (
-            dict[
-                str, Callable[[web.Request], Coroutine[Any, Any, web.Response | web.StreamResponse]]
-            ]
-            | None
-        ) = {} if enable_dynamic_routes else None
+        self._dynamic_routes: dict[str, DynamicRouteHandler] | None = (
+            {} if enable_dynamic_routes else None
+        )
         self._bind_port: int | None = None
         self._ingress_tcp_site: web.TCPSite | None = None
 
