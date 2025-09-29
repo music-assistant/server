@@ -47,7 +47,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
-from music_assistant.models.player import SyncGroupPlayer
+from music_assistant.models.sync_group_player import SyncGroupPlayer
 
 from .datetime import utc
 from .dsp import filter_to_ffmpeg_params

@@ -14,7 +14,7 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     SYNCGROUP_PREFIX,
 )
-from music_assistant.models.player import SyncGroupPlayer
+from music_assistant.models.sync_group_player import SyncGroupPlayer
 
 from .provider import Provider
 

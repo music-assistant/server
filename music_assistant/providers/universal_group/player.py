@@ -31,7 +31,8 @@ from music_assistant.constants import (
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import TaskManager
-from music_assistant.models.player import DeviceInfo, GroupPlayer, PlayerMedia
+from music_assistant.models.group_player import GroupPlayer
+from music_assistant.models.player import DeviceInfo, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
 
 from .constants import CONF_ENTRY_SAMPLE_RATES_UGP, CONFIG_ENTRY_UGP_NOTE
