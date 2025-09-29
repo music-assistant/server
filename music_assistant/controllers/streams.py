@@ -14,7 +14,7 @@ import os
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -54,6 +54,7 @@ from music_assistant.constants import (
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.players.player_controller import AnnounceData
 from music_assistant.helpers.audio import (
     CACHE_FILES_IN_USE,
     get_chunksize,
@@ -115,14 +116,6 @@ class CrossfadeData:
     pcm_format: AudioFormat
     queue_item_id: str
     session_id: str
-
-
-class AnnounceData(TypedDict):
-    """Announcement data."""
-
-    announcement_url: str
-    pre_announce: bool
-    pre_announce_url: str
 
 
 class StreamsController(CoreController):

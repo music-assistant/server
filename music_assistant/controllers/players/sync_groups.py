@@ -1,19 +1,26 @@
 """
-Base class/model for a Player within Music Assistant.
+Controller for (provider specific) SyncGroup players.
 
-All providerspecific players should inherit from this class and implement the required methods.
-
-Note that the serverside Player object is not the same as the clientside Player object,
-which is a dataclass in the models package containing the player state.
+A SyncGroup player is a virtual player that automatically groups multiple players
+together in a sync group, where one player is the sync leader
+and the other players are synced to that leader.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, cast
 
+import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
@@ -28,13 +35,39 @@ from music_assistant.constants import (
     CONF_OUTPUT_CODEC,
     CONF_SAMPLE_RATES,
     CONF_SMART_FADES_MODE,
+    SYNCGROUP_PREFIX,
 )
-
-from .group_player import GroupPlayer
-from .player import Player
+from music_assistant.models.group_player import GroupPlayer
+from music_assistant.models.player import Player
 
 if TYPE_CHECKING:
     from music_assistant.models.player_provider import PlayerProvider
+
+    from .player_controller import PlayerController
+
+
+SUPPORT_DYNAMIC_LEADER = {
+    # providers that support dynamic leader selection in a syncgroup
+    # meaning that if you would remove the current leader from the group,
+    # the provider will automatically select a new leader from the remaining members
+    # and the music keeps playing uninterrupted.
+    "airplay",
+    "squeezelite",
+    "resonate",
+    # TODO: Get this working with Sonos as well (need to handle range requests)
+}
+
+OPTIONAL_FEATURES = {
+    PlayerFeature.ENQUEUE,
+    PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
+    PlayerFeature.NEXT_PREVIOUS,
+    PlayerFeature.PAUSE,
+    PlayerFeature.PLAY_ANNOUNCEMENT,
+    PlayerFeature.SEEK,
+    PlayerFeature.SELECT_SOURCE,
+    PlayerFeature.VOLUME_MUTE,
+}
 
 
 class SyncGroupPlayer(GroupPlayer):
@@ -81,6 +114,13 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
+        if self.sync_leader:
+            base_features = self._attr_supported_features.copy()
+            # add features supported by the sync leader
+            for feature in OPTIONAL_FEATURES:
+                if feature in self.sync_leader.supported_features:
+                    base_features.add(feature)
+            return base_features
         return self._attr_supported_features
 
     @property
@@ -165,7 +205,7 @@ class SyncGroupPlayer(GroupPlayer):
             ),
         ]
         # combine base group entries with (base) player entries for this player type
-        child_player = next((x for x in self.provider.players if x.type != PlayerType.GROUP), None)
+        child_player = next((x for x in self.provider.players if x.type == PlayerType.PLAYER), None)
         if child_player:
             allowed_conf_entries = (
                 CONF_HTTP_PROFILE,
@@ -196,34 +236,6 @@ class SyncGroupPlayer(GroupPlayer):
         """Send PAUSE command to given player."""
         if sync_leader := self.sync_leader:
             await sync_leader.pause()
-
-    async def _handle_member_collisions(self, member: Player) -> None:
-        """Handle collisions when adding a member to the sync group."""
-        active_groups = member.active_groups
-        for group in active_groups:
-            if group == self.player_id:
-                continue
-            # collision: child player is part another group that is already active !
-            # solve this by trying to leave the group first
-            if other_group := self.mass.players.get(group):
-                if (
-                    other_group.supports_feature(PlayerFeature.SET_MEMBERS)
-                    and member.player_id not in other_group.static_group_members
-                ):
-                    await other_group.set_members(player_ids_to_remove=[member.player_id])
-                else:
-                    # if the other group does not support SET_MEMBERS or it is a static
-                    # member, we need to power it off to leave the group
-                    await other_group.power(False)
-        if (
-            member.synced_to is not None
-            and member.synced_to != self.sync_leader
-            and (synced_to_player := self.mass.players.get(member.synced_to))
-            and member.player_id in synced_to_player.group_members
-        ):
-            # collision: child player is synced to another player and still in that group
-            # ungroup it first
-            await synced_to_player.set_members(player_ids_to_remove=[member.player_id])
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
@@ -273,41 +285,6 @@ class SyncGroupPlayer(GroupPlayer):
             self._attr_group_members = self._attr_static_group_members.copy()
             # and clear the sync leader
             self.sync_leader = None
-
-    async def _dissolve_syncgroup(self) -> None:
-        """Dissolve the current syncgroup by ungrouping all members and restoring leader queue."""
-        if sync_leader := self.sync_leader:
-            # dissolve the temporary syncgroup from the sync leader
-            sync_children = [x for x in sync_leader.group_members if x != sync_leader.player_id]
-            if sync_children:
-                await sync_leader.set_members(player_ids_to_remove=sync_children)
-            # Reset the leaders queue since it is no longer part of this group
-            sync_leader.active_source = None
-            sync_leader.current_media = None
-            sync_leader.update_state()
-
-    async def _handle_leader_transition(self, new_leader: Player | None) -> None:
-        """Handle transition from current leader to new leader."""
-        prev_leader = self.sync_leader
-        was_playing = False
-
-        if prev_leader:
-            # Save current media and playback state for potential restart
-            was_playing = self.playback_state == PlaybackState.PLAYING
-            # Stop current playback and dissolve existing group
-            await self.stop()
-            await self._dissolve_syncgroup()
-
-        # Set new leader
-        self.sync_leader = new_leader
-
-        if new_leader:
-            # form a syncgroup with the new leader
-            await self._form_syncgroup()
-
-            # Restart playback if requested and we have media to play
-            if was_playing and self.current_media is not None:
-                await new_leader.play_media(self.current_media)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -423,6 +400,57 @@ class SyncGroupPlayer(GroupPlayer):
         if members_to_sync:
             await self.sync_leader.set_members(members_to_sync)
 
+    async def _dissolve_syncgroup(self) -> None:
+        """Dissolve the current syncgroup by ungrouping all members and restoring leader queue."""
+        if sync_leader := self.sync_leader:
+            # dissolve the temporary syncgroup from the sync leader
+            sync_children = [x for x in sync_leader.group_members if x != sync_leader.player_id]
+            if sync_children:
+                await sync_leader.set_members(player_ids_to_remove=sync_children)
+            # Reset the leaders queue since it is no longer part of this group
+            sync_leader.active_source = None
+            sync_leader.current_media = None
+            sync_leader.update_state()
+
+    async def _handle_leader_transition(self, new_leader: Player | None) -> None:
+        """Handle transition from current leader to new leader."""
+        prev_leader = self.sync_leader
+        was_playing = False
+
+        if (
+            prev_leader
+            and new_leader
+            and prev_leader != new_leader
+            and self.provider.domain in SUPPORT_DYNAMIC_LEADER
+        ):
+            # provider supports dynamic leader selection, so just remove/add members
+            await prev_leader.ungroup()
+            self.sync_leader = new_leader
+            # allow some time to propagate the changes before resyncing
+            await asyncio.sleep(2)
+            await self._form_syncgroup()
+            return
+
+        if prev_leader:
+            # Save current media and playback state for potential restart
+            was_playing = self.playback_state == PlaybackState.PLAYING
+            # Stop current playback and dissolve existing group
+            await self.stop()
+            await self._dissolve_syncgroup()
+            # allow some time to propagate the changes before resyncing
+            await asyncio.sleep(2)
+
+        # Set new leader
+        self.sync_leader = new_leader
+
+        if new_leader:
+            # form a syncgroup with the new leader
+            await self._form_syncgroup()
+
+            # Restart playback if requested and we have media to play
+            if was_playing and self.current_media is not None:
+                await new_leader.play_media(self.current_media)
+
     def _select_sync_leader(self) -> Player | None:
         """Select the active sync leader player for a syncgroup."""
         if self.sync_leader and self.sync_leader.player_id in self.group_members:
@@ -443,3 +471,103 @@ class SyncGroupPlayer(GroupPlayer):
                     continue
                 return child_player
         return None
+
+    async def _handle_member_collisions(self, member: Player) -> None:
+        """Handle collisions when adding a member to the sync group."""
+        active_groups = member.active_groups
+        for group in active_groups:
+            if group == self.player_id:
+                continue
+            # collision: child player is part another group that is already active !
+            # solve this by trying to leave the group first
+            if other_group := self.mass.players.get(group):
+                if (
+                    other_group.supports_feature(PlayerFeature.SET_MEMBERS)
+                    and member.player_id not in other_group.static_group_members
+                ):
+                    await other_group.set_members(player_ids_to_remove=[member.player_id])
+                else:
+                    # if the other group does not support SET_MEMBERS or it is a static
+                    # member, we need to power it off to leave the group
+                    await other_group.power(False)
+        if (
+            member.synced_to is not None
+            and member.synced_to != self.sync_leader
+            and (synced_to_player := self.mass.players.get(member.synced_to))
+            and member.player_id in synced_to_player.group_members
+        ):
+            # collision: child player is synced to another player and still in that group
+            # ungroup it first
+            await synced_to_player.set_members(player_ids_to_remove=[member.player_id])
+
+
+class SyncGroupController:
+    """Controller managing SyncGroup players."""
+
+    def __init__(self, player_controller: PlayerController) -> None:
+        """Initialize SyncGroupController."""
+        self.player_controller = player_controller
+        self.mass = player_controller.mass
+
+    async def create_group_player(
+        self, provider: PlayerProvider, name: str, members: list[str], dynamic: bool = True
+    ) -> Player:
+        """
+        Create new SyncGroup Player.
+
+        :param provider: The provider to create the group player for
+        :param name: Name of the group player
+        :param members: List of player ids to add to the group
+        :param dynamic: Whether the group is dynamic (members can change)
+        """
+        # default implementation for providers that support syncing players
+        if ProviderFeature.SYNC_PLAYERS not in provider.supported_features:
+            # the frontend should already prevent this, but just in case
+            raise UnsupportedFeaturedException(
+                f"Provider {provider.name} does not support player syncing!"
+            )
+        # Create a new syncgroup player with the given members
+        members = [x for x in members if x in [y.player_id for y in provider.players]]
+        player_id = f"{SYNCGROUP_PREFIX}{shortuuid.random(8).lower()}"
+        self.mass.config.create_default_player_config(
+            player_id=player_id,
+            provider=provider.lookup_key,
+            name=name,
+            enabled=True,
+            values={
+                CONF_GROUP_MEMBERS: members,
+                CONF_DYNAMIC_GROUP_MEMBERS: dynamic,
+            },
+        )
+        return await self._register_syncgroup_player(player_id, provider)
+
+    async def remove_group_player(self, player_id: str) -> None:
+        """
+        Remove a group player.
+
+        :param player_id: ID of the group player to remove.
+        """
+        # we simply permanently unregister the syncgroup player and wipe its config
+        await self.mass.players.unregister(player_id, True)
+
+    async def _register_syncgroup_player(self, player_id: str, provider: PlayerProvider) -> Player:
+        """Register a syncgroup player."""
+        syncgroup = SyncGroupPlayer(provider, player_id)
+        await self.mass.players.register_or_update(syncgroup)
+        return syncgroup
+
+    async def on_provider_loaded(self, provider: PlayerProvider) -> None:
+        """Handle logic when a provider is loaded."""
+        # register existing syncgroup players for this provider
+        for player_conf in await self.mass.config.get_player_configs(provider.lookup_key):
+            if player_conf.player_id.startswith(SYNCGROUP_PREFIX):
+                await self._register_syncgroup_player(player_conf.player_id, provider)
+
+    async def on_provider_unload(self, provider: PlayerProvider) -> None:
+        """Handle logic when a provider is (about to get) unloaded."""
+        # unregister existing syncgroup players for this provider
+        for player in self.mass.players.all(
+            provider_filter=provider.lookup_key, return_sync_groups=True
+        ):
+            if player.player_id.startswith(SYNCGROUP_PREFIX):
+                await self.mass.players.unregister(player.player_id, False)

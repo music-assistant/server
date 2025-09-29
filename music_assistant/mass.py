@@ -42,7 +42,7 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.player_controller import PlayerController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.webserver import WebserverController
 from music_assistant.helpers.aiohttp_client import create_clientsession
@@ -586,11 +586,10 @@ class MusicAssistant:
             if provider.manifest.mdns_discovery:
                 for mdns_type in provider.manifest.mdns_discovery:
                     self._aiobrowser.types.discard(mdns_type)
-            # make sure to stop any running sync tasks first
-            for sync_task in self.music.in_progress_syncs:
-                if sync_task.provider_instance == instance_id:
-                    if sync_task.task:
-                        sync_task.task.cancel()
+            if isinstance(provider, PlayerProvider):
+                await self.players.on_provider_unload(provider)
+            if isinstance(provider, MusicProvider):
+                await self.music.on_provider_unload(provider)
             # check if there are no other providers dependent of this provider
             for dep_prov in self.providers:
                 if dep_prov.manifest.depends_on == provider.domain:
@@ -717,7 +716,9 @@ class MusicAssistant:
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         await self._update_available_providers_cache()
         if isinstance(provider, MusicProvider):
-            await self.music.schedule_provider_sync(provider.instance_id)
+            await self.music.on_provider_loaded(provider)
+        if isinstance(provider, PlayerProvider):
+            await self.players.on_provider_loaded(provider)
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""
