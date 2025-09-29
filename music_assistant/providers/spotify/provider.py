@@ -532,8 +532,6 @@ class SpotifyProvider(MusicProvider):
         )
         # do single request to get the etag (which we use as checksum for caching)
         cache_checksum = await self._get_etag(uri, limit=1, offset=0)
-        if cache_checksum is None:
-            cache_checksum = ""
 
         page_size = 50
         offset = page * page_size
