@@ -492,22 +492,26 @@ class SonosPlayer(Player):
         :param player_ids_to_add: List of player_id's to add to the group.
         :param player_ids_to_remove: List of player_id's to remove from the group.
         """
+        player_ids_to_add = player_ids_to_add or []
+        player_ids_to_remove = player_ids_to_remove or []
         if airplay_player := self.get_linked_airplay_player(False):
             # if airplay mode is enabled, we could possibly receive child player id's that are
             # not Sonos players, but AirPlay players. We redirect those.
-            airplay_child_ids = [x for x in player_ids_to_add or [] if x.startswith("ap")]
-            player_ids_to_add = [x for x in player_ids_to_add or [] if x not in airplay_child_ids]
-            if airplay_child_ids:
-                if (
-                    airplay_player.active_source != self._attr_active_source
-                    and airplay_player.playback_state == PlaybackState.PLAYING
-                ):
-                    # edge case player is not playing a MA queue - fail this request
-                    raise PlayerCommandFailed("Player is not playing a Music Assistant queue.")
-                await self.mass.players.cmd_group_many(airplay_player.player_id, airplay_child_ids)
-        if player_ids_to_add:
+            airplay_player_ids_to_add = [x for x in player_ids_to_add if x.startswith("ap")]
+            player_ids_to_add = [x for x in player_ids_to_add if x not in airplay_player_ids_to_add]
+            airplay_player_ids_to_remove = [x for x in player_ids_to_remove if x.startswith("ap")]
+            player_ids_to_remove = [
+                x for x in player_ids_to_remove if x not in airplay_player_ids_to_remove
+            ]
+            if airplay_player_ids_to_add or airplay_player_ids_to_remove:
+                await self.mass.players.cmd_set_members(
+                    airplay_player.player_id,
+                    player_ids_to_add=airplay_player_ids_to_add,
+                    player_ids_to_remove=airplay_player_ids_to_remove,
+                )
+        if player_ids_to_add or player_ids_to_remove:
             await self.client.player.group.modify_group_members(
-                player_ids_to_add=player_ids_to_add, player_ids_to_remove=[]
+                player_ids_to_add=player_ids_to_add, player_ids_to_remove=player_ids_to_remove
             )
 
     async def ungroup(self) -> None:
