@@ -870,7 +870,7 @@ class SmartFadesMixer:
             start_time=fadeout_eq_start,
             sweep_direction="fade_in",
             poles=1,
-            curve_type="exponential",  # Use exponential curve for smoother DJ-style transitions
+            curve_type="logarithmic",  # Use logarithmic curve so give the next track more space
         )
 
         # fadein (high-pass → unfiltered)
@@ -883,7 +883,7 @@ class SmartFadesMixer:
             start_time=0,
             sweep_direction="fade_out",
             poles=1,
-            curve_type="exponential",  # Use exponential curve for smoother DJ-style transitions
+            curve_type="linear",  # Use linear curve for transition, predictable and not too abrupt
         )
 
         return fadeout_filters + fadein_filters
