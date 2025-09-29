@@ -37,8 +37,7 @@ from music_assistant.constants import (
     CONF_SMART_FADES_MODE,
     SYNCGROUP_PREFIX,
 )
-from music_assistant.models.group_player import GroupPlayer
-from music_assistant.models.player import Player
+from music_assistant.models.player import GroupPlayer, Player
 
 if TYPE_CHECKING:
     from music_assistant.models.player_provider import PlayerProvider
