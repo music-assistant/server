@@ -870,7 +870,7 @@ class SmartFadesMixer:
             start_time=fadeout_eq_start,
             sweep_direction="fade_in",
             poles=1,
-            curve_type="logarithmic",  # Use logarithmic curve so give the next track more space
+            curve_type="logarithmic",  # Use logarithmic curve to give the next track more space
         )
 
         # fadein (high-pass → unfiltered)
