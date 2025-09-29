@@ -48,7 +48,7 @@ py-opensonic==7.0.2
 pyblu==2.0.5
 PyChromecast==14.0.7
 pycryptodome==3.23.0
-pylast==5.5.0
+pylast==6.0.0
 python-fullykiosk==0.0.14
 python-slugify==8.0.4
 pywidevine==1.8.0
