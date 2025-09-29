@@ -1192,7 +1192,6 @@ class PlayerController(CoreController):
             f"Provider {provider} does not support creating group players"
         )
 
-
     @api_command("players/remove_group_player")
     async def remove_group_player(self, player_id: str) -> None:
         """
