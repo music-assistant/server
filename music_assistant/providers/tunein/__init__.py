@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -10,6 +10,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     ImageType,
+    MediaType,
     ProviderFeature,
     StreamType,
 )
@@ -17,10 +18,10 @@ from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNo
 from music_assistant_models.media_items import (
     AudioFormat,
     MediaItemImage,
-    MediaType,
     ProviderMapping,
     Radio,
     SearchResults,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -91,7 +92,8 @@ class TuneInProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=2)
-        if "@" in self.config.get_value(CONF_USERNAME):
+        username = self.config.get_value(CONF_USERNAME)
+        if isinstance(username, str) and "@" in username:
             self.logger.warning(
                 "Email address detected instead of username, "
                 "it is advised to use the tunein username instead of email."
@@ -101,7 +103,7 @@ class TuneInProvider(MusicProvider):
         """Retrieve library/subscribed radio stations from the provider."""
 
         async def parse_items(
-            items: list[dict], folder: str | None = None
+            items: list[dict[str, Any]], folder: str | None = None
         ) -> AsyncGenerator[Radio, None]:
             for item in items:
                 item_type = item.get("type", "")
@@ -158,7 +160,10 @@ class TuneInProvider(MusicProvider):
         raise MediaNotFoundError(msg)
 
     def _parse_radio(
-        self, details: dict, stream_info: list[dict] | None = None, folder: str | None = None
+        self,
+        details: dict[str, Any],
+        stream_info: list[dict[str, Any]] | None = None,
+        folder: str | None = None,
     ) -> Radio:
         """Parse Radio object from json obj returned from api."""
         if "name" in details:
@@ -220,27 +225,42 @@ class TuneInProvider(MusicProvider):
             radio.metadata.description = details["text"]
         # image
         if img := details.get("image") or details.get("logo"):
-            radio.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=img,
-                    provider=self.lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
+            radio.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=img,
+                        provider=self.lookup_key,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
         return radio
 
-    async def _get_stream_info(self, preset_id: str) -> list[dict]:
+    async def _get_stream_info(self, preset_id: str) -> list[dict[str, Any]]:
         """Get stream info for a radio station."""
-        if cache := await self.mass.cache.get(
+        cached_data = await self.mass.cache.get(
             preset_id, provider=self.instance_id, category=CACHE_CATEGORY_STREAMS
-        ):
-            return cache
-        result = (await self.__get_data("Tune.ashx", id=preset_id))["body"]
-        await self.mass.cache.set(
-            key=preset_id, data=result, provider=self.instance_id, category=CACHE_CATEGORY_STREAMS
         )
-        return result
+        if cached_data is not None:
+            # We know from cache this is the right type
+            assert isinstance(cached_data, list)
+            return cached_data
+
+        data = await self.__get_data("Tune.ashx", id=preset_id)
+        if not data:
+            return []
+
+        body_data = data["body"]
+        assert isinstance(body_data, list)
+
+        await self.mass.cache.set(
+            key=preset_id,
+            data=body_data,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_STREAMS,
+        )
+        return body_data
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for a radio station."""
@@ -311,7 +331,7 @@ class TuneInProvider(MusicProvider):
         result.radio = radios
         return result
 
-    async def __get_data(self, endpoint: str, **kwargs):
+    async def __get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
         if endpoint.startswith("http"):
             url = endpoint
@@ -328,9 +348,10 @@ class TuneInProvider(MusicProvider):
             self._throttler,
             self.mass.http_session.get(url, params=kwargs, headers=headers, ssl=False) as response,
         ):
-            result = await response.json()
+            result: Any = await response.json()
             if not result or "error" in result:
                 self.logger.error(url)
                 self.logger.error(kwargs)
-                result = None
+                return None
+            assert isinstance(result, dict)
             return result
