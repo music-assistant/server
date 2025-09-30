@@ -63,7 +63,6 @@ test = [
   "ruff==0.12.12",
 ]
 
-
 [project.scripts]
 mass = "music_assistant.__main__:main"
 
@@ -131,6 +130,7 @@ enable_error_code = [
 ]
 exclude = [
   '^music_assistant/controllers/.*$',
+  '^music_assistant/controllers/players/player_controller.py',
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/models/player_provider.py',
   '^music_assistant/providers/apple_music/.*$',

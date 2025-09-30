@@ -20,7 +20,7 @@ import asyncio
 import functools
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypedDict, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, cast
 
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
@@ -93,18 +93,13 @@ class AnnounceData(TypedDict):
     pre_announce_url: str
 
 
-_PlayerControllerT = TypeVar("_PlayerControllerT", bound="PlayerController")
-_R = TypeVar("_R")
-_P = ParamSpec("_P")
-
-
 def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
-    func: Callable[Concatenate[_PlayerControllerT, _P], Awaitable[_R]],
-) -> Callable[Concatenate[_PlayerControllerT, _P], Coroutine[Any, Any, _R | None]]:
+    func: Callable[Concatenate[PlayerControllerT, P], Awaitable[R]],
+) -> Callable[Concatenate[PlayerControllerT, P], Coroutine[Any, Any, R | None]]:
     """Check and log commands to players."""
 
     @functools.wraps(func)
-    async def wrapper(self: _PlayerControllerT, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
+    async def wrapper(self: PlayerControllerT, *args: P.args, **kwargs: P.kwargs) -> R | None:
         """Log and handle_player_command commands to players."""
         player_id = kwargs["player_id"] if "player_id" in kwargs else args[0]
         if (player := self._players.get(player_id)) is None or not player.available:
