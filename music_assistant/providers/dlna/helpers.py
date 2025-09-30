@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 
-class DLNANotifyServer(UpnpNotifyServer):
+class DLNANotifyServer(UpnpNotifyServer):  # type: ignore[misc] due to upstream library lacking type stubs
     """Notify server for async_upnp_client which uses the MA webserver."""
 
     def __init__(
