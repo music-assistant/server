@@ -851,7 +851,7 @@ class SmartFadesMixer:
         fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
 
         # For shorter fades, use exp/exp curves to avoid abruptness
-        if crossfade_bars <= 4:
+        if crossfade_bars < 8:
             fadeout_curve = "exponential"
             fadein_curve = "exponential"
         # For long fades, use log/linear curves
