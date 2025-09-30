@@ -513,7 +513,7 @@ class SmartFadesMixer:
         if bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
             ideal_bars = 8
         else:
-            ideal_bars = 2
+            ideal_bars = 4
 
         # We could encounter songs that have a long athmospheric intro without any downbeats
         # In those cases, we need to reduce the bars until it fits in the fadein buffer.
