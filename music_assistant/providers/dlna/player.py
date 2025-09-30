@@ -145,11 +145,11 @@ class DLNAPlayer(Player):
                 ):
                     self.force_poll = True
                     self.mass.create_task(self.poll())
-                self.logger.debug(
-                    "Received new state from event for Player %s: %s",
-                    self.display_name,
-                    state_variable.value,
-                )
+                    self.logger.debug(
+                        "Received new state from event for Player %s: %s",
+                        self.display_name,
+                        state_variable.value,
+                    )
         self.last_seen = time.time()
         self.mass.create_task(self._update_player())
 
