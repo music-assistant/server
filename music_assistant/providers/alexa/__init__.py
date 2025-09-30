@@ -48,6 +48,13 @@ CONF_AUTH_SECRET = "secret"
 CONF_API_BASIC_AUTH_USERNAME = "api_username"
 CONF_API_BASIC_AUTH_PASSWORD = "api_password"
 CONF_API_URL = "api_url"
+CONF_ALEXA_LANGUAGE = "alexa_language"
+
+ALEXA_LANGUAGE_COMMANDS = {
+    "play_audio_de-DE": "sag music assistant spiele audio",
+    "play_audio_en-US": "ask music assistant to play audio",
+    "play_audio_default": "ask music assistant to play audio",
+}
 
 SUPPORTED_FEATURES: set[ProviderFeature] = set()  # no special features supported (yet)
 
@@ -196,6 +203,13 @@ async def get_config_entries(
             required=False,
             value=values.get(CONF_API_BASIC_AUTH_PASSWORD) if values else None,
         ),
+        ConfigEntry(
+            key=CONF_ALEXA_LANGUAGE,
+            type=ConfigEntryType.STRING,
+            label="Alexa Language",
+            required=True,
+            default_value="en-US",
+        ),
     )
 
 
@@ -317,7 +331,24 @@ class AlexaPlayer(Player):
                 _LOGGER.error("Failed to push URL to Alexa: %s", exc)
                 return
 
-        await self.api.run_custom("Ask music assistant to play audio")
+        alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
+
+        ask_command_key = f"play_audio_{alexa_locale if alexa_locale else 'default'}"
+
+        if ask_command_key not in ALEXA_LANGUAGE_COMMANDS:
+            _LOGGER.debug(
+                "Ask command key %s not found in ALEXA_LANGUAGE_COMMANDS.",
+                ask_command_key,
+            )
+            ask_command_key = "play_audio_default"
+
+        _LOGGER.debug(
+            "Using ask command key: %s -> %s",
+            ask_command_key,
+            ALEXA_LANGUAGE_COMMANDS[ask_command_key],
+        )
+
+        await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
 
         state = await self.api.get_state()
         if state:

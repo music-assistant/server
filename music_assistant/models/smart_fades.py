@@ -1,7 +1,7 @@
 """Data models for Smart Fades analysis and configuration."""
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 
 import numpy as np
 import numpy.typing as npt
@@ -17,10 +17,18 @@ class SmartFadesMode(StrEnum):
     DISABLED = "disabled"  # No crossfade
 
 
+class SmartFadesAnalysisFragment(IntEnum):
+    """Smart fades analysis fragment types."""
+
+    INTRO = 1
+    OUTRO = 2
+
+
 @dataclass
 class SmartFadesAnalysis(DataClassDictMixin):
     """Beat tracking analysis data for BPM matching crossfade."""
 
+    fragment: SmartFadesAnalysisFragment
     bpm: float
     beats: npt.NDArray[np.float64]  # Beat positions
     downbeats: npt.NDArray[np.float64]  # Downbeat positions

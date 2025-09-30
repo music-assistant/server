@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -956,7 +956,7 @@ class SpotifyProvider(MusicProvider):
                 break
 
     async def _get_data_with_caching(
-        self, endpoint: str, cache_checksum: str, **kwargs: Any
+        self, endpoint: str, cache_checksum: str | None, **kwargs: Any
     ) -> dict[str, Any]:
         """Get data from api with caching."""
         cache_key_parts = [endpoint]
@@ -966,7 +966,7 @@ class SpotifyProvider(MusicProvider):
         if cached := await self.mass.cache.get(
             cache_key, provider=self.instance_id, checksum=cache_checksum, allow_bypass=False
         ):
-            return cached
+            return cast("dict[str, Any]", cached)
         result = await self._get_data(endpoint, **kwargs)
         await self.mass.cache.set(
             cache_key, result, provider=self.instance_id, checksum=cache_checksum

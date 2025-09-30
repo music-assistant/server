@@ -627,15 +627,6 @@ async def get_stream_details(
         streamdetails.loudness = result[0]
         streamdetails.loudness_album = result[1]
     streamdetails.prefer_album_loudness = prefer_album_loudness
-
-    # handle smart fades analysis details
-    if queue_item.media_type == MediaType.TRACK:
-        if smart_fades_analysis := await mass.music.get_smart_fades_analysis(
-            streamdetails.item_id,
-            streamdetails.provider,
-        ):
-            LOGGER.debug("Found smart fades analysis in the database for %s", queue_item.uri)
-            streamdetails.smart_fades = smart_fades_analysis
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
     streamdetails.target_loudness = float(
@@ -1420,6 +1411,26 @@ async def get_silence(
     async with AsyncProcess(args, stdout=True) as ffmpeg_proc:
         async for chunk in ffmpeg_proc.iter_chunked():
             yield chunk
+
+
+async def resample_pcm_audio(
+    input_audio: bytes | AsyncGenerator[bytes, None],
+    input_format: AudioFormat,
+    output_format: AudioFormat,
+) -> AsyncGenerator[bytes, None]:
+    """Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg."""
+    LOGGER.debug(f"Resampling audio from {input_format} to {output_format}")
+
+    async def _yielder() -> AsyncGenerator[bytes, None]:
+        yield input_audio  # type: ignore[misc]
+
+    async for chunk in get_ffmpeg_stream(
+        audio_input=_yielder() if isinstance(input_audio, bytes) else input_audio,
+        input_format=input_format,
+        output_format=output_format,
+        raise_ffmpeg_exception=True,
+    ):
+        yield chunk
 
 
 def get_chunksize(

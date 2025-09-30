@@ -20,8 +20,6 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.BROWSE,
-    ProviderFeature.LIBRARY_PODCASTS,
-    ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
 
 
