@@ -66,6 +66,8 @@ SUPPORTED_FEATURES = {
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.ENQUEUE,
     PlayerFeature.SET_MEMBERS,
+    PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
 }
 
 

@@ -9,35 +9,32 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import aiofiles
 import librosa
 import numpy as np
 import numpy.typing as npt
 import shortuuid
-from music_assistant_models.enums import ContentType, MediaType
-from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.helpers.audio import crossfade_pcm_parts, get_media_stream
+from music_assistant.helpers.audio import crossfade_pcm_parts
 from music_assistant.helpers.process import communicate
 from music_assistant.helpers.util import remove_file
 from music_assistant.models.smart_fades import (
     SmartFadesAnalysis,
+    SmartFadesAnalysisFragment,
     SmartFadesMode,
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant.mass import MusicAssistant
 
-MAX_SMART_CROSSFADE_DURATION = 45
+SMART_CROSSFADE_DURATION = 45
 ANALYSIS_FPS = 100
-ANALYSIS_PCM_FORMAT = AudioFormat(
-    content_type=ContentType.PCM_F32LE, sample_rate=44100, bit_depth=32, channels=1
-)
 # Only apply time stretching if BPM difference is < this %
 TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD = 8.0
 
@@ -52,28 +49,40 @@ class SmartFadesAnalyzer:
 
     async def analyze(
         self,
-        streamdetails: StreamDetails,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        fragment: SmartFadesAnalysisFragment,
+        audio_data: bytes,
+        pcm_format: AudioFormat,
     ) -> SmartFadesAnalysis | None:
         """Analyze a track's beats for BPM matching smart fade."""
-        stream_details_name = f"{streamdetails.provider}://{streamdetails.item_id}"
-        if streamdetails.media_type != MediaType.TRACK:
-            self.logger.debug(
-                "Skipping smart fades analysis for non-track item: %s", stream_details_name
-            )
-            return None
-
+        stream_details_name = f"{provider_instance_id_or_domain}://{item_id}"
         start_time = time.perf_counter()
-        self.logger.debug("Starting beat analysis for track : %s", stream_details_name)
+        self.logger.debug(
+            "Starting %s beat analysis for track : %s", fragment.name, stream_details_name
+        )
+        fragment_duration = len(audio_data) / (pcm_format.pcm_sample_size)
         try:
-            audio_data = await self._get_audio_bytes_from_stream_details(streamdetails)
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
                 "Audio data: %.2fs, %d bytes",
-                streamdetails.duration or 0,
+                fragment_duration,
                 len(audio_data),
             )
             # Perform beat analysis
-            analysis = await self._analyze_track_beats(audio_data)
+
+            # Convert PCM bytes to numpy array and then to mono for analysis
+            audio_array = np.frombuffer(audio_data, dtype=np.float32)
+            if pcm_format.channels > 1:
+                # Reshape to separate channels and take average for mono conversion
+                audio_array = audio_array.reshape(-1, pcm_format.channels)
+                mono_audio = np.asarray(np.mean(audio_array, axis=1, dtype=np.float32))
+            else:
+                # Single channel - ensure consistent array type
+                mono_audio = np.asarray(audio_array, dtype=np.float32)
+
+            analysis = await self._analyze_track_beats(mono_audio, fragment, pcm_format.sample_rate)
+
             total_time = time.perf_counter() - start_time
             if not analysis:
                 self.logger.debug(
@@ -94,7 +103,7 @@ class SmartFadesAnalyzer:
             )
             self.mass.create_task(
                 self.mass.music.set_smart_fades_analysis(
-                    streamdetails.item_id, streamdetails.provider, analysis
+                    item_id, provider_instance_id_or_domain, analysis
                 )
             )
             return analysis
@@ -109,15 +118,20 @@ class SmartFadesAnalyzer:
             return None
 
     def _librosa_beat_analysis(
-        self, audio_array: npt.NDArray[np.float32]
+        self,
+        audio_array: npt.NDArray[np.float32],
+        fragment: SmartFadesAnalysisFragment,
+        sample_rate: int,
     ) -> SmartFadesAnalysis | None:
         """Perform beat analysis using librosa."""
         try:
             tempo, beats_array = librosa.beat.beat_track(
                 y=audio_array,
-                sr=ANALYSIS_PCM_FORMAT.sample_rate,
+                sr=sample_rate,
                 units="time",
             )
+            # librosa returns np.float64 arrays when units="time"
+
             if len(beats_array) < 2:
                 self.logger.warning("Insufficient beats detected: %d", len(beats_array))
                 return None
@@ -137,15 +151,16 @@ class SmartFadesAnalyzer:
 
             downbeats = self._estimate_musical_downbeats(beats_array, bpm)
 
-            # Store complete track analysis
-            track_duration = len(audio_array) / ANALYSIS_PCM_FORMAT.sample_rate
+            # Store complete fragment analysis
+            fragment_duration = len(audio_array) / sample_rate
 
             return SmartFadesAnalysis(
+                fragment=fragment,
                 bpm=float(bpm),
                 beats=beats_array,
                 downbeats=downbeats,
                 confidence=float(confidence),
-                duration=track_duration,
+                duration=fragment_duration,
             )
 
         except Exception as e:
@@ -201,33 +216,17 @@ class SmartFadesAnalyzer:
 
         return downbeats
 
-    async def _get_audio_bytes_from_stream_details(self, streamdetails: StreamDetails) -> bytes:
-        """Retrieve bytes from the audio stream."""
-        audio_data = bytearray()
-        async for chunk in get_media_stream(
-            self.mass,
-            streamdetails=streamdetails,
-            pcm_format=ANALYSIS_PCM_FORMAT,
-            filter_params=[],
-        ):
-            audio_data.extend(chunk)
-        if not audio_data:
-            self.logger.warning(
-                "No audio data received for analysis: %s",
-                f"{streamdetails.provider}/{streamdetails.item_id}",
-            )
-            return b""
-        return bytes(audio_data)
-
     async def _analyze_track_beats(
         self,
-        audio_data: bytes,
+        audio_data: npt.NDArray[np.float32],
+        fragment: SmartFadesAnalysisFragment,
+        sample_rate: int,
     ) -> SmartFadesAnalysis | None:
         """Analyze track for beat tracking using librosa."""
         try:
-            # Convert PCM bytes directly to numpy array (mono audio)
-            audio_array = np.frombuffer(audio_data, dtype=np.float32)
-            return await asyncio.to_thread(self._librosa_beat_analysis, audio_array)
+            return await asyncio.to_thread(
+                self._librosa_beat_analysis, audio_data, fragment, sample_rate
+            )
         except Exception as e:
             self.logger.exception("Beat tracking analysis failed: %s", e)
             return None
@@ -240,18 +239,51 @@ class SmartFadesMixer:
         """Initialize smart fades mixer."""
         self.mass = mass
         self.logger = logging.getLogger(__name__)
+        # TODO: Refactor into stream (or metadata) controller after we have split the controllers
+        self.analyzer = SmartFadesAnalyzer(mass)
 
     async def mix(
         self,
         fade_in_part: bytes,
         fade_out_part: bytes,
-        fade_in_analysis: SmartFadesAnalysis,
-        fade_out_analysis: SmartFadesAnalysis,
+        fade_in_streamdetails: StreamDetails,
+        fade_out_streamdetails: StreamDetails,
         pcm_format: AudioFormat,
         standard_crossfade_duration: int = 10,
         mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
     ) -> bytes:
         """Apply crossfade with internal state management and smart/standard fallback logic."""
+        fade_out_analysis: SmartFadesAnalysis | None
+        if stored_analysis := await self.mass.music.get_smart_fades_analysis(
+            fade_out_streamdetails.item_id,
+            fade_out_streamdetails.provider,
+            SmartFadesAnalysisFragment.OUTRO,
+        ):
+            fade_out_analysis = stored_analysis
+        else:
+            fade_out_analysis = await self.analyzer.analyze(
+                fade_out_streamdetails.item_id,
+                fade_out_streamdetails.provider,
+                SmartFadesAnalysisFragment.OUTRO,
+                fade_out_part,
+                pcm_format,
+            )
+
+        fade_in_analysis: SmartFadesAnalysis | None
+        if stored_analysis := await self.mass.music.get_smart_fades_analysis(
+            fade_in_streamdetails.item_id,
+            fade_in_streamdetails.provider,
+            SmartFadesAnalysisFragment.INTRO,
+        ):
+            fade_in_analysis = stored_analysis
+        else:
+            fade_in_analysis = await self.analyzer.analyze(
+                fade_in_streamdetails.item_id,
+                fade_in_streamdetails.provider,
+                SmartFadesAnalysisFragment.INTRO,
+                fade_in_part,
+                pcm_format,
+            )
         if (
             fade_out_analysis
             and fade_in_analysis
@@ -348,7 +380,7 @@ class SmartFadesMixer:
             ]
         )
 
-        self.logger.debug("FFmpeg command args: %s", " ".join(args))
+        self.logger.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
 
         # Execute the enhanced smart fade with full buffer
         _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
@@ -401,13 +433,13 @@ class SmartFadesMixer:
         # Check if we would have enough audio after beat alignment for the crossfade
         if (
             fadein_start_pos is not None
-            and fadein_start_pos + crossfade_duration > MAX_SMART_CROSSFADE_DURATION
+            and fadein_start_pos + crossfade_duration > SMART_CROSSFADE_DURATION
         ):
             self.logger.debug(
                 "Skipping beat alignment: not enough audio after trim (%.1fs + %.1fs > %.1fs)",
                 fadein_start_pos,
                 crossfade_duration,
-                MAX_SMART_CROSSFADE_DURATION,
+                SMART_CROSSFADE_DURATION,
             )
             # Skip beat alignment
             fadein_start_pos = None
@@ -434,6 +466,7 @@ class SmartFadesMixer:
             fade_out_label="[fadeout_beatalign]",
             fade_in_label="[fadein_beatalign]",
             crossfade_duration=crossfade_duration,
+            crossfade_bars=crossfade_bars,
         )
         filters.extend(frequency_filters)
 
@@ -455,10 +488,10 @@ class SmartFadesMixer:
         musical_duration = crossfade_bars * beats_per_bar * seconds_per_beat
 
         # Apply buffer constraint
-        actual_duration = min(musical_duration, MAX_SMART_CROSSFADE_DURATION)
+        actual_duration = min(musical_duration, SMART_CROSSFADE_DURATION)
 
         # Log if we had to constrain the duration
-        if musical_duration > MAX_SMART_CROSSFADE_DURATION:
+        if musical_duration > SMART_CROSSFADE_DURATION:
             self.logger.debug(
                 "Constraining crossfade duration from %.1fs to %.1fs (buffer limit)",
                 musical_duration,
@@ -477,16 +510,11 @@ class SmartFadesMixer:
 
         # Calculate ideal bars based on BPM compatibility. We link this to time stretching
         # so we avoid extreme tempo changes over short fades.
-        if bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
-            ideal_bars = 8
-        elif bpm_diff_percent < 25.0:
-            ideal_bars = 2
-        else:
-            ideal_bars = 1
+        ideal_bars = 10 if bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD else 6
 
         # We could encounter songs that have a long athmospheric intro without any downbeats
         # In those cases, we need to reduce the bars until it fits in the fadein buffer.
-        for bars in [ideal_bars, 4, 2, 1]:
+        for bars in [ideal_bars, 8, 6, 4, 2, 1]:
             if bars > ideal_bars:
                 continue  # Skip bars longer than optimal
 
@@ -503,7 +531,7 @@ class SmartFadesMixer:
             )
 
             # Check if it fits in fadein buffer
-            fadein_buffer = MAX_SMART_CROSSFADE_DURATION - fadein_start_pos
+            fadein_buffer = SMART_CROSSFADE_DURATION - fadein_start_pos
             if test_duration <= fadein_buffer:
                 if bars < ideal_bars:
                     self.logger.debug(
@@ -529,7 +557,9 @@ class SmartFadesMixer:
 
         # Helper function to calculate beat positions from beat arrays
         def calculate_beat_positions(
-            fade_out_beats: Any, fade_in_beats: Any, num_beats: int
+            fade_out_beats: npt.NDArray[np.float64],
+            fade_in_beats: npt.NDArray[np.float64],
+            num_beats: int,
         ) -> tuple[float, float] | None:
             """Calculate start positions from beat arrays with phantom downbeat support."""
             if len(fade_out_beats) < num_beats or len(fade_in_beats) < num_beats:
@@ -695,7 +725,7 @@ class SmartFadesMixer:
         # Calculate the tempo change factor
         # atempo accepts values between 0.5 and 2.0 (can be chained for larger changes)
         tempo_factor = bpm_ratio
-        buffer_duration = MAX_SMART_CROSSFADE_DURATION  # 45 seconds
+        buffer_duration = SMART_CROSSFADE_DURATION  # 45 seconds
 
         # Calculate expected crossfade duration from bars for comparison
         beats_per_bar = 4
@@ -793,6 +823,7 @@ class SmartFadesMixer:
         fade_out_label: str,
         fade_in_label: str,
         crossfade_duration: float,
+        crossfade_bars: int,
     ) -> list[str]:
         """Create LP / HP complementary filters using frequency sweeps for smooth transitions."""
         # Calculate target frequency based on average BPM
@@ -807,23 +838,37 @@ class SmartFadesMixer:
             crossover_freq = int(crossover_freq * 0.85)
 
         # Extended lowpass effect to gradually remove bass frequencies
-        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), MAX_SMART_CROSSFADE_DURATION)
+        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), SMART_CROSSFADE_DURATION)
 
         # Quicker highpass removal to avoid lingering vocals after crossfade
         fadein_eq_duration = crossfade_duration / 1.5
 
         # Calculate when the EQ sweep should start
         # The crossfade always happens at the END of the buffer, regardless of beat alignment
-        fadeout_eq_start = max(0, MAX_SMART_CROSSFADE_DURATION - fadeout_eq_duration)
+        fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
+
+        # For shorter fades, use exp/exp curves to avoid abruptness
+        if crossfade_bars < 8:
+            fadeout_curve = "exponential"
+            fadein_curve = "exponential"
+        # For long fades, use log/linear curves
+        else:
+            # Use logarithmic curve to give the next track more space
+            fadeout_curve = "logarithmic"
+            # Use linear curve for transition, predictable and not too abrupt
+            fadein_curve = "linear"
 
         self.logger.debug(
-            "EQ: crossover=%dHz, EQ fadeout duration=%.1fs"
-            " EQ fadein duration=%.1fs, BPM=%.1f BPM ratio=%.2f",
+            "EQ: crossover=%dHz, EQ fadeout duration=%.1fs,"
+            " EQ fadein duration=%.1fs, BPM=%.1f, BPM ratio=%.2f,"
+            " EQ curves: %s/%s",
             crossover_freq,
             fadeout_eq_duration,
             fadein_eq_duration,
             avg_bpm,
             bpm_ratio,
+            fadeout_curve,
+            fadein_curve,
         )
 
         # fadeout (unfiltered → low-pass)
@@ -836,7 +881,7 @@ class SmartFadesMixer:
             start_time=fadeout_eq_start,
             sweep_direction="fade_in",
             poles=1,
-            curve_type="exponential",  # Use exponential curve for smoother DJ-style transitions
+            curve_type=fadeout_curve,
         )
 
         # fadein (high-pass → unfiltered)
@@ -849,7 +894,7 @@ class SmartFadesMixer:
             start_time=0,
             sweep_direction="fade_out",
             poles=1,
-            curve_type="exponential",  # Use exponential curve for smoother DJ-style transitions
+            curve_type=fadein_curve,
         )
 
         return fadeout_filters + fadein_filters
@@ -872,6 +917,7 @@ class SmartFadesMixer:
             fade_in_part[:crossfade_size],
             fade_out_part[-crossfade_size:],
             pcm_format=pcm_format,
+            fade_out_pcm_format=pcm_format,
         )
         # Post-crossfade: incoming track minus the crossfaded portion
         post_crossfade = fade_in_part[crossfade_size:]
