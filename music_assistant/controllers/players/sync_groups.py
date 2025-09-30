@@ -251,16 +251,21 @@ class SyncGroupPlayer(GroupPlayer):
 
     async def power(self, powered: bool) -> None:
         """Handle POWER command to group player."""
+        prev_power = self._attr_powered
+        if powered == prev_power:
+            # no change
+            return
+
         # always stop at power off
         if not powered and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             await self.stop()
 
         # optimistically set the group state
-        prev_power = self._attr_powered
+
         self._attr_powered = powered
         self.update_state()
 
-        if powered:
+        if not prev_power and powered:
             # ensure static members are present when powering on
             for static_group_member in self._attr_static_group_members:
                 member_player = self.mass.players.get(static_group_member)
@@ -291,7 +296,7 @@ class SyncGroupPlayer(GroupPlayer):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await member.power(False)
 
-        if not powered and not powered:
+        if not powered:
             # Reset to unfiltered static members list when powered off
             # (the frontend will hide unavailable members)
             self._attr_group_members = self._attr_static_group_members.copy()
