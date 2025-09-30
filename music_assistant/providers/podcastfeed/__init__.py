@@ -23,7 +23,13 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import InvalidProviderURI, MediaNotFoundError
-from music_assistant_models.media_items import AudioFormat, Podcast, PodcastEpisode
+from music_assistant_models.media_items import (
+    AudioFormat,
+    MediaItemImage,
+    Podcast,
+    PodcastEpisode,
+    UniqueList,
+)
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
@@ -199,7 +205,7 @@ class PodcastMusicprovider(MusicProvider):
     def _parse_episode(
         self, episode_obj: dict[str, Any], fallback_position: int
     ) -> PodcastEpisode | None:
-        return parse_podcast_episode(
+        episode_result = parse_podcast_episode(
             episode=episode_obj,
             prov_podcast_id=self.podcast_id,
             episode_cnt=fallback_position,
@@ -209,6 +215,21 @@ class PodcastMusicprovider(MusicProvider):
             instance_id=self.instance_id,
             mass_item_id=episode_obj["guid"],
         )
+        # Override remotely_accessible as these providers can have unreliable image URLs
+        if episode_result and episode_result.metadata.images:
+            new_images = []
+            for img in episode_result.metadata.images:
+                new_images.append(
+                    MediaItemImage(
+                        type=img.type,
+                        path=img.path,
+                        provider=img.provider,
+                        remotely_accessible=False,  # Force through imageproxy
+                    )
+                )
+            episode_result.metadata.images = UniqueList(new_images)
+
+        return episode_result
 
     async def _get_podcast(self) -> dict[str, Any]:
         assert self.feed_url is not None
@@ -235,3 +256,29 @@ class PodcastMusicprovider(MusicProvider):
             data=self.parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day
         )
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Resolve image for RSS provider with fallback to podcast cover."""
+        if not path.startswith("http"):
+            return path
+
+        try:
+            async with self.mass.http_session.get(path, raise_for_status=True) as response:
+                # Check if we got actual image content
+                content_type = response.headers.get("content-type", "").lower()
+                if not content_type.startswith(("image/", "application/octet-stream")):
+                    # Not an image - likely redirected to error page
+                    raise ClientError(f"Invalid content type: {content_type}")
+
+                return await response.read()
+
+        except (ClientError, Exception):
+            # Try podcast cover fallback
+            podcast_cover = self.parsed_podcast.get("cover_url")
+            if podcast_cover and isinstance(podcast_cover, str) and podcast_cover != path:
+                async with self.mass.http_session.get(
+                    podcast_cover, raise_for_status=True
+                ) as response:
+                    return await response.read()
+
+            raise MediaNotFoundError(f"Episode image not found: {path}")
