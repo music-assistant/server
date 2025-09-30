@@ -63,6 +63,6 @@ sxm==0.2.8
 unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.8.0
-xmltodict==0.14.2
+xmltodict==1.0.2
 ytmusicapi==1.11.1
 zeroconf==0.147.2
