@@ -1,7 +1,11 @@
 """Helper functions for JioSaavn Music Provider."""
 
+import base64
+import contextlib
+import html
 from typing import Any
 
+from Crypto.Cipher import DES
 from music_assistant_models.enums import ContentType, ImageType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
@@ -15,23 +19,41 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from .constants import DES_KEY
+
+
+def decrypt_stream_url(encrypted_url: str) -> str:
+    """Decrypt JioSaavn stream URL using DES."""
+    try:
+        cipher = DES.new(DES_KEY, DES.MODE_ECB)
+        encrypted_bytes = base64.b64decode(encrypted_url.strip())
+        decrypted = cipher.decrypt(encrypted_bytes)
+        # Remove PKCS5 padding
+        padding_length = decrypted[-1]
+        decrypted_url = decrypted[:-padding_length].decode("utf-8")
+        # Return highest quality (320kbps)
+        return decrypted_url.replace("_96.mp4", "_320.mp4")
+    except Exception as err:
+        raise InvalidDataError(f"Failed to decrypt stream URL: {err}") from err
+
 
 def parse_artist(data: dict[str, Any], provider_instance: str, provider_domain: str) -> Artist:
     """Parse JioSaavn artist data to Artist object."""
-    artist_id = data.get("id") or data.get("artistId") or ""
-    name = data.get("name") or data.get("title") or ""
+    # Try multiple possible ID fields
+    artist_id = str(data.get("artistId") or data.get("id") or data.get("artistid") or "")
+    # Try multiple possible name fields
+    name = html.unescape(data.get("name") or data.get("title") or "")
 
-    # JioSaavn sometimes returns artists with empty names or None IDs
-    if not name or not artist_id or artist_id == "None":
-        raise InvalidDataError("Artist has no name or invalid ID")
+    if not name or not artist_id:
+        raise InvalidDataError(f"Artist has no name or ID. Data: {data}")
 
     artist = Artist(
-        item_id=str(artist_id),
+        item_id=artist_id,
         provider=provider_instance,
         name=name,
         provider_mappings={
             ProviderMapping(
-                item_id=str(artist_id),
+                item_id=artist_id,
                 provider_domain=provider_domain,
                 provider_instance=provider_instance,
                 available=True,
@@ -41,13 +63,12 @@ def parse_artist(data: dict[str, Any], provider_instance: str, provider_domain: 
 
     # Add image if available
     if image_url := data.get("image"):
-        # Skip default placeholder images
         if "artist-default" not in image_url and "share-image" not in image_url:
             artist.metadata.images = UniqueList(
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=image_url,
+                        path=image_url.replace("150x150", "500x500"),
                         provider=provider_instance,
                         remotely_accessible=True,
                     )
@@ -59,20 +80,19 @@ def parse_artist(data: dict[str, Any], provider_instance: str, provider_domain: 
 
 def parse_album(data: dict[str, Any], provider_instance: str, provider_domain: str) -> Album:
     """Parse JioSaavn album data to Album object."""
-    album_id = data.get("id") or data.get("albumid") or ""
-    name = data.get("title") or data.get("name") or ""
+    album_id = str(data.get("albumid") or data.get("id") or "")
+    name = html.unescape(data.get("title") or data.get("name") or "")
 
-    # JioSaavn sometimes returns albums with empty names or invalid IDs
     if not name or not album_id:
         raise InvalidDataError("Album has no name or ID")
 
     album = Album(
-        item_id=str(album_id),
+        item_id=album_id,
         provider=provider_instance,
         name=name,
         provider_mappings={
             ProviderMapping(
-                item_id=str(album_id),
+                item_id=album_id,
                 provider_domain=provider_domain,
                 provider_instance=provider_instance,
                 available=True,
@@ -85,14 +105,14 @@ def parse_album(data: dict[str, Any], provider_instance: str, provider_domain: s
     )
 
     # Add artist info
-    artist_name = data.get("music") or data.get("primary_artists") or ""
-    if artist_name:
-        artist_id = data.get("artistId") or artist_name
+    primary_artists = data.get("primary_artists") or data.get("music") or ""
+    if primary_artists:
+        artist_id = data.get("primary_artists_id") or primary_artists
         album.artists.append(
             Artist(
                 item_id=str(artist_id),
                 provider=provider_instance,
-                name=artist_name,
+                name=html.unescape(primary_artists),
                 provider_mappings={
                     ProviderMapping(
                         item_id=str(artist_id),
@@ -103,17 +123,18 @@ def parse_album(data: dict[str, Any], provider_instance: str, provider_domain: s
             )
         )
 
-    # Add release year if available
+    # Add year
     if year := data.get("year"):
-        album.year = int(year) if isinstance(year, str) and year.isdigit() else year
+        with contextlib.suppress(ValueError, TypeError):
+            album.year = int(year)
 
-    # Add image if available
+    # Add image
     if image_url := data.get("image"):
         album.metadata.images = UniqueList(
             [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=image_url,
+                    path=image_url.replace("150x150", "500x500"),
                     provider=provider_instance,
                     remotely_accessible=True,
                 )
@@ -125,18 +146,25 @@ def parse_album(data: dict[str, Any], provider_instance: str, provider_domain: s
 
 def parse_track(data: dict[str, Any], provider_instance: str, provider_domain: str) -> Track:
     """Parse JioSaavn track data to Track object."""
-    track_id = data.get("id") or ""
-    name = data.get("title") or data.get("song") or ""
+    track_id = str(data.get("id") or "")
+    # Handle both search results (title) and details (song)
+    name = html.unescape(data.get("song") or data.get("title") or "")
 
-    # Determine duration
-    duration = data.get("duration")
-    duration_int = int(duration) if duration and str(duration).isdigit() else 0
+    if not name or not track_id:
+        raise InvalidDataError("Track has no name or ID")
+
+    # Get duration
+    duration_str = data.get("duration") or data.get("more_info", {}).get("duration") or "0"
+    try:
+        duration = int(duration_str)
+    except (ValueError, TypeError):
+        duration = 0
 
     track = Track(
         item_id=track_id,
         provider=provider_instance,
         name=name,
-        duration=duration_int,
+        duration=duration,
         provider_mappings={
             ProviderMapping(
                 item_id=track_id,
@@ -152,17 +180,17 @@ def parse_track(data: dict[str, Any], provider_instance: str, provider_domain: s
     )
 
     # Add artists
-    artist_name = data.get("primary_artists") or data.get("singers") or data.get("music") or ""
-    if artist_name:
-        artist_id = data.get("artistId") or artist_name
+    primary_artists = data.get("primary_artists") or data.get("singers") or ""
+    if primary_artists:
+        artist_id = data.get("primary_artists_id") or primary_artists
         track.artists.append(
             Artist(
-                item_id=artist_id,
+                item_id=str(artist_id),
                 provider=provider_instance,
-                name=artist_name,
+                name=html.unescape(primary_artists),
                 provider_mappings={
                     ProviderMapping(
-                        item_id=artist_id,
+                        item_id=str(artist_id),
                         provider_domain=provider_domain,
                         provider_instance=provider_instance,
                     )
@@ -170,30 +198,30 @@ def parse_track(data: dict[str, Any], provider_instance: str, provider_domain: s
             )
         )
 
-    # Add album info
+    # Add album
     album_name = data.get("album") or ""
     album_id = data.get("albumid") or data.get("album_id") or ""
     if album_name and album_id:
         track.album = Album(
-            item_id=album_id,
+            item_id=str(album_id),
             provider=provider_instance,
-            name=album_name,
+            name=html.unescape(album_name),
             provider_mappings={
                 ProviderMapping(
-                    item_id=album_id,
+                    item_id=str(album_id),
                     provider_domain=provider_domain,
                     provider_instance=provider_instance,
                 )
             },
         )
 
-    # Add image if available
+    # Add image
     if image_url := data.get("image"):
         track.metadata.images = UniqueList(
             [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=image_url,
+                    path=image_url.replace("150x150", "500x500"),
                     provider=provider_instance,
                     remotely_accessible=True,
                 )
@@ -205,8 +233,11 @@ def parse_track(data: dict[str, Any], provider_instance: str, provider_domain: s
 
 def parse_playlist(data: dict[str, Any], provider_instance: str, provider_domain: str) -> Playlist:
     """Parse JioSaavn playlist data to Playlist object."""
-    playlist_id = data.get("id") or data.get("listid") or ""
-    name = data.get("title") or data.get("listname") or ""
+    playlist_id = str(data.get("listid") or data.get("id") or "")
+    name = html.unescape(data.get("listname") or data.get("title") or "")
+
+    if not name or not playlist_id:
+        raise InvalidDataError("Playlist has no name or ID")
 
     playlist = Playlist(
         item_id=playlist_id,
@@ -223,17 +254,17 @@ def parse_playlist(data: dict[str, Any], provider_instance: str, provider_domain
         is_editable=False,
     )
 
-    # Add owner info if available
+    # Add owner
     if owner := data.get("firstname") or data.get("username"):
         playlist.owner = owner
 
-    # Add image if available
+    # Add image
     if image_url := data.get("image"):
         playlist.metadata.images = UniqueList(
             [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=image_url,
+                    path=image_url.replace("150x150", "500x500"),
                     provider=provider_instance,
                     remotely_accessible=True,
                 )

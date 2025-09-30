@@ -2,8 +2,17 @@
 
 from typing import Final
 
-API_URL: Final[str] = "https://www.jiosaavn.com/api.php"
-REQUEST_TIMEOUT: Final[int] = 20
+BASE_URL: Final[str] = "https://www.jiosaavn.com/api.php"
+
+# API Endpoints
+SEARCH_ENDPOINT: Final[str] = "search.getResults"
+SONG_DETAILS_ENDPOINT: Final[str] = "song.getDetails"
+ALBUM_DETAILS_ENDPOINT: Final[str] = "content.getAlbumDetails"
+ARTIST_DETAILS_ENDPOINT: Final[str] = "artist.getArtistPageDetails"
+PLAYLIST_DETAILS_ENDPOINT: Final[str] = "playlist.getDetails"
+
+# DES encryption key for stream URL decryption
+DES_KEY: Final[bytes] = b"38346591"
 
 DEFAULT_HEADERS: Final[dict[str, str]] = {
     "User-Agent": (
@@ -12,10 +21,4 @@ DEFAULT_HEADERS: Final[dict[str, str]] = {
         "Chrome/91.0.4472.124 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Connection": "keep-alive",
-    "Referer": "https://www.jiosaavn.com/",
-    "Sec-Fetch-Dest": "empty",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Site": "same-origin",
 }
