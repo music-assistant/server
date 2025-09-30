@@ -512,8 +512,6 @@ class SmartFadesMixer:
         # so we avoid extreme tempo changes over short fades.
         if bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
             ideal_bars = 8
-        elif bpm_diff_percent < 12.0:
-            ideal_bars = 4
         else:
             ideal_bars = 2
 
