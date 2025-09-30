@@ -279,11 +279,11 @@ class WebsocketClientHandler:
         self._writer_task: asyncio.Task[None] | None = None
         self._logger = webserver.logger
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
-        self.client_base_url: str | None = None
+        self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
             ingress_path = request.headers.get("X-Ingress-Path", "")
             forward_proto = request.headers.get("X-Forwarded-Proto", request.protocol)
-            self.client_base_url = f"{forward_proto}://{forward_host}{ingress_path}"
+            self.base_url = f"{forward_proto}://{forward_host}{ingress_path}"
 
     async def disconnect(self) -> None:
         """Disconnect client."""
