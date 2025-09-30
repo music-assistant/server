@@ -88,6 +88,7 @@ def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]
     next_song = metadata.get("next")
     block_data = metadata.get("block_data")
     enhanced_title = enhance_title_with_upcoming(title, current_song, next_song, block_data)
+    enhanced_title = title  # TODO remove after frontend update
 
     return StreamMetadata(
         title=enhanced_title,
