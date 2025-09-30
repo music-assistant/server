@@ -510,14 +510,11 @@ class SmartFadesMixer:
 
         # Calculate ideal bars based on BPM compatibility. We link this to time stretching
         # so we avoid extreme tempo changes over short fades.
-        if bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
-            ideal_bars = 8
-        else:
-            ideal_bars = 4
+        ideal_bars = 10 if bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD else 6
 
         # We could encounter songs that have a long athmospheric intro without any downbeats
         # In those cases, we need to reduce the bars until it fits in the fadein buffer.
-        for bars in [ideal_bars, 4, 2, 1]:
+        for bars in [ideal_bars, 8, 6, 4, 2, 1]:
             if bars > ideal_bars:
                 continue  # Skip bars longer than optimal
 
