@@ -466,6 +466,7 @@ class SmartFadesMixer:
             fade_out_label="[fadeout_beatalign]",
             fade_in_label="[fadein_beatalign]",
             crossfade_duration=crossfade_duration,
+            crossfade_bars=crossfade_bars,
         )
         filters.extend(frequency_filters)
 
@@ -511,10 +512,10 @@ class SmartFadesMixer:
         # so we avoid extreme tempo changes over short fades.
         if bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
             ideal_bars = 8
-        elif bpm_diff_percent < 25.0:
-            ideal_bars = 2
+        elif bpm_diff_percent < 12.0:
+            ideal_bars = 4
         else:
-            ideal_bars = 1
+            ideal_bars = 2
 
         # We could encounter songs that have a long athmospheric intro without any downbeats
         # In those cases, we need to reduce the bars until it fits in the fadein buffer.
@@ -827,6 +828,7 @@ class SmartFadesMixer:
         fade_out_label: str,
         fade_in_label: str,
         crossfade_duration: float,
+        crossfade_bars: int,
     ) -> list[str]:
         """Create LP / HP complementary filters using frequency sweeps for smooth transitions."""
         # Calculate target frequency based on average BPM
@@ -850,14 +852,28 @@ class SmartFadesMixer:
         # The crossfade always happens at the END of the buffer, regardless of beat alignment
         fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
 
+        # For shorter fades, use exp/exp curves to avoid abruptness
+        if crossfade_bars <= 4:
+            fadeout_curve = "exponential"
+            fadein_curve = "exponential"
+        # For long fades, use log/linear curves
+        else:
+            # Use logarithmic curve to give the next track more space
+            fadeout_curve = "logarithmic"
+            # Use linear curve for transition, predictable and not too abrupt
+            fadein_curve = "linear"
+
         self.logger.debug(
-            "EQ: crossover=%dHz, EQ fadeout duration=%.1fs"
-            " EQ fadein duration=%.1fs, BPM=%.1f BPM ratio=%.2f",
+            "EQ: crossover=%dHz, EQ fadeout duration=%.1fs,"
+            " EQ fadein duration=%.1fs, BPM=%.1f, BPM ratio=%.2f,"
+            " EQ curves: %s/%s",
             crossover_freq,
             fadeout_eq_duration,
             fadein_eq_duration,
             avg_bpm,
             bpm_ratio,
+            fadeout_curve,
+            fadein_curve,
         )
 
         # fadeout (unfiltered → low-pass)
@@ -870,7 +886,7 @@ class SmartFadesMixer:
             start_time=fadeout_eq_start,
             sweep_direction="fade_in",
             poles=1,
-            curve_type="logarithmic",  # Use logarithmic curve to give the next track more space
+            curve_type=fadeout_curve,
         )
 
         # fadein (high-pass → unfiltered)
@@ -883,7 +899,7 @@ class SmartFadesMixer:
             start_time=0,
             sweep_direction="fade_out",
             poles=1,
-            curve_type="linear",  # Use linear curve for transition, predictable and not too abrupt
+            curve_type=fadein_curve,
         )
 
         return fadeout_filters + fadein_filters
