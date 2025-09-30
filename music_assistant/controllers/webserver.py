@@ -167,12 +167,11 @@ class WebserverController(CoreController):
             ingress_tcp_site_params = None
         base_url = str(config.get_value(CONF_BASE_URL))
         port_value = config.get_value(CONF_BIND_PORT)
-        self.publish_port = (
-            int(port_value) if isinstance(port_value, (int, float, str)) else DEFAULT_SERVER_PORT
-        )
+        assert isinstance(port_value, int)
+        self.publish_port = port_value
         self.publish_ip = default_publish_ip
-        bind_ip_raw = config.get_value(CONF_BIND_IP)
-        bind_ip = str(bind_ip_raw) if bind_ip_raw is not None else None
+        bind_ip = config.get_value(CONF_BIND_IP)
+        assert isinstance(bind_ip, str)
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
         if not self.mass.config.onboard_done:
