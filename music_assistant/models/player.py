@@ -192,18 +192,6 @@ class Player(ABC):
         """Return if the player is available."""
         return self._attr_available
 
-    @available.setter
-    def available(self, value: bool) -> None:
-        """
-        Set the availability of the player.
-
-        :param value: bool if the player is available or not.
-        """
-        if self._attr_available != value:
-            self._attr_available = value
-            # also update the state
-            self._state.available = value
-
     @property
     def name(self) -> str | None:
         """Return the name of the player."""
@@ -271,16 +259,6 @@ class Player(ABC):
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
         return self._attr_elapsed_time
 
-    @elapsed_time.setter
-    def elapsed_time(self, value: float | None) -> None:
-        """Set the elapsed time on the player."""
-        if self._attr_elapsed_time != value:
-            self._attr_elapsed_time = value
-            # also update the state
-            self._state.elapsed_time = value
-            # update the last updated time
-            self._attr_elapsed_time_last_updated = time.time()
-
     @property
     def elapsed_time_last_updated(self) -> float | None:
         """
@@ -342,11 +320,6 @@ class Player(ABC):
         """
         return self._attr_active_source
 
-    @active_source.setter
-    def active_source(self, value: str | None) -> None:
-        """Set the active source of the player."""
-        self._attr_active_source = value
-
     @property
     def source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
@@ -356,11 +329,6 @@ class Player(ABC):
     def current_media(self) -> PlayerMedia | None:
         """Return the current media being played by the player."""
         return self._attr_current_media
-
-    @current_media.setter
-    def current_media(self, value: PlayerMedia | None) -> None:
-        """Set the current media being played by the player."""
-        self._attr_current_media = value
 
     @property
     def needs_poll(self) -> bool:
@@ -1018,7 +986,7 @@ class Player(ABC):
         """
         return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA))
 
-    @cached_property
+    @property
     @final
     def mass_queue_active(self) -> bool:
         """
@@ -1226,37 +1194,38 @@ class Player(ABC):
         Returns a dict with the state attributes that have changed.
         """
         prev_state = deepcopy(self._state)
-        self._state.name = self.display_name
-        self._state.available = self.available
-        self._state.device_info = self.device_info
-        self._state.supported_features = self.supported_features
-        self._state.playback_state = self.playback_state
-        self._state.elapsed_time = self.elapsed_time
-        self._state.elapsed_time_last_updated = self.elapsed_time_last_updated
-        self._state.powered = self.power_state
-        self._state.volume_level = self.volume_state
-        self._state.volume_muted = self.volume_muted_state
-        self._state.group_members = UniqueList(self.group_members)
-        self._state.static_group_members = UniqueList(self.static_group_members)
-        self._state.can_group_with = self.can_group_with
-        self._state.synced_to = self.synced_to
-        self._state.active_source = self.active_source_state
-        self._state.source_list = self.source_list_state
-        self._state.active_group = self.active_group
-        self._state.current_media = self.current_media
-        self._state.enabled = self.enabled
-        self._state.hide_player_in_ui = self.hide_player_in_ui
-        self._state.expose_to_ha = self.expose_to_ha
-        self._state.icon = self.icon
-        self._state.group_volume = self.group_volume
-        self._state.extra_attributes = self.extra_attributes
-        self._state.power_control = self.power_control
-        self._state.volume_control = self.volume_control
-        self._state.mute_control = self.mute_control
-
-        # correct available state if needed
-        if not self._state.enabled:
-            self._state.available = False
+        self._state = PlayerState(
+            player_id=self.player_id,
+            provider=self.provider_id,
+            type=self.type,
+            available=self.enabled and self.available,
+            device_info=self.device_info,
+            supported_features=self.supported_features,
+            playback_state=self.playback_state,
+            elapsed_time=self.elapsed_time,
+            elapsed_time_last_updated=self.elapsed_time_last_updated,
+            powered=self.powered,
+            volume_level=self.volume_level,
+            volume_muted=self.volume_muted,
+            group_members=UniqueList(self.group_members),
+            static_group_members=UniqueList(self.static_group_members),
+            can_group_with=self.can_group_with,
+            synced_to=self.synced_to,
+            active_source=self.active_source_state,
+            source_list=self.source_list_state,
+            active_group=self.active_group,
+            current_media=self.current_media,
+            name=self.display_name,
+            enabled=self.enabled,
+            hide_player_in_ui=self.hide_player_in_ui,
+            expose_to_ha=self.expose_to_ha,
+            icon=self.icon,
+            group_volume=self.group_volume,
+            extra_attributes=self.extra_attributes,
+            power_control=self.power_control,
+            volume_control=self.volume_control,
+            mute_control=self.mute_control,
+        )
 
         # correct group_members if needed
         if self._state.group_members == [self.player_id]:

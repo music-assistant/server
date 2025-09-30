@@ -917,8 +917,8 @@ class PlayerController(CoreController):
             if player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(player_id)
                 await asyncio.sleep(0.5)  # small delay to allow stop to process
-            player.active_source = None
-            player.current_media = None
+            player.state.active_source = None
+            player.state.current_media = None
         # check if source is a pluginsource
         # in that case the source id is the instance_id of the plugin provider
         if plugin_prov := self.mass.get_provider(source):
@@ -1172,7 +1172,7 @@ class PlayerController(CoreController):
         """
         Create a new (permanent) Group Player.
 
-        :param provider: The provider to create the group player for
+        :param provider: The provider(id) to create the group player for
         :param name: Name of the new group player
         :param members: List of player ids to add to the group
         :param dynamic: Whether the group is dynamic (members can change)
@@ -1186,7 +1186,7 @@ class PlayerController(CoreController):
             # provider supports syncing but not dedicated group players
             # create a sync group instead
             return await self._sync_groups.create_group_player(
-                provider, name, members, dynamic=False
+                provider_instance, name, members, dynamic=dynamic
             )
         raise UnsupportedFeaturedException(
             f"Provider {provider} does not support creating group players"
@@ -1723,7 +1723,6 @@ class PlayerController(CoreController):
                 await self.cmd_power(config.player_id, False)
             elif player.playback_state != PlaybackState.IDLE:
                 await self.cmd_stop(config.player_id)
-            player.available = False
         # if the PlayerQueue was playing, restart playback
         # TODO: add property to ConfigEntry if it requires a restart of playback on change
         elif not player_disabled and resume_queue and resume_queue.state == PlaybackState.PLAYING:
@@ -2007,9 +2006,6 @@ class PlayerController(CoreController):
                         str(err),
                         exc_info=err if self.logger.isEnabledFor(10) else None,
                     )
-                finally:
-                    # always update player state
-                    self.mass.loop.call_soon(player.update_state)
             await asyncio.sleep(1)
 
     async def _handle_select_plugin_source(

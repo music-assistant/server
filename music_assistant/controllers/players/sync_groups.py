@@ -9,6 +9,7 @@ and the other players are synced to that leader.
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
 import shortuuid
@@ -22,7 +23,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
-from music_assistant_models.player import DeviceInfo, PlayerMedia
+from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
@@ -91,7 +92,7 @@ class SyncGroupPlayer(GroupPlayer):
         self._attr_name = self.config.name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
-        self._attr_active_source = player_id
+        self._attr_active_source = None
         self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
         self._attr_supported_features = {
             PlayerFeature.POWER,
@@ -147,15 +148,27 @@ class SyncGroupPlayer(GroupPlayer):
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
         return self.sync_leader.elapsed_time if self.sync_leader else None
 
-    @elapsed_time.setter
-    def elapsed_time(self, value: float | None) -> None:
-        """Set the elapsed time on the player."""
-        raise NotImplementedError("elapsed_time is read-only on a SyncGroup player")
-
     @property
     def elapsed_time_last_updated(self) -> float | None:
         """Return when the elapsed time was last updated."""
         return self.sync_leader.elapsed_time_last_updated if self.sync_leader else None
+
+    @property
+    def current_media(self) -> PlayerMedia | None:
+        """Return the current media item (if any) loaded in the player."""
+        return self.sync_leader.current_media if self.sync_leader else self._attr_current_media
+
+    @property
+    def active_source(self) -> str | None:
+        """Return the active source id (if any) of the player."""
+        return self._attr_active_source
+
+    @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return list of available (native) sources for this player."""
+        if self.sync_leader:
+            return self.sync_leader.source_list
+        return []
 
     @property
     def can_group_with(self) -> set[str]:
@@ -268,7 +281,7 @@ class SyncGroupPlayer(GroupPlayer):
                     await member.power(True)
             # Set up the sync group with the new leader
             await self._handle_leader_transition(new_leader)
-        elif prev_power:
+        elif prev_power and not powered:
             # handle TURN_OFF of the group player by dissolving group and turning off all members
             await self._dissolve_syncgroup()
             # turn off all group members
@@ -278,12 +291,14 @@ class SyncGroupPlayer(GroupPlayer):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
                     await member.power(False)
 
-        if not powered:
+        if not powered and not powered:
             # Reset to unfiltered static members list when powered off
             # (the frontend will hide unavailable members)
             self._attr_group_members = self._attr_static_group_members.copy()
+            self._attr_active_source = None
             # and clear the sync leader
             self.sync_leader = None
+        self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -296,7 +311,7 @@ class SyncGroupPlayer(GroupPlayer):
         # simply forward the command to the sync leader
         if sync_leader := self.sync_leader:
             await sync_leader.play_media(media)
-            self._attr_current_media = media
+            self._attr_current_media = deepcopy(media)
             self._attr_active_source = media.source_id
             self.update_state()
         else:
@@ -407,8 +422,6 @@ class SyncGroupPlayer(GroupPlayer):
             if sync_children:
                 await sync_leader.set_members(player_ids_to_remove=sync_children)
             # Reset the leaders queue since it is no longer part of this group
-            sync_leader.active_source = None
-            sync_leader.current_media = None
             sync_leader.update_state()
 
     async def _handle_leader_transition(self, new_leader: Player | None) -> None:
