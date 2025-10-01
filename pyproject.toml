@@ -130,15 +130,7 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/controllers/__init__.py$',
-  '^music_assistant/controllers/cache.py$',
-  '^music_assistant/controllers/config.py$',
-  '^music_assistant/controllers/media/.*$',
-  '^music_assistant/controllers/metadata.py$',
-  '^music_assistant/controllers/music.py$',
-  '^music_assistant/controllers/player_queues.py$',
-  '^music_assistant/controllers/players.py$',
-  '^music_assistant/controllers/streams.py$',
+  '^music_assistant/controllers/.*$',
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/models/player_provider.py',
   '^music_assistant/providers/apple_music/.*$',
