@@ -1,0 +1,11 @@
+{
+  "domain": "jiosaavn",
+  "name": "JioSaavn",
+  "description": "Stream Bollywood, Indian, and international music from JioSaavn’s extensive catalog.",
+  "documentation": "https://music-assistant.io/music-providers/jiosaavn/",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@ozgav",
+  "multi_instance": false,
+  "stage": "beta"
+}
