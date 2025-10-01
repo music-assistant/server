@@ -38,7 +38,7 @@ def decrypt_stream_url(encrypted_url: str) -> str:
         encrypted_data = base64.b64decode(encrypted_url.strip())
         cipher = DES.new(DES_KEY, DES.MODE_ECB)
         decrypted_data = cipher.decrypt(encrypted_data)
-        decrypted_url = decrypted_data.decode("utf-8").rstrip(
+        decrypted_url: str = decrypted_data.decode("utf-8").rstrip(
             "\x00\x01\x02\x03\x04\x05\x06\x07\x08"
         )
         return decrypted_url.replace("_96.mp4", "_320.mp4")
