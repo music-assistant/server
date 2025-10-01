@@ -4,7 +4,7 @@ import base64
 import binascii
 import contextlib
 import html
-from typing import Any, Final
+from typing import Any
 
 from Crypto.Cipher import DES
 from music_assistant_models.enums import ContentType, ImageType
@@ -20,8 +20,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
+
 # DES encryption key for stream URL decryption
-DES_KEY: Final[bytes] = b"38346591"
+DES_KEY = app_var(11)
 
 
 def decrypt_stream_url(encrypted_url: str) -> str:
