@@ -67,6 +67,12 @@ class PhishInProvider(MusicProvider):
         limit: int = MAX_SEARCH_RESULTS,
     ) -> SearchResults:
         """Perform search on Phish.in."""
+        # Handle "Artist - Track" format by extracting just the track name
+        if " - " in search_query:
+            parts = search_query.split(" - ", 1)
+            if parts[0].strip().lower() in ["phish", "the phish"]:
+                search_query = parts[1].strip()
+
         if len(search_query.strip()) < 3:
             return SearchResults()
 
@@ -76,7 +82,29 @@ class PhishInProvider(MusicProvider):
                 self, endpoint, params={"audio_status": "complete_or_partial"}
             )
 
-            # If venues are found and we want albums, fetch shows for those venues
+            # If we got song matches, fetch all performances of those songs
+            if MediaType.TRACK in media_types and search_data.get("songs"):
+                all_track_results = []
+                for song in search_data.get("songs", [])[:3]:  # Limit to first 3 songs
+                    song_slug = song.get("slug")
+                    if song_slug:
+                        tracks_data = await api_request(
+                            self,
+                            "/tracks",
+                            params={
+                                "song_slug": song_slug,
+                                "audio_status": "complete_or_partial",
+                                "per_page": limit,
+                                "sort": "likes_count:desc",
+                            },
+                        )
+                        all_track_results.extend(tracks_data.get("tracks", []))
+
+                # Replace with comprehensive song_slug results
+                if all_track_results:
+                    search_data["tracks"] = all_track_results[:limit]
+
+            # Handle venue album searches
             if MediaType.ALBUM in media_types and search_data.get("venues"):
                 venue_shows: list[dict[str, Any]] = []
                 for venue in search_data.get("venues", []):
@@ -86,27 +114,21 @@ class PhishInProvider(MusicProvider):
                         shows_data = await api_request(
                             self, "/shows", params={"venue_slug": venue_slug, "page": page}
                         )
-
                         shows_on_page = shows_data.get("shows", [])
                         if not shows_on_page:
                             break
-
                         remaining_slots = limit - len(venue_shows)
                         venue_shows.extend(shows_on_page[:remaining_slots])
-
                         current_page = shows_data.get("current_page", 1)
                         total_pages = shows_data.get("total_pages", 1)
-
                         if current_page >= total_pages or len(venue_shows) >= limit:
                             break
-
                         page += 1
-
                 if venue_shows:
                     search_data["venue_shows"] = venue_shows
 
             artists, albums, tracks, playlists = parse_search_results(
-                self, search_data, media_types, search_query
+                self, search_data, media_types, search_query.lower()
             )
 
             return SearchResults(
@@ -284,101 +306,6 @@ class PhishInProvider(MusicProvider):
         except Exception as err:
             self.logger.error("Failed to get album tracks for %s: %s", prov_album_id, err)
             raise ProviderUnavailableError(f"Album tracks error: {err}") from err
-
-    @use_cache(expiration=2592000)  # 30 days - once recorded the tracks won't change
-    async def get_track_albums(
-        self,
-        prov_track_id: str,
-        library_only: bool = False,
-    ) -> list[Album]:
-        """Get albums (shows) that contain a specific track."""
-        try:
-            track_data = await api_request(self, f"/tracks/{prov_track_id}")
-
-            if not track_data or not track_data.get("songs"):
-                return []
-
-            song_slug = track_data["songs"][0]["slug"]
-
-            tracks_data = await api_request(
-                self,
-                "/tracks",
-                params={
-                    "song_slug": song_slug,
-                    "audio_status": "complete_or_partial",
-                    "per_page": 100,
-                },
-            )
-
-            unique_shows = {}
-            for track in tracks_data.get("tracks", []):
-                show_date = track.get("show_date")
-                if show_date and show_date not in unique_shows:
-                    # Just use the show object directly - it has everything needed
-                    unique_shows[show_date] = track["show"]
-
-            albums = []
-            for show_data in unique_shows.values():
-                album = show_to_album(self, show_data)
-                albums.append(album)
-
-            albums.sort(key=lambda x: x.name, reverse=True)
-            return albums
-
-        except (MediaNotFoundError, ProviderUnavailableError):
-            raise
-        except Exception as err:
-            self.logger.error("Failed to get track albums for %s: %s", prov_track_id, err)
-            raise ProviderUnavailableError(f"Track albums error: {err}") from err
-
-    # @use_cache(86400)  # 24 hours
-    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Get other performances of the same song."""
-        try:
-            # Get the track to find its song slug
-            track_data = await api_request(self, f"/tracks/{prov_track_id}")
-
-            if not track_data or not track_data.get("songs"):
-                return []
-
-            song_slug = track_data["songs"][0]["slug"]
-
-            # Find other performances of this song
-            tracks_data = await api_request(
-                self,
-                "/tracks",
-                params={
-                    "song_slug": song_slug,
-                    "audio_status": "complete_or_partial",
-                    "per_page": limit,
-                    "sort": "likes_count:desc",  # Get most popular versions
-                },
-            )
-            self.logger.error(
-                f"Found {len(tracks_data.get('tracks', []))} tracks for song {song_slug}"
-            )
-
-            similar_tracks = []
-            for track in tracks_data.get("tracks", []):
-                # Skip the original track
-                if str(track.get("id")) == prov_track_id:
-                    continue
-
-                if track.get("mp3_url"):
-                    # track_to_ma_track will extract show data from track["show"]
-                    similar_track = track_to_ma_track(self, track)
-                    similar_tracks.append(similar_track)
-
-                    if len(similar_tracks) >= limit:
-                        break
-
-            return similar_tracks
-
-        except (MediaNotFoundError, ProviderUnavailableError):
-            raise
-        except Exception as err:
-            self.logger.error("Failed to get similar tracks for %s: %s", prov_track_id, err)
-            raise ProviderUnavailableError(f"Similar tracks error: {err}") from err
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track."""

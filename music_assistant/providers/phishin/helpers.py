@@ -161,6 +161,92 @@ async def get_phish_artist(provider: MusicProvider) -> Artist:
     return artist
 
 
+def _extract_version_from_title(full_title: str) -> tuple[str, str]:
+    """Extract song title and version from full title with performance indicators.
+
+    Returns:
+        Tuple of (clean_song_title, version_string)
+    """
+    song_title = full_title
+    version = None
+    performance_indicators = ["set", "soundcheck", "check", "encore"]
+
+    # Check for prefix: "(Check) Song Name"
+    if full_title.startswith("(") and ") " in full_title:
+        end_paren = full_title.index(") ")
+        prefix = full_title[1:end_paren]
+        if any(indicator in prefix.lower() for indicator in performance_indicators):
+            version = prefix
+            song_title = full_title[end_paren + 2 :]
+
+    # Check for suffix: "Song Name (Soundcheck)"
+    if " (" in song_title and song_title.endswith(")"):
+        base_title, suffix = song_title.rsplit(" (", 1)
+        suffix = suffix.rstrip(")")
+        if any(indicator in suffix.lower() for indicator in performance_indicators):
+            version = f"{version}, {suffix}" if version else suffix
+            song_title = base_title
+
+    return song_title, version or ""
+
+
+def _create_album_mapping(
+    provider: MusicProvider,
+    show_date: str,
+    show_data: dict[str, Any] | None,
+) -> ItemMapping | None:
+    """Create album ItemMapping with image for a track."""
+    if not show_date:
+        return None
+
+    venue_name = show_data.get("venue", {}).get("name", "") if show_data else ""
+
+    # Create the image for the album mapping
+    album_image = None
+    if show_data:
+        image_url = show_data.get("album_cover_url") or FALLBACK_ALBUM_IMAGE
+        album_image = MediaItemImage(
+            type=ImageType.THUMB,
+            path=image_url,
+            provider=provider.instance_id,
+            remotely_accessible=True,
+        )
+
+    return ItemMapping(
+        item_id=show_date,
+        provider=provider.instance_id,
+        name=f"{show_date} - {venue_name}" if venue_name else show_date,
+        media_type=MediaType.ALBUM,
+        available=True,
+        image=album_image,
+    )
+
+
+def _build_track_details(
+    track_data: dict[str, Any],
+    song_data: dict[str, Any],
+    show_date: str,
+    set_name: str,
+    venue_name: str,
+) -> str:
+    """Build details string for provider mapping."""
+    details_parts = [f"song_slug:{song_data.get('slug', '')}"]
+
+    if set_name:
+        details_parts.append(f"set_name:{set_name}")
+    if show_date:
+        details_parts.append(f"show_date:{show_date}")
+    if venue_name:
+        details_parts.append(f"venue:{venue_name}")
+    if track_data.get("tags"):
+        tag_names = [tag.get("name", "") for tag in track_data.get("tags", [])]
+        details_parts.append(f"tags:{','.join(tag_names)}")
+    if track_data.get("likes_count"):
+        details_parts.append(f"likes_count:{track_data.get('likes_count', 0)}")
+
+    return "|".join(details_parts)
+
+
 def track_to_ma_track(
     provider: MusicProvider,
     track_data: dict[str, Any],
@@ -169,53 +255,26 @@ def track_to_ma_track(
     """Convert a Phish.in track to a Music Assistant Track."""
     track_id = str(track_data.get("id", ""))
 
-    # Get song data from songs array
+    # Extract song info and version
     songs = track_data.get("songs", [])
     song_data = songs[0] if songs else {}
     full_title = track_data.get("title", "Unknown Song")
+    song_title, version = _extract_version_from_title(full_title)
 
-    # Extract base song name and version info from title
-    # Phish.in adds prefixes/suffixes like (Check), (Set1), (Soundcheck), etc.
-    song_title = full_title
-    version = None
-
-    performance_indicators = ["set", "soundcheck", "check", "encore"]
-
-    # Check for prefix first: "(Check) Song Name"
-    if full_title.startswith("(") and ") " in full_title:
-        end_paren = full_title.index(") ")
-        prefix = full_title[1:end_paren]
-
-        if any(indicator in prefix.lower() for indicator in performance_indicators):
-            version = prefix
-            song_title = full_title[end_paren + 2 :]  # Skip ") "
-
-    # Check for suffix: "Song Name (Soundcheck)"
-    if " (" in song_title and song_title.endswith(")"):
-        base_title, suffix = song_title.rsplit(" (", 1)
-        suffix = suffix.rstrip(")")
-
-        if any(indicator in suffix.lower() for indicator in performance_indicators):
-            version = f"{version}, {suffix}" if version else suffix
-            song_title = base_title
-
-    # Duration in milliseconds, convert to seconds
+    # Extract basic track info
     duration_ms = track_data.get("duration")
     duration = int(duration_ms / 1000) if duration_ms else 0
-
-    # Track position in set
     position = track_data.get("position")
     track_number = int(position) if position is not None else 0
     set_name = track_data.get("set_name", "")
 
-    # Show information
+    # Get show information
     if show_data is None:
         show_data = track_data.get("show", {})
-
     show_date = show_data.get("date", "")
     venue_name = show_data.get("venue", {}).get("name", "")
 
-    # Create ItemMapping for Phish artist
+    # Create artist mapping
     phish_artist = ItemMapping(
         item_id=PHISH_ARTIST_ID,
         provider=provider.instance_id,
@@ -224,56 +283,35 @@ def track_to_ma_track(
         available=True,
     )
 
-    # Create album ItemMapping if show_date is available
-    album_mapping = None
-    if show_date:
-        album_mapping = ItemMapping(
-            item_id=show_date,
-            provider=provider.instance_id,
-            name=f"{show_date} - {venue_name}" if venue_name else show_date,
-            media_type=MediaType.ALBUM,
-            available=True,
-        )
+    # Create album mapping with image
+    album_mapping = _create_album_mapping(provider, show_date, show_data)
 
-    # Create details string for provider mapping
-    details_parts = [f"song_slug:{song_data.get('slug', '')}"]
-    if set_name:
-        details_parts.append(f"set_name:{set_name}")
-    if show_date:
-        details_parts.append(f"show_date:{show_date}")
-    if venue_name:
-        details_parts.append(f"venue:{venue_name}")
+    # Build details string
+    details = _build_track_details(track_data, song_data, show_date, set_name, venue_name)
 
-    # Extract tag names from tag objects
-    if track_data.get("tags"):
-        tag_names = [tag.get("name", "") for tag in track_data.get("tags", [])]
-        details_parts.append(f"tags:{','.join(tag_names)}")
-
-    if track_data.get("likes_count"):
-        details_parts.append(f"likes_count:{track_data.get('likes_count', 0)}")
-
-    # Create metadata with image if available
+    # Create metadata with image
     metadata = MediaItemMetadata()
-    image_path = show_data.get("album_cover_url") if show_data else None
-    if image_path:
-        metadata = MediaItemMetadata(
-            images=UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_path,
-                        provider=provider.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
+    if show_data:
+        image_url = show_data.get("album_cover_url")
+        if image_url:
+            metadata = MediaItemMetadata(
+                images=UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=image_url,
+                            provider=provider.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ]
+                )
             )
-        )
 
     return Track(
         item_id=track_id,
         provider=provider.instance_id,
-        name=song_title,  # Clean title without prefix/suffix
-        version=version or "",  # Set version on Track object
+        name=song_title,
+        version=version,
         artists=UniqueList([phish_artist]),
         album=album_mapping,
         duration=duration,
@@ -287,7 +325,7 @@ def track_to_ma_track(
                 available=bool(track_data.get("mp3_url")),
                 audio_format=AudioFormat(content_type=ContentType.MP3),
                 url=track_data.get("mp3_url"),
-                details="|".join(details_parts),
+                details=details,
             )
         },
     )
@@ -361,9 +399,32 @@ def parse_search_results(
     def contains_search_term(text: str | None) -> bool:
         return search_term in text.lower() if text else False
 
+    def strip_performance_indicators(title: str) -> str:
+        """Strip performance indicators like (Set1), (Soundcheck), etc. from title."""
+        song_title = title
+        performance_indicators = ["set", "soundcheck", "check", "encore"]
+
+        # Check for prefix: "(Check) Song"
+        if song_title.startswith("(") and ") " in song_title:
+            end_paren = song_title.index(") ")
+            prefix = song_title[1:end_paren]
+            if any(indicator in prefix.lower() for indicator in performance_indicators):
+                song_title = song_title[end_paren + 2 :]
+
+        # Check for suffix: "Song (Set1)"
+        if " (" in song_title and song_title.endswith(")"):
+            base_title, suffix = song_title.rsplit(" (", 1)
+            suffix = suffix.rstrip(")")
+            if any(indicator in suffix.lower() for indicator in performance_indicators):
+                song_title = base_title
+
+        return song_title
+
     artists: list[Artist] = _parse_artists(provider, media_types)
     albums: list[Album] = _parse_albums(provider, search_data, media_types, contains_search_term)
-    tracks: list[Track] = _parse_tracks(provider, search_data, media_types, contains_search_term)
+    tracks: list[Track] = _parse_tracks(
+        provider, search_data, media_types, contains_search_term, strip_performance_indicators
+    )
     playlists: list[Playlist] = _parse_playlists(
         provider, search_data, media_types, contains_search_term
     )
@@ -445,22 +506,39 @@ def _parse_tracks(
     search_data: dict[str, Any],
     media_types: list[MediaType],
     contains_search_term: Callable[[str | None], bool],
+    strip_performance_indicators: Callable[[str], str],
 ) -> list[Track]:
     """Parse tracks from search results."""
     tracks: list[Track] = []
-    if MediaType.TRACK in media_types:
-        for track_data in search_data.get("tracks", []):
-            track_title = track_data.get("title", "")
-            if contains_search_term(track_title):
-                # Extract show data from track data for image
-                show_data = {
-                    "date": track_data.get("show_date"),
-                    "album_cover_url": track_data.get("show_album_cover_url"),
-                    "venue": {"name": track_data.get("venue_name")},
-                }
-                tracks.append(track_to_ma_track(provider, track_data, show_data))
+    if MediaType.TRACK not in media_types:
+        return tracks
 
-    return tracks
+    for track_data in search_data.get("tracks", []):
+        full_title = track_data.get("title", "")
+        # Strip performance indicators to get base song name for matching
+        clean_title = strip_performance_indicators(full_title)
+
+        if contains_search_term(clean_title):
+            # Extract show data from track data for image
+            show_data = {
+                "date": track_data.get("show_date"),
+                "album_cover_url": track_data.get("show_album_cover_url"),
+                "venue": {"name": track_data.get("venue_name")},
+            }
+            tracks.append(track_to_ma_track(provider, track_data, show_data))
+
+    # Deduplicate by album - only return one track per show
+    seen_albums = set()
+    unique_tracks = []
+    for track in tracks:
+        album_id = track.album.item_id if track.album else None
+        if album_id and album_id not in seen_albums:
+            seen_albums.add(album_id)
+            unique_tracks.append(track)
+        elif not album_id:
+            unique_tracks.append(track)
+
+    return unique_tracks
 
 
 def _parse_playlists(
