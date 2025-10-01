@@ -23,7 +23,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 
 # DES encryption key for stream URL decryption
-DES_KEY = app_var(11)
+DES_KEY = app_var(11).encode("utf-8")
 
 
 def decrypt_stream_url(encrypted_url: str) -> str:
