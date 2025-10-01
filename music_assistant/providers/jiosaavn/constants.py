@@ -11,9 +11,6 @@ ALBUM_DETAILS_ENDPOINT: Final[str] = "content.getAlbumDetails"
 ARTIST_DETAILS_ENDPOINT: Final[str] = "artist.getArtistPageDetails"
 PLAYLIST_DETAILS_ENDPOINT: Final[str] = "playlist.getDetails"
 
-# DES encryption key for stream URL decryption
-DES_KEY: Final[bytes] = b"38346591"
-
 DEFAULT_HEADERS: Final[dict[str, str]] = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
