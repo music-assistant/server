@@ -8,7 +8,13 @@ from typing import Any
 
 import aiohttp
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -28,7 +34,6 @@ from .constants import (
     ALBUM_DETAILS_ENDPOINT,
     ARTIST_DETAILS_ENDPOINT,
     BASE_URL,
-    DEFAULT_HEADERS,
     SEARCH_ENDPOINT,
     SONG_DETAILS_ENDPOINT,
 )
@@ -40,11 +45,13 @@ class JioSaavnProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization."""
-        # Test connection
         try:
-            await self._make_request(SEARCH_ENDPOINT, {"q": "test", "n": "1"})
+            # Test connection
+            await self._make_request(SEARCH_ENDPOINT, {"q": "test", "n": "1", "p": "0"})
         except aiohttp.ClientError as err:
-            self.logger.error("Failed to connect to JioSaavn: %s", err)
+            msg = f"Failed to connect to JioSaavn: {err}"
+            self.logger.error(msg)
+            raise SetupFailedError(msg) from err
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -369,25 +376,40 @@ class JioSaavnProvider(MusicProvider):
             allow_seek=True,
         )
 
-    async def _make_request(
-        self, endpoint: str, params: dict[str, str] | None = None
-    ) -> dict[str, Any]:
-        """Make API request to JioSaavn."""
-        request_params: dict[str, str] = {
-            "__call": endpoint,
-            "api_version": "4",
+    async def _make_request(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Make API request to JioSaavn API."""
+        full_params = {
+            **params,
             "_format": "json",
             "_marker": "0",
             "ctx": "web6dot0",
+            "api_version": "4",
         }
 
-        if params:
-            request_params.update(params)
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+        }
 
-        async with self.mass.http_session.get(
-            BASE_URL, params=request_params, headers=DEFAULT_HEADERS
-        ) as response:
-            response.raise_for_status()
-            # JioSaavn returns JSON with wrong content-type
-            result: dict[str, Any] = await response.json(content_type=None)
-            return result
+        url = f"{BASE_URL}?__call={endpoint}"
+
+        try:
+            async with self.mass.http_session.get(
+                url,
+                params=full_params,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                response.raise_for_status()
+                data: dict[str, Any] = await response.json()
+                return data
+        except aiohttp.ClientResponseError as err:
+            if err.status in (401, 403):
+                raise LoginFailed(f"JioSaavn API authentication failed: {err}") from err
+            if err.status == 404:
+                raise MediaNotFoundError(f"Resource not found: {endpoint}") from err
+            # All other HTTP errors (500, 503, etc.) are service unavailable
+            raise ProviderUnavailableError(f"JioSaavn API error: {err.status}") from err
+        except aiohttp.ClientError as err:
+            # Network errors, timeouts, etc.
+            raise ProviderUnavailableError(f"JioSaavn connection error: {err}") from err

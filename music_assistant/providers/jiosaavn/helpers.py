@@ -1,9 +1,10 @@
 """Helper functions for JioSaavn Music Provider."""
 
 import base64
+import binascii
 import contextlib
 import html
-from typing import Any
+from typing import Any, Final
 
 from Crypto.Cipher import DES
 from music_assistant_models.enums import ContentType, ImageType
@@ -19,21 +20,21 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.unique_list import UniqueList
 
-from .constants import DES_KEY
+# DES encryption key for stream URL decryption
+DES_KEY: Final[bytes] = b"38346591"
 
 
 def decrypt_stream_url(encrypted_url: str) -> str:
-    """Decrypt JioSaavn stream URL using DES."""
+    """Decrypt JioSaavn stream URL."""
     try:
+        encrypted_data = base64.b64decode(encrypted_url.strip())
         cipher = DES.new(DES_KEY, DES.MODE_ECB)
-        encrypted_bytes = base64.b64decode(encrypted_url.strip())
-        decrypted = cipher.decrypt(encrypted_bytes)
-        # Remove PKCS5 padding
-        padding_length = decrypted[-1]
-        decrypted_url = decrypted[:-padding_length].decode("utf-8")
-        # Return highest quality (320kbps)
+        decrypted_data = cipher.decrypt(encrypted_data)
+        decrypted_url = decrypted_data.decode("utf-8").rstrip(
+            "\x00\x01\x02\x03\x04\x05\x06\x07\x08"
+        )
         return decrypted_url.replace("_96.mp4", "_320.mp4")
-    except Exception as err:
+    except (binascii.Error, UnicodeDecodeError, ValueError) as err:
         raise InvalidDataError(f"Failed to decrypt stream URL: {err}") from err
 
 
