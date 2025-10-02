@@ -328,6 +328,19 @@ class SyncGroupPlayer(GroupPlayer):
         if sync_leader := self.sync_leader:
             await sync_leader.enqueue_next_media(media)
 
+    async def select_source(self, source: str) -> None:
+        """
+        Handle SELECT SOURCE command on the player.
+
+        Will only be called if the PlayerFeature.SELECT_SOURCE is supported.
+
+        :param source: The source(id) to select, as defined in the source_list.
+        """
+        if sync_leader := self.sync_leader:
+            await sync_leader.select_source(source)
+            self._attr_active_source = source
+            self.update_state()
+
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
