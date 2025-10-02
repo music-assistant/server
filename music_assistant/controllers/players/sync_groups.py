@@ -472,6 +472,9 @@ class SyncGroupPlayer(GroupPlayer):
             # Restart playback if requested and we have media to play
             if was_playing and self.current_media is not None:
                 await new_leader.play_media(self.current_media)
+        else:
+            # We have no leader anymore, send update since we stopped playback
+            self.update_state()
 
     def _select_sync_leader(self) -> Player | None:
         """Select the active sync leader player for a syncgroup."""
