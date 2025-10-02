@@ -11,7 +11,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamMetadata
 
 from .constants import RADIO_PARADISE_CHANNELS, STATION_ICONS_BASE_URL
-from .helpers import enhance_title_with_upcoming. # noqa: F401
+from .helpers import enhance_title_with_upcoming  # noqa: F401
 
 
 def parse_radio(
