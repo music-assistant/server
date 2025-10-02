@@ -53,7 +53,6 @@ SUPPORT_DYNAMIC_LEADER = {
     # and the music keeps playing uninterrupted.
     "airplay",
     "squeezelite",
-    "resonate",
     # TODO: Get this working with Sonos as well (need to handle range requests)
 }
 
