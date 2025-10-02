@@ -528,6 +528,11 @@ class ConfigController:
         # Also remove the DSP config if it exists
         self.remove(dsp_conf_key)
 
+    def set_player_default_name(self, player_id: str, default_name: str) -> None:
+        """Set (or update) the default name for a player."""
+        conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
+        self.set(conf_key, default_name)
+
     @api_command("config/players/dsp/get")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
         """

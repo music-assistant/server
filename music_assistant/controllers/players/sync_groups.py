@@ -88,7 +88,7 @@ class SyncGroupPlayer(GroupPlayer):
     ) -> None:
         """Initialize GroupPlayer instance."""
         super().__init__(provider, player_id)
-        self._attr_name = self.config.name or f"SyncGroup {player_id}"
+        self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
         self._attr_active_source = None
