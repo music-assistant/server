@@ -364,13 +364,13 @@ class PlayerController(CoreController):
                 "Ignore PLAY request to player %s: player is already playing", player.display_name
             )
             return
-        # Redirect to queue controller if it is active
-        if active_queue := self.get_active_queue(player):
-            await self.mass.player_queues.play(active_queue.queue_id)
-            return
-        # handle command on player directly
-        async with self._player_throttlers[player.player_id]:
-            await player.play()
+        if player.playback_state == PlaybackState.PAUSED:
+            # handle command on player directly
+            async with self._player_throttlers[player.player_id]:
+                await player.play()
+        else:
+            # try to resume the player
+            await self.cmd_resume(player.player_id)
 
     @api_command("players/cmd/pause")
     @handle_player_command
@@ -406,6 +406,43 @@ class PlayerController(CoreController):
             await self.cmd_pause(player.player_id)
         else:
             await self.cmd_play(player.player_id)
+
+    @api_command("players/cmd/resume")
+    async def cmd_resume(
+        self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
+    ) -> None:
+        """
+        Send RESUME command to given player.
+
+        Resume (or restart) playback on the player.
+        """
+        player = self._get_player_with_redirect(player_id)
+        source = source or player.active_source
+        media = media or player.current_media
+        # Redirect to queue controller if it is active
+        if active_queue := self.mass.player_queues.get(source or player_id):
+            await self.mass.player_queues.resume(active_queue.queue_id)
+            return
+        # try to handle command on player directly
+        # TODO: check if player has an active source with native resume support
+        active_source = next((x for x in player.source_list if x.id == source), None)
+        if (
+            player.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED)
+            and active_source
+            and active_source.can_play_pause
+        ):
+            # player has some other source active and native resume support
+            await player.play()
+            return
+        if active_source and not active_source.passive:
+            await player.select_source(active_source.id)
+            return
+        if media:
+            # try to re-play the current media item
+            await player.play_media(media)
+            return
+        # fallback: just send play command - which will fail if nothing can be played
+        await self.cmd_play(player.player_id)
 
     @api_command("players/cmd/seek")
     async def cmd_seek(self, player_id: str, position: int) -> None:
@@ -1817,12 +1854,11 @@ class PlayerController(CoreController):
         This default implementation will only be used if the player
         (provider) has no native support for the PLAY_ANNOUNCEMENT feature.
         """
-        prev_power = player.powered
         prev_state = player.playback_state
+        prev_power = player.powered or prev_state != PlaybackState.IDLE
         prev_synced_to = player.synced_to
         prev_group = self.get(player.active_group) if player.active_group else None
         prev_source = player.active_source
-        prev_queue = self.get_active_queue(player)
         prev_media = player.current_media
         prev_media_name = prev_media.title or prev_media.uri if prev_media else None
         if prev_synced_to:
@@ -1931,14 +1967,23 @@ class PlayerController(CoreController):
             for volume_player_id, prev_volume in prev_volumes.items():
                 tg.create_task(self.cmd_volume_set(volume_player_id, prev_volume))
         await asyncio.sleep(0.2)
-        player.current_media = prev_media
-        player.active_source = prev_source
         # either power off the player or resume playing
-        if not prev_power and player.power_control != PLAYER_CONTROL_NONE:
-            await self.cmd_power(player.player_id, False)
+        if not prev_power:
+            if player.power_control != PLAYER_CONTROL_NONE:
+                self.logger.debug(
+                    "Announcement to player %s - turning player off again...", player.display_name
+                )
+                await self.cmd_power(player.player_id, False)
+            # nothing to do anymore, player was not previously powered
+            # and does not support power control
             return
         elif prev_synced_to:
-            await self.cmd_group(player.player_id, prev_synced_to)
+            self.logger.debug(
+                "Announcement to player %s - syncing back to %s...",
+                player.display_name,
+                prev_synced_to,
+            )
+            await self.cmd_set_members(prev_synced_to, player_ids_to_add=[player.player_id])
         elif prev_group:
             if PlayerFeature.SET_MEMBERS in prev_group.supported_features:
                 self.logger.debug(
@@ -1956,18 +2001,9 @@ class PlayerController(CoreController):
                     prev_group.display_name,
                 )
                 await self.cmd_play(prev_group.player_id)
-        elif prev_queue and prev_state == PlaybackState.PLAYING:
-            await self.mass.player_queues.resume(prev_queue.queue_id, True)
-            await self.wait_for_state(player, PlaybackState.PLAYING, 5)
         elif prev_state == PlaybackState.PLAYING:
-            # player was playing something else - try to resume that here
-            for source in player.source_list_state:
-                if source.id == prev_source and not source.passive:
-                    await player.select_source(source.id)
-                    break
-            else:
-                # no source found, try to resume the previous media
-                await self.cmd_play(player.player_id)
+            # player was playing something before the announcement - try to resume that here
+            await self.cmd_resume(player.player_id, prev_source, prev_media)
 
     async def _poll_players(self) -> None:
         """Background task that polls players for updates."""

@@ -350,7 +350,7 @@ class SqueezelitePlayer(Player):
         if players_added and self.current_media and self.playback_state == PlaybackState.PLAYING:
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
-            self.mass.create_task(self.play_media(self.current_media))
+            self.mass.create_task(self.mass.players.resume(self.player_id))
 
     def handle_slim_event(self, event: SlimEvent) -> None:
         """Handle player event from slimproto server."""
