@@ -57,7 +57,7 @@ class DemoPlayer(Player):
         return 5 if self.playback_state == PlaybackState.PLAYING else 30
 
     @property
-    def source_list(self) -> list[PlayerSource]:
+    def _source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
         # OPTIONAL - required only if you specified PlayerFeature.SELECT_SOURCE
         # this is an optional property that you can implement if your

@@ -125,7 +125,7 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
-        if self.power_state:
+        if self.powered:
             return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
         else:
             return PlaybackState.IDLE
@@ -153,17 +153,17 @@ class SyncGroupPlayer(GroupPlayer):
         return self.sync_leader.elapsed_time_last_updated if self.sync_leader else None
 
     @property
-    def current_media(self) -> PlayerMedia | None:
+    def _current_media(self) -> PlayerMedia | None:
         """Return the current media item (if any) loaded in the player."""
         return self.sync_leader.current_media if self.sync_leader else self._attr_current_media
 
     @property
-    def active_source(self) -> str | None:
+    def _active_source(self) -> str | None:
         """Return the active source id (if any) of the player."""
-        return self._attr_active_source
+        return self.sync_leader._active_source if self.sync_leader else self._attr_active_source
 
     @property
-    def source_list(self) -> list[PlayerSource]:
+    def _source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
         if self.sync_leader:
             return self.sync_leader.source_list
@@ -258,6 +258,8 @@ class SyncGroupPlayer(GroupPlayer):
         # always stop at power off
         if not powered and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             await self.stop()
+            self._attr_current_media = None
+            self._attr_active_source = None
 
         # optimistically set the group state
 

@@ -203,39 +203,9 @@ class Player(ABC):
         return self._attr_supported_features
 
     @property
-    def powered(self) -> bool | None:
-        """
-        Return if the player is powered on.
-
-        If the player does not support PlayerFeature.POWER,
-        or the state is (currently) unknown, this property may return None.
-        """
-        return self._attr_powered
-
-    @property
     def playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
         return self._attr_playback_state
-
-    @property
-    def volume_level(self) -> int | None:
-        """
-        Return the current volume level (0..100) of the player.
-
-        If the player does not support PlayerFeature.VOLUME_SET,
-        or the state is (currently) unknown, this property may return None.
-        """
-        return self._attr_volume_level
-
-    @property
-    def volume_muted(self) -> bool | None:
-        """
-        Return the current mute state of the player.
-
-        If the player does not support PlayerFeature.VOLUME_MUTE,
-        or the state is (currently) unknown, this property may return None.
-        """
-        return self._attr_volume_muted
 
     @cached_property
     def flow_mode(self) -> bool:
@@ -311,26 +281,6 @@ class Player(ABC):
         return self._attr_can_group_with
 
     @property
-    def active_source(self) -> str | None:
-        """
-        Return the (id of) the active source of the player.
-
-        Set to None if the player is not currently playing a source or
-        the player_id if the player is currently playing a MA queue.
-        """
-        return self._attr_active_source
-
-    @property
-    def source_list(self) -> list[PlayerSource]:
-        """Return list of available (native) sources for this player."""
-        return self._attr_source_list
-
-    @property
-    def current_media(self) -> PlayerMedia | None:
-        """Return the current media being played by the player."""
-        return self._attr_current_media
-
-    @property
     def needs_poll(self) -> bool:
         """Return if the player needs to be polled for state updates."""
         return self._attr_needs_poll
@@ -359,6 +309,90 @@ class Player(ABC):
     def enabled_by_default(self) -> bool:
         """Return if the player should be enabled by default."""
         return self._attr_enabled_by_default
+
+    @property
+    def _powered(self) -> bool | None:
+        """
+        Return if the player is powered on.
+
+        If the player does not support PlayerFeature.POWER,
+        or the state is (currently) unknown, this property may return None.
+
+        Note that this is NOT the final power state of the player,
+        as it may be overridden by a playercontrol.
+        Hence it's marked as a private property.
+        The final power state can be retrieved by using the 'powered' property.
+        """
+        return self._attr_powered
+
+    @property
+    def _volume_level(self) -> int | None:
+        """
+        Return the current volume level (0..100) of the player.
+
+        If the player does not support PlayerFeature.VOLUME_SET,
+        or the state is (currently) unknown, this property may return None.
+
+        Note that this is NOT the final volume level state of the player,
+        as it may be overridden by a playercontrol.
+        Hence it's marked as a private property.
+        The final volume level state can be retrieved by using the 'volume_level' property.
+        """
+        return self._attr_volume_level
+
+    @property
+    def _volume_muted(self) -> bool | None:
+        """
+        Return the current mute state of the player.
+
+        If the player does not support PlayerFeature.VOLUME_MUTE,
+        or the state is (currently) unknown, this property may return None.
+
+        Note that this is NOT the final muted state of the player,
+        as it may be overridden by a playercontrol.
+        Hence it's marked as a private property.
+        The final muted state can be retrieved by using the 'volume_muted' property.
+        """
+        return self._attr_volume_muted
+
+    @property
+    def _active_source(self) -> str | None:
+        """
+        Return the (id of) the active source of the player.
+
+        Set to None if the player is not currently playing a source or
+        the player_id if the player is currently playing a MA queue.
+
+        Note that this is NOT the final active source of the player,
+        as it may be overridden by a active group/sync membership.
+        Hence it's marked as a private property.
+        The final active source can be retrieved by using the 'active_source' property.
+        """
+        return self._attr_active_source
+
+    @property
+    def _current_media(self) -> PlayerMedia | None:
+        """
+        Return the current media being played by the player.
+
+        Note that this is NOT the final current media of the player,
+        as it may be overridden by a active group/sync membership.
+        Hence it's marked as a private property.
+        The final current media can be retrieved by using the 'current_media' property.
+        """
+        return self._attr_current_media
+
+    @property
+    def _source_list(self) -> list[PlayerSource]:
+        """
+        Return list of available (native) sources for this player.
+
+        Note that this is NOT the final source list of the player,
+        as we inject the MA queue source if the player is currently playing a MA queue.
+        Hence it's marked as a private property.
+        The final source list can be retrieved by using the 'source_list' property.
+        """
+        return self._attr_source_list
 
     async def power(self, powered: bool) -> None:
         """
@@ -721,7 +755,7 @@ class Player(ABC):
 
     @cached_property
     @final
-    def power_state(self) -> bool | None:
+    def powered(self) -> bool | None:
         """
         Return the FINAL power state of the player.
 
@@ -732,7 +766,7 @@ class Player(ABC):
         if power_control == PLAYER_CONTROL_FAKE:
             return bool(self.extra_data.get(ATTR_FAKE_POWER, False))
         if power_control == PLAYER_CONTROL_NATIVE:
-            return self.powered
+            return self._powered
         if power_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(power_control):
@@ -741,7 +775,7 @@ class Player(ABC):
 
     @cached_property
     @final
-    def volume_state(self) -> int | None:
+    def volume_level(self) -> int | None:
         """
         Return the FINAL volume level of the player.
 
@@ -752,7 +786,7 @@ class Player(ABC):
         if volume_control == PLAYER_CONTROL_FAKE:
             return int(self.extra_data.get(ATTR_FAKE_VOLUME, 0))
         if volume_control == PLAYER_CONTROL_NATIVE:
-            return self.volume_level
+            return self._volume_level
         if volume_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(volume_control):
@@ -761,7 +795,7 @@ class Player(ABC):
 
     @cached_property
     @final
-    def volume_muted_state(self) -> bool | None:
+    def volume_muted(self) -> bool | None:
         """
         Return the FINAL mute state of the player.
 
@@ -772,7 +806,7 @@ class Player(ABC):
         if mute_control == PLAYER_CONTROL_FAKE:
             return bool(self.extra_data.get(ATTR_FAKE_MUTE, False))
         if mute_control == PLAYER_CONTROL_NATIVE:
-            return self.volume_muted
+            return self._volume_muted
         if mute_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(mute_control):
@@ -781,7 +815,7 @@ class Player(ABC):
 
     @cached_property
     @final
-    def active_source_state(self) -> str | None:
+    def active_source(self) -> str | None:
         """
         Return the FINAL active source of the player.
 
@@ -792,18 +826,18 @@ class Player(ABC):
         if parent_player_id := (self.active_group or self.synced_to):
             return parent_player_id
         # in case player's source is None, return the player_id (to indicate MA is active source)
-        return self.active_source or self.player_id
+        return self._active_source or self.player_id
 
     @cached_property
     @final
-    def source_list_state(self) -> UniqueList[PlayerSource]:
+    def source_list(self) -> UniqueList[PlayerSource]:
         """
         Return the FINAL source list of the player.
 
         This is a convenience property which calculates the final source list
         based on any group memberships or source plugins that can be active.
         """
-        sources = UniqueList(self.source_list)
+        sources = UniqueList(self._source_list)
         # always ensure the Music Assistant Queue is in the source list
         mass_source = next((x for x in sources if x.id == self.player_id), None)
         if mass_source is None:
@@ -819,10 +853,10 @@ class Player(ABC):
             )
             sources.append(mass_source)
         # if the player is grouped/synced, add the active source list of the group/parent player
-        if parent_player_id := (self.synced_to or self.active_group):
+        if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                for source in parent_player.source_list_state:
-                    if source.id == parent_player.active_source_state:
+                for source in parent_player.source_list:
+                    if source.id == parent_player.active_source:
                         sources.append(
                             PlayerSource(
                                 id=source.id,
@@ -885,7 +919,7 @@ class Player(ABC):
 
     @cached_property
     @final
-    def current_media_state(self) -> PlayerMedia | None:
+    def current_media(self) -> PlayerMedia | None:
         """
         Return the current media being played by the player.
 
@@ -893,16 +927,16 @@ class Player(ABC):
         based on any group memberships or source plugins that can be active.
         """
         # if the player is grouped/synced, use the current_media of the group/parent player
-        if parent_player_id := (self.synced_to or self.active_group):
+        if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                return parent_player.current_media_state
+                return parent_player.current_media
         # if a pluginsource is currently active, return those details
-        if self.active_source_state and (
-            source := self.mass.players.get_plugin_source(self.active_source_state)
+        if self.active_source and (
+            source := self.mass.players.get_plugin_source(self.active_source)
         ):
             return source.metadata
 
-        return None
+        return self._current_media
 
     @cached_property
     @final
@@ -954,7 +988,7 @@ class Player(ABC):
         for child_player in self.mass.players.iter_group_members(
             self, only_powered=True, exclude_self=self.type != PlayerType.PLAYER
         ):
-            if (child_volume := child_player.volume_state) is None:
+            if (child_volume := child_player.volume_level) is None:
                 continue
             group_volume += child_volume
             active_players += 1
@@ -1211,8 +1245,8 @@ class Player(ABC):
             static_group_members=UniqueList(self.static_group_members),
             can_group_with=self.can_group_with,
             synced_to=self.synced_to,
-            active_source=self.active_source_state,
-            source_list=self.source_list_state,
+            active_source=self.active_source,
+            source_list=self.source_list,
             active_group=self.active_group,
             current_media=self.current_media,
             name=self.display_name,
