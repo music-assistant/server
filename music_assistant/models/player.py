@@ -789,7 +789,7 @@ class Player(ABC):
         based on any group memberships or source plugins that can be active.
         """
         # if the player is grouped/synced, use the active source of the group/parent player
-        if parent_player_id := (self.synced_to or self.active_group):
+        if parent_player_id := (self.active_group or self.synced_to):
             return parent_player_id
         # in case player's source is None, return the player_id (to indicate MA is active source)
         return self.active_source or self.player_id
