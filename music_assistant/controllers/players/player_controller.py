@@ -509,7 +509,7 @@ class PlayerController(CoreController):
 
     @api_command("players/cmd/power")
     @handle_player_command
-    async def cmd_power(self, player_id: str, powered: bool, skip_update: bool = False) -> None:
+    async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.
 
         - player_id: player_id of the player to handle the command.
@@ -590,8 +590,7 @@ class PlayerController(CoreController):
                 await player_control.power_off()
 
         # always trigger a state update to update the UI
-        if not skip_update:
-            player.update_state()
+        player.update_state()
 
         # handle 'auto play on power on' feature
         if (
@@ -1087,7 +1086,7 @@ class PlayerController(CoreController):
 
             # power on the player if needed
             if not child_player.powered and child_player.power_control != PLAYER_CONTROL_NONE:
-                await self.cmd_power(child_player.player_id, True, skip_update=True)
+                await self.cmd_power(child_player.player_id, True)
             # if we reach here, all checks passed
             final_player_ids_to_add.append(child_player_id)
 

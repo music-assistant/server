@@ -155,7 +155,7 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def _current_media(self) -> PlayerMedia | None:
         """Return the current media item (if any) loaded in the player."""
-        return self.sync_leader.current_media if self.sync_leader else self._attr_current_media
+        return self.sync_leader._current_media if self.sync_leader else self._attr_current_media
 
     @property
     def _active_source(self) -> str | None:
@@ -166,7 +166,7 @@ class SyncGroupPlayer(GroupPlayer):
     def _source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
         if self.sync_leader:
-            return self.sync_leader.source_list
+            return self.sync_leader._source_list
         return []
 
     @property
