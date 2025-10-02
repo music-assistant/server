@@ -91,8 +91,8 @@ def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]
 # enhanced_title = enhance_title_with_upcoming(title, current_song, next_song, block_data)
 # enhanced_title = title  # TODO remove after frontend update
 
-return StreamMetadata(
-title=title,
+    return StreamMetadata(
+        title=title,
         artist=artist,
         album=album_display,
         image_url=image_url,
