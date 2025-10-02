@@ -1,8 +1,8 @@
 name-template: '$RESOLVED_VERSION'
 tag-template: '$RESOLVED_VERSION'
+version-template: "$MAJOR.$MINOR.0.b$PATCH"
 change-template: '- #$NUMBER - $TITLE (@$AUTHOR)'
-filter-by-commitish: true
-commitish: dev
+latest: false
 prerelease: true
 categories:
 

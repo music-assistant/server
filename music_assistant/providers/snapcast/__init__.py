@@ -36,9 +36,6 @@ from music_assistant.providers.snapcast.provider import SnapCastProvider
 SUPPORTED_FEATURES = {
     ProviderFeature.SYNC_PLAYERS,
     ProviderFeature.REMOVE_PLAYER,
-    # support sync groups by reporting create/remove player group support
-    ProviderFeature.CREATE_GROUP_PLAYER,
-    ProviderFeature.REMOVE_GROUP_PLAYER,
 }
 
 

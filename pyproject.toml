@@ -24,7 +24,7 @@ dependencies = [
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "mashumaro==3.16",
-  "music-assistant-frontend==2.16.1",
+  "music-assistant-frontend==2.16.3",
   "music-assistant-models==1.1.60",
   "mutagen==1.47.0",
   "orjson==3.11.3",
@@ -33,7 +33,7 @@ dependencies = [
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
   "unidecode==1.4.0",
-  "xmltodict==0.14.2",
+  "xmltodict==1.0.2",
   "shortuuid==1.0.13",
   "zeroconf==0.147.2",
   "uv>=0.8.0",
@@ -58,11 +58,10 @@ test = [
   "pytest==8.4.2",
   "pytest-aiohttp==1.1.0",
   "pytest-cov==7.0.0",
-  "syrupy==4.9.1",
+  "syrupy==5.0.0",
   "tomli==2.2.1",
   "ruff==0.12.12",
 ]
-
 
 [project.scripts]
 mass = "music_assistant.__main__:main"
@@ -130,14 +129,21 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/controllers/.*$',
+  '^music_assistant/controllers/__init__.py$',
+  '^music_assistant/controllers/cache.py$',
+  '^music_assistant/controllers/config.py$',
+  '^music_assistant/controllers/media/.*$',
+  '^music_assistant/controllers/metadata.py$',
+  '^music_assistant/controllers/music.py$',
+  '^music_assistant/controllers/player_queues.py$',
+  '^music_assistant/controllers/players/player_controller.py',
+  '^music_assistant/controllers/streams.py$',
+  '^music_assistant/controllers/webserver.py',
   '^music_assistant/helpers/app_vars.py',
-  '^music_assistant/helpers/webserver.py',
   '^music_assistant/models/player_provider.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
   '^music_assistant/providers/chromecast/.*$',
-  '^music_assistant/providers/deezer/.*$',
   '^music_assistant/providers/dlna/.*$',
   '^music_assistant/providers/hass_players/.*$',
   '^music_assistant/providers/player_group/.*$',
@@ -147,8 +153,6 @@ exclude = [
   '^music_assistant/providers/sonos/.*$',
   '^music_assistant/providers/soundcloud/.*$',
   '^music_assistant/providers/snapcast/.*$',
-  '^music_assistant/providers/spotify/.*$',
-  '^music_assistant/providers/tunein/.*$',
   '^music_assistant/providers/ytmusic/.*$',
 ]
 extra_checks = false

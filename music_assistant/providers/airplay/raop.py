@@ -122,7 +122,7 @@ class RaopStreamSession:
         if sync_leader.current_media:
             self.mass.call_later(
                 0.5,
-                sync_leader.play_media(sync_leader.current_media),
+                self.mass.players.cmd_resume(sync_leader.player_id),
                 task_id=f"resync_session_{sync_leader.player_id}",
             )
 

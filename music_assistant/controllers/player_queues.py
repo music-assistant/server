@@ -65,7 +65,6 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_details
-from music_assistant.helpers.smart_fades import SmartFadesAnalyzer
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
@@ -142,7 +141,6 @@ class PlayerQueuesController(CoreController):
             "Music Assistant's core controller which manages the queues for all players."
         )
         self.manifest.icon = "playlist-music"
-        self._smart_fades_analyzer = SmartFadesAnalyzer(self.mass)
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -1009,13 +1007,13 @@ class PlayerQueuesController(CoreController):
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
-    async def preload_next_queue_item(
+    async def load_next_queue_item(
         self,
         queue_id: str,
         current_item_id: str,
     ) -> QueueItem:
         """
-        Call when a player wants (to preload) the next queue item to play.
+        Call when a player wants the next queue item to play.
 
         Raises QueueEmpty if there are no more tracks left.
         """
@@ -1161,9 +1159,9 @@ class PlayerQueuesController(CoreController):
         )
         # allow stripping silence from the begin/end of the track if crossfade is enabled
         # this will allow for (much) smoother crossfades
-        if await self.mass.config.get_player_config_value(queue_id, CONF_SMART_FADES_MODE) in (
-            SmartFadesMode.STANDARD_CROSSFADE,
-            SmartFadesMode.SMART_FADES,
+        if (
+            await self.mass.config.get_player_config_value(queue_id, CONF_SMART_FADES_MODE)
+            != SmartFadesMode.DISABLED
         ):
             queue_item.streamdetails.strip_silence_end = True
             queue_item.streamdetails.strip_silence_begin = not is_start
@@ -1591,15 +1589,9 @@ class PlayerQueuesController(CoreController):
                     retries -= 1
                     await asyncio.sleep(1)
 
-                if next_item := await self.preload_next_queue_item(queue_id, item_id_in_buffer):
+                if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
                     self._enqueue_next_item(queue_id, next_item)
-                    if (
-                        await self.mass.config.get_player_config_value(
-                            queue_id, CONF_SMART_FADES_MODE
-                        )
-                        == SmartFadesMode.SMART_FADES
-                    ):
-                        self._trigger_smart_fades_analysis(next_item)
+
             except QueueEmpty:
                 return
 
@@ -2139,22 +2131,3 @@ class PlayerQueuesController(CoreController):
                 is_playing=is_playing,
             ),
         )
-
-    def _trigger_smart_fades_analysis(self, next_item: QueueItem) -> None:
-        """Trigger analysis for smart fades if needed."""
-        if not next_item.streamdetails:
-            self.logger.warning("No stream details for smart fades analysis: %s", next_item.name)
-            return
-        if next_item.streamdetails.smart_fades:
-            return
-
-        async def _trigger_smart_fades_analysis(next_item: QueueItem) -> None:
-            analysis = await self._smart_fades_analyzer.analyze(next_item.streamdetails)
-            # Store the analysis on the queue item for future reference
-            next_item.streamdetails.smart_fades = analysis
-
-        task_id = (
-            f"smart_fades_analysis_{next_item.streamdetails.provider}_"
-            f"{next_item.streamdetails.item_id}"
-        )
-        self.mass.create_task(_trigger_smart_fades_analysis, next_item, task_id=task_id)

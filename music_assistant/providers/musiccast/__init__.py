@@ -11,9 +11,6 @@ from .provider import MusicCastProvider
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SYNC_PLAYERS,
-    # support sync groups by reporting create/remove player group support
-    ProviderFeature.CREATE_GROUP_PLAYER,
-    ProviderFeature.REMOVE_GROUP_PLAYER,
 }
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import shutil
@@ -67,13 +66,14 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
-from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
+from music_assistant.helpers.smart_fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.smart_fades import SmartFadesAnalysis
+from music_assistant.models.smart_fades import SmartFadesAnalysis, SmartFadesAnalysisFragment
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -92,7 +92,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 20
+DB_SCHEMA_VERSION: Final[int] = 21
 
 CACHE_CATEGORY_LAST_SYNC: Final[int] = 9
 
@@ -169,6 +169,18 @@ class MusicController(CoreController):
         """Cleanup on exit."""
         if self.database:
             await self.database.close()
+
+    async def on_provider_loaded(self, provider: MusicProvider) -> None:
+        """Handle logic when a provider is loaded."""
+        await self.schedule_provider_sync(provider.instance_id)
+
+    async def on_provider_unload(self, provider: MusicProvider) -> None:
+        """Handle logic when a provider is (about to get) unloaded."""
+        # make sure to stop any running sync tasks first
+        for sync_task in self.in_progress_syncs:
+            if sync_task.provider_instance == provider.instance_id:
+                if sync_task.task:
+                    sync_task.task.cancel()
 
     @property
     def providers(self) -> list[MusicProvider]:
@@ -846,15 +858,23 @@ class MusicController(CoreController):
         """Store Smart Fades BPM analysis for a track in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return
-        if analysis.bpm <= 0 or analysis.confidence < 0:
-            # skip invalid values
+        if (
+            analysis.duration <= 0.75 * SMART_CROSSFADE_DURATION
+            or analysis.bpm <= 0
+            or analysis.confidence < 0
+        ):
+            # skip invalid values, we skip analysis that were performed on
+            # a short amount of audio as those are often unreliable
             return
+        beats_json = await asyncio.to_thread(lambda: json_dumps(analysis.beats.tolist()))
+        downbeats_json = await asyncio.to_thread(lambda: json_dumps(analysis.downbeats.tolist()))
         values = {
+            "fragment": analysis.fragment.value,
             "item_id": item_id,
             "provider": provider.lookup_key,
             "bpm": analysis.bpm,
-            "beats": json.dumps(analysis.beats.tolist()),
-            "downbeats": json.dumps(analysis.downbeats.tolist()),
+            "beats": beats_json,
+            "downbeats": downbeats_json,
             "confidence": analysis.confidence,
             "duration": analysis.duration,
         }
@@ -864,6 +884,7 @@ class MusicController(CoreController):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        fragment: SmartFadesAnalysisFragment,
     ) -> SmartFadesAnalysis | None:
         """Get Smart Fades BPM analysis for a track from db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
@@ -873,13 +894,17 @@ class MusicController(CoreController):
             {
                 "item_id": item_id,
                 "provider": provider.lookup_key,
+                "fragment": fragment.value,
             },
         )
         if db_row and db_row["bpm"] > 0:
+            beats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["beats"])))
+            downbeats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["downbeats"])))
             return SmartFadesAnalysis(
+                fragment=SmartFadesAnalysisFragment(db_row["fragment"]),
                 bpm=float(db_row["bpm"]),
-                beats=np.array(json.loads(db_row["beats"])),
-                downbeats=np.array(json.loads(db_row["downbeats"])),
+                beats=beats,
+                downbeats=downbeats,
                 confidence=float(db_row["confidence"]),
                 duration=float(db_row["duration"]),
             )
@@ -1725,9 +1750,18 @@ class MusicController(CoreController):
         if prev_version <= 20:
             # drop column cache_checksum from playlists table
             # this is no longer used and is a leftover from previous designs
-            await self.database.execute(
-                f"ALTER TABLE {DB_TABLE_PLAYLISTS} DROP COLUMN cache_checksum"
-            )
+            try:
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} DROP COLUMN cache_checksum"
+                )
+            except Exception as err:
+                if "no such column" not in str(err):
+                    raise
+
+        if prev_version <= 21:
+            # drop table for smart fades analysis - it will be recreated with needed columns
+            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}")
+            await self.__create_database_tables()
 
         # save changes
         await self.database.commit()
@@ -1963,6 +1997,7 @@ class MusicController(CoreController):
                     [id] INTEGER PRIMARY KEY AUTOINCREMENT,
                     [item_id] TEXT NOT NULL,
                     [provider] TEXT NOT NULL,
+                    [fragment] INTEGER NOT NULL,
                     [bpm] REAL NOT NULL,
                     [beats] TEXT NOT NULL,
                     [downbeats] TEXT NOT NULL,
@@ -1970,7 +2005,7 @@ class MusicController(CoreController):
                     [duration] REAL,
                     [analysis_version] INTEGER DEFAULT 1,
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider));"""
+                    UNIQUE(item_id,provider,fragment));"""
         )
 
         await self.database.commit()
@@ -2081,7 +2116,7 @@ class MusicController(CoreController):
         # index on smart fades analysis table
         await self.database.execute(
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_SMART_FADES_ANALYSIS}_idx "
-            f"on {DB_TABLE_SMART_FADES_ANALYSIS}(item_id,provider);"
+            f"on {DB_TABLE_SMART_FADES_ANALYSIS}(item_id,provider,fragment);"
         )
         await self.database.commit()
 
