@@ -85,8 +85,8 @@ def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]
         duration = int(duration) // 1000  # Convert from ms to seconds
 
     # Add upcoming tracks info to title for scrolling display
-    next_song = metadata.get("next")  #noqa: F841
-    block_data = metadata.get("block_data"). # noqa: F841
+    # next_song = metadata.get("next")
+    # block_data = metadata.get("block_data")
 # TODO: Find a way to forward the next_song data to the frontend in the stream metadata
 # enhanced_title = enhance_title_with_upcoming(title, current_song, next_song, block_data)
 # enhanced_title = title  # TODO remove after frontend update
