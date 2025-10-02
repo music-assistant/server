@@ -753,7 +753,7 @@ class Player(ABC):
             return custom_name
         return self.name or self._config.default_name or self.player_id
 
-    @cached_property
+    @property
     @final
     def powered(self) -> bool | None:
         """
@@ -813,7 +813,7 @@ class Player(ABC):
             return control.volume_muted
         return None
 
-    @cached_property
+    @property
     @final
     def active_source(self) -> str | None:
         """
@@ -824,7 +824,8 @@ class Player(ABC):
         """
         # if the player is grouped/synced, use the active source of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
-            return parent_player_id
+            if parent_player := self.mass.players.get(parent_player_id):
+                return parent_player.active_source
         # in case player's source is None, return the player_id (to indicate MA is active source)
         return self._active_source or self.player_id
 
@@ -917,7 +918,7 @@ class Player(ABC):
         active_groups = self.active_groups
         return active_groups[0] if active_groups else None
 
-    @cached_property
+    @property
     @final
     def current_media(self) -> PlayerMedia | None:
         """
