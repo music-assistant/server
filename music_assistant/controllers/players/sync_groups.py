@@ -485,8 +485,8 @@ class SyncGroupPlayer(GroupPlayer):
             await self._form_syncgroup()
 
             # Restart playback if requested and we have media to play
-            if was_playing and self.current_media is not None:
-                await new_leader.play_media(self.current_media)
+            if was_playing:
+                await self.mass.players.cmd_resume(self.player_id)
         else:
             # We have no leader anymore, send update since we stopped playback
             self.update_state()
