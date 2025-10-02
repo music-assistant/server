@@ -398,6 +398,7 @@ class SyncGroupPlayer(GroupPlayer):
         ]
         self.update_state()
         members_to_sync: list[str] = []
+        members_to_remove: list[str] = []
         for member in self.mass.players.iter_group_members(self, active_only=False):
             # Handle collisions before attempting to sync
             await self._handle_member_collisions(member)
@@ -415,8 +416,13 @@ class SyncGroupPlayer(GroupPlayer):
                 # already synced
                 continue
             members_to_sync.append(member.player_id)
-        if members_to_sync:
-            await self.sync_leader.set_members(members_to_sync)
+        for former_members in self.sync_leader.group_members:
+            if (
+                former_members not in members_to_sync
+            ) and former_members != self.sync_leader.player_id:
+                members_to_remove.append(former_members)
+        if members_to_sync or members_to_remove:
+            await self.sync_leader.set_members(members_to_sync, members_to_remove)
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members and restoring leader queue."""
