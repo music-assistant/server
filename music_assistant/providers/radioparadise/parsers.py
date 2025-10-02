@@ -50,7 +50,7 @@ def parse_radio(
     return radio
 
 
-def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]) -> StreamMetadata:
+def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]) -> StreamMetadata:  # noqa: ARG001
     """Build StreamMetadata with current track info and upcoming tracks.
 
     Args:
