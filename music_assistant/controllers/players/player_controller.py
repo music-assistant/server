@@ -566,6 +566,7 @@ class PlayerController(CoreController):
             # user wants to use fake power control - so we (optimistically) update the state
             # and store the state in the cache
             player.extra_data[ATTR_FAKE_POWER] = powered
+            player.update_state()  # trigger update of the player state
             await self.mass.cache.set(
                 key=player_id,
                 data=powered,
@@ -588,13 +589,7 @@ class PlayerController(CoreController):
                 assert player_control.power_off is not None  # for type checking
                 await player_control.power_off()
 
-        # always optimistically set the power state to update the UI
-        # as fast as possible and prevent race conditions
-        player_state.powered = powered
-        # reset active source on power off
-        if not powered:
-            player_state.active_source = None
-
+        # always trigger a state update to update the UI
         if not skip_update:
             player.update_state()
 
@@ -667,7 +662,7 @@ class PlayerController(CoreController):
         """
         if not (player := self.get(player_id)):
             return
-        current_volume = player.volume_state or 0
+        current_volume = player.volume_level or 0
         if current_volume < 5 or current_volume > 95:
             step_size = 1
         elif current_volume < 20 or current_volume > 80:
@@ -686,7 +681,7 @@ class PlayerController(CoreController):
         """
         if not (player := self.get(player_id)):
             return
-        current_volume = player.volume_state or 0
+        current_volume = player.volume_level or 0
         if current_volume < 5 or current_volume > 95:
             step_size = 1
         elif current_volume < 20 or current_volume > 80:
@@ -787,14 +782,16 @@ class PlayerController(CoreController):
                 player.display_name,
             )
             if muted:
-                player.extra_data[ATTR_PREVIOUS_VOLUME] = player.volume_state
+                player.extra_data[ATTR_PREVIOUS_VOLUME] = player.volume_level
                 player.extra_data[ATTR_FAKE_MUTE] = True
                 await self.cmd_volume_set(player_id, 0)
+                player.update_state()
             else:
                 player._attr_volume_muted = False
                 prev_volume = player.extra_data.get(ATTR_PREVIOUS_VOLUME, 1)
                 player.extra_data[ATTR_FAKE_MUTE] = False
                 await self.cmd_volume_set(player_id, prev_volume)
+                player.update_state()
         else:
             # handle external player control
             player_control = self._controls.get(player.mute_control)
