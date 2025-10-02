@@ -419,6 +419,9 @@ class PlayerController(CoreController):
         player = self._get_player_with_redirect(player_id)
         source = source or player.active_source
         media = media or player.current_media
+        # power on the player if needed
+        if not player.powered and player.power_control != PLAYER_CONTROL_NONE:
+            await self.cmd_power(player.player_id, True)
         # Redirect to queue controller if it is active
         if active_queue := self.mass.player_queues.get(source or player_id):
             await self.mass.player_queues.resume(active_queue.queue_id)
@@ -442,7 +445,7 @@ class PlayerController(CoreController):
             await player.play_media(media)
             return
         # fallback: just send play command - which will fail if nothing can be played
-        await self.cmd_play(player.player_id)
+        await player.play()
 
     @api_command("players/cmd/seek")
     async def cmd_seek(self, player_id: str, position: int) -> None:
