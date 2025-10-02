@@ -420,8 +420,10 @@ class ChromecastPlayer(Player):
         elif status.player_is_paused:
             self._attr_playback_state = PlaybackState.PAUSED
             self._attr_current_media = None
+            self._attr_current_media = None
         else:
             self._attr_playback_state = PlaybackState.IDLE
+            self._attr_current_media = None
             self._attr_current_media = None
 
         # elapsed time

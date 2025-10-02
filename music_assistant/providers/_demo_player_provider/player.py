@@ -191,6 +191,8 @@ class DemoPlayer(Player):
         logger = self.provider.logger.getChild(self.player_id)
         logger.info("Received STOP command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
         self.update_state()
 
     async def pause(self) -> None:

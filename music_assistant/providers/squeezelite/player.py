@@ -194,6 +194,8 @@ class SqueezelitePlayer(Player):
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 tg.create_task(client.stop())
+        self._attr_active_source = None
+        self.update_state()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""

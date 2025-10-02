@@ -183,6 +183,9 @@ class AirPlayPlayer(Player):
         if self.raop_stream and self.raop_stream.session:
             # forward stop to the entire stream session
             await self.raop_stream.session.stop()
+        self._attr_active_source = None
+        self._attr_current_media = None
+        self.update_state()
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to player."""
