@@ -398,7 +398,7 @@ class SqueezelitePlayer(Player):
                 artist=metadata.get("artist"),
                 image_url=metadata.get("image_url"),
                 duration=metadata.get("duration"),
-                queue_id=metadata.get("queue_id"),
+                source_id=metadata.get("source_id"),
                 queue_item_id=metadata.get("queue_item_id"),
             )
         else:
@@ -421,7 +421,7 @@ class SqueezelitePlayer(Player):
             "artist": media.artist,
             "image_url": media.image_url,
             "duration": media.duration,
-            "queue_id": media.source_id,
+            "source_id": media.source_id,
             "queue_item_id": media.queue_item_id,
         }
         if queue := self.mass.player_queues.get(media.source_id):
