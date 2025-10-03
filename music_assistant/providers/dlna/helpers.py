@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 
-class DLNANotifyServer(UpnpNotifyServer):
+class DLNANotifyServer(UpnpNotifyServer):  # type: ignore[misc]
     """Notify server for async_upnp_client which uses the MA webserver."""
 
     def __init__(
@@ -35,7 +35,7 @@ class DLNANotifyServer(UpnpNotifyServer):
         # transform aiohttp request to async_upnp_client request
         http_request = HttpRequest(
             method=request.method,
-            url=request.url,
+            url=str(request.url),
             headers=request.headers,
             body=await request.text(),
         )

@@ -170,6 +170,18 @@ class MusicController(CoreController):
         if self.database:
             await self.database.close()
 
+    async def on_provider_loaded(self, provider: MusicProvider) -> None:
+        """Handle logic when a provider is loaded."""
+        await self.schedule_provider_sync(provider.instance_id)
+
+    async def on_provider_unload(self, provider: MusicProvider) -> None:
+        """Handle logic when a provider is (about to get) unloaded."""
+        # make sure to stop any running sync tasks first
+        for sync_task in self.in_progress_syncs:
+            if sync_task.provider_instance == provider.instance_id:
+                if sync_task.task:
+                    sync_task.task.cancel()
+
     @property
     def providers(self) -> list[MusicProvider]:
         """Return all loaded/running MusicProviders (instances)."""

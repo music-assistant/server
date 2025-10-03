@@ -177,6 +177,9 @@ class ResonatePlayer(Player):
         self.logger.debug("Received STOP command on player %s", self.display_name)
         # We don't care if we stopped the stream or it was already stopped
         self.api.group.stop()
+        self._attr_active_source = None
+        self._attr_current_media = None
+        self.update_state()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""

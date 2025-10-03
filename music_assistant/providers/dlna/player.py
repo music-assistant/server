@@ -128,14 +128,13 @@ class DLNAPlayer(Player):
     def _handle_event(
         self,
         service: UpnpService,
-        state_variables: Sequence[UpnpStateVariable],
+        state_variables: Sequence[UpnpStateVariable[Any]],
     ) -> None:
         """Handle state variable(s) changed event from DLNA device."""
         if not state_variables:
             # Indicates a failure to resubscribe, check if device is still available
             self.force_poll = True
             return
-
         if service.service_id == "urn:upnp-org:serviceId:AVTransport":
             for state_variable in state_variables:
                 # Force a state refresh when player begins or pauses playback
@@ -151,7 +150,6 @@ class DLNAPlayer(Player):
                         self.display_name,
                         state_variable.value,
                     )
-
         self.last_seen = time.time()
         self.mass.create_task(self._update_player())
 
