@@ -902,7 +902,9 @@ class PlayerController(CoreController):
                     pre_announce_url=pre_announce_url,
                 )
                 announcement = PlayerMedia(
-                    uri=self.mass.streams.get_announcement_url(player_id, url, announce_data),
+                    uri=self.mass.streams.get_announcement_url(
+                        player_id, announce_data=announce_data
+                    ),
                     media_type=MediaType.ANNOUNCEMENT,
                     title="Announcement",
                     custom_data=announce_data,
