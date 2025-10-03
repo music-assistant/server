@@ -64,6 +64,7 @@ from music_assistant.constants import (
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
+    SYNCGROUP_PREFIX,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
@@ -1420,8 +1421,12 @@ class PlayerController(CoreController):
             # we simply permanently delete the player config since it is not registered
             self.delete_player_config(player_id)
             return
+        if player.type == PlayerType.GROUP and player_id.startswith(SYNCGROUP_PREFIX):
+            await self._sync_groups.remove_group_player(player_id)
+            return
         if player.type == PlayerType.GROUP:
             # Handle group player removal
+            player.provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
             await player.provider.remove_group_player(player_id)
             return
         player.provider.check_feature(ProviderFeature.REMOVE_PLAYER)
