@@ -11,7 +11,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamMetadata
 
 from .constants import RADIO_PARADISE_CHANNELS, STATION_ICONS_BASE_URL
-from .helpers import enhance_title_with_upcoming
+from .helpers import enhance_title_with_upcoming  # noqa: F401
 
 
 def parse_radio(
@@ -50,7 +50,7 @@ def parse_radio(
     return radio
 
 
-def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]) -> StreamMetadata:
+def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]) -> StreamMetadata:  # noqa: ARG001
     """Build StreamMetadata with current track info and upcoming tracks.
 
     Args:
@@ -85,12 +85,14 @@ def build_stream_metadata(current_song: dict[str, Any], metadata: dict[str, Any]
         duration = int(duration) // 1000  # Convert from ms to seconds
 
     # Add upcoming tracks info to title for scrolling display
-    next_song = metadata.get("next")
-    block_data = metadata.get("block_data")
-    enhanced_title = enhance_title_with_upcoming(title, current_song, next_song, block_data)
+    # next_song = metadata.get("next")
+    # block_data = metadata.get("block_data")
+    # TODO: Find a way to forward the next_song data to the frontend in the stream metadata
+    # enhanced_title = enhance_title_with_upcoming(title, current_song, next_song, block_data)
+    # enhanced_title = title  # TODO remove after frontend update
 
     return StreamMetadata(
-        title=enhanced_title,
+        title=title,
         artist=artist,
         album=album_display,
         image_url=image_url,
