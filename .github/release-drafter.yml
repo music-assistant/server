@@ -34,12 +34,9 @@ template: |
 
   $CHANGES
 
-  
+
   ## :bow: Thanks to our contributors
 
   Special thanks to the following contributors who helped with this release:
 
   $CONTRIBUTORS
-
-
-
