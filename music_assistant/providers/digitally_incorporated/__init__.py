@@ -676,7 +676,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 self.logger.debug(
                     "%s: Added genres %s for channel %s", self.domain, genres, prov_id
                 )
-        except Exception as err:
+        except (ProviderUnavailableError, MediaNotFoundError, aiohttp.ClientError) as err:
             # Don't fail the entire conversion if genre lookup fails
             self.logger.debug(
                 "%s: Failed to get genres for channel %s: %s", self.domain, prov_id, err
