@@ -571,7 +571,7 @@ class SonosPlayer(Player):
             # append airplay child's to group childs
             if self.airplay_mode_enabled and airplay_player:
                 airplay_childs = [
-                    x for x in airplay_player._attr_group_members if x != airplay_player.player_id
+                    x for x in airplay_player.group_members if x != airplay_player.player_id
                 ]
                 self._attr_group_members.extend(airplay_childs)
                 airplay_prov = airplay_player.provider
