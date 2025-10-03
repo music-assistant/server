@@ -487,8 +487,12 @@ class ARDAudiothek(MusicProvider):
     ) -> AsyncGenerator[PodcastEpisode, None]:
         """Get podcast episodes."""
         await self._update_progress()
+        depublished_filter = {"isPublished": {"equalTo": True}}
         async with await self.get_client() as session:
-            show_length_query.variable_values = {"showId": prov_podcast_id}
+            show_length_query.variable_values = {
+                "showId": prov_podcast_id,
+                "filter": depublished_filter,
+            }
             length = await session.execute(show_length_query)
             length = length["show"]["items"]["totalCount"]
             step_size = 128
@@ -497,6 +501,7 @@ class ARDAudiothek(MusicProvider):
                     "showId": prov_podcast_id,
                     "first": step_size,
                     "offset": offset,
+                    "filter": depublished_filter,
                 }
                 result = (await session.execute(show_query))["show"]
                 for idx, episode in enumerate(result["items"]["nodes"]):
