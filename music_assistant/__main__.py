@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import threading
@@ -59,7 +58,7 @@ def get_arguments() -> argparse.Namespace:
         "--cache-dir",
         metavar="path_to_cache_dir",
         default=default_cache_dir,
-        help="Directory that contains MusicAssistant cache data",
+        help="Directory that contains MusicAssistant cache data [optional]",
     )
     parser.add_argument(
         "--log-level",
@@ -193,12 +192,6 @@ def main() -> None:
 
     data_dir = args.data_dir
     cache_dir = args.cache_dir
-
-    # move legacy cache directory
-    old_cache_dir = os.path.join(data_dir, ".cache")
-    if os.path.isdir(old_cache_dir) and old_cache_dir != cache_dir:
-        with suppress(OSError):
-            shutil.move(old_cache_dir, cache_dir)
 
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
