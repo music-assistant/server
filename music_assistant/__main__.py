@@ -37,19 +37,15 @@ def get_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MusicAssistant")
 
     # determine default data directory
-    if os.path.isdir(old_data_dir := os.path.join(os.path.expanduser("~"), ".musicassistant")):
-        # prefer (existing) legacy directory
-        default_data_dir = old_data_dir
+    if xdg_data_home := os.getenv("XDG_DATA_HOME"):
+        default_data_dir = os.path.join(xdg_data_home, "music-assistant")
     else:
-        default_data_dir = os.path.join(
-            os.getenv("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share")),
-            "music-assistant",
-        )
-
-    default_cache_dir = os.path.join(
-        os.getenv("XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")),
-        "music-assistant",
-    )
+        default_data_dir = os.path.join(os.path.expanduser("~"), ".musicassistant")
+    # determine default cache directory
+    if xdg_cache_home := os.getenv("XDG_CACHE_HOME"):
+        default_cache_dir = os.path.join(xdg_cache_home, "music-assistant")
+    else:
+        default_cache_dir = os.path.join(default_data_dir, ".cache")
 
     parser.add_argument(
         "--data-dir",
@@ -206,9 +202,10 @@ def main() -> None:
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(cache_dir, exist_ok=True)
 
-    # TEMP: override options though hass config file
+    # Override options though hass add-on config file
     hass_options_file = os.path.join(data_dir, "options.json")
     if os.path.isfile(hass_options_file):
+        # we are running as a hass add-on
         with open(hass_options_file, "rb") as _file:
             hass_options = json_loads(_file.read())
     else:
