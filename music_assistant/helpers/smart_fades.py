@@ -253,6 +253,15 @@ class SmartFadesMixer:
         mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
     ) -> bytes:
         """Apply crossfade with internal state management and smart/standard fallback logic."""
+        if mode == SmartFadesMode.STANDARD_CROSSFADE:
+            # crossfade with standard crossfade
+            return await self._default_crossfade(
+                fade_in_part,
+                fade_out_part,
+                pcm_format,
+                standard_crossfade_duration,
+            )
+        # Attempt smart crossfade with analysis data
         fade_out_analysis: SmartFadesAnalysis | None
         if stored_analysis := await self.mass.music.get_smart_fades_analysis(
             fade_out_streamdetails.item_id,

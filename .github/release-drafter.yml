@@ -2,7 +2,7 @@ name-template: '$RESOLVED_VERSION'
 tag-template: '$RESOLVED_VERSION'
 version-template: "$MAJOR.$MINOR.0.b$PATCH"
 change-template: '- #$NUMBER - $TITLE (@$AUTHOR)'
-latest: false
+latest: 'false'
 prerelease: true
 categories:
 
