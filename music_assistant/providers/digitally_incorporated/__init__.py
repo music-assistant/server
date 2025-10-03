@@ -71,6 +71,7 @@ SUPPORTED_FEATURES = {
 API_BASE_URL = "api.audioaddict.com/v1"
 API_TIMEOUT = 30
 CACHE_CHANNELS = 86400  # 24 hours
+CACHE_GENRES = 86400  # 24 hours
 CACHE_STREAM_URL = 3600  # 1 hour
 
 # Rate limiting
@@ -79,7 +80,6 @@ RATE_PERIOD = 1  # second
 
 # Validation constants
 MIN_LISTEN_KEY_LENGTH = 10
-HTTPS_SCHEME_PREFIX = "//"
 
 # Digitally Incorporated radio services configuration
 NETWORKS = {
@@ -247,7 +247,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 for channel_data in channels:
                     channel_name = str(channel_data.get("name", "")).lower()
                     if search_query_lower in channel_name:
-                        radio = self._channel_to_radio(channel_data, network_key)
+                        radio = await self._channel_to_radio(channel_data, network_key)
                         radios.append(radio)
 
                         if len(radios) >= limit:
@@ -278,7 +278,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
                 channels = await self._get_channels(network_key)
 
                 for channel_data in channels:
-                    yield self._channel_to_radio(channel_data, network_key)
+                    yield await self._channel_to_radio(channel_data, network_key)
 
             except (
                 ProviderUnavailableError,
@@ -301,7 +301,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
 
         for channel_data in channels:
             if channel_data["key"] == channel_key:
-                return self._channel_to_radio(channel_data, network_key)
+                return await self._channel_to_radio(channel_data, network_key)
 
         msg = f"{self.domain}: Radio station not found: {prov_radio_id}"
         raise MediaNotFoundError(msg)
@@ -409,9 +409,10 @@ class DigitallyIncorporatedProvider(MusicProvider):
             self.logger.debug(
                 "%s: Found %d channels for network %s", self.domain, len(channels), network_key
             )
-            radio_items: list[MediaItemType | BrowseFolder] = [
-                self._channel_to_radio(ch, network_key) for ch in channels
-            ]
+            radio_items: list[MediaItemType | BrowseFolder] = []
+            for ch in channels:
+                radio = await self._channel_to_radio(ch, network_key)
+                radio_items.append(radio)
             self.logger.debug("%s: Converted to %d radio items", self.domain, len(radio_items))
             return radio_items
         except (
@@ -486,23 +487,71 @@ class DigitallyIncorporatedProvider(MusicProvider):
 
     @use_cache(CACHE_CHANNELS)
     async def _get_channels(self, network_key: str) -> list[dict[str, Any]]:
-        """Get listenable channels for a specific network (optimized single call)."""
+        """Get channels for a specific network."""
         try:
-            # Get only listenable channels directly - no need for two API calls
-            channels_response = await self._api_request(network_key, "listen/channels")
+            # Get all channel data (includes images, descriptions, etc.)
+            channels_response = await self._api_request(network_key, "channels")
 
             if not channels_response or not isinstance(channels_response, list):
                 self.logger.warning("No channels returned for network %s", network_key)
                 return []
 
-            # Ensure all items are dictionaries
+            self.logger.debug(
+                "%s: Retrieved %d channels for network %s",
+                self.domain,
+                len(channels_response),
+                network_key,
+            )
+
+            # Ensure all items are dictionaries and filter out disabled channels
             channels: list[dict[str, Any]] = [
-                ch for ch in channels_response if isinstance(ch, dict)
+                ch
+                for ch in channels_response
+                if isinstance(ch, dict) and not self._is_disabled_channel(ch)
             ]
+
             return channels
 
         except (ProviderUnavailableError, MediaNotFoundError, aiohttp.ClientError) as err:
             self.logger.error("Failed to get channels for network %s: %s", network_key, err)
+            raise
+
+    @use_cache(CACHE_GENRES)
+    async def _get_channel_filters(self, network_key: str) -> list[dict[str, Any]]:
+        """Get channel filters (genre information) for a specific network."""
+        try:
+            # Get genre/filter data
+            filters_response = await self._api_request(network_key, "channel_filters")
+
+            if not filters_response or not isinstance(filters_response, list):
+                self.logger.warning("No channel filters returned for network %s", network_key)
+                return []
+
+            self.logger.debug(
+                "%s: Retrieved %d channel filters for network %s",
+                self.domain,
+                len(filters_response),
+                network_key,
+            )
+
+            # Ensure all items are dictionaries and filter for actual genres
+            # (genre=True indicates actual genre categories vs meta categories)
+            genre_filters: list[dict[str, Any]] = [
+                f for f in filters_response if isinstance(f, dict) and f.get("genre", False)
+            ]
+
+            self.logger.debug(
+                "%s: Found %d genre filters (out of %d total filters) for network %s",
+                self.domain,
+                len(genre_filters),
+                len(filters_response),
+                network_key,
+            )
+
+            return genre_filters
+
+        except (ProviderUnavailableError, MediaNotFoundError, aiohttp.ClientError) as err:
+            self.logger.error("Failed to get channel filters for network %s: %s", network_key, err)
             raise
 
     @use_cache(CACHE_STREAM_URL)
@@ -557,7 +606,52 @@ class DigitallyIncorporatedProvider(MusicProvider):
             )
             raise MediaNotFoundError(f"{self.domain}: Unable to get stream URL: {err}") from err
 
-    def _channel_to_radio(self, channel_data: dict[str, Any], network_key: str) -> Radio:
+    async def _get_channel_genres(
+        self, channel_data: dict[str, Any], network_key: str
+    ) -> list[str]:
+        """Get genre names for a channel based on its filter IDs."""
+        channel_filter_ids = channel_data.get("channel_filter_ids", [])
+        if not channel_filter_ids:
+            return []
+
+        try:
+            # Get the genre filters for this network
+            genre_filters = await self._get_channel_filters(network_key)
+
+            # Create a mapping of filter ID to genre name
+            filter_id_to_name = {
+                f["id"]: f["name"]
+                for f in genre_filters
+                if isinstance(f, dict) and "id" in f and "name" in f
+            }
+
+            # Map channel filter IDs to genre names
+            genres = [
+                filter_id_to_name[filter_id]
+                for filter_id in channel_filter_ids
+                if filter_id in filter_id_to_name
+            ]
+
+            self.logger.debug(
+                "%s: Mapped channel filter IDs %s to genres %s for channel %s",
+                self.domain,
+                channel_filter_ids,
+                genres,
+                channel_data.get("key", "unknown"),
+            )
+
+            return genres
+
+        except (ProviderUnavailableError, MediaNotFoundError, aiohttp.ClientError) as err:
+            self.logger.debug(
+                "%s: Failed to get genres for channel %s: %s",
+                self.domain,
+                channel_data.get("key", "unknown"),
+                err,
+            )
+            return []
+
+    async def _channel_to_radio(self, channel_data: dict[str, Any], network_key: str) -> Radio:
         """Convert channel data to Radio object."""
         # Create provider ID as network:channel_key
         channel_key = channel_data.get("key")
@@ -567,17 +661,33 @@ class DigitallyIncorporatedProvider(MusicProvider):
 
         prov_id = f"{network_key}:{channel_key}"
         channel_name = str(channel_data.get("name", "Unknown"))
-        network_info = NETWORKS[network_key]
 
-        # Create metadata with optional image
+        # Create metadata with optional image and genres
         metadata = MediaItemMetadata(
-            description=f"{network_info['description']} - {channel_name}",
+            description=self._get_description(channel_data),
             explicit=False,
         )
+
+        # Add genre information
+        try:
+            genres = await self._get_channel_genres(channel_data, network_key)
+            if genres:
+                metadata.genres = set(genres)
+                self.logger.debug(
+                    "%s: Added genres %s for channel %s", self.domain, genres, prov_id
+                )
+        except Exception as err:
+            # Don't fail the entire conversion if genre lookup fails
+            self.logger.debug(
+                "%s: Failed to get genres for channel %s: %s", self.domain, prov_id, err
+            )
 
         # Process image URL if available
         image_url = self._extract_image_url(channel_data)
         if image_url:
+            self.logger.debug(
+                "%s: Found image URL for channel %s: %s", self.domain, prov_id, image_url
+            )
             metadata.images = UniqueList(
                 [
                     MediaItemImage(
@@ -588,6 +698,8 @@ class DigitallyIncorporatedProvider(MusicProvider):
                     )
                 ]
             )
+        else:
+            self.logger.debug("%s: No valid image URL found for channel %s", self.domain, prov_id)
 
         return Radio(
             item_id=prov_id,
@@ -607,19 +719,38 @@ class DigitallyIncorporatedProvider(MusicProvider):
             metadata=metadata,
         )
 
+    def _is_disabled_channel(self, channel_data: dict[str, Any]) -> bool:
+        """Check if a channel is disabled based on its name pattern."""
+        name = channel_data.get("name")
+        if not name or not isinstance(name, str) or len(name) < 2:
+            return False
+
+        # Disabled channels have names starting with 'X' followed by a (capitalized) channel name.
+        return bool(name[0] == "X" and name[1].isupper())
+
+    def _get_description(self, channel_data: dict[str, Any]) -> str:
+        """Get combined description from channel data."""
+        short_desc = channel_data.get("description_short", "")
+        long_desc = channel_data.get("description_long", "")
+
+        if not long_desc or long_desc == short_desc:
+            return str(short_desc)
+
+        return f"{short_desc}\n\n{long_desc}"
+
     def _extract_image_url(self, channel_data: dict[str, Any]) -> str | None:
         """Extract and normalize image URL from channel data."""
         images = channel_data.get("images")
         if not images or not isinstance(images, dict):
             return None
 
-        image_url = images.get("default")
+        image_url = images.get("square")
         if not image_url or not isinstance(image_url, str):
             return None
 
-        # Add protocol if missing
-        if image_url.startswith(HTTPS_SCHEME_PREFIX):
+        # Add protocol if missing (AudioAddict returns URLs starting with //)
+        if image_url.startswith("//"):
             image_url = f"https:{image_url}"
 
-        # Remove template parts if present
+        # Remove template parts if present (URLs may contain {size} placeholders)
         return str(image_url.split("{")[0])
