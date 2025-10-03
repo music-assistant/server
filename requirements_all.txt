@@ -37,7 +37,7 @@ mashumaro==3.16
 music-assistant-frontend==2.16.4
 music-assistant-models==1.1.60
 mutagen==1.47.0
-numpy==2.2.6
+numpy==2.3.3
 orjson==3.11.3
 pillow==11.3.0
 pkce==1.0.3
