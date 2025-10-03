@@ -68,7 +68,7 @@ LABEL \
     io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"
 
-VOLUME [ "/data", "/cache" ]
+VOLUME [ "/data" ]
 EXPOSE 8095
 
 WORKDIR $VIRTUAL_ENV
