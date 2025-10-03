@@ -1490,11 +1490,6 @@ class PlayerController(CoreController):
             self._handle_group_dsp_change(player, prev_group_members or [], new_group_members)
 
         if ATTR_GROUP_MEMBERS in changed_values:
-            self.logger.debug(
-                "Player %s group membership changed: %s",
-                player.display_name,
-                changed_values[ATTR_GROUP_MEMBERS],
-            )
             # Removed group members also need to be updated since they are no longer part
             # of this group and are available for playback again
             prev_group_members = changed_values[ATTR_GROUP_MEMBERS][0] or []
