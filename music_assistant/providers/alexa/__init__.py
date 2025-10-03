@@ -288,6 +288,8 @@ class AlexaPlayer(Player):
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         await self.api.stop()
+        self._attr_active_source = None
+        self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 

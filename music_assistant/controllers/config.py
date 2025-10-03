@@ -528,6 +528,11 @@ class ConfigController:
         # Also remove the DSP config if it exists
         self.remove(dsp_conf_key)
 
+    def set_player_default_name(self, player_id: str, default_name: str) -> None:
+        """Set (or update) the default name for a player."""
+        conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
+        self.set(conf_key, default_name)
+
     @api_command("config/players/dsp/get")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
         """
@@ -1005,13 +1010,26 @@ class ConfigController:
 
         # Migrate the crossfade setting into Smart Fade Mode = 'crossfade'
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            if (crossfade := player_config.pop(CONF_DEPRECATED_CROSSFADE, None)) is None:
+                continue
             # Check if player has old crossfade enabled but no smart fades mode set
-            if (
-                player_config.get(CONF_DEPRECATED_CROSSFADE) is True
-                and CONF_SMART_FADES_MODE not in player_config
-            ):
+            if crossfade is True and CONF_SMART_FADES_MODE not in player_config:
                 # Set smart fades mode to standard_crossfade
                 player_config[CONF_SMART_FADES_MODE] = "standard_crossfade"
+                changed = True
+
+        # migrate player configs: always use lookup key for provider
+        prov_configs = self._data.get(CONF_PROVIDERS, {})
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            player_provider = player_config["provider"]
+            if prov_conf := prov_configs.get(player_provider):
+                if not (prov_manifest := self.mass.get_provider_manifest(prov_conf["domain"])):
+                    continue
+                if prov_manifest.multi_instance:
+                    # multi instance providers use instance_id as lookup key
+                    continue
+                # single instance providers use domain as lookup key
+                player_config["provider"] = prov_conf["domain"]
                 changed = True
 
         if changed:

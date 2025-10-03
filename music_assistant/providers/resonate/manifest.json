@@ -2,8 +2,8 @@
   "type": "player",
   "domain": "resonate",
   "stage": "alpha",
-  "name": "Resonate",
-  "description": "Resonate provider for Music Assistant.",
+  "name": "Resonate (WIP)",
+  "description": "Resonate (working title) is the next generation streaming protocol built by the Open Home Foundation. Follow the development on Discord to see how you can get involved.",
   "codeowners": ["@music-assistant"],
   "requirements": ["aioresonate==0.9.1"]
 }

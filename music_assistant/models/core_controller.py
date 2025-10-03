@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ProviderType
+from music_assistant_models.enums import ProviderStage, ProviderType
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
@@ -32,7 +32,10 @@ class CoreController:
             name=f"{self.domain.title()} Core controller",
             description=f"{self.domain.title()} Core controller",
             codeowners=["@music-assistant"],
+            stage=ProviderStage.STABLE,
             icon="puzzle-outline",
+            builtin=True,
+            allow_disable=False,
         )
 
     async def get_config_entries(

@@ -53,7 +53,6 @@ SUPPORT_DYNAMIC_LEADER = {
     # and the music keeps playing uninterrupted.
     "airplay",
     "squeezelite",
-    "resonate",
     # TODO: Get this working with Sonos as well (need to handle range requests)
 }
 
@@ -89,7 +88,7 @@ class SyncGroupPlayer(GroupPlayer):
     ) -> None:
         """Initialize GroupPlayer instance."""
         super().__init__(provider, player_id)
-        self._attr_name = self.config.name or f"SyncGroup {player_id}"
+        self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
         self._attr_active_source = None
@@ -126,7 +125,7 @@ class SyncGroupPlayer(GroupPlayer):
     @property
     def playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
-        if self.power_state:
+        if self.powered:
             return self.sync_leader.playback_state if self.sync_leader else PlaybackState.IDLE
         else:
             return PlaybackState.IDLE
@@ -154,20 +153,20 @@ class SyncGroupPlayer(GroupPlayer):
         return self.sync_leader.elapsed_time_last_updated if self.sync_leader else None
 
     @property
-    def current_media(self) -> PlayerMedia | None:
+    def _current_media(self) -> PlayerMedia | None:
         """Return the current media item (if any) loaded in the player."""
-        return self.sync_leader.current_media if self.sync_leader else self._attr_current_media
+        return self.sync_leader._current_media if self.sync_leader else self._attr_current_media
 
     @property
-    def active_source(self) -> str | None:
+    def _active_source(self) -> str | None:
         """Return the active source id (if any) of the player."""
-        return self._attr_active_source
+        return self.sync_leader._active_source if self.sync_leader else self._attr_active_source
 
     @property
-    def source_list(self) -> list[PlayerSource]:
+    def _source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
         if self.sync_leader:
-            return self.sync_leader.source_list
+            return self.sync_leader._source_list
         return []
 
     @property
@@ -259,6 +258,8 @@ class SyncGroupPlayer(GroupPlayer):
         # always stop at power off
         if not powered and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             await self.stop()
+            self._attr_current_media = None
+            self._attr_active_source = None
 
         # optimistically set the group state
 
@@ -326,6 +327,19 @@ class SyncGroupPlayer(GroupPlayer):
         """Handle enqueuing of a next media item on the player."""
         if sync_leader := self.sync_leader:
             await sync_leader.enqueue_next_media(media)
+
+    async def select_source(self, source: str) -> None:
+        """
+        Handle SELECT SOURCE command on the player.
+
+        Will only be called if the PlayerFeature.SELECT_SOURCE is supported.
+
+        :param source: The source(id) to select, as defined in the source_list.
+        """
+        if sync_leader := self.sync_leader:
+            await sync_leader.select_source(source)
+            self._attr_active_source = source
+            self.update_state()
 
     async def set_members(
         self,
@@ -399,6 +413,7 @@ class SyncGroupPlayer(GroupPlayer):
         ]
         self.update_state()
         members_to_sync: list[str] = []
+        members_to_remove: list[str] = []
         for member in self.mass.players.iter_group_members(self, active_only=False):
             # Handle collisions before attempting to sync
             await self._handle_member_collisions(member)
@@ -416,8 +431,13 @@ class SyncGroupPlayer(GroupPlayer):
                 # already synced
                 continue
             members_to_sync.append(member.player_id)
-        if members_to_sync:
-            await self.sync_leader.set_members(members_to_sync)
+        for former_members in self.sync_leader.group_members:
+            if (
+                former_members not in members_to_sync
+            ) and former_members != self.sync_leader.player_id:
+                members_to_remove.append(former_members)
+        if members_to_sync or members_to_remove:
+            await self.sync_leader.set_members(members_to_sync, members_to_remove)
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members and restoring leader queue."""
@@ -465,8 +485,11 @@ class SyncGroupPlayer(GroupPlayer):
             await self._form_syncgroup()
 
             # Restart playback if requested and we have media to play
-            if was_playing and self.current_media is not None:
-                await new_leader.play_media(self.current_media)
+            if was_playing:
+                await self.mass.players.cmd_resume(self.player_id)
+        else:
+            # We have no leader anymore, send update since we stopped playback
+            self.update_state()
 
     def _select_sync_leader(self) -> Player | None:
         """Select the active sync leader player for a syncgroup."""

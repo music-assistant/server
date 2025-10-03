@@ -1,0 +1,11 @@
+{
+  "domain": "phishin",
+  "name": "Phish.in",
+  "description": "Stream live audience recordings and complete setlists from Phish’s archives.",
+  "documentation": "https://music-assistant.io/music-providers/phishin/",
+  "type": "music",
+  "requirements": [],
+  "codeowners": "@ozgav",
+  "multi_instance": false,
+  "stage": "beta"
+}

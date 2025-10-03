@@ -643,6 +643,9 @@ class MusicAssistant:
         """Load providers from config."""
         # create default config for any 'builtin' providers (e.g. URL provider)
         for prov_manifest in self._provider_manifests.values():
+            if prov_manifest.type == ProviderType.CORE:
+                # core controllers are not real providers
+                continue
             if not prov_manifest.builtin:
                 continue
             await self.config.create_builtin_provider_config(prov_manifest.domain)
