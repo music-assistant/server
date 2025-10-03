@@ -122,10 +122,9 @@ class SiriusXMProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         username = self.config.get_value(CONF_SXM_USERNAME)
+        assert isinstance(username, str)  # for type checker
         password = self.config.get_value(CONF_SXM_PASSWORD)
-
-        assert isinstance(username, str)
-        assert isinstance(password, str)
+        assert isinstance(password, str)  # for type checker
 
         region: RegionChoice = (
             RegionChoice.US if self.config.get_value(CONF_SXM_REGION) == "US" else RegionChoice.CA
