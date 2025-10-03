@@ -50,8 +50,7 @@ class DLNAPlayerProvider(PlayerProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
         self.mass.streams.unregister_dynamic_route("/notify", "NOTIFY")
-        if self.dlnaplayers is None:
-            return
+
         async with TaskManager(self.mass) as tg:
             for dlna_player in self.dlnaplayers.values():
                 tg.create_task(self._device_disconnect(dlna_player))
