@@ -823,10 +823,10 @@ class StreamsController(CoreController):
             queue.queue_id, CONF_CROSSFADE_DURATION, 10
         )
         self.logger.info(
-            "Start Queue Flow stream for Queue %s - %s: %s",
-            smart_fades_mode,
+            "Start Queue Flow stream for Queue %s - crossfade: %s %s",
             queue.display_name,
-            f"{standard_crossfade_duration}s"
+            smart_fades_mode,
+            f"({standard_crossfade_duration}s)"
             if smart_fades_mode == SmartFadesMode.STANDARD_CROSSFADE
             else "",
         )
