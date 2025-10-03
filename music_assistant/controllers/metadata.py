@@ -182,14 +182,13 @@ class MetaDataController(CoreController):
         # just tun the scan for missing metadata once at startup
         # TODO: allows to enable/disable this in the UI and configure interval/time
         self._missing_metadata_scan_task = self.mass.create_task(self._scan_missing_metadata())
-        # migrate old image path for collage images from absolute to relative
-        # TODO: remove this after 2.5+ release
-        old_path = f"{self.mass.storage_path}/collage_images/"
-        new_path = "/collage/"
+        # migrate theaudiodb images to new url
+        # they updated their cdn url to r2.theaudiodb.com
+        # TODO: remove this after 2.7 release
         query = (
-            "UPDATE playlists SET metadata = "
-            f"REPLACE (metadata, '{old_path}', '{new_path}') "
-            f"WHERE playlists.metadata LIKE '%{old_path}%'"
+            "UPDATE artists SET metadata = "
+            "REPLACE (metadata, 'https://www.theaudiodb.com', 'https://r2.theaudiodb.com') "
+            "WHERE artists.metadata LIKE '%https://www.theaudiodb.com%'"
         )
         if self.mass.music.database:
             await self.mass.music.database.execute(query)
