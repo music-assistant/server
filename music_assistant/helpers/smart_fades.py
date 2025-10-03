@@ -468,7 +468,7 @@ class SmartFadesMixer:
             tempo_factor=tempo_factor,
         )
 
-        beat_align_filters = self._perform_beat_alignment(
+        beat_align_filters = self._trim_incoming_track_to_downbeat(
             fadein_start_pos=fadein_start_pos,
             fadeout_input_label="[fadeout_stretched]",
             fadein_input_label="[1]",
@@ -531,9 +531,8 @@ class SmartFadesMixer:
     ) -> npt.NDArray[np.float64]:
         """Extrapolate downbeats based on actual intervals when detection is incomplete.
 
-        When time stretching is applied, the intervals between downbeats change.
-        This method adjusts both the detected downbeat positions and the interval
-        before extrapolating, so all returned positions are in stretched time.
+        This is needed when we want to perform beat alignment in an 'atmospheric' outro
+        that does not have any detected downbeats.
         """
         if len(downbeats) < 3:
             # Need at least 3 downbeats to reliably calculate interval
@@ -642,17 +641,6 @@ class SmartFadesMixer:
                 later_downbeat = downbeat
                 break
 
-        # Debug: Show downbeats near the ideal position (±10s window)
-        nearby_downbeats = [
-            db for db in adjusted_downbeats if ideal_start_pos - 10 <= db <= ideal_start_pos + 10
-        ]
-        self.logger.debug(
-            "Downbeats near ideal position (±10s): [%s], selected candidates: earlier=%s, later=%s",
-            ", ".join(f"{db:.2f}" for db in nearby_downbeats),
-            f"{earlier_downbeat:.2f}" if earlier_downbeat is not None else "None",
-            f"{later_downbeat:.2f}" if later_downbeat is not None else "None",
-        )
-
         # Try earlier downbeat first (longer crossfade)
         if earlier_downbeat is not None:
             adjusted_duration = float(SMART_CROSSFADE_DURATION - earlier_downbeat)
@@ -667,17 +655,6 @@ class SmartFadesMixer:
                         earlier_downbeat,
                     )
                 return adjusted_duration
-            else:
-                # Debug: Earlier downbeat rejected due to buffer constraint
-                self.logger.debug(
-                    "Earlier downbeat (%.2fs → duration %.2fs) rejected: "
-                    "fadein_start %.2fs + duration %.2fs > buffer %.1fs",
-                    earlier_downbeat,
-                    adjusted_duration,
-                    fadein_start_pos,
-                    adjusted_duration,
-                    SMART_CROSSFADE_DURATION,
-                )
 
         # Try later downbeat (shorter crossfade)
         if later_downbeat is not None:
@@ -693,17 +670,6 @@ class SmartFadesMixer:
                         later_downbeat,
                     )
                 return adjusted_duration
-            else:
-                # Debug: Later downbeat rejected due to buffer constraint
-                self.logger.debug(
-                    "Later downbeat (%.2fs → duration %.2fs) rejected: "
-                    "fadein_start %.2fs + duration %.2fs > buffer %.1fs",
-                    later_downbeat,
-                    adjusted_duration,
-                    fadein_start_pos,
-                    adjusted_duration,
-                    SMART_CROSSFADE_DURATION,
-                )
 
         # If no suitable downbeat found, return original duration
         self.logger.debug(
@@ -881,7 +847,7 @@ class SmartFadesMixer:
             ),
         ]
 
-    def _perform_beat_alignment(
+    def _trim_incoming_track_to_downbeat(
         self,
         fadein_start_pos: float | None,
         fadeout_input_label: str = "[0]",
@@ -900,11 +866,7 @@ class SmartFadesMixer:
                 f"{fadein_input_label}anull[fadein_beatalign]",  # codespell:ignore anull
             ]
 
-        # The incoming track is not time-stretched (it's already at target BPM)
-        # So we use the original fadein position without adjustment
-        # The outgoing track is stretched to match, and its downbeats are adjusted separately
-
-        # Apply beat alignment: fadeout passes through, fadein trims to original position
+        # Trim incoming track to start at first downbeat position
         return [
             f"{fadeout_input_label}anull[fadeout_beatalign]",  # codespell:ignore anull
             f"{fadein_input_label}atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_beatalign]",
@@ -943,38 +905,19 @@ class SmartFadesMixer:
             SMART_CROSSFADE_DURATION - crossfade_duration,
         )
 
-        # Calculate the tempo change factor
-        # atempo accepts values between 0.5 and 2.0 (can be chained for larger changes)
-        tempo_factor = bpm_ratio
-        buffer_duration = SMART_CROSSFADE_DURATION  # 45 seconds
-
-        # Calculate where the crossfade will start
-        crossfade_start_time = buffer_duration - crossfade_duration
-
-        # Validate tempo factor is within ffmpeg's atempo range
-        # For BPM differences < 8%, tempo_factor will be between 0.92 and 1.08
-        if not 0.5 <= tempo_factor <= 2.0:
-            self.logger.warning(
-                "Tempo factor %.4f out of range [0.5, 2.0], skipping time stretch",
-                tempo_factor,
-            )
-            return ["[0]anull[fadeout_stretched]"], 1.0  # codespell:ignore anull
-
         # Use uniform rubberband time stretching for the entire buffer
         # This ensures downbeat adjustment calculations are accurate and beat alignment is perfect
         # Rubberband is a high-quality music-specific algorithm optimized for music
         self.logger.debug(
-            "Time stretch (rubberband uniform): %.1f BPM -> %.1f BPM (factor=%.4f), "
-            "crossfade starts at %.1fs",
+            "Time stretch (rubberband uniform): %.1f BPM -> %.1f BPM (factor=%.4f)",
             original_bpm,
             target_bpm,
-            tempo_factor,
-            crossfade_start_time,
+            bpm_ratio,
         )
         return [
-            f"[0]rubberband=tempo={tempo_factor:.6f}:transients=mixed:detector=soft:pitchq=quality"
+            f"[0]rubberband=tempo={bpm_ratio:.6f}:transients=mixed:detector=soft:pitchq=quality"
             "[fadeout_stretched]"
-        ], tempo_factor
+        ], bpm_ratio
 
     def _apply_eq_filters(
         self,
