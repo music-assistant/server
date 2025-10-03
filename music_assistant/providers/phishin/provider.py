@@ -447,6 +447,8 @@ class PhishInProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks for given playlist id."""
+        if page > 0:
+            return []
         try:
             playlists_data = await api_request(self, ENDPOINTS["playlists"])
             playlist_slug = None
@@ -463,11 +465,6 @@ class PhishInProvider(MusicProvider):
                 self, ENDPOINTS["playlist_by_slug"].format(slug=playlist_slug)
             )
 
-            # Simple pagination - fetch all tracks and slice
-            page_size = 50
-            start_idx = page * page_size
-            end_idx = start_idx + page_size
-
             all_tracks = []
             for entry in playlist_data.get("entries", []):
                 track_data = entry.get("track")
@@ -475,7 +472,7 @@ class PhishInProvider(MusicProvider):
                     track = track_to_ma_track(self, track_data)
                     all_tracks.append(track)
 
-            return all_tracks[start_idx:end_idx]
+            return all_tracks
 
         except (MediaNotFoundError, ProviderUnavailableError):
             raise
