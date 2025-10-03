@@ -17,8 +17,6 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SYNC_PLAYERS,
-    ProviderFeature.CREATE_GROUP_PLAYER,
-    ProviderFeature.REMOVE_GROUP_PLAYER,
 }
 
 

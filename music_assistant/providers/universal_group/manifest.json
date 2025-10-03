@@ -1,7 +1,7 @@
 {
   "type": "player",
   "domain": "universal_group",
-  "stage": "stable",
+  "stage": "experimental",
   "name": "Universal Group Player",
   "description": "Create universal groups to group speakers of different protocols/ecosystems to play the same audio (but not in sync).",
   "codeowners": ["@music-assistant"],

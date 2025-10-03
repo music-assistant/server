@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import web
 
 if TYPE_CHECKING:
     import logging
-    from collections.abc import Callable
 
     from aiohttp.typedefs import Handler
 
 
 MAX_CLIENT_SIZE: Final = 1024**2 * 16
 MAX_LINE_SIZE: Final = 24570
+
+# Type alias for dynamic route handlers
+DynamicRouteHandler = Callable[
+    [web.Request], Coroutine[Any, Any, web.Response | web.StreamResponse]
+]
 
 
 class Webserver:
@@ -33,7 +37,9 @@ class Webserver:
         self._webapp: web.Application | None = None
         self._tcp_site: web.TCPSite | None = None
         self._static_routes: list[tuple[str, str, Handler]] | None = None
-        self._dynamic_routes: dict[str, Callable] | None = {} if enable_dynamic_routes else None
+        self._dynamic_routes: dict[str, DynamicRouteHandler] | None = (
+            {} if enable_dynamic_routes else None
+        )
         self._bind_port: int | None = None
         self._ingress_tcp_site: web.TCPSite | None = None
 
@@ -124,7 +130,7 @@ class Webserver:
         path: str,
         handler: Callable[[web.Request], Coroutine[Any, Any, web.Response | web.StreamResponse]],
         method: str = "*",
-    ) -> Callable:
+    ) -> Callable[[], None]:
         """Register a dynamic route on the webserver, returns handler to unregister."""
         if self._dynamic_routes is None:
             msg = "Dynamic routes are not enabled"
@@ -135,9 +141,9 @@ class Webserver:
             raise RuntimeError(msg)
         self._dynamic_routes[key] = handler
 
-        def _remove():
+        def _remove() -> None:
             assert self._dynamic_routes is not None  # for type checking
-            return self._dynamic_routes.pop(key)
+            self._dynamic_routes.pop(key, None)
 
         return _remove
 
@@ -154,7 +160,7 @@ class Webserver:
         headers = {"Cache-Control": "no-cache"}
         return web.FileResponse(file_path, headers=headers)
 
-    async def _handle_catch_all(self, request: web.Request) -> web.Response:
+    async def _handle_catch_all(self, request: web.Request) -> web.Response | web.StreamResponse:
         """Redirect request to correct destination."""
         # find handler for the request
         # Try exact match first

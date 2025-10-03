@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import shutil
@@ -67,7 +66,8 @@ from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.helpers.datetime import utc_timestamp
-from music_assistant.helpers.json import json_loads, serialize_to_json
+from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
+from music_assistant.helpers.smart_fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_title_and_version
@@ -169,6 +169,18 @@ class MusicController(CoreController):
         """Cleanup on exit."""
         if self.database:
             await self.database.close()
+
+    async def on_provider_loaded(self, provider: MusicProvider) -> None:
+        """Handle logic when a provider is loaded."""
+        await self.schedule_provider_sync(provider.instance_id)
+
+    async def on_provider_unload(self, provider: MusicProvider) -> None:
+        """Handle logic when a provider is (about to get) unloaded."""
+        # make sure to stop any running sync tasks first
+        for sync_task in self.in_progress_syncs:
+            if sync_task.provider_instance == provider.instance_id:
+                if sync_task.task:
+                    sync_task.task.cancel()
 
     @property
     def providers(self) -> list[MusicProvider]:
@@ -846,16 +858,23 @@ class MusicController(CoreController):
         """Store Smart Fades BPM analysis for a track in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return
-        if analysis.bpm <= 0 or analysis.confidence < 0:
-            # skip invalid values
+        if (
+            analysis.duration <= 0.75 * SMART_CROSSFADE_DURATION
+            or analysis.bpm <= 0
+            or analysis.confidence < 0
+        ):
+            # skip invalid values, we skip analysis that were performed on
+            # a short amount of audio as those are often unreliable
             return
+        beats_json = await asyncio.to_thread(lambda: json_dumps(analysis.beats.tolist()))
+        downbeats_json = await asyncio.to_thread(lambda: json_dumps(analysis.downbeats.tolist()))
         values = {
             "fragment": analysis.fragment.value,
             "item_id": item_id,
             "provider": provider.lookup_key,
             "bpm": analysis.bpm,
-            "beats": json.dumps(analysis.beats.tolist()),
-            "downbeats": json.dumps(analysis.downbeats.tolist()),
+            "beats": beats_json,
+            "downbeats": downbeats_json,
             "confidence": analysis.confidence,
             "duration": analysis.duration,
         }
@@ -879,11 +898,13 @@ class MusicController(CoreController):
             },
         )
         if db_row and db_row["bpm"] > 0:
+            beats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["beats"])))
+            downbeats = await asyncio.to_thread(lambda: np.array(json_loads(db_row["downbeats"])))
             return SmartFadesAnalysis(
                 fragment=SmartFadesAnalysisFragment(db_row["fragment"]),
                 bpm=float(db_row["bpm"]),
-                beats=np.array(json.loads(db_row["beats"])),
-                downbeats=np.array(json.loads(db_row["downbeats"])),
+                beats=beats,
+                downbeats=downbeats,
                 confidence=float(db_row["confidence"]),
                 duration=float(db_row["duration"]),
             )

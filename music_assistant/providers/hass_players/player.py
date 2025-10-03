@@ -190,6 +190,10 @@ class HomeAssistantPlayer(Player):
                 raise
             if PlayerFeature.PAUSE in self.supported_features:
                 await self.pause()
+        finally:
+            self._attr_current_media = None
+            self._attr_active_source = None
+            self.update_state()
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""

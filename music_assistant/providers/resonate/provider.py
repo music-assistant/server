@@ -58,8 +58,6 @@ class ResonateProvider(PlayerProvider):
         """Return the features supported by this Provider."""
         return {
             ProviderFeature.SYNC_PLAYERS,
-            ProviderFeature.CREATE_GROUP_PLAYER,
-            ProviderFeature.REMOVE_GROUP_PLAYER,
         }
 
     async def loaded_in_mass(self) -> None:
