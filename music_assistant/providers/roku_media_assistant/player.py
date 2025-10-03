@@ -146,6 +146,8 @@ class MediaAssistantPlayer(Player):
             logger = self.provider.logger.getChild(self.player_id)
             logger.info("Received STOP command on player %s", self.display_name)
             self._attr_playback_state = PlaybackState.IDLE
+            self._attr_active_source = None
+            self._attr_current_media = None
             self.update_state()
         except Exception:
             self.logger.error("Failed to send stop signal to: %s", self.name)

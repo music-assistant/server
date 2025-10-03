@@ -53,8 +53,6 @@ SUPPORTED_FEATURES = {
     # that your provider supports or an empty set if none.
     # see the ProviderFeature enum for all available features
     ProviderFeature.SYNC_PLAYERS,
-    ProviderFeature.CREATE_GROUP_PLAYER,
-    ProviderFeature.REMOVE_GROUP_PLAYER,
 }
 
 

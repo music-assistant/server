@@ -4,17 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import shortuuid
-from music_assistant_models.enums import ProviderFeature
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
-
-from music_assistant.constants import (
-    CONF_DYNAMIC_GROUP_MEMBERS,
-    CONF_GROUP_MEMBERS,
-    SYNCGROUP_PREFIX,
-)
-from music_assistant.models.player import SyncGroupPlayer
 
 from .provider import Provider
 
@@ -59,24 +50,6 @@ class PlayerProvider(Provider):
         :param members: List of player ids to add to the group
         :param dynamic: Whether the group is dynamic (members can change)
         """
-        # default implementation for providers that support syncing players
-        if ProviderFeature.SYNC_PLAYERS in self.supported_features:
-            # we simply create a new syncgroup player with the given members
-            # feel free to override or extend this method in your provider
-            members = [x for x in members if x in [y.player_id for y in self.players]]
-            player_id = f"{SYNCGROUP_PREFIX}{shortuuid.random(8).lower()}"
-            self.mass.config.create_default_player_config(
-                player_id=player_id,
-                provider=self.lookup_key,
-                name=name,
-                enabled=True,
-                values={
-                    CONF_GROUP_MEMBERS: members,
-                    CONF_DYNAMIC_GROUP_MEMBERS: dynamic,
-                },
-            )
-            return await self._register_syncgroup_player(player_id)
-        # all other providers should implement this method
         raise NotImplementedError
 
     async def remove_group_player(self, player_id: str) -> None:
@@ -87,14 +60,6 @@ class PlayerProvider(Provider):
 
         :param player_id: ID of the group player to remove.
         """
-        # default implementation for providers that support syncing players
-        if ProviderFeature.SYNC_PLAYERS in self.supported_features and player_id.startswith(
-            SYNCGROUP_PREFIX
-        ):
-            # we simply permanently unregister the syncgroup player and wipe its config
-            await self.mass.players.unregister(player_id, True)
-            return
-        # all other providers should implement this method
         raise NotImplementedError
 
     async def discover_players(self) -> None:
@@ -114,22 +79,8 @@ class PlayerProvider(Provider):
                     await self.on_mdns_service_state_change(
                         mdns_name, ServiceStateChange.Added, info
                     )
-        # discover syncgroup players
-        if (
-            ProviderFeature.SYNC_PLAYERS in self.supported_features
-            and ProviderFeature.CREATE_GROUP_PLAYER in self.supported_features
-        ):
-            for player_conf in await self.mass.config.get_player_configs(self.lookup_key):
-                if player_conf.player_id.startswith(SYNCGROUP_PREFIX):
-                    await self._register_syncgroup_player(player_conf.player_id)
-
-    async def _register_syncgroup_player(self, player_id: str) -> Player:
-        """Register a syncgroup player."""
-        syncgroup = SyncGroupPlayer(self, player_id)
-        await self.mass.players.register_or_update(syncgroup)
-        return syncgroup
 
     @property
     def players(self) -> list[Player]:
         """Return all players belonging to this provider."""
-        return self.mass.players.all(provider_filter=self.lookup_key)
+        return self.mass.players.all(provider_filter=self.lookup_key, return_sync_groups=False)

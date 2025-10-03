@@ -1,8 +1,8 @@
 {
-  "domain": "podcast-index",
+  "domain": "podcast_index",
   "name": "Podcast Index",
   "description": "Discover and play podcasts using the open Podcast Index.",
-  "documentation": "https://music-assistant.io/music-providers/podcast-index/",
+  "documentation": "https://music-assistant.io/music-providers/podcast_index/",
   "type": "music",
   "requirements": [],
   "codeowners": "@ozgav",

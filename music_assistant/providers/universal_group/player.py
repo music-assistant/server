@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
 
@@ -262,7 +263,7 @@ class UniversalGroupPlayer(GroupPlayer):
         base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.flac"
 
         # set the state optimistically
-        self._attr_current_media = media
+        self._attr_current_media = deepcopy(media)
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time() - 1
         self._attr_playback_state = PlaybackState.PLAYING

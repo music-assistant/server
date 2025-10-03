@@ -14,7 +14,7 @@ import os
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -54,6 +54,7 @@ from music_assistant.constants import (
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.players.player_controller import AnnounceData
 from music_assistant.helpers.audio import (
     CACHE_FILES_IN_USE,
     get_chunksize,
@@ -115,14 +116,6 @@ class CrossfadeData:
     pcm_format: AudioFormat
     queue_item_id: str
     session_id: str
-
-
-class AnnounceData(TypedDict):
-    """Announcement data."""
-
-    announcement_url: str
-    pre_announce: bool
-    pre_announce_url: str
 
 
 class StreamsController(CoreController):
@@ -1052,7 +1045,7 @@ class StreamsController(CoreController):
             if plugin_source.stream_type == StreamType.CUSTOM
             else plugin_source.path
         )
-        player.active_source = plugin_source_id
+        player.state.active_source = plugin_source_id
         plugin_source.in_use_by = player_id
         try:
             async for chunk in get_ffmpeg_stream(
@@ -1069,7 +1062,7 @@ class StreamsController(CoreController):
                 "Finished streaming PluginSource %s to %s", plugin_source_id, player_id
             )
             await asyncio.sleep(0.5)
-            player.active_source = player.player_id
+            player.state.active_source = player.player_id
             plugin_source.in_use_by = None
 
     async def get_queue_item_stream(
