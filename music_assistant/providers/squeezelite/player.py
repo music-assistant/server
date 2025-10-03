@@ -35,6 +35,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SYNC_ADJUST,
     DEFAULT_PCM_FORMAT,
+    VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -541,7 +542,7 @@ class SqueezelitePlayer(Player):
             _, param = event_data.split(" ", 1)
             if param.isnumeric():
                 await self.mass.player_queues.seek(queue.queue_id, int(param))
-        self.logger.debug("CLI Event: %s", event_data)
+        self.logger.log(VERBOSE_LOG_LEVEL, "CLI Event: %s", event_data)
 
     def _handle_sync(self) -> None:
         """Synchronize audio of a sync slimplayer."""
