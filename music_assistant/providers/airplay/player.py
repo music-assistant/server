@@ -357,9 +357,9 @@ class AirPlayPlayer(Player):
                     await child_player_to_add.raop_stream.session.remove_client(child_player_to_add)
 
             # add new child to the existing raop session (if any)
-            self._attr_group_members.append(player_id)
             if raop_session:
                 await raop_session.add_client(child_player_to_add)
+            self._attr_group_members.append(child_player_to_add.player_id)
 
         # always update the state after modifying group members
         self.update_state()
