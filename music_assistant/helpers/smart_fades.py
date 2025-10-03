@@ -453,6 +453,14 @@ class SmartFadesMixer:
             # Skip beat alignment
             fadein_start_pos = None
 
+        # Adjust crossfade duration to align with outgoing track's downbeats
+        # This prevents echo-ey sounds when both tracks have kicks during the crossfade
+        crossfade_duration = self._adjust_crossfade_to_downbeats(
+            fade_out_analysis=fade_out_analysis,
+            crossfade_duration=crossfade_duration,
+            fadein_start_pos=fadein_start_pos,
+        )
+
         beat_align_filters = self._perform_beat_alignment(
             fadein_start_pos=fadein_start_pos,
             tempo_factor=tempo_factor,
@@ -508,6 +516,176 @@ class SmartFadesMixer:
             )
 
         return actual_duration
+
+    def _extrapolate_downbeats(
+        self,
+        downbeats: npt.NDArray[np.float64],
+        buffer_size: float = SMART_CROSSFADE_DURATION,
+    ) -> npt.NDArray[np.float64]:
+        """Extrapolate downbeats based on actual intervals when detection is incomplete.
+
+        This handles cases where beat tracking only detects beats in part of the audio,
+        typically due to atmospheric outros, silence, or beat tracking limitations.
+        """
+        if len(downbeats) < 3:
+            # Need at least 3 downbeats to reliably calculate interval
+            return downbeats
+
+        last_downbeat = downbeats[-1]
+        # If the last downbeat is close to the buffer end, no extrapolation needed
+        if last_downbeat >= buffer_size - 5:
+            return downbeats
+
+        # Calculate intervals between consecutive downbeats
+        intervals = np.diff(downbeats)
+        median_interval = float(np.median(intervals))
+        std_interval = float(np.std(intervals))
+
+        # Only extrapolate if intervals are consistent (low standard deviation)
+        if std_interval > 0.2:
+            self.logger.debug(
+                "Downbeat intervals too inconsistent (std=%.3fs) for extrapolation",
+                std_interval,
+            )
+            return downbeats
+
+        # Extrapolate forward from last detected downbeat
+        extrapolated = []
+        current_pos = last_downbeat + median_interval
+        max_extrapolation_distance = 25.0  # Don't extrapolate more than 25s
+
+        while (
+            current_pos < buffer_size
+            and (current_pos - last_downbeat) <= max_extrapolation_distance
+        ):
+            extrapolated.append(current_pos)
+            current_pos += median_interval
+
+        if extrapolated:
+            self.logger.debug(
+                "Extrapolated %d downbeats (interval=%.3fs) from %.2fs to %.2fs",
+                len(extrapolated),
+                median_interval,
+                last_downbeat,
+                extrapolated[-1],
+            )
+            # Combine detected and extrapolated downbeats
+            return np.concatenate([downbeats, np.array(extrapolated)])
+
+        return downbeats
+
+    def _adjust_crossfade_to_downbeats(
+        self,
+        fade_out_analysis: SmartFadesAnalysis,
+        crossfade_duration: float,
+        fadein_start_pos: float | None,
+    ) -> float:
+        """Adjust crossfade duration to align with outgoing track's downbeats.
+
+        This ensures the crossfade starts on a downbeat of the outgoing track,
+        preventing echo-ey sounds when both tracks have kicks during the crossfade.
+        """
+        # If we don't have downbeats or beat alignment is disabled, return original duration
+        if len(fade_out_analysis.downbeats) == 0 or fadein_start_pos is None:
+            return crossfade_duration
+
+        # Extrapolate downbeats if needed (e.g., when beat detection is incomplete)
+        downbeats = self._extrapolate_downbeats(fade_out_analysis.downbeats)
+
+        # Calculate where the crossfade would start in the buffer
+        ideal_start_pos = SMART_CROSSFADE_DURATION - crossfade_duration
+
+        # Debug: Show all downbeats and the ideal position
+        self.logger.debug(
+            "Downbeat adjustment - ideal_start=%.2fs (buffer=%.1fs - crossfade=%.2fs), "
+            "fadein_start=%.2fs, downbeats=[%s]",
+            ideal_start_pos,
+            SMART_CROSSFADE_DURATION,
+            crossfade_duration,
+            fadein_start_pos,
+            ", ".join(f"{db:.2f}" for db in downbeats),
+        )
+
+        # Find the closest downbeats (earlier and later)
+        earlier_downbeat = None
+        later_downbeat = None
+
+        for downbeat in downbeats:
+            if downbeat <= ideal_start_pos:
+                earlier_downbeat = downbeat
+            elif downbeat > ideal_start_pos and later_downbeat is None:
+                later_downbeat = downbeat
+                break
+
+        # Debug: Show downbeats near the ideal position (±10s window)
+        nearby_downbeats = [
+            db for db in downbeats if ideal_start_pos - 10 <= db <= ideal_start_pos + 10
+        ]
+        self.logger.debug(
+            "Downbeats near ideal position (±10s): [%s], selected candidates: earlier=%s, later=%s",
+            ", ".join(f"{db:.2f}" for db in nearby_downbeats),
+            f"{earlier_downbeat:.2f}" if earlier_downbeat is not None else "None",
+            f"{later_downbeat:.2f}" if later_downbeat is not None else "None",
+        )
+
+        # Try earlier downbeat first (longer crossfade)
+        if earlier_downbeat is not None:
+            adjusted_duration = float(SMART_CROSSFADE_DURATION - earlier_downbeat)
+            # Check if this fits in the buffer
+            if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
+                if abs(adjusted_duration - crossfade_duration) > 0.1:
+                    self.logger.debug(
+                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
+                        "downbeat at %.2fs (earlier)",
+                        crossfade_duration,
+                        adjusted_duration,
+                        earlier_downbeat,
+                    )
+                return adjusted_duration
+            else:
+                # Debug: Earlier downbeat rejected due to buffer constraint
+                self.logger.debug(
+                    "Earlier downbeat (%.2fs → duration %.2fs) rejected: "
+                    "fadein_start %.2fs + duration %.2fs > buffer %.1fs",
+                    earlier_downbeat,
+                    adjusted_duration,
+                    fadein_start_pos,
+                    adjusted_duration,
+                    SMART_CROSSFADE_DURATION,
+                )
+
+        # Try later downbeat (shorter crossfade)
+        if later_downbeat is not None:
+            adjusted_duration = float(SMART_CROSSFADE_DURATION - later_downbeat)
+            # Check if this fits in the buffer
+            if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
+                if abs(adjusted_duration - crossfade_duration) > 0.1:
+                    self.logger.debug(
+                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
+                        "downbeat at %.2fs (later)",
+                        crossfade_duration,
+                        adjusted_duration,
+                        later_downbeat,
+                    )
+                return adjusted_duration
+            else:
+                # Debug: Later downbeat rejected due to buffer constraint
+                self.logger.debug(
+                    "Later downbeat (%.2fs → duration %.2fs) rejected: "
+                    "fadein_start %.2fs + duration %.2fs > buffer %.1fs",
+                    later_downbeat,
+                    adjusted_duration,
+                    fadein_start_pos,
+                    adjusted_duration,
+                    SMART_CROSSFADE_DURATION,
+                )
+
+        # If no suitable downbeat found, return original duration
+        self.logger.debug(
+            "Could not adjust crossfade duration to downbeats, using original %.2fs",
+            crossfade_duration,
+        )
+        return crossfade_duration
 
     def _calculate_optimal_crossfade_bars(
         self, fade_out_analysis: SmartFadesAnalysis, fade_in_analysis: SmartFadesAnalysis
