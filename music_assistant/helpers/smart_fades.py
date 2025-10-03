@@ -621,13 +621,12 @@ class SmartFadesMixer:
         # Debug: Show all downbeats and the ideal position
         self.logger.debug(
             "Downbeat adjustment - ideal_start=%.2fs (buffer=%.1fs - crossfade=%.2fs), "
-            "fadein_start=%.2fs, tempo_factor=%.4f, adjusted_downbeats=[%s]",
+            "fadein_start=%.2fs, tempo_factor=%.4f",
             ideal_start_pos,
             SMART_CROSSFADE_DURATION,
             crossfade_duration,
             fadein_start_pos,
             tempo_factor,
-            ", ".join(f"{db:.2f}" for db in adjusted_downbeats),
         )
 
         # Find the closest downbeats (earlier and later)
