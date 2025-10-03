@@ -842,5 +842,4 @@ class DeezerProvider(MusicProvider):
             Blowfish.MODE_CBC,
             b"\x00\x01\x02\x03\x04\x05\x06\x07",
         )
-
         return cipher.decrypt(chunk)  # type: ignore[no-any-return,unused-ignore]
