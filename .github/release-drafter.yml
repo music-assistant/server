@@ -1,55 +1,45 @@
-name-template: '$RESOLVED_VERSION'
-tag-template: '$RESOLVED_VERSION'
-version-template: "$MAJOR.$MINOR.0.b$PATCH"
-change-template: '- #$NUMBER - $TITLE (@$AUTHOR)'
-latest: 'false'
+change-template: '- $TITLE (by @$AUTHOR in #$NUMBER)'
 prerelease: true
+prerelease-identifier: 'b'
+include-pre-releases: true
 categories:
 
   - title: "⚠ Breaking Changes"
     labels:
       - 'breaking-change'
 
-  - title: "🐛 Bugfixes"
+  - title: "🚀 New Providers"
     labels:
-      - 'bugfix'
+      - 'new-provider'
 
   - title: "🚀 Features"
     labels:
       - 'feature'
       - 'enhancement'
       - 'new-feature'
-      - 'new-provider'
 
-  - title: '🧰 Maintenance'
+  - title: "🐛 Bugfixes"
+    labels:
+      - 'bugfix'
+
+  - title: '🧰 Maintenance and dependency bumps'
+    collapse-after: 3
     labels:
       - 'ci'
       - 'documentation'
       - 'maintenance'
-
-  - title: '⬆️ Dependencies'
-    collapse-after: 1
-    labels:
       - 'dependencies'
 
 template: |
 
+  $CHANGES
+
+  
   ## :bow: Thanks to our contributors
 
   Special thanks to the following contributors who helped with this release:
 
   $CONTRIBUTORS
 
-  ## Full Changelog
 
-  $CHANGES
 
-version-resolver:
-  major:
-    labels:
-      - 'breaking-change'
-  minor:
-    labels:
-      - 'new-feature'
-      - 'new-provider'
-  default: patch
