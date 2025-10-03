@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 SMART_CROSSFADE_DURATION = 45
 ANALYSIS_FPS = 100
 # Only apply time stretching if BPM difference is < this %
-TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD = 8.0
+TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD = 5.0
 
 
 class SmartFadesAnalyzer:
@@ -427,17 +427,23 @@ class SmartFadesMixer:
 
         filters: list[str] = []
 
+        # Calculate initial crossfade duration (may be adjusted later for downbeat alignment)
+        initial_crossfade_duration = self._calculate_crossfade_duration(
+            crossfade_bars=crossfade_bars,
+            fade_in_analysis=fade_in_analysis,
+        )
+
+        # Create time stretch filters - needs to know crossfade duration to complete
+        # tempo ramping before the crossfade starts
         time_stretch_filters, tempo_factor = self._create_time_stretch_filters(
             fade_out_analysis=fade_out_analysis,
             fade_in_analysis=fade_in_analysis,
             crossfade_bars=crossfade_bars,
+            crossfade_duration=initial_crossfade_duration,
         )
         filters.extend(time_stretch_filters)
 
-        crossfade_duration = self._calculate_crossfade_duration(
-            crossfade_bars=crossfade_bars,
-            fade_in_analysis=fade_in_analysis,
-        )
+        crossfade_duration = initial_crossfade_duration
 
         # Check if we would have enough audio after beat alignment for the crossfade
         if (
@@ -459,11 +465,11 @@ class SmartFadesMixer:
             fade_out_analysis=fade_out_analysis,
             crossfade_duration=crossfade_duration,
             fadein_start_pos=fadein_start_pos,
+            tempo_factor=tempo_factor,
         )
 
         beat_align_filters = self._perform_beat_alignment(
             fadein_start_pos=fadein_start_pos,
-            tempo_factor=tempo_factor,
             fadeout_input_label="[fadeout_stretched]",
             fadein_input_label="[1]",
         )
@@ -520,23 +526,28 @@ class SmartFadesMixer:
     def _extrapolate_downbeats(
         self,
         downbeats: npt.NDArray[np.float64],
+        tempo_factor: float,
         buffer_size: float = SMART_CROSSFADE_DURATION,
     ) -> npt.NDArray[np.float64]:
         """Extrapolate downbeats based on actual intervals when detection is incomplete.
 
-        This handles cases where beat tracking only detects beats in part of the audio,
-        typically due to atmospheric outros, silence, or beat tracking limitations.
+        When time stretching is applied, the intervals between downbeats change.
+        This method adjusts both the detected downbeat positions and the interval
+        before extrapolating, so all returned positions are in stretched time.
         """
         if len(downbeats) < 3:
             # Need at least 3 downbeats to reliably calculate interval
-            return downbeats
+            return downbeats / tempo_factor
 
-        last_downbeat = downbeats[-1]
+        # Adjust detected downbeats for time stretching first
+        adjusted_downbeats = downbeats / tempo_factor
+        last_downbeat = adjusted_downbeats[-1]
+
         # If the last downbeat is close to the buffer end, no extrapolation needed
         if last_downbeat >= buffer_size - 5:
-            return downbeats
+            return adjusted_downbeats
 
-        # Calculate intervals between consecutive downbeats
+        # Calculate intervals from ORIGINAL downbeats (before time stretching)
         intervals = np.diff(downbeats)
         median_interval = float(np.median(intervals))
         std_interval = float(np.std(intervals))
@@ -547,11 +558,15 @@ class SmartFadesMixer:
                 "Downbeat intervals too inconsistent (std=%.3fs) for extrapolation",
                 std_interval,
             )
-            return downbeats
+            return adjusted_downbeats
 
-        # Extrapolate forward from last detected downbeat
+        # Adjust the interval for time stretching
+        # When slowing down (tempo_factor < 1.0), intervals get longer
+        adjusted_interval = median_interval / tempo_factor
+
+        # Extrapolate forward from last adjusted downbeat using adjusted interval
         extrapolated = []
-        current_pos = last_downbeat + median_interval
+        current_pos = last_downbeat + adjusted_interval
         max_extrapolation_distance = 25.0  # Don't extrapolate more than 25s
 
         while (
@@ -559,38 +574,47 @@ class SmartFadesMixer:
             and (current_pos - last_downbeat) <= max_extrapolation_distance
         ):
             extrapolated.append(current_pos)
-            current_pos += median_interval
+            current_pos += adjusted_interval
 
         if extrapolated:
             self.logger.debug(
-                "Extrapolated %d downbeats (interval=%.3fs) from %.2fs to %.2fs",
+                "Extrapolated %d downbeats (adjusted_interval=%.3fs, original=%.3fs) "
+                "from %.2fs to %.2fs",
                 len(extrapolated),
+                adjusted_interval,
                 median_interval,
                 last_downbeat,
                 extrapolated[-1],
             )
-            # Combine detected and extrapolated downbeats
-            return np.concatenate([downbeats, np.array(extrapolated)])
+            # Combine adjusted detected downbeats and extrapolated downbeats
+            return np.concatenate([adjusted_downbeats, np.array(extrapolated)])
 
-        return downbeats
+        return adjusted_downbeats
 
     def _adjust_crossfade_to_downbeats(
         self,
         fade_out_analysis: SmartFadesAnalysis,
         crossfade_duration: float,
         fadein_start_pos: float | None,
+        tempo_factor: float,
     ) -> float:
         """Adjust crossfade duration to align with outgoing track's downbeats.
 
         This ensures the crossfade starts on a downbeat of the outgoing track,
         preventing echo-ey sounds when both tracks have kicks during the crossfade.
+
+        The downbeat positions are adjusted for time stretching - when tempo_factor < 1.0
+        (slowing down), beats take longer to reach their position in the stretched audio.
         """
         # If we don't have downbeats or beat alignment is disabled, return original duration
         if len(fade_out_analysis.downbeats) == 0 or fadein_start_pos is None:
             return crossfade_duration
 
         # Extrapolate downbeats if needed (e.g., when beat detection is incomplete)
-        downbeats = self._extrapolate_downbeats(fade_out_analysis.downbeats)
+        # This returns downbeats already adjusted for time stretching
+        adjusted_downbeats = self._extrapolate_downbeats(
+            fade_out_analysis.downbeats, tempo_factor=tempo_factor
+        )
 
         # Calculate where the crossfade would start in the buffer
         ideal_start_pos = SMART_CROSSFADE_DURATION - crossfade_duration
@@ -598,19 +622,20 @@ class SmartFadesMixer:
         # Debug: Show all downbeats and the ideal position
         self.logger.debug(
             "Downbeat adjustment - ideal_start=%.2fs (buffer=%.1fs - crossfade=%.2fs), "
-            "fadein_start=%.2fs, downbeats=[%s]",
+            "fadein_start=%.2fs, tempo_factor=%.4f, adjusted_downbeats=[%s]",
             ideal_start_pos,
             SMART_CROSSFADE_DURATION,
             crossfade_duration,
             fadein_start_pos,
-            ", ".join(f"{db:.2f}" for db in downbeats),
+            tempo_factor,
+            ", ".join(f"{db:.2f}" for db in adjusted_downbeats),
         )
 
         # Find the closest downbeats (earlier and later)
         earlier_downbeat = None
         later_downbeat = None
 
-        for downbeat in downbeats:
+        for downbeat in adjusted_downbeats:
             if downbeat <= ideal_start_pos:
                 earlier_downbeat = downbeat
             elif downbeat > ideal_start_pos and later_downbeat is None:
@@ -619,7 +644,7 @@ class SmartFadesMixer:
 
         # Debug: Show downbeats near the ideal position (±10s window)
         nearby_downbeats = [
-            db for db in downbeats if ideal_start_pos - 10 <= db <= ideal_start_pos + 10
+            db for db in adjusted_downbeats if ideal_start_pos - 10 <= db <= ideal_start_pos + 10
         ]
         self.logger.debug(
             "Downbeats near ideal position (±10s): [%s], selected candidates: earlier=%s, later=%s",
@@ -859,11 +884,15 @@ class SmartFadesMixer:
     def _perform_beat_alignment(
         self,
         fadein_start_pos: float | None,
-        tempo_factor: float,
         fadeout_input_label: str = "[0]",
         fadein_input_label: str = "[1]",
     ) -> list[str]:
-        """Perform beat alignment preprocessing."""
+        """Perform beat alignment preprocessing.
+
+        The incoming track is trimmed to its first downbeat position.
+        No adjustment is needed for time stretching since the incoming track
+        is not stretched - it's already at the target BPM.
+        """
         # Just relabel in case we cannot perform beat alignment
         if fadein_start_pos is None:
             return [
@@ -871,15 +900,14 @@ class SmartFadesMixer:
                 f"{fadein_input_label}anull[fadein_beatalign]",  # codespell:ignore anull
             ]
 
-        # When time stretching is applied, we need to compensate for the timing change
-        # If tempo_factor < 1.0 (slowing down), beats in fadeout take longer to reach
-        # If tempo_factor > 1.0 (speeding up), beats in fadeout arrive sooner
-        adjusted_fadein_start_pos = fadein_start_pos / tempo_factor
+        # The incoming track is not time-stretched (it's already at target BPM)
+        # So we use the original fadein position without adjustment
+        # The outgoing track is stretched to match, and its downbeats are adjusted separately
 
-        # Apply beat alignment: fadeout passes through, fadein trims to adjusted position
+        # Apply beat alignment: fadeout passes through, fadein trims to original position
         return [
             f"{fadeout_input_label}anull[fadeout_beatalign]",  # codespell:ignore anull
-            f"{fadein_input_label}atrim=start={adjusted_fadein_start_pos},asetpts=PTS-STARTPTS[fadein_beatalign]",
+            f"{fadein_input_label}atrim=start={fadein_start_pos},asetpts=PTS-STARTPTS[fadein_beatalign]",
         ]
 
     def _create_time_stretch_filters(
@@ -887,8 +915,13 @@ class SmartFadesMixer:
         fade_out_analysis: SmartFadesAnalysis,
         fade_in_analysis: SmartFadesAnalysis,
         crossfade_bars: int,
+        crossfade_duration: float,
     ) -> tuple[list[str], float]:
-        """Create FFmpeg filters to gradually adjust tempo from original BPM to target BPM."""
+        """Create FFmpeg filters to gradually adjust tempo from original BPM to target BPM.
+
+        The tempo ramping is completed before the crossfade starts to ensure perfect beat alignment
+        throughout the entire crossfade region.
+        """
         # Check if time stretching should be applied (BPM difference < 3%)
         original_bpm = fade_out_analysis.bpm
         target_bpm = fade_in_analysis.bpm
@@ -903,10 +936,11 @@ class SmartFadesMixer:
 
         # Log that we're applying time stretching
         self.logger.debug(
-            "Time stretch: %.1f%% BPM diff, adjusting %.1f -> %.1f BPM over buffer",
+            "Time stretch: %.1f%% BPM diff, adjusting %.1f -> %.1f BPM, crossfade starts at %.1fs",
             bpm_diff_percent,
             original_bpm,
             target_bpm,
+            SMART_CROSSFADE_DURATION - crossfade_duration,
         )
 
         # Calculate the tempo change factor
@@ -914,15 +948,11 @@ class SmartFadesMixer:
         tempo_factor = bpm_ratio
         buffer_duration = SMART_CROSSFADE_DURATION  # 45 seconds
 
-        # Calculate expected crossfade duration from bars for comparison
-        beats_per_bar = 4
-        seconds_per_beat = 60.0 / original_bpm
-        expected_crossfade_duration = crossfade_bars * beats_per_bar * seconds_per_beat
-
-        # For BPM differences < 3%, tempo_factor will be between 0.97 and 1.03
-        # This is well within atempo's range
+        # Calculate where the crossfade will start
+        crossfade_start_time = buffer_duration - crossfade_duration
 
         # Validate tempo factor is within ffmpeg's atempo range
+        # For BPM differences < 8%, tempo_factor will be between 0.92 and 1.08
         if not 0.5 <= tempo_factor <= 2.0:
             self.logger.warning(
                 "Tempo factor %.4f out of range [0.5, 2.0], skipping time stretch",
@@ -930,78 +960,21 @@ class SmartFadesMixer:
             )
             return ["[0]anull[fadeout_stretched]"], 1.0  # codespell:ignore anull
 
-        # If the crossfade takes up most of the buffer, use simple linear stretch
-        if buffer_duration - expected_crossfade_duration < 5.0:
-            self.logger.debug(
-                "Time stretch filter (linear): %.1f BPM -> %.1f BPM (factor=%.4f)",
-                original_bpm,
-                target_bpm,
-                tempo_factor,
-            )
-            return [f"[0]atempo={tempo_factor:.6f}[fadeout_stretched]"], tempo_factor
-
-        # Implement segmented time stretching with exponential curve
-        num_segments = 4  # Balance between smoothness and filter complexity
-        filters = []
-
-        # Split the input into segments
-        filters.append(
-            f"[0]asplit={num_segments}" + "".join(f"[seg{i}]" for i in range(num_segments))
-        )
-
-        # Process each segment with progressively more tempo adjustment
-        for i in range(num_segments):
-            # Calculate segment timing
-            segment_start = (i * buffer_duration) / num_segments
-            segment_end = ((i + 1) * buffer_duration) / num_segments
-
-            # Calculate progress through the buffer (0 to 1)
-            progress = (i + 0.5) / num_segments  # Use midpoint of segment
-
-            # Apply exponential easing curve (ease-in-out cubic)
-            # This creates minimal change at start, accelerating in middle, decelerating at end
-            if progress < 0.5:
-                # First half: ease in (slow start)
-                eased_progress = 4 * progress * progress * progress
-            else:
-                # Second half: ease out (slow finish)
-                p = 2 * progress - 2
-                eased_progress = 1 + p * p * p / 2
-
-            # Calculate tempo for this segment
-            segment_tempo = 1.0 + (tempo_factor - 1.0) * eased_progress
-
-            # Clamp to atempo's valid range (should never exceed for < 3% changes)
-            segment_tempo = max(0.5, min(2.0, segment_tempo))
-
-            # Trim segment and apply tempo adjustment
-            filters.append(
-                f"[seg{i}]atrim=start={segment_start:.3f}:end={segment_end:.3f},"
-                f"asetpts=PTS-STARTPTS,atempo={segment_tempo:.6f}[seg{i}_stretched]"
-            )
-
-            self.logger.debug(
-                "Segment %d: %.1f-%.1fs, tempo factor=%.4f (%.1f%% of change)",
-                i + 1,
-                segment_start,
-                segment_end,
-                segment_tempo,
-                eased_progress * 100,
-            )
-
-        # Concatenate all stretched segments
-        concat_inputs = "".join(f"[seg{i}_stretched]" for i in range(num_segments))
-        filters.append(f"{concat_inputs}concat=n={num_segments}:v=0:a=1[fadeout_stretched]")
-
+        # Use uniform rubberband time stretching for the entire buffer
+        # This ensures downbeat adjustment calculations are accurate and beat alignment is perfect
+        # Rubberband is a high-quality music-specific algorithm optimized for music
         self.logger.debug(
-            "Time stretch filter (segmented): %.1f BPM -> %.1f BPM (factor=%.4f) with %d segments",
+            "Time stretch (rubberband uniform): %.1f BPM -> %.1f BPM (factor=%.4f), "
+            "crossfade starts at %.1fs",
             original_bpm,
             target_bpm,
             tempo_factor,
-            num_segments,
+            crossfade_start_time,
         )
-
-        return filters, tempo_factor
+        return [
+            f"[0]rubberband=tempo={tempo_factor:.6f}:transients=mixed:detector=soft:pitchq=quality"
+            "[fadeout_stretched]"
+        ], tempo_factor
 
     def _apply_eq_filters(
         self,
