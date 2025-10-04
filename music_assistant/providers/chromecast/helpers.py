@@ -85,7 +85,7 @@ class ChromecastInfo:
         elif (
             multichannel_groups
             and self.cast_type != "group" 
-            and cast_info.model_name != "Google Cast Group"
+            and self.model_name != "Google Cast Group"
         ):
             self.is_multichannel_child = True
 
