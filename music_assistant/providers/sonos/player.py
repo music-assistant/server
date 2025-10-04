@@ -480,21 +480,20 @@ class SonosPlayer(Player):
         if airplay_player := self.get_linked_airplay_player(False):
             # if airplay mode is enabled, we could possibly receive child player id's that are
             # not Sonos players, but AirPlay players. We redirect those.
-            airplay_player_ids_to_add = [x for x in player_ids_to_add if x.startswith("ap")]
-            player_ids_to_add = [x for x in player_ids_to_add if x not in airplay_player_ids_to_add]
-            airplay_player_ids_to_remove = [x for x in player_ids_to_remove if x.startswith("ap")]
-            player_ids_to_remove = [
-                x for x in player_ids_to_remove if x not in airplay_player_ids_to_remove
-            ]
+            airplay_player_ids_to_add = {x for x in player_ids_to_add if x.startswith("ap")}
+            airplay_player_ids_to_remove = {x for x in player_ids_to_remove if x.startswith("ap")}
             if airplay_player_ids_to_add or airplay_player_ids_to_remove:
                 await self.mass.players.cmd_set_members(
                     airplay_player.player_id,
-                    player_ids_to_add=airplay_player_ids_to_add,
-                    player_ids_to_remove=airplay_player_ids_to_remove,
+                    player_ids_to_add=list(airplay_player_ids_to_add),
+                    player_ids_to_remove=list(airplay_player_ids_to_remove),
                 )
-        if player_ids_to_add or player_ids_to_remove:
+        sonos_player_ids_to_add = {x for x in player_ids_to_add if not x.startswith("ap")}
+        sonos_player_ids_to_remove = {x for x in player_ids_to_remove if not x.startswith("ap")}
+        if sonos_player_ids_to_add or sonos_player_ids_to_remove:
             await self.client.player.group.modify_group_members(
-                player_ids_to_add=player_ids_to_add, player_ids_to_remove=player_ids_to_remove
+                player_ids_to_add=list(sonos_player_ids_to_add),
+                player_ids_to_remove=list(sonos_player_ids_to_remove),
             )
 
     async def ungroup(self) -> None:
@@ -835,15 +834,22 @@ class SonosPlayer(Player):
         # Sonos has an annoying bug (for years already, and they dont seem to care),
         # where it looses its sync childs when airplay playback is (re)started.
         # Try to handle it here with this workaround.
-        group_childs = [x for x in self.client.player.group.player_ids if x != player_id]
-        if group_childs:
-            await self.mass.players.cmd_ungroup_many(group_childs)
+        org_group_childs = {x for x in self.client.player.group.player_ids if x != player_id}
+        if org_group_childs:
+            # ungroup all childs first
+            await self.client.player.group.modify_group_members(
+                player_ids_to_add=[], player_ids_to_remove=list(org_group_childs)
+            )
+        # start playback on the airplay player
         await self.mass.players.play_media(airplay_player.player_id, media)
-        if group_childs:
-            # ensure master player is first in the list
-            group_childs = [self.player_id, *group_childs]
-            await asyncio.sleep(5)
-            await self.client.player.group.set_group_members(group_childs)
+        # re-add the original group childs to the sonos player if needed
+        if org_group_childs:
+            # wait a bit to let the airplay playback start
+            await asyncio.sleep(3)
+            await self.client.player.group.modify_group_members(
+                player_ids_to_add=list(org_group_childs),
+                player_ids_to_remove=[],
+            )
 
     async def _play_media_legacy(
         self,
