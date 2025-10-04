@@ -840,11 +840,10 @@ class SonosPlayer(Player):
             await self.mass.players.cmd_ungroup_many(group_childs)
         await self.mass.players.play_media(airplay_player.player_id, media)
         if group_childs:
-            # ensure master player is first in the list
-            group_childs = [self.player_id, *group_childs]
+            # ensure master player is first in the list, deduplicate the group_list
+            group_childs = [self.player_id, *set(group_childs)]
             self.logger.info(
-                "Group childs: %s, player_id: %s, group_childs: %s",
-                group_childs,
+                "Player_id: %s, group_childs: %s",
                 player_id,
                 group_childs,
             )
