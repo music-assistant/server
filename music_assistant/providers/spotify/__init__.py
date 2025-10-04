@@ -178,7 +178,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_SYNC_PODCAST_PROGRESS,
             type=ConfigEntryType.BOOLEAN,
-            label="Sync Podcast Status from Spotify",
+            label="Sync Podcast Progress from Spotify",
             description="Automatically sync episode played status from Spotify to Music Assistant. "
             "Episodes marked as played in Spotify will be marked as played in MA."
             "Only enable this if you use both the Spotify app and Music Assistant "
