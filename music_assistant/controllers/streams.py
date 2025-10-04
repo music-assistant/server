@@ -910,9 +910,7 @@ class StreamsController(CoreController):
                         )
                     # send crossfade_part (as one big chunk)
                     yield crossfade_part
-
                     del crossfade_part
-
                     # also write the leftover bytes from the crossfade action
                     if remaining_bytes:
                         yield remaining_bytes
@@ -935,7 +933,9 @@ class StreamsController(CoreController):
                 yield last_fadeout_part
                 bytes_written += len(last_fadeout_part)
                 last_fadeout_part = b""
-            if self._crossfade_allowed(queue_track, flow_mode=True):
+            if self._crossfade_allowed(
+                queue_track, smart_fades_mode=smart_fades_mode, flow_mode=True
+            ):
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_size:]
                 last_streamdetails = queue_track.streamdetails
@@ -1204,7 +1204,9 @@ class StreamsController(CoreController):
 
         #### HANDLE END OF TRACK
 
-        if not self._crossfade_allowed(queue_item, flow_mode=False):
+        if not self._crossfade_allowed(
+            queue_item, smart_fades_mode=smart_fades_mode, flow_mode=False
+        ):
             # no crossfade enabled/allowed, just yield the buffer last part
             bytes_written += len(buffer)
             yield buffer
@@ -1381,8 +1383,12 @@ class StreamsController(CoreController):
         # reschedule self
         self.mass.call_later(3600, self._clean_audio_cache)
 
-    def _crossfade_allowed(self, queue_item: QueueItem, flow_mode: bool = False) -> bool:
+    def _crossfade_allowed(
+        self, queue_item: QueueItem, smart_fades_mode: SmartFadesMode, flow_mode: bool = False
+    ) -> bool:
         """Get the crossfade config for a queue item."""
+        if smart_fades_mode == SmartFadesMode.DISABLED:
+            return False
         if not (queue_player := self.mass.players.get(queue_item.queue_id)):
             return False  # just a guard
         if queue_item.media_type != MediaType.TRACK:
