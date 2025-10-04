@@ -838,7 +838,7 @@ class SonosPlayer(Player):
         if org_group_childs:
             # ungroup all childs first
             await self.client.player.group.modify_group_members(
-                player_ids_to_remove=list(org_group_childs)
+                player_ids_to_add=[], player_ids_to_remove=list(org_group_childs)
             )
         # start playback on the airplay player
         await self.mass.players.play_media(airplay_player.player_id, media)
@@ -847,7 +847,8 @@ class SonosPlayer(Player):
             # wait a bit to let the airplay playback start
             await asyncio.sleep(3)
             await self.client.player.group.modify_group_members(
-                player_ids_to_add=list(org_group_childs)
+                player_ids_to_add=list(org_group_childs),
+                player_ids_to_remove=[],
             )
 
     async def _play_media_legacy(
