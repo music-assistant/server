@@ -253,6 +253,9 @@ class SmartFadesMixer:
         mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
     ) -> bytes:
         """Apply crossfade with internal state management and smart/standard fallback logic."""
+        if mode == SmartFadesMode.DISABLED:
+            # No crossfade, just concatenate
+            return fade_out_part + fade_in_part
         if mode == SmartFadesMode.STANDARD_CROSSFADE:
             # crossfade with standard crossfade
             return await self._default_crossfade(

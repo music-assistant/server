@@ -842,6 +842,12 @@ class SonosPlayer(Player):
         if group_childs:
             # ensure master player is first in the list
             group_childs = [self.player_id, *group_childs]
+            self.logger.info(
+                "Group childs: %s, player_id: %s, group_childs: %s",
+                group_childs,
+                player_id,
+                group_childs,
+            )
             await asyncio.sleep(5)
             await self.client.player.group.set_group_members(group_childs)
 
