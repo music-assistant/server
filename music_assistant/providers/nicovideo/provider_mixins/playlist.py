@@ -45,22 +45,16 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
 
         return playlist_with_tracks.tracks if playlist_with_tracks else []
 
-    @override
     async def get_library_playlists(
         self,
     ) -> AsyncGenerator[Playlist, None]:
         """Retrieve library playlists from the provider."""
-        # Get user's own playlists (editable)
-        own_playlists = await self.service_manager.mylist.get_own_mylists()
-        for playlist in own_playlists:
-            yield playlist
-
-        # Include following mylists if enabled in config
-        include_following = self.nicovideo_config.content.include_followed_mylists
-        if include_following:
-            following_playlists = await self.service_manager.user.get_following_playlists()
-            for playlist in following_playlists:
-                yield playlist
+        # Get own mylists (editable playlists)
+        own_mylists = await self.service_manager.mylist.get_own_mylists()
+        for mylist in own_mylists:
+            yield mylist
+        # Following mylists are not included in simplified config
+        return
 
     @override
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:

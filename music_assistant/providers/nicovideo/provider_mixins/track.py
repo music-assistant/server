@@ -33,10 +33,10 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        # Check config settings for including tracks
-        include_following_tracks = self.nicovideo_config.content.include_followed_mylists_tracks
-        include_own_tracks = self.nicovideo_config.content.include_own_mylists_tracks
-        include_own_videos_tracks = self.nicovideo_config.content.include_own_videos_tracks
+        # Default behavior: include own mylists but not following or own videos
+        include_following_tracks = False
+        include_own_tracks = True
+        include_own_videos_tracks = False
 
         # Process all library playlists for this provider
         async for playlist in self.mass.music.playlists.iter_library_items(
@@ -84,8 +84,8 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
         if item.media_type is not MediaType.TRACK:
             return None
 
-        # Check if auto-like is enabled
-        auto_like_enabled = self.nicovideo_config.content.auto_like_on_library_add
+        # Default: auto-like is enabled
+        auto_like_enabled = True
         if not auto_like_enabled:
             return True  # Successfully "added" but no action needed
 

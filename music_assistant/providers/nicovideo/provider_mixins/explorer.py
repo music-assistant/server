@@ -55,11 +55,9 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         """
         recommendation_folders = []
 
-        recommendations_config = self.nicovideo_config.recommendations
-
-        # Main recommendations
-        main_recommendation_tracks = await self._fetch_recommendations_with_filtering(
-            recommendations_config.main_recommendation_count
+        # Main recommendations (default: 25 tracks)
+        main_recommendation_tracks = await self.service_manager.user.get_recommendations(
+            "video_recommendation_recommend", limit=25
         )
         if main_recommendation_tracks:
             recommendation_folders.append(
@@ -72,10 +70,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 )
             )
 
-        # History Tracks
-        history_tracks = await self.service_manager.user.get_user_history(
-            limit=recommendations_config.history_count
-        )
+        # History Tracks (default: 50 tracks)
+        history_tracks = await self.service_manager.user.get_user_history(limit=50)
         if history_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
@@ -87,9 +83,9 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 )
             )
 
-        # Following activities recommendations
+        # Following activities recommendations (default: 30 tracks)
         following_activities_tracks = await self.service_manager.user.get_following_activities(
-            limit=recommendations_config.following_activities_count
+            limit=30
         )
         if following_activities_tracks:
             recommendation_folders.append(
@@ -102,10 +98,8 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 )
             )
 
-        # Like History recommendations
-        like_history_tracks = await self.service_manager.user.get_like_history(
-            limit=recommendations_config.like_history_count
-        )
+        # Like History recommendations (default: 50 tracks)
+        like_history_tracks = await self.service_manager.user.get_like_history(limit=50)
         if like_history_tracks:
             recommendation_folders.append(
                 RecommendationFolder(
@@ -117,186 +111,15 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
                 )
             )
 
-        # Tag-based recommendations
-        for tag in recommendations_config.tag_based_recommendation_tags:
-            tag_based_tracks = await self.service_manager.search.search_videos_by_tag(
-                tag,
-                recommendations_config.tag_based_recommendation_count,
-                "personalized",
-                "none",
-            )
-            if tag_based_tracks:
-                recommendation_folders.append(
-                    RecommendationFolder(
-                        item_id=f"nicovideo_tag_recommendations_{tag}",
-                        name=f"Tag-based Recommendations: {tag}",
-                        provider=self.lookup_key,
-                        icon="mdi-tag-outline",
-                        items=UniqueList(tag_based_tracks),
-                    )
-                )
-
-        # New tracks by tags
-        for new_tracks_tag in recommendations_config.tag_new_tracks_tags:
-            tag_new_tracks = await self.service_manager.search.search_videos_by_tag(
-                new_tracks_tag, recommendations_config.tag_new_tracks_count, "registeredAt", "desc"
-            )
-            if tag_new_tracks:
-                recommendation_folders.append(
-                    RecommendationFolder(
-                        item_id=f"nicovideo_new_tracks_by_tags_{new_tracks_tag}",
-                        name=f"New Tracks by Tags: {new_tracks_tag}",
-                        provider=self.lookup_key,
-                        icon="mdi-new-box",
-                        items=UniqueList(tag_new_tracks),
-                    )
-                )
-
         return recommendation_folders
 
     @override
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
-        # Use config count if limit is default
-        target_count = (
-            self.nicovideo_config.recommendations.main_recommendation_count
-            if limit == 25
-            else limit
-        )
-
-        return await self._fetch_similar_tracks_with_filtering(prov_track_id, target_count)
-
-    def _track_has_required_tags(self, track_tags: list[str], required_tags: list[str]) -> bool:
-        """Check if track has at least one of the required tags."""
-        if not required_tags:
-            # If no tags are required, allow all tracks
-            return True
-
-        if not track_tags:
-            # If track has no tags but tags are required, reject
-            return False
-
-        # Check if track has at least one required tag
-        return any(tag in track_tags for tag in required_tags)
-
-    async def _filter_tracks_by_tags(self, tracks: list[Track]) -> list[Track]:
-        """Filter tracks based on required tags from configuration."""
-        required_tags = self.nicovideo_config.recommendations.recommendation_filter_tags
-        if not required_tags:
-            # No filtering needed
-            return tracks
-
-        filtered_tracks = []
-        for track in tracks:
-            try:
-                # First try to get tags from Track metadata (genres)
-                tag_names = list(track.metadata.genres) if track.metadata.genres else []
-                current_track = track
-
-                # If no tags available, get fresh data from provider (with cache)
-                if not tag_names:
-                    # Use MusicAssistant's get_provider_item to get cached or fresh data
-                    updated_track = await self.mass.music.tracks.get_provider_item(
-                        track.item_id, self.instance_id
-                    )
-                    if updated_track:
-                        current_track = updated_track
-                        tag_names = (
-                            list(current_track.metadata.genres)
-                            if current_track.metadata.genres
-                            else []
-                        )
-
-                if self._track_has_required_tags(tag_names, required_tags):
-                    filtered_tracks.append(current_track)
-            except Exception as err:
-                # If we can't get tags, log warning but don't fail entirely
-                self.logger.warning("Failed to get tags for track %s: %s", track.item_id, err)
-                # Include track if tag fetching fails (graceful degradation)
-                filtered_tracks.append(track)
-
-        return filtered_tracks
-
-    async def _fetch_recommendations_with_filtering(self, target_count: int) -> list[Track]:
-        """Fetch recommendations with dynamic count adjustment for tag filtering."""
-        required_tags = self.nicovideo_config.recommendations.recommendation_filter_tags
-        if not required_tags:
-            # No filtering needed, just fetch the target count
-            return await self.service_manager.user.get_recommendations(limit=target_count)
-
-        # With filtering, we need to fetch more to account for filtered out tracks
-        max_attempts = 5
-        all_tracks = []
-        seen_track_ids = set()
-
-        for attempt in range(max_attempts):
-            current_limit = target_count * 5
-
-            try:
-                batch_tracks = await self.service_manager.user.get_recommendations(
-                    "video_recommendation_recommend", limit=current_limit
-                )
-
-                if not batch_tracks:
-                    break  # No more tracks to process
-
-                # Filter out duplicates
-                new_tracks = [
-                    track for track in batch_tracks if track.item_id not in seen_track_ids
-                ]
-
-                for track in new_tracks:
-                    seen_track_ids.add(track.item_id)
-
-                all_tracks.extend(new_tracks)
-
-                # Apply filtering to all collected tracks
-                filtered_tracks = await self._filter_tracks_by_tags(all_tracks)
-
-                if len(filtered_tracks) >= target_count:
-                    # We have enough filtered tracks
-                    return filtered_tracks[:target_count]
-
-                # Not enough tracks yet, prepare for next attempt
-                if attempt < max_attempts - 1:
-                    self.logger.debug(
-                        "Got %d filtered tracks (target: %d), fetching more...",
-                        len(filtered_tracks),
-                        target_count,
-                    )
-
-            except Exception as err:
-                self.logger.warning(
-                    "Failed to fetch recommendations batch (attempt %d): %s", attempt + 1, err
-                )
-                break
-
-        # Return what we have, even if less than target
-        filtered_tracks = await self._filter_tracks_by_tags(all_tracks)
-        return filtered_tracks[:target_count] if filtered_tracks else []
+        return await self._fetch_similar_tracks_with_filtering(prov_track_id, limit)
 
     async def _fetch_similar_tracks_with_filtering(
         self, prov_track_id: str, target_count: int
     ) -> list[Track]:
-        """Fetch similar tracks with dynamic count adjustment for tag filtering."""
-        required_tags = self.nicovideo_config.recommendations.recommendation_filter_tags
-        if not required_tags:
-            # No filtering needed, just fetch the target count
-            return await self.service_manager.user.get_similar_tracks(
-                prov_track_id, limit=target_count
-            )
-
-        # With filtering, we need to fetch more to account for filtered out tracks
-        # For similar tracks, we have less control over pagination, so we use a simpler approach
-        fetch_limit = min(int(target_count * 2.5), 100)  # Fetch 2.5x target, cap at 100
-
-        try:
-            tracks = await self.service_manager.user.get_similar_tracks(
-                prov_track_id, limit=fetch_limit
-            )
-            filtered_tracks = await self._filter_tracks_by_tags(tracks)
-            return filtered_tracks[:target_count] if filtered_tracks else []
-
-        except Exception as err:
-            self.logger.warning("Failed to fetch similar tracks for %s: %s", prov_track_id, err)
-            return []
+        """Fetch similar tracks without tag filtering (simplified version)."""
+        return await self.service_manager.user.get_similar_tracks(prov_track_id, target_count)

@@ -11,7 +11,7 @@ from music_assistant.providers.nicovideo.services.base import NicovideoBaseServi
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Artist, Playlist, Track
-    from niconico.objects.nvapi import FollowingMylistsData
+    from niconico.objects.nvapi import FollowingMylistItem
 
     from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
 
@@ -41,8 +41,8 @@ class NicovideoUserService(NicovideoBaseService):
         limit: int = 25,
     ) -> list[Track]:
         """Get recommendations from nicovideo."""
-        config = self.nicovideo_config
-        sensitive_contents = config.content.sensitive_contents_config
+        # Default: mask sensitive contents
+        sensitive_contents: Literal["mask", "filter"] = "mask"
         recommendations = await self.service_manager._call_with_throttler(
             self.niconico_py_client.user.get_recommendations,
             recipe_id,
@@ -67,8 +67,8 @@ class NicovideoUserService(NicovideoBaseService):
 
     async def get_similar_tracks(self, track_id: str, limit: int = 25) -> list[Track]:
         """Get tracks similar to the given track."""
-        config = self.nicovideo_config
-        sensitive_contents = config.content.sensitive_contents_config
+        # Default: mask sensitive contents
+        sensitive_contents: Literal["mask", "filter"] = "mask"
         recommendation_api_item = await self.service_manager._call_with_throttler(
             self.niconico_py_client.user.get_recommendations,
             "video_watch_recommendation",
@@ -132,8 +132,8 @@ class NicovideoUserService(NicovideoBaseService):
 
     async def get_own_videos(self, limit: int = 100) -> list[Track]:
         """Get user's own uploaded videos from nicovideo."""
-        config = self.nicovideo_config
-        sensitive_contents = config.content.sensitive_contents_config
+        # Default: mask sensitive contents
+        sensitive_contents: Literal["mask", "filter"] = "mask"
 
         # Calculate page_size based on limit
         page_size = min(limit, 100)  # API max likely 100
@@ -200,30 +200,15 @@ class NicovideoUserService(NicovideoBaseService):
 
         return tracks[:limit]
 
-    async def get_following_mylists(self) -> FollowingMylistsData | None:
-        """Get mylists from users you follow."""
-        following_mylists = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.user.get_own_following_mylists,
-        )
-        return following_mylists if following_mylists else None
+    async def get_following_mylists(self) -> list[FollowingMylistItem]:
+        """Get mylists the user is following."""
+        # Following mylists are not included in simplified config
+        return []
 
     async def get_own_followings(self) -> list[Artist]:
-        """Get users you are following as Artists."""
-        followings_data = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.user.get_own_followings,
-        )
-
-        if not followings_data:
-            return []
-
-        # Extract users from followings data and convert to Artist objects
-        artists: list[Artist] = []
-        for item in followings_data.items:
-            artist = self.converter_manager.artist.convert_by_owner_or_user(item)
-            if artist:
-                artists.append(artist)
-
-        return artists
+        """Get users the current user is following and convert them to Artists."""
+        # Own followings are not included in simplified config
+        return []
 
     async def follow_user(self, user_id: str) -> bool:
         """Follow a user."""
@@ -241,12 +226,12 @@ class NicovideoUserService(NicovideoBaseService):
 
     async def get_following_playlists(self) -> list[Playlist]:
         """Get playlists from users you follow, converted to Music Assistant format."""
-        following_mylists_data = await self.get_following_mylists()
-        if not following_mylists_data:
+        following_mylists = await self.get_following_mylists()
+        if not following_mylists:
             return []
 
         playlists = []
-        for mylist in following_mylists_data.mylists:
+        for mylist in following_mylists:
             playlist = self.converter_manager.playlist.convert_following_by_mylist(mylist)
             playlists.append(playlist)
         return playlists

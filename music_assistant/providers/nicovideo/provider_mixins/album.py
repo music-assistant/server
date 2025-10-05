@@ -42,9 +42,10 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
     async def get_library_albums(
         self,
     ) -> AsyncGenerator[Album, None]:
-        """Retrieve library albums from the provider (user's own series)."""
-        # Check config setting for including own series as albums
-        if not self.nicovideo_config.content.include_own_series_albums:
+        """Retrieve library albums from the provider."""
+        # Default: do not include own series as albums
+        include_own_series_albums = False
+        if not include_own_series_albums:
             return
 
         page = 1
