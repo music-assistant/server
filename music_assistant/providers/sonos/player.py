@@ -567,7 +567,7 @@ class SonosPlayer(Player):
             # player is group coordinator
             active_group = self.client.player.group
             if len(self.client.player.group_members) > 1:
-                self._attr_group_members = [*self.client.player.group_members]
+                self._attr_group_members = list(self.client.player.group_members)
             else:
                 self._attr_group_members.clear()
             # append airplay child's to group childs
