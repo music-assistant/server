@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import UnplayableMediaError
 
+from music_assistant.providers.nicovideo.constants import SENSITIVE_CONTENTS
 from music_assistant.providers.nicovideo.converters.stream import (
     StreamConversionData,
 )
@@ -30,14 +31,12 @@ class NicovideoVideoService(NicovideoBaseService):
         self, user_id: str, page: int = 1, page_size: int = 50
     ) -> list[Track]:
         """Get user videos and convert as Track list."""
-        # Default: mask sensitive contents
-        sensitive_contents: Literal["mask", "filter"] = "mask"
         user_video_data = await self.service_manager._call_with_throttler(
             self.niconico_py_client.user.get_user_videos,
             user_id,
             page=page,
             page_size=page_size,
-            sensitive_contents=sensitive_contents,
+            sensitive_contents=SENSITIVE_CONTENTS,
         )
         if not user_video_data or not user_video_data.items:
             return []

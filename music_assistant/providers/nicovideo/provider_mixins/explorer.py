@@ -116,10 +116,4 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
-        return await self._fetch_similar_tracks_with_filtering(prov_track_id, limit)
-
-    async def _fetch_similar_tracks_with_filtering(
-        self, prov_track_id: str, target_count: int
-    ) -> list[Track]:
-        """Fetch similar tracks without tag filtering (simplified version)."""
-        return await self.service_manager.user.get_similar_tracks(prov_track_id, target_count)
+        return await self.service_manager.user.get_similar_tracks(prov_track_id, limit)

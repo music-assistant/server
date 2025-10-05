@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from music_assistant_models.errors import MediaNotFoundError
 
+from music_assistant.providers.nicovideo.constants import SENSITIVE_CONTENTS
 from music_assistant.providers.nicovideo.services.base import NicovideoBaseService
 
 if TYPE_CHECKING:
+    from typing import Literal
+
     from music_assistant_models.media_items import Artist, Playlist, Track
     from niconico.objects.nvapi import FollowingMylistItem
 
@@ -41,13 +44,11 @@ class NicovideoUserService(NicovideoBaseService):
         limit: int = 25,
     ) -> list[Track]:
         """Get recommendations from nicovideo."""
-        # Default: mask sensitive contents
-        sensitive_contents: Literal["mask", "filter"] = "mask"
         recommendations = await self.service_manager._call_with_throttler(
             self.niconico_py_client.user.get_recommendations,
             recipe_id,
             limit=limit,
-            sensitive_contents=sensitive_contents,
+            sensitive_contents=SENSITIVE_CONTENTS,
         )
         if not recommendations or not recommendations.items:
             return []
@@ -67,14 +68,12 @@ class NicovideoUserService(NicovideoBaseService):
 
     async def get_similar_tracks(self, track_id: str, limit: int = 25) -> list[Track]:
         """Get tracks similar to the given track."""
-        # Default: mask sensitive contents
-        sensitive_contents: Literal["mask", "filter"] = "mask"
         recommendation_api_item = await self.service_manager._call_with_throttler(
             self.niconico_py_client.user.get_recommendations,
             "video_watch_recommendation",
             video_id=track_id,
             limit=limit,
-            sensitive_contents=sensitive_contents,
+            sensitive_contents=SENSITIVE_CONTENTS,
         )
         if not recommendation_api_item or not recommendation_api_item.items:
             return []
@@ -132,16 +131,13 @@ class NicovideoUserService(NicovideoBaseService):
 
     async def get_own_videos(self, limit: int = 100) -> list[Track]:
         """Get user's own uploaded videos from nicovideo."""
-        # Default: mask sensitive contents
-        sensitive_contents: Literal["mask", "filter"] = "mask"
-
         # Calculate page_size based on limit
         page_size = min(limit, 100)  # API max likely 100
         own_videos = await self.service_manager._call_with_throttler(
             self.niconico_py_client.user.get_own_videos,
             page_size=page_size,
             page=1,
-            sensitive_contents=sensitive_contents,
+            sensitive_contents=SENSITIVE_CONTENTS,
         )
         if not own_videos or not own_videos.items:
             return []

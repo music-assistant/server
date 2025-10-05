@@ -45,6 +45,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
 
         return playlist_with_tracks.tracks if playlist_with_tracks else []
 
+    @override
     async def get_library_playlists(
         self,
     ) -> AsyncGenerator[Playlist, None]:

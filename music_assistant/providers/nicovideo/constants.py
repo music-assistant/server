@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType
+
+if TYPE_CHECKING:
+    from typing import Literal
 
 
 class ApiPriority(Enum):
@@ -25,3 +29,7 @@ NICOVIDEO_CONTENT_TYPE = ContentType.MP4
 NICOVIDEO_CODEC_TYPE = ContentType.AAC
 NICOVIDEO_AUDIO_CHANNELS = 2  # Stereo (2ch)
 NICOVIDEO_AUDIO_BIT_DEPTH = 16  # 16-bit (confirmed from downloaded video analysis)
+
+# Content filtering constants
+# Default behavior for sensitive content handling
+SENSITIVE_CONTENTS: Literal["mask", "filter"] = "mask"
