@@ -45,6 +45,7 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
@@ -53,7 +54,7 @@ from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.util import install_package
+from music_assistant.helpers.util import infer_album_type, install_package
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -100,9 +101,10 @@ VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 # So we need to add a delimiter to make them unique
 YT_PLAYLIST_ID_DELIMITER = "🎵"
 PODCAST_EPISODE_SPLITTER = "|"
+YT_LIKED_SONGS_PLAYLIST_ID = "LM"
 YT_PERSONAL_PLAYLISTS = (
-    "LM",  # Liked songs
-    "SE"  # Episodes for Later
+    YT_LIKED_SONGS_PLAYLIST_ID,  # Liked songs
+    "SE",  # Episodes for Later
     "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
     "RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",  # My Mix 1
     "RDTMAK5uy_lz2owBgwWf1mjzyn_NbxzMViQzIg8IAIg",  # My Mix 2
@@ -116,6 +118,7 @@ YT_PERSONAL_PLAYLISTS = (
     "RDTMAK5uy_nilrsVWxrKskY0ZUpVZ3zpB0u4LwWTVJ4",  # Replay Mix
     "RDTMAK5uy_mZtXeU08kxXJOUhL0ETdAuZTh1z7aAFAo",  # Archive Mix
 )
+DYNAMIC_PLAYLIST_TRACK_LIMIT = 300
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
 PACKAGES_TO_INSTALL = ("yt-dlp", "bgutil-ytdlp-pot-provider")
 
@@ -142,7 +145,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return YoutubeMusicProvider(mass, manifest, config)
+    return YoutubeMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -226,11 +229,7 @@ class YoutubeMusicProvider(MusicProvider):
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
-
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types=list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -323,6 +322,7 @@ class YoutubeMusicProvider(MusicProvider):
         for podcast in podcasts_obj:
             yield self._parse_podcast(podcast)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         if album_obj := await get_album(prov_album_id=prov_album_id, language=self.language):
@@ -330,6 +330,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         album_obj = await get_album(prov_album_id=prov_album_id, language=self.language)
@@ -344,6 +345,7 @@ class YoutubeMusicProvider(MusicProvider):
             tracks.append(track)
         return tracks
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         if artist_obj := await get_artist(
@@ -353,6 +355,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         if track_obj := await get_track(
@@ -364,33 +367,57 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
+        # Grab the full playlist by default
+        limit = None
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
             prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+        if (
+            prov_playlist_id in YT_PERSONAL_PLAYLISTS
+            and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
+        ):
+            # Personal playlists are dynamic and can result in endless tracks
+            # limit to avoid memory issues
+            limit = DYNAMIC_PLAYLIST_TRACK_LIMIT
         if playlist_obj := await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers,
             language=self.language,
             user=self._yt_user,
+            limit=limit,
         ):
             return self._parse_playlist(playlist_obj)
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
         if page > 0:
             # paging not supported, we always return the whole list at once
             return []
+        # Grab the full playlist by default
+        limit = None
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
             prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+        if (
+            prov_playlist_id in YT_PERSONAL_PLAYLISTS
+            and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
+        ):
+            # Personal playlists are dynamic and can result in endless tracks
+            # limit to avoid memory issues
+            limit = DYNAMIC_PLAYLIST_TRACK_LIMIT
         # Add a try to prevent MA from stopping syncing whenever we fail a single playlist
         try:
             playlist_obj = await get_playlist(
-                prov_playlist_id=prov_playlist_id, headers=self._headers, user=self._yt_user
+                prov_playlist_id=prov_playlist_id,
+                headers=self._headers,
+                user=self._yt_user,
+                limit=limit,
             )
         except KeyError as ke:
             self.logger.warning("Could not load playlist: %s: %s", prov_playlist_id, ke)
@@ -414,6 +441,7 @@ class YoutubeMusicProvider(MusicProvider):
         # YTM doesn't seem to support paging so we ignore offset and limit
         return result
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -428,6 +456,7 @@ class YoutubeMusicProvider(MusicProvider):
             return albums
         return []
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -437,6 +466,7 @@ class YoutubeMusicProvider(MusicProvider):
             return playlist_tracks[:25]
         return []
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get the full details of a Podcast."""
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
@@ -455,6 +485,7 @@ class YoutubeMusicProvider(MusicProvider):
             episode.position = ep_index
             yield episode
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get a single Podcast Episode."""
         podcast_id, episode_id = prov_episode_id.split(PODCAST_EPISODE_SPLITTER)
@@ -526,10 +557,21 @@ class YoutubeMusicProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
+        # Grab the full playlist by default
+        limit = None
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
             prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
-        playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
+        if (
+            prov_playlist_id in YT_PERSONAL_PLAYLISTS
+            and prov_playlist_id != YT_LIKED_SONGS_PLAYLIST_ID
+        ):
+            # Personal playlists are dynamic and can result in endless tracks
+            # limit to avoid memory issues
+            limit = DYNAMIC_PLAYLIST_TRACK_LIMIT
+        playlist_obj = await get_playlist(
+            prov_playlist_id=prov_playlist_id, headers=self._headers, limit=limit
+        )
         if "tracks" not in playlist_obj:
             return None
         tracks_to_delete = []
@@ -550,6 +592,7 @@ class YoutubeMusicProvider(MusicProvider):
             user=self._yt_user,
         )
 
+    @use_cache(3600 * 24)  # Cache for 1 day
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         result = []
@@ -610,6 +653,8 @@ class YoutubeMusicProvider(MusicProvider):
                 icon=determine_recommendation_icon(section["title"]),
             )
             for recommended_item in section.get("contents", []):
+                if not recommended_item:
+                    continue  # yeah this seems to happen sometimes ?!
                 if recommended_item.get("videoId"):
                     # Probably a track
                     try:
@@ -690,6 +735,10 @@ class YoutubeMusicProvider(MusicProvider):
     def _parse_album(self, album_obj: dict, album_id: str | None = None) -> Album:
         """Parse a YT Album response to an Album model object."""
         album_id = album_id or album_obj.get("id") or album_obj.get("browseId")
+
+        if not album_id:
+            raise InvalidDataError("Album ID is required but not found")
+
         if "title" in album_obj:
             name = album_obj["title"]
         elif "name" in album_obj:
@@ -710,19 +759,21 @@ class YoutubeMusicProvider(MusicProvider):
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
         if "thumbnails" in album_obj:
-            album.metadata.images = self._parse_thumbnails(album_obj["thumbnails"])
+            album.metadata.images = UniqueList(self._parse_thumbnails(album_obj["thumbnails"]))
         if description := album_obj.get("description"):
             album.metadata.description = unquote(description)
         if "isExplicit" in album_obj:
             album.metadata.explicit = album_obj["isExplicit"]
         if "artists" in album_obj:
-            album.artists = [
-                self._get_artist_item_mapping(artist)
-                for artist in album_obj["artists"]
-                if artist.get("id")
-                or artist.get("channelId")
-                or artist.get("name") == "Various Artists"
-            ]
+            album.artists = UniqueList(
+                [
+                    self._get_artist_item_mapping(artist)
+                    for artist in album_obj["artists"]
+                    if artist.get("id")
+                    or artist.get("channelId")
+                    or artist.get("name") == "Various Artists"
+                ]
+            )
         if "type" in album_obj:
             if album_obj["type"] == "Single":
                 album_type = AlbumType.SINGLE
@@ -733,6 +784,12 @@ class YoutubeMusicProvider(MusicProvider):
             else:
                 album_type = AlbumType.UNKNOWN
             album.album_type = album_type
+
+        # Try inference - override if it finds something more specific
+        inferred_type = infer_album_type(name, "")  # YouTube doesn't seem to have version field
+        if inferred_type in (AlbumType.SOUNDTRACK, AlbumType.LIVE):
+            album.album_type = inferred_type
+
         return album
 
     def _parse_artist(self, artist_obj: dict) -> Artist:
@@ -804,7 +861,6 @@ class YoutubeMusicProvider(MusicProvider):
                 playlist.owner = authors["name"]
         else:
             playlist.owner = self.name
-        playlist.cache_checksum = playlist_obj.get("checksum")
         return playlist
 
     def _parse_track(self, track_obj: dict) -> Track:

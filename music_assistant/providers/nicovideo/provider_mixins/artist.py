@@ -20,12 +20,15 @@ if TYPE_CHECKING:
 class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
     """Artist-related methods for NicovideoMusicProvider."""
 
-    _supported_features = {
-        ProviderFeature.ARTIST_TOPTRACKS,
-        ProviderFeature.ARTIST_ALBUMS,
-        ProviderFeature.LIBRARY_ARTISTS,
-        ProviderFeature.LIBRARY_ARTISTS_EDIT,
-    }
+    @override
+    def get_supported_features_for_mixin(self) -> set[ProviderFeature]:
+        """Return the features supported by this Provider mixin."""
+        return {
+            ProviderFeature.ARTIST_TOPTRACKS,
+            ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.LIBRARY_ARTISTS,
+            ProviderFeature.LIBRARY_ARTISTS_EDIT,
+        }
 
     @override
     async def get_artist(self, prov_artist_id: str) -> Artist:

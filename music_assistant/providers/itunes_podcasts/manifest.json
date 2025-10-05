@@ -3,7 +3,7 @@
   "domain": "itunes_podcasts",
   "stage": "stable",
   "name": "iTunes Podcast Search",
-  "description": "Search podcasts via iTunes API in Music Assistant.",
+  "description": "Search and play podcasts indexed via Apple’s iTunes feed / podcast directory.",
   "codeowners": ["@fmunkes"],
   "icon": "podcast",
   "documentation": "https://music-assistant.io/music-providers/itunes-podcasts/",

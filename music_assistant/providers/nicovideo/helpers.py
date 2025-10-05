@@ -16,10 +16,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.constants import (
-    CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.providers.nicovideo.constants import (
     NICOVIDEO_AUDIO_BIT_DEPTH,
     NICOVIDEO_AUDIO_CHANNELS,
@@ -61,8 +58,7 @@ async def cache_track(provider: MusicProvider, track: Track) -> None:
     await provider.mass.cache.set(
         cache_key,
         track.to_dict(),
-        category=CACHE_CATEGORY_MUSIC_PROVIDER_ITEM,
-        base_key=provider.lookup_key,
+        provider=provider.lookup_key,
     )
 
 

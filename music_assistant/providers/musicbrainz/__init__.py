@@ -33,12 +33,16 @@ if TYPE_CHECKING:
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
+SUPPORTED_FEATURES: set[ProviderFeature] = (
+    set()
+)  # we don't have any special supported features (yet)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return MusicbrainzProvider(mass, manifest, config)
+    return MusicbrainzProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -236,11 +240,6 @@ class MusicbrainzProvider(MetadataProvider):
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return set()
-
     async def search(
         self, artistname: str, albumname: str, trackname: str, trackversion: str | None = None
     ) -> tuple[MusicBrainzArtist, MusicBrainzReleaseGroup, MusicBrainzRecording] | None:
@@ -427,7 +426,7 @@ class MusicbrainzProvider(MetadataProvider):
                 return MusicBrainzArtist.from_raw(artist)
         return None
 
-    @use_cache(86400 * 30)
+    @use_cache(86400 * 30)  # Cache for 30 days
     @throttle_with_retries
     async def get_data(self, endpoint: str, **kwargs: str) -> Any:
         """Get data from api."""

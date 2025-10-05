@@ -14,7 +14,7 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import ConfigEntryType, EventType
+from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
@@ -26,12 +26,16 @@ from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
 
+SUPPORTED_FEATURES: set[ProviderFeature] = (
+    set()
+)  # we don't have any special supported features (yet)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    provider = LastFMScrobbleProvider(mass, manifest, config)
+    provider = LastFMScrobbleProvider(mass, manifest, config, SUPPORTED_FEATURES)
     pylast.logger.setLevel(provider.logger.level)
 
     # httpcore is very spammy on debug without providing useful information 99% of the time
@@ -40,8 +44,6 @@ async def setup(
     else:
         logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-    # run async setup of provider to catch any login issues early
-    await provider.async_setup()
     return provider
 
 
@@ -51,7 +53,7 @@ class LastFMScrobbleProvider(PluginProvider):
     network: pylast._Network
     _on_unload: list[Callable[[], None]]
 
-    async def async_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async setup."""
         self._on_unload: list[Callable[[], None]] = []
 

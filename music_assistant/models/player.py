@@ -9,7 +9,6 @@ which is a dataclass in the models package containing the player state.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -45,16 +44,11 @@ from music_assistant.constants import (
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
-    CONF_CROSSFADE,
-    CONF_CROSSFADE_DURATION,
-    CONF_DYNAMIC_GROUP_MEMBERS,
-    CONF_ENABLE_ICY_METADATA,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_AUTO_PLAY,
-    CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_EXPOSE_PLAYER_TO_HA,
     CONF_ENTRY_EXPOSE_PLAYER_TO_HA_DEFAULT_DISABLED,
@@ -69,36 +63,53 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_SAMPLE_RATES,
+    CONF_ENTRY_SMART_FADES_MODE,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_FLOW_MODE,
-    CONF_GROUP_MEMBERS,
     CONF_HIDE_PLAYER_IN_UI,
-    CONF_HTTP_PROFILE,
     CONF_MUTE_CONTROL,
-    CONF_OUTPUT_CODEC,
     CONF_POWER_CONTROL,
-    CONF_SAMPLE_RATES,
+    CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_VOLUME_CONTROL,
 )
-from music_assistant.helpers.util import get_changed_dataclass_values
+from music_assistant.helpers.util import (
+    get_changed_dataclass_values,
+    validate_announcement_chime_url,
+)
 
 if TYPE_CHECKING:
     from .player_provider import PlayerProvider
 
+CONF_ENTRY_PRE_ANNOUNCE_CUSTOM_CHIME_URL = ConfigEntry(
+    key=CONF_PRE_ANNOUNCE_CHIME_URL,
+    type=ConfigEntryType.STRING,
+    label="Custom (pre)announcement chime URL",
+    description="URL to a custom audio file to play before announcements.\n"
+    "Leave empty to use the default chime.\n"
+    "Supports http:// and https:// URLs pointing to "
+    "audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\n"
+    "Example: http://homeassistant.local:8123/local/audio/custom_chime.mp3",
+    category="announcements",
+    required=False,
+    depends_on=CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
+    depends_on_value=True,
+    validate=lambda val: validate_announcement_chime_url(cast("str", val)),
+)
 
 BASE_CONFIG_ENTRIES = [
     # config entries that are valid for all player types
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_SMART_FADES_MODE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
+    CONF_ENTRY_PRE_ANNOUNCE_CUSTOM_CHIME_URL,
     CONF_ENTRY_HTTP_PROFILE,
 ]
 
@@ -113,6 +124,7 @@ class Player(ABC):
     _attr_type: PlayerType = PlayerType.PLAYER
     _attr_supported_features: set[PlayerFeature]
     _attr_group_members: list[str]
+    _attr_static_group_members: list[str]
     _attr_device_info: DeviceInfo
     _attr_can_group_with: set[str]
     _attr_source_list: list[PlayerSource]
@@ -129,7 +141,7 @@ class Player(ABC):
     _attr_needs_poll: bool = False
     _attr_poll_interval: int = 30
     _attr_hidden_by_default: bool = False
-    _attr_expose_to_ha_by_default: bool = False
+    _attr_expose_to_ha_by_default: bool = True
     _attr_enabled_by_default: bool = True
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
@@ -140,6 +152,7 @@ class Player(ABC):
         # initialize mutable attributes
         self._attr_supported_features = set()
         self._attr_group_members = []
+        self._attr_static_group_members = []
         self._attr_device_info = DeviceInfo()
         self._attr_can_group_with = set()
         self._attr_source_list = []
@@ -179,18 +192,6 @@ class Player(ABC):
         """Return if the player is available."""
         return self._attr_available
 
-    @available.setter
-    def available(self, value: bool) -> None:
-        """
-        Set the availability of the player.
-
-        :param value: bool if the player is available or not.
-        """
-        if self._attr_available != value:
-            self._attr_available = value
-            # also update the state
-            self._state.available = value
-
     @property
     def name(self) -> str | None:
         """Return the name of the player."""
@@ -202,39 +203,9 @@ class Player(ABC):
         return self._attr_supported_features
 
     @property
-    def powered(self) -> bool | None:
-        """
-        Return if the player is powered on.
-
-        If the player does not support PlayerFeature.POWER,
-        or the state is (currently) unknown, this property may return None.
-        """
-        return self._attr_powered
-
-    @property
     def playback_state(self) -> PlaybackState:
         """Return the current playback state of the player."""
         return self._attr_playback_state
-
-    @property
-    def volume_level(self) -> int | None:
-        """
-        Return the current volume level (0..100) of the player.
-
-        If the player does not support PlayerFeature.VOLUME_SET,
-        or the state is (currently) unknown, this property may return None.
-        """
-        return self._attr_volume_level
-
-    @property
-    def volume_muted(self) -> bool | None:
-        """
-        Return the current mute state of the player.
-
-        If the player does not support PlayerFeature.VOLUME_MUTE,
-        or the state is (currently) unknown, this property may return None.
-        """
-        return self._attr_volume_muted
 
     @cached_property
     def flow_mode(self) -> bool:
@@ -258,16 +229,6 @@ class Player(ABC):
         """Return the elapsed time in (fractional) seconds of the current track (if any)."""
         return self._attr_elapsed_time
 
-    @elapsed_time.setter
-    def elapsed_time(self, value: float | None) -> None:
-        """Set the elapsed time on the player."""
-        if self._attr_elapsed_time != value:
-            self._attr_elapsed_time = value
-            # also update the state
-            self._state.elapsed_time = value
-            # update the last updated time
-            self._attr_elapsed_time_last_updated = time.time()
-
     @property
     def elapsed_time_last_updated(self) -> float | None:
         """
@@ -289,7 +250,25 @@ class Player(ABC):
 
         If there are currently no group members, this should return an empty list.
         """
+        if self.type == PlayerType.PLAYER and (
+            len(self._attr_group_members) >= 1 and self.player_id not in self._attr_group_members
+        ):
+            # always ensure the player_id is in the group_members list for players
+            return [self.player_id, *self._attr_group_members]
+        elif self._attr_group_members == [self.player_id]:
+            return []
         return self._attr_group_members
+
+    @property
+    def static_group_members(self) -> list[str]:
+        """
+        Return the static group members for a player group.
+
+        For PlayerType.GROUP return the player_ids of members that must not be removed by
+        the user.
+        For all other player types return an empty list.
+        """
+        return self._attr_static_group_members
 
     @property
     def can_group_with(self) -> set[str]:
@@ -300,26 +279,6 @@ class Player(ABC):
         or just the provider's instance_id if all players can group with each other.
         """
         return self._attr_can_group_with
-
-    @property
-    def active_source(self) -> str | None:
-        """
-        Return the (id of) the active source of the player.
-
-        Set to None if the player is not currently playing a source or
-        the player_id if the player is currently playing a MA queue.
-        """
-        return self._attr_active_source
-
-    @property
-    def source_list(self) -> list[PlayerSource]:
-        """Return list of available (native) sources for this player."""
-        return self._attr_source_list
-
-    @property
-    def current_media(self) -> PlayerMedia | None:
-        """Return the current media being played by the player."""
-        return self._attr_current_media
 
     @property
     def needs_poll(self) -> bool:
@@ -350,6 +309,90 @@ class Player(ABC):
     def enabled_by_default(self) -> bool:
         """Return if the player should be enabled by default."""
         return self._attr_enabled_by_default
+
+    @property
+    def _powered(self) -> bool | None:
+        """
+        Return if the player is powered on.
+
+        If the player does not support PlayerFeature.POWER,
+        or the state is (currently) unknown, this property may return None.
+
+        Note that this is NOT the final power state of the player,
+        as it may be overridden by a playercontrol.
+        Hence it's marked as a private property.
+        The final power state can be retrieved by using the 'powered' property.
+        """
+        return self._attr_powered
+
+    @property
+    def _volume_level(self) -> int | None:
+        """
+        Return the current volume level (0..100) of the player.
+
+        If the player does not support PlayerFeature.VOLUME_SET,
+        or the state is (currently) unknown, this property may return None.
+
+        Note that this is NOT the final volume level state of the player,
+        as it may be overridden by a playercontrol.
+        Hence it's marked as a private property.
+        The final volume level state can be retrieved by using the 'volume_level' property.
+        """
+        return self._attr_volume_level
+
+    @property
+    def _volume_muted(self) -> bool | None:
+        """
+        Return the current mute state of the player.
+
+        If the player does not support PlayerFeature.VOLUME_MUTE,
+        or the state is (currently) unknown, this property may return None.
+
+        Note that this is NOT the final muted state of the player,
+        as it may be overridden by a playercontrol.
+        Hence it's marked as a private property.
+        The final muted state can be retrieved by using the 'volume_muted' property.
+        """
+        return self._attr_volume_muted
+
+    @property
+    def _active_source(self) -> str | None:
+        """
+        Return the (id of) the active source of the player.
+
+        Set to None if the player is not currently playing a source or
+        the player_id if the player is currently playing a MA queue.
+
+        Note that this is NOT the final active source of the player,
+        as it may be overridden by a active group/sync membership.
+        Hence it's marked as a private property.
+        The final active source can be retrieved by using the 'active_source' property.
+        """
+        return self._attr_active_source
+
+    @property
+    def _current_media(self) -> PlayerMedia | None:
+        """
+        Return the current media being played by the player.
+
+        Note that this is NOT the final current media of the player,
+        as it may be overridden by a active group/sync membership.
+        Hence it's marked as a private property.
+        The final current media can be retrieved by using the 'current_media' property.
+        """
+        return self._attr_current_media
+
+    @property
+    def _source_list(self) -> list[PlayerSource]:
+        """
+        Return list of available (native) sources for this player.
+
+        Note that this is NOT the final source list of the player,
+        as we inject the MA queue source if the player is currently playing a MA queue.
+        Hence it's marked as a private property.
+        The final source list can be retrieved by using the 'source_list' property.
+        """
+        return self._attr_source_list
 
     async def power(self, powered: bool) -> None:
         """
@@ -570,6 +613,16 @@ class Player(ABC):
             ),
         ]
 
+    async def on_config_updated(self) -> None:
+        """
+        Handle logic when the player is loaded or updated.
+
+        Override this method in your player implementation if you need
+        to perform any additional setup logic after the player is registered and
+        the self.config was loaded, and whenever the config changes.
+        """
+        return
+
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         for callback in self._on_unload_callbacks:
@@ -626,14 +679,15 @@ class Player(ABC):
 
         If this player is not synced to another player (or is the sync leader itself),
         this should return None.
+        If it is part of a (permanent) group, this should also return None.
         """
         # default implementation: feel free to override
         for player in self.mass.players.all():
             if player.player_id == self.player_id:
                 # skip self
                 continue
-            if self.player_id in player.group_members:
-                # this player is a member of the group of the other player
+            if player.type == PlayerType.PLAYER and self.player_id in player.group_members:
+                # this player is synced to another player, but not part of a (permanent) group
                 return player.player_id
         return None
 
@@ -699,9 +753,9 @@ class Player(ABC):
             return custom_name
         return self.name or self._config.default_name or self.player_id
 
-    @cached_property
+    @property
     @final
-    def power_state(self) -> bool | None:
+    def powered(self) -> bool | None:
         """
         Return the FINAL power state of the player.
 
@@ -712,7 +766,7 @@ class Player(ABC):
         if power_control == PLAYER_CONTROL_FAKE:
             return bool(self.extra_data.get(ATTR_FAKE_POWER, False))
         if power_control == PLAYER_CONTROL_NATIVE:
-            return self.powered
+            return self._powered
         if power_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(power_control):
@@ -721,7 +775,7 @@ class Player(ABC):
 
     @cached_property
     @final
-    def volume_state(self) -> int | None:
+    def volume_level(self) -> int | None:
         """
         Return the FINAL volume level of the player.
 
@@ -732,7 +786,7 @@ class Player(ABC):
         if volume_control == PLAYER_CONTROL_FAKE:
             return int(self.extra_data.get(ATTR_FAKE_VOLUME, 0))
         if volume_control == PLAYER_CONTROL_NATIVE:
-            return self.volume_level
+            return self._volume_level
         if volume_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(volume_control):
@@ -741,7 +795,7 @@ class Player(ABC):
 
     @cached_property
     @final
-    def volume_muted_state(self) -> bool | None:
+    def volume_muted(self) -> bool | None:
         """
         Return the FINAL mute state of the player.
 
@@ -752,16 +806,16 @@ class Player(ABC):
         if mute_control == PLAYER_CONTROL_FAKE:
             return bool(self.extra_data.get(ATTR_FAKE_MUTE, False))
         if mute_control == PLAYER_CONTROL_NATIVE:
-            return self.volume_muted
+            return self._volume_muted
         if mute_control == PLAYER_CONTROL_NONE:
             return None
         if control := self.mass.players.get_player_control(mute_control):
             return control.volume_muted
         return None
 
-    @cached_property
+    @property
     @final
-    def active_source_state(self) -> str | None:
+    def active_source(self) -> str | None:
         """
         Return the FINAL active source of the player.
 
@@ -769,22 +823,22 @@ class Player(ABC):
         based on any group memberships or source plugins that can be active.
         """
         # if the player is grouped/synced, use the active source of the group/parent player
-        if parent_player_id := (self.synced_to or self.active_group):
+        if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                return parent_player.active_source_state
+                return parent_player.active_source
         # in case player's source is None, return the player_id (to indicate MA is active source)
-        return self.active_source or self.player_id
+        return self._active_source or self.player_id
 
     @cached_property
     @final
-    def source_list_state(self) -> UniqueList[PlayerSource]:
+    def source_list(self) -> UniqueList[PlayerSource]:
         """
         Return the FINAL source list of the player.
 
         This is a convenience property which calculates the final source list
         based on any group memberships or source plugins that can be active.
         """
-        sources = UniqueList(self.source_list)
+        sources = UniqueList(self._source_list)
         # always ensure the Music Assistant Queue is in the source list
         mass_source = next((x for x in sources if x.id == self.player_id), None)
         if mass_source is None:
@@ -800,10 +854,10 @@ class Player(ABC):
             )
             sources.append(mass_source)
         # if the player is grouped/synced, add the active source list of the group/parent player
-        if parent_player_id := (self.synced_to or self.active_group):
+        if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                for source in parent_player.source_list_state:
-                    if source.id == parent_player.active_source_state:
+                for source in parent_player.source_list:
+                    if source.id == parent_player.active_source:
                         sources.append(
                             PlayerSource(
                                 id=source.id,
@@ -835,6 +889,25 @@ class Player(ABC):
 
     @property
     @final
+    def active_groups(self) -> list[str]:
+        """
+        Return the player ids of all playergroups that are currently active for this player.
+
+        This will return the ids of the groupplayers if any groups are active.
+        If no groups are currently active, this will return an empty list.
+        """
+        active_groups = []
+        for player in self.mass.players.all(return_unavailable=False, return_disabled=False):
+            if player.type != PlayerType.GROUP:
+                continue
+            if not (player.powered or player.playback_state == PlaybackState.PLAYING):
+                continue
+            if self.player_id in player.group_members:
+                active_groups.append(player.player_id)
+        return active_groups
+
+    @property
+    @final
     def active_group(self) -> str | None:
         """
         Return the player id of the (first) playergroup that is currently active for this player.
@@ -842,18 +915,12 @@ class Player(ABC):
         This will return the id of the groupplayer if a group is active.
         If no group is currently active, this will return None.
         """
-        for player in self.mass.players.all(return_unavailable=False, return_disabled=False):
-            if player.type != PlayerType.GROUP:
-                continue
-            if not (player.powered or player.playback_state == PlaybackState.PLAYING):
-                continue
-            if self.player_id in player.group_members:
-                return player.player_id
-        return None
+        active_groups = self.active_groups
+        return active_groups[0] if active_groups else None
 
-    @cached_property
+    @property
     @final
-    def current_media_state(self) -> PlayerMedia | None:
+    def current_media(self) -> PlayerMedia | None:
         """
         Return the current media being played by the player.
 
@@ -861,16 +928,16 @@ class Player(ABC):
         based on any group memberships or source plugins that can be active.
         """
         # if the player is grouped/synced, use the current_media of the group/parent player
-        if parent_player_id := (self.synced_to or self.active_group):
+        if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                return parent_player.current_media_state
+                return parent_player.current_media
         # if a pluginsource is currently active, return those details
-        if self.active_source_state and (
-            source := self.mass.players.get_plugin_source(self.active_source_state)
+        if self.active_source and (
+            source := self.mass.players.get_plugin_source(self.active_source)
         ):
             return source.metadata
 
-        return None
+        return self._current_media
 
     @cached_property
     @final
@@ -922,7 +989,7 @@ class Player(ABC):
         for child_player in self.mass.players.iter_group_members(
             self, only_powered=True, exclude_self=self.type != PlayerType.PLAYER
         ):
-            if (child_volume := child_player.volume_state) is None:
+            if (child_volume := child_player.volume_level) is None:
                 continue
             group_volume += child_volume
             active_players += 1
@@ -954,7 +1021,7 @@ class Player(ABC):
         """
         return bool(self._config.get_value(CONF_EXPOSE_PLAYER_TO_HA))
 
-    @cached_property
+    @property
     @final
     def mass_queue_active(self) -> bool:
         """
@@ -991,6 +1058,9 @@ class Player(ABC):
         changed_values.pop("elapsed_time_last_updated", None)
         changed_values.pop("extra_attributes.seq_no", None)
         changed_values.pop("extra_attributes.last_poll", None)
+        # persist the default name if it changed
+        if self.name and self.config.default_name != self.name:
+            self.mass.config.set_player_default_name(self.player_id, self.name)
         # return early if nothing changed (unless force_update is True)
         if len(changed_values) == 0 and not force_update:
             return
@@ -1007,7 +1077,7 @@ class Player(ABC):
         album: str | None = None,
         image_url: str | None = None,
         duration: int | None = None,
-        queue_id: str | None = None,
+        source_id: str | None = None,
         queue_item_id: str | None = None,
         custom_data: dict[str, Any] | None = None,
         clear_all: bool = False,
@@ -1035,8 +1105,8 @@ class Player(ABC):
             self._attr_current_media.image_url = image_url
         if duration:
             self._attr_current_media.duration = duration
-        if queue_id:
-            self._attr_current_media.queue_id = queue_id
+        if source_id:
+            self._attr_current_media.source_id = source_id
         if queue_item_id:
             self._attr_current_media.queue_item_id = queue_item_id
         if custom_data:
@@ -1162,36 +1232,38 @@ class Player(ABC):
         Returns a dict with the state attributes that have changed.
         """
         prev_state = deepcopy(self._state)
-        self._state.name = self.display_name
-        self._state.available = self.available
-        self._state.device_info = self.device_info
-        self._state.supported_features = self.supported_features
-        self._state.playback_state = self.playback_state
-        self._state.elapsed_time = self.elapsed_time
-        self._state.elapsed_time_last_updated = self.elapsed_time_last_updated
-        self._state.powered = self.power_state
-        self._state.volume_level = self.volume_state
-        self._state.volume_muted = self.volume_muted_state
-        self._state.group_members = UniqueList(self.group_members)
-        self._state.can_group_with = self.can_group_with
-        self._state.synced_to = self.synced_to
-        self._state.active_source = self.active_source_state
-        self._state.source_list = self.source_list_state
-        self._state.active_group = self.active_group
-        self._state.current_media = self.current_media
-        self._state.enabled = self.enabled
-        self._state.hide_player_in_ui = self.hide_player_in_ui
-        self._state.expose_to_ha = self.expose_to_ha
-        self._state.icon = self.icon
-        self._state.group_volume = self.group_volume
-        self._state.extra_attributes = self.extra_attributes
-        self._state.power_control = self.power_control
-        self._state.volume_control = self.volume_control
-        self._state.mute_control = self.mute_control
-
-        # correct available state if needed
-        if not self._state.enabled:
-            self._state.available = False
+        self._state = PlayerState(
+            player_id=self.player_id,
+            provider=self.provider_id,
+            type=self.type,
+            available=self.enabled and self.available,
+            device_info=self.device_info,
+            supported_features=self.supported_features,
+            playback_state=self.playback_state,
+            elapsed_time=self.elapsed_time,
+            elapsed_time_last_updated=self.elapsed_time_last_updated,
+            powered=self.powered,
+            volume_level=self.volume_level,
+            volume_muted=self.volume_muted,
+            group_members=UniqueList(self.group_members),
+            static_group_members=UniqueList(self.static_group_members),
+            can_group_with=self.can_group_with,
+            synced_to=self.synced_to,
+            active_source=self.active_source,
+            source_list=self.source_list,
+            active_group=self.active_group,
+            current_media=self.current_media,
+            name=self.display_name,
+            enabled=self.enabled,
+            hide_player_in_ui=self.hide_player_in_ui,
+            expose_to_ha=self.expose_to_ha,
+            icon=self.icon,
+            group_volume=self.group_volume,
+            extra_attributes=self.extra_attributes,
+            power_control=self.power_control,
+            volume_control=self.volume_control,
+            mute_control=self.mute_control,
+        )
 
         # correct group_members if needed
         if self._state.group_members == [self.player_id]:
@@ -1240,10 +1312,28 @@ class Player(ABC):
         return not self.__eq__(other)
 
 
+__all__ = [
+    # explicitly re-export the models we imported from the models package,
+    # for convenience reasons
+    "EXTRA_ATTRIBUTES_TYPES",
+    "DeviceInfo",
+    "Player",
+    "PlayerMedia",
+    "PlayerSource",
+    "PlayerState",
+]
+
+
 class GroupPlayer(Player):
     """Helper class for a (generic) group player."""
 
     _attr_type: PlayerType = PlayerType.GROUP
+
+    @cached_property
+    def synced_to(self) -> str | None:
+        """Return the id of the player this player is synced to (sync leader)."""
+        # default implementation: groups can't be synced
+        return None
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
@@ -1302,290 +1392,3 @@ class GroupPlayer(Player):
         # This will set the (relative) volume level on all child players.
         # free to override if you want to handle this differently.
         await self.mass.players.set_group_volume(self, volume_level)
-
-
-class SyncGroupPlayer(GroupPlayer):
-    """Helper class for a (provider specific) SyncGroup player."""
-
-    _attr_type: PlayerType = PlayerType.GROUP
-
-    @cached_property
-    def is_dynamic(self) -> bool:
-        """Return if the player is a dynamic group player."""
-        return bool(self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, False))
-
-    def __init__(
-        self,
-        provider: PlayerProvider,
-        player_id: str,
-    ) -> None:
-        """Initialize GroupPlayer instance."""
-        super().__init__(provider, player_id)
-        self._attr_name = self.config.name or f"SyncGroup {player_id}"
-        self._attr_available = True
-        self._attr_powered = False  # group players are always powered off by default
-        self._attr_active_source = player_id
-        self._attr_group_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
-        self._set_attributes()
-
-    def _set_attributes(self) -> None:
-        """Set player attributes."""
-        player_features = {
-            PlayerFeature.POWER,
-            PlayerFeature.VOLUME_SET,
-        }
-        if self.is_dynamic:
-            player_features.add(PlayerFeature.SET_MEMBERS)
-
-        self._attr_supported_features = player_features
-
-    async def get_config_entries(self) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        entries: list[ConfigEntry] = [
-            # default entries for player groups
-            *await super().get_config_entries(),
-            # add syncgroup specific entries
-            ConfigEntry(
-                key=CONF_GROUP_MEMBERS,
-                type=ConfigEntryType.STRING,
-                multi_value=True,
-                label="Group members",
-                default_value=[],
-                description="Select all players you want to be part of this group",
-                required=False,  # needed for dynamic members (which allows empty members list)
-                options=[
-                    ConfigValueOption(x.display_name, x.player_id) for x in self.provider.players
-                ],
-            ),
-            ConfigEntry(
-                key="dynamic_members",
-                type=ConfigEntryType.BOOLEAN,
-                label="Enable dynamic members",
-                description="Allow (un)joining members dynamically, so the group more or less"
-                "behaves the same like manually syncing players together, "
-                "with the main difference being that the groupplayer will hold the queue.",
-                default_value=False,
-                required=False,
-            ),
-        ]
-        # combine base group entries with (base) player entries for this player type
-        child_player = next((x for x in self.provider.players if x.type != PlayerType.GROUP), None)
-        if child_player:
-            allowed_conf_entries = (
-                CONF_HTTP_PROFILE,
-                CONF_ENABLE_ICY_METADATA,
-                CONF_CROSSFADE,
-                CONF_CROSSFADE_DURATION,
-                CONF_OUTPUT_CODEC,
-                CONF_FLOW_MODE,
-                CONF_SAMPLE_RATES,
-            )
-            child_config_entries = await child_player.get_config_entries()
-            entries.extend(
-                [entry for entry in child_config_entries if entry.key in allowed_conf_entries]
-            )
-        return entries
-
-    async def stop(self) -> None:
-        """Send STOP command to given player."""
-        if sync_leader := self.sync_leader:
-            await sync_leader.stop()
-
-    async def play(self) -> None:
-        """Send PLAY command to given player."""
-        if sync_leader := self.sync_leader:
-            await sync_leader.play()
-
-    async def pause(self) -> None:
-        """Send PAUSE command to given player."""
-        if sync_leader := self.sync_leader:
-            await sync_leader.pause()
-
-    async def power(self, powered: bool) -> None:
-        """Handle POWER command to group player."""
-        # always stop at power off
-        if not powered and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-            await self.stop()
-
-        if powered:
-            await self._form_syncgroup()
-
-        # optimistically set the group state
-        prev_power = self._attr_powered
-        self._attr_powered = powered
-        self.update_state()
-
-        if powered:
-            # handle TURN_ON of the group player by turning on all members
-            for member in self.mass.players.iter_group_members(
-                self, only_powered=False, active_only=False
-            ):
-                if member.active_group is not None and member.active_group != self.player_id:
-                    # collision: child player is part of multiple groups
-                    # and another group already active !
-                    # solve this by trying to leave the group first
-                    if (
-                        other_group := self.mass.players.get(member.active_group)
-                    ) and PlayerFeature.SET_MEMBERS in other_group.supported_features:
-                        await other_group.set_members(player_ids_to_remove=[member.player_id])
-                    else:
-                        # if the other group does not support SET_MEMBERS,
-                        # we need to power it off to leave the group
-                        await self.mass.players.cmd_power(member.active_group, False)
-                        await asyncio.sleep(1)
-                    await asyncio.sleep(1)
-                if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, True)
-        elif not prev_power:
-            # handle TURN_OFF of the group player by ungrouping and turning off all members
-            if (sync_leader := self.sync_leader) and sync_leader.group_members:
-                # dissolve the temporary syncgroup from the sync leader
-                sync_childs = [x for x in sync_leader.group_members if x != sync_leader.player_id]
-                if sync_childs:
-                    await sync_leader.set_members(player_ids_to_remove=sync_childs)
-            # turn off all group members
-            for member in self.mass.players.iter_group_members(
-                self, only_powered=True, active_only=True
-            ):
-                if member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await self.mass.players.cmd_power(member.player_id, False)
-
-        if not powered:
-            # reset the original group members when powered off
-            self._attr_group_members = cast(
-                "list[str]", self.config.get_value(CONF_GROUP_MEMBERS, [])
-            )
-
-    async def volume_set(self, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        # group volume is already handled in the player manager
-
-    async def play_media(self, media: PlayerMedia) -> None:
-        """Handle PLAY MEDIA on given player."""
-        # power on (which will also resync if needed)
-        await self.power(True)
-        # simply forward the command to the sync leader
-        if sync_leader := self.sync_leader:
-            await sync_leader.play_media(media)
-
-    async def enqueue_next_media(self, media: PlayerMedia) -> None:
-        """Handle enqueuing of a next media item on the player."""
-        if sync_leader := self.sync_leader:
-            await sync_leader.enqueue_next_media(media)
-
-    async def set_members(
-        self,
-        player_ids_to_add: list[str] | None = None,
-        player_ids_to_remove: list[str] | None = None,
-    ) -> None:
-        """Handle SET_MEMBERS command on the player."""
-        if not self.is_dynamic:
-            raise UnsupportedFeaturedException(
-                f"Group {self.display_name} does not allow dynamically adding/removing members!"
-            )
-        # handle additions
-        final_players_to_add: list[str] = []
-        for player_id in player_ids_to_add or []:
-            if player_id in self._attr_group_members:
-                continue
-            if player_id == self.player_id:
-                raise UnsupportedFeaturedException(
-                    f"Cannot add {self.display_name} to itself as a member!"
-                )
-            self._attr_group_members.append(player_id)
-            final_players_to_add.append(player_id)
-        # handle removals
-        final_players_to_remove: list[str] = []
-        static_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        for player_id in player_ids_to_remove or []:
-            if player_id not in self._attr_group_members:
-                continue
-            if player_id in static_members:
-                raise UnsupportedFeaturedException(
-                    f"Cannot remove {player_id} from {self.display_name} "
-                    "as it is a static member of this group"
-                )
-            if player_id == self.player_id:
-                raise UnsupportedFeaturedException(
-                    f"Cannot remove {self.display_name} from itself as a member!"
-                )
-            self._attr_group_members.remove(player_id)
-            final_players_to_remove.append(player_id)
-        self.update_state()
-        if self.powered and (player_ids_to_add or player_ids_to_remove):
-            # if the group is powered on, we need to (re)sync the members
-            sync_leader = await self._select_sync_leader()
-            await sync_leader.set_members(
-                player_ids_to_add=final_players_to_add,
-                player_ids_to_remove=final_players_to_remove,
-            )
-
-    @property
-    def sync_leader(self) -> Player | None:
-        """Get the active sync leader player for the syncgroup."""
-        for child_player in self.mass.players.iter_group_members(
-            self, only_powered=False, only_playing=False, active_only=False
-        ):
-            # the syncleader is just the first player in the group
-            return child_player
-        return None
-
-    async def _form_syncgroup(self) -> None:
-        """Form syncgroup by sync all (possible) members."""
-        sync_leader = await self._select_sync_leader()
-        # ensure the sync leader is first in the list
-        self._attr_group_members = [
-            sync_leader.player_id,
-            *[x for x in self._attr_group_members if x != sync_leader.player_id],
-        ]
-        self.update_state()
-        members_to_sync: list[str] = []
-        for member in self.mass.players.iter_group_members(self, active_only=False):
-            if member.synced_to and member.synced_to != sync_leader.player_id:
-                # ungroup first
-                await self.mass.players.cmd_ungroup(member.player_id)
-            if member.player_id == sync_leader.player_id:
-                # skip sync leader
-                continue
-            if (
-                member.synced_to == sync_leader.player_id
-                and member.player_id in sync_leader.group_members
-            ):
-                # already synced
-                continue
-            members_to_sync.append(member.player_id)
-        if members_to_sync:
-            await sync_leader.set_members(members_to_sync)
-
-    async def _select_sync_leader(self) -> Player:
-        """Select the active sync leader player for a syncgroup."""
-        for prefer_sync_leader in (True, False):
-            for child_player in self.mass.players.iter_group_members(self):
-                if prefer_sync_leader and child_player.synced_to:
-                    # prefer the first player that already has sync childs
-                    continue
-                if child_player.active_group not in (
-                    None,
-                    self.player_id,
-                    child_player.player_id,
-                ):
-                    # this should not happen (because its already handled in the power on logic),
-                    # but guard it just in case bad things happen
-                    continue
-                return child_player
-        raise RuntimeError("No players available to form syncgroup")
-
-
-__all__ = [
-    # explicitly re-export the models we imported from the models package,
-    # for convenience reasons
-    "EXTRA_ATTRIBUTES_TYPES",
-    "DeviceInfo",
-    "GroupPlayer",
-    "Player",
-    "PlayerMedia",
-    "PlayerSource",
-    "PlayerState",
-    "SyncGroupPlayer",
-]

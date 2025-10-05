@@ -3,7 +3,7 @@
   "domain": "theaudiodb",
   "stage": "stable",
   "name": "The Audio DB",
-  "description": "TheAudioDB is a community Database of audio artwork and metadata with a JSON API.",
+  "description": "Provides artist images, album art, and rich textual metadata from TheAudioDB for use in the Music Assistant UI.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "",

@@ -7,7 +7,7 @@ on:
 env:
   PYTHON_VERSION: "3.12"
   BASE_IMAGE_VERSION_STABLE: "1.3.1"
-  BASE_IMAGE_VERSION_BETA: "1.3.1"
+  BASE_IMAGE_VERSION_BETA: "1.3.2"
 
 jobs:
   build-artifact:
@@ -35,7 +35,7 @@ jobs:
             fi
           fi
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5.6.0
+        uses: actions/setup-python@v6.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install build
@@ -76,7 +76,7 @@ jobs:
           path: dist/
       - name: Publish release to PyPI
         if: ${{ github.event.release.prerelease == false }}
-        uses: pypa/gh-action-pypi-publish@v1.12.4
+        uses: pypa/gh-action-pypi-publish@v1.13.0
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
@@ -97,7 +97,7 @@ jobs:
           name: release-dists
           path: dist/
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v3.5.0
+        uses: docker/login-action@v3.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}

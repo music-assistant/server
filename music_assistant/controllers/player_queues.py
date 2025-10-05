@@ -53,15 +53,13 @@ from music_assistant_models.media_items import (
     media_from_dict,
 )
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.player import PlayerMedia
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
-    CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-    CONF_CROSSFADE,
     CONF_FLOW_MODE,
+    CONF_SMART_FADES_MODE,
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
@@ -70,6 +68,8 @@ from music_assistant.helpers.audio import get_stream_details, get_stream_dsp_det
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
+from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -103,6 +103,8 @@ CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_ep
 CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
 RADIO_TRACK_MAX_DURATION_SECS = 20 * 60  # 20 minutes
+CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
+CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
 
 
 class CompareState(TypedDict):
@@ -921,15 +923,15 @@ class PlayerQueuesController(CoreController):
         queue = None
         # try to restore previous state
         if prev_state := await self.mass.cache.get(
-            "state", category=CACHE_CATEGORY_PLAYER_QUEUE_STATE, base_key=queue_id
+            key=queue_id, provider=self.domain, category=CACHE_CATEGORY_PLAYER_QUEUE_STATE
         ):
             try:
                 queue = PlayerQueue.from_cache(prev_state)
                 prev_items = await self.mass.cache.get(
-                    "items",
+                    key=queue_id,
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                     default=[],
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                    base_key=queue_id,
                 )
                 queue_items = [QueueItem.from_cache(x) for x in prev_items]
             except Exception as err:
@@ -990,18 +992,28 @@ class PlayerQueuesController(CoreController):
         """Call when a player is removed from the registry."""
         if permanent:
             # if the player is permanently removed, we also remove the cached queue data
-            self.mass.create_task(self.mass.cache.delete(f"queue.state.{player_id}"))
-            self.mass.create_task(self.mass.cache.delete(f"queue.items.{player_id}"))
+            self.mass.create_task(
+                self.mass.cache.delete(
+                    key=player_id, provider=self.domain, category=CACHE_CATEGORY_PLAYER_QUEUE_STATE
+                )
+            )
+            self.mass.create_task(
+                self.mass.cache.delete(
+                    key=player_id,
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+                )
+            )
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
-    async def preload_next_queue_item(
+    async def load_next_queue_item(
         self,
         queue_id: str,
         current_item_id: str,
     ) -> QueueItem:
         """
-        Call when a player wants (to preload) the next queue item to play.
+        Call when a player wants the next queue item to play.
 
         Raises QueueEmpty if there are no more tracks left.
         """
@@ -1147,7 +1159,10 @@ class PlayerQueuesController(CoreController):
         )
         # allow stripping silence from the begin/end of the track if crossfade is enabled
         # this will allow for (much) smoother crossfades
-        if await self.mass.config.get_player_config_value(queue_id, CONF_CROSSFADE):
+        if (
+            await self.mass.config.get_player_config_value(queue_id, CONF_SMART_FADES_MODE)
+            != SmartFadesMode.DISABLED
+        ):
             queue_item.streamdetails.strip_silence_end = True
             queue_item.streamdetails.strip_silence_begin = not is_start
 
@@ -1236,10 +1251,10 @@ class PlayerQueuesController(CoreController):
             # save items in cache
             self.mass.create_task(
                 self.mass.cache.set(
-                    "items",
-                    [x.to_cache() for x in self._queue_items[queue_id]],
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                    base_key=queue_id,
+                    key=queue_id,
+                    data=[x.to_cache() for x in self._queue_items[queue_id]],
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
                 )
             )
         # always send the base event
@@ -1247,10 +1262,10 @@ class PlayerQueuesController(CoreController):
         # save state
         self.mass.create_task(
             self.mass.cache.set(
-                "state",
-                queue.to_cache(),
+                key=queue_id,
+                data=queue.to_cache(),
+                provider=self.domain,
                 category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-                base_key=queue_id,
             )
         )
 
@@ -1283,7 +1298,7 @@ class PlayerQueuesController(CoreController):
             title="Music Assistant" if flow_mode else queue_item.name,
             image_url=MASS_LOGO_ONLINE,
             duration=duration,
-            queue_id=queue_item.queue_id,
+            source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
         )
         if not flow_mode and queue_item.media_item:
@@ -1574,8 +1589,9 @@ class PlayerQueuesController(CoreController):
                     retries -= 1
                     await asyncio.sleep(1)
 
-                if next_item := await self.preload_next_queue_item(queue_id, item_id_in_buffer):
+                if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
                     self._enqueue_next_item(queue_id, next_item)
+
             except QueueEmpty:
                 return
 
@@ -1940,7 +1956,7 @@ class PlayerQueuesController(CoreController):
         if not player.current_media:
             return None
         # prefer queue_id and queue_item_id within the current media
-        if player.current_media.queue_id == queue_id and player.current_media.queue_item_id:
+        if player.current_media.source_id == queue_id and player.current_media.queue_item_id:
             return player.current_media.queue_item_id
         # special case for sonos players
         if (

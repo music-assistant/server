@@ -22,7 +22,7 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.dsp import DSPConfig, DSPConfigPreset, ToneControlFilter
-from music_assistant_models.enums import EventType, ProviderType
+from music_assistant_models.enums import EventType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     ActionUnavailable,
     InvalidDataError,
@@ -32,15 +32,35 @@ from music_assistant_models.helpers import get_global_cache_value
 
 from music_assistant.constants import (
     CONF_CORE,
+    CONF_DEPRECATED_CROSSFADE,
     CONF_DEPRECATED_EQ_BASS,
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
+    CONF_ENTRY_LIBRARY_EXPORT_ADD,
+    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS,
+    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
+    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
+    CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_PRESETS,
     CONF_PLAYERS,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
+    CONF_SMART_FADES_MODE,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
@@ -231,7 +251,7 @@ class ConfigController:
         instance_id: str | None = None,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    ) -> list[ConfigEntry]:
         """
         Return Config entries to setup/configure a provider.
 
@@ -241,9 +261,9 @@ class ConfigController:
         values: the (intermediate) raw values for config entries sent with the action.
         """
         # lookup provider manifest and module
-        for prov in self.mass.get_provider_manifests():
-            if prov.domain == provider_domain:
-                prov_mod = await load_provider_module(provider_domain, prov.requirements)
+        for manifest in self.mass.get_provider_manifests():
+            if manifest.domain == provider_domain:
+                prov_mod = await load_provider_module(provider_domain, manifest.requirements)
                 break
         else:
             msg = f"Unknown provider domain: {provider_domain}"
@@ -251,12 +271,72 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
 
-        return (
-            await prov_mod.get_config_entries(
-                self.mass, instance_id=instance_id, action=action, values=values
+        # add dynamic optional config entries that depend on features
+        if instance_id and (provider := self.mass.get_provider(instance_id)):
+            supported_features = provider.supported_features
+        else:
+            provider = None
+            supported_features: set[ProviderFeature] = getattr(
+                prov_mod, "SUPPORTED_FEATURES", set()
             )
-            + DEFAULT_PROVIDER_CONFIG_ENTRIES
-        )
+        extra_entries: list[ConfigEntry] = []
+        if manifest.type == ProviderType.MUSIC:
+            # library sync settings
+            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ARTISTS)
+            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUMS)
+                if provider and provider.is_streaming_provider:
+                    extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS)
+            if ProviderFeature.LIBRARY_TRACKS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_TRACKS)
+            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS)
+                if provider and provider.is_streaming_provider:
+                    extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS)
+            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS)
+            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PODCASTS)
+            if ProviderFeature.LIBRARY_RADIOS in supported_features:
+                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_RADIOS)
+            # sync interval settings
+            if ProviderFeature.LIBRARY_ARTISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS)
+            if ProviderFeature.LIBRARY_ALBUMS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS)
+            if ProviderFeature.LIBRARY_TRACKS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS)
+            if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS)
+            if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS)
+            if ProviderFeature.LIBRARY_PODCASTS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PODCASTS)
+            if ProviderFeature.LIBRARY_RADIOS in supported_features:
+                extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS)
+            # sync export settings
+            if supported_features.intersection(
+                {
+                    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+                    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+                    ProviderFeature.LIBRARY_TRACKS_EDIT,
+                    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+                    ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+                    ProviderFeature.LIBRARY_PODCASTS_EDIT,
+                    ProviderFeature.LIBRARY_RADIOS_EDIT,
+                }
+            ):
+                extra_entries.append(CONF_ENTRY_LIBRARY_EXPORT_ADD)
+                extra_entries.append(CONF_ENTRY_LIBRARY_EXPORT_REMOVE)
+
+        return [
+            *DEFAULT_PROVIDER_CONFIG_ENTRIES,
+            *extra_entries,
+            *await prov_mod.get_config_entries(
+                self.mass, instance_id=instance_id, action=action, values=values
+            ),
+        ]
 
     @api_command("config/providers/save")
     async def save_provider_config(
@@ -300,11 +380,11 @@ class ConfigController:
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)
         if existing["type"] == "player":
-            # cleanup entries in player manager
+            # all players should already be removed by now through unload_provider
             for player in list(self.mass.players):
                 if player.provider.instance_id != instance_id:
                     continue
-                self.mass.players.remove(player.player_id, cleanup_config=True)
+                self.mass.players.delete_player_config(player.player_id)
             # cleanup remaining player configs
             for player_conf in list(self.get(CONF_PLAYERS, {}).values()):
                 if player_conf["provider"] == instance_id:
@@ -442,11 +522,16 @@ class ConfigController:
                 raise ActionUnavailable("Can not remove config for an active player!")
             # tell the player manager to remove the player if its lingering around
             # set permanent to false otherwise we end up in an infinite loop
-            self.mass.players.unregister(player_id, permanent=False)
+            await self.mass.players.unregister(player_id, permanent=False)
         # remove the actual config if all of the above passed
         self.remove(conf_key)
         # Also remove the DSP config if it exists
         self.remove(dsp_conf_key)
+
+    def set_player_default_name(self, player_id: str, default_name: str) -> None:
+        """Set (or update) the default name for a player."""
+        conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
+        self.set(conf_key, default_name)
 
     @api_command("config/players/dsp/get")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
@@ -923,6 +1008,30 @@ class ConfigController:
             provider_config["instance_id"] = "universal_group"
             self._data[CONF_PROVIDERS]["universal_group"] = provider_config
 
+        # Migrate the crossfade setting into Smart Fade Mode = 'crossfade'
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            if (crossfade := player_config.pop(CONF_DEPRECATED_CROSSFADE, None)) is None:
+                continue
+            # Check if player has old crossfade enabled but no smart fades mode set
+            if crossfade is True and CONF_SMART_FADES_MODE not in player_config:
+                # Set smart fades mode to standard_crossfade
+                player_config[CONF_SMART_FADES_MODE] = "standard_crossfade"
+                changed = True
+
+        # migrate player configs: always use lookup key for provider
+        prov_configs = self._data.get(CONF_PROVIDERS, {})
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            player_provider = player_config["provider"]
+            if prov_conf := prov_configs.get(player_provider):
+                if not (prov_manifest := self.mass.get_provider_manifest(prov_conf["domain"])):
+                    continue
+                if prov_manifest.multi_instance:
+                    # multi instance providers use instance_id as lookup key
+                    continue
+                # single instance providers use domain as lookup key
+                player_config["provider"] = prov_conf["domain"]
+                changed = True
+
         if changed:
             await self._async_save()
 
@@ -979,12 +1088,7 @@ class ConfigController:
                 if dep_prov.manifest.depends_on == config.domain:
                     await self.mass.unload_provider(dep_prov.instance_id)
             await self.mass.unload_provider(config.instance_id)
-            if config.type == ProviderType.PLAYER:
-                # cleanup entries in player manager
-                for player in self.mass.players.all(return_unavailable=True, return_disabled=True):
-                    if player.provider.instance_id != instance_id:
-                        continue
-                    self.mass.players.remove(player.player_id, cleanup_config=False)
+            # For player providers, unload_provider should have removed all its players by now
         return config
 
     async def _add_provider_config(
@@ -1051,7 +1155,4 @@ class ConfigController:
             # loading failed, remove config
             self.remove(conf_key)
             raise
-        if prov.type == ProviderType.MUSIC:
-            # kick off initial library scan
-            self.mass.music.start_sync(None, [config.instance_id])
         return config

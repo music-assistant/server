@@ -20,6 +20,7 @@ from .player import ChromecastPlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
     from pychromecast.models import CastInfo
 
@@ -34,10 +35,14 @@ class ChromecastProvider(PlayerProvider):
     _discover_lock: threading.Lock
 
     def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature],
     ) -> None:
         """Handle async initialization of the provider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, supported_features)
         self._discover_lock = threading.Lock()
         self.mz_mgr = MultizoneManager()
         # Handle config option for manual IP's
@@ -133,12 +138,17 @@ class ChromecastProvider(PlayerProvider):
                 self.mass.aiozc.zeroconf,
             )
             # create and register the new ChromeCastPlayer
-            castplayer = ChromecastPlayer(
-                self, player_id, cast_info=cast_info, chromecast=chromecast
-            )
             asyncio.run_coroutine_threadsafe(
-                self.mass.players.register_or_update(castplayer), loop=self.mass.loop
+                self._create_and_register_player(player_id, cast_info, chromecast),
+                loop=self.mass.loop,
             )
+
+    async def _create_and_register_player(
+        self, player_id: str, cast_info: ChromecastInfo, chromecast: pychromecast.Chromecast
+    ) -> None:
+        """Create and register a new ChromecastPlayer."""
+        castplayer = ChromecastPlayer(self, player_id, cast_info=cast_info, chromecast=chromecast)
+        await self.mass.players.register_or_update(castplayer)
 
     def _on_chromecast_removed(self, uuid: str, service: object, cast_info: object) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""

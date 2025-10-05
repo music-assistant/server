@@ -20,10 +20,13 @@ if TYPE_CHECKING:
 class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
     """Track-related methods for NicovideoMusicProvider."""
 
-    _supported_features = {
-        ProviderFeature.LIBRARY_TRACKS,
-        ProviderFeature.LIBRARY_TRACKS_EDIT,
-    }
+    @override
+    def get_supported_features_for_mixin(self) -> set[ProviderFeature]:
+        """Return the features supported by this Provider mixin."""
+        return {
+            ProviderFeature.LIBRARY_TRACKS,
+            ProviderFeature.LIBRARY_TRACKS_EDIT,
+        }
 
     @override
     async def get_track(self, prov_track_id: str) -> Track:

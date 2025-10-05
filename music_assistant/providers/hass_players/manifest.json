@@ -3,7 +3,7 @@
   "domain": "hass_players",
   "stage": "stable",
   "name": "Home Assistant MediaPlayers",
-  "description": "Use (supported) Home Assistant media players as players in Music Assistant.",
+  "description": "Control and play music on (supported) Home Assistant media players in your smart home.",
   "codeowners": ["@music-assistant"],
   "documentation": "https://music-assistant.io/player-support/ha/",
   "multi_instance": false,

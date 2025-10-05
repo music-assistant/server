@@ -22,8 +22,8 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_DEPRECATED_CROSSFADE,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_PASSWORD,
@@ -48,15 +48,22 @@ CONF_AUTH_SECRET = "secret"
 CONF_API_BASIC_AUTH_USERNAME = "api_username"
 CONF_API_BASIC_AUTH_PASSWORD = "api_password"
 CONF_API_URL = "api_url"
+CONF_ALEXA_LANGUAGE = "alexa_language"
 
-SUPPORTED_FEATURES: set[ProviderFeature] = set()
+ALEXA_LANGUAGE_COMMANDS = {
+    "play_audio_de-DE": "sag music assistant spiele audio",
+    "play_audio_en-US": "ask music assistant to play audio",
+    "play_audio_default": "ask music assistant to play audio",
+}
+
+SUPPORTED_FEATURES: set[ProviderFeature] = set()  # no special features supported (yet)
 
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return AlexaProvider(mass, manifest, config)
+    return AlexaProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -196,6 +203,13 @@ async def get_config_entries(
             required=False,
             value=values.get(CONF_API_BASIC_AUTH_PASSWORD) if values else None,
         ),
+        ConfigEntry(
+            key=CONF_ALEXA_LANGUAGE,
+            type=ConfigEntryType.STRING,
+            label="Alexa Language",
+            required=True,
+            default_value="en-US",
+        ),
     )
 
 
@@ -274,6 +288,8 @@ class AlexaPlayer(Player):
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         await self.api.stop()
+        self._attr_active_source = None
+        self._attr_current_media = None
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
@@ -317,7 +333,24 @@ class AlexaPlayer(Player):
                 _LOGGER.error("Failed to push URL to Alexa: %s", exc)
                 return
 
-        await self.api.run_custom("Ask music assistant to play audio")
+        alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
+
+        ask_command_key = f"play_audio_{alexa_locale if alexa_locale else 'default'}"
+
+        if ask_command_key not in ALEXA_LANGUAGE_COMMANDS:
+            _LOGGER.debug(
+                "Ask command key %s not found in ALEXA_LANGUAGE_COMMANDS.",
+                ask_command_key,
+            )
+            ask_command_key = "play_audio_default"
+
+        _LOGGER.debug(
+            "Using ask command key: %s -> %s",
+            ask_command_key,
+            ALEXA_LANGUAGE_COMMANDS[ask_command_key],
+        )
+
+        await self.api.run_custom(ALEXA_LANGUAGE_COMMANDS[ask_command_key])
 
         state = await self.api.get_state()
         if state:
@@ -341,7 +374,7 @@ class AlexaPlayer(Player):
         return [
             *base_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
-            CONF_ENTRY_CROSSFADE,
+            CONF_ENTRY_DEPRECATED_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_HTTP_PROFILE,
         ]
@@ -353,16 +386,8 @@ class AlexaProvider(PlayerProvider):
     login: AlexaLogin
     devices: dict[str, AlexaDevice]
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
-
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize AlexaProvider and its device mapping."""
-        super().__init__(mass, manifest, config)
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
         self.devices = {}
 
     async def loaded_in_mass(self) -> None:

@@ -14,6 +14,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.media_items import MediaItemMetadata, Track
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -37,7 +38,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return LrclibProvider(mass, manifest, config)
+    return LrclibProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -77,11 +78,7 @@ class LrclibProvider(MetadataProvider):
             self.throttler = ThrottlerManager(rate_limit=1, period=1)
             self.logger.debug("Using custom API endpoint: %s (throttling disabled)", self.api_url)
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
-
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     @throttle_with_retries
     async def _get_data(self, **params: Any) -> dict[str, Any] | None:
         """Get data from LRCLib API with throttling and retries."""
@@ -104,9 +101,10 @@ class LrclibProvider(MetadataProvider):
 
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve synchronized lyrics for a track."""
-        if track.metadata and track.metadata.lrc_lyrics:
+        if track.metadata and (track.metadata.lyrics or track.metadata.lrc_lyrics):
             self.logger.debug(
-                "Skipping lyrics lookup for %s: Already has synchronized lyrics", track.name
+                "Lyrics already exist for %s, skipping LRCLIB lookup for this track.",
+                track.name,
             )
             return None
 
@@ -115,7 +113,7 @@ class LrclibProvider(MetadataProvider):
             return None
 
         artist_name = track.artists[0].name
-        album_name = track.album.name if track.album else "Unknown Album"
+        album_name = track.album.name if track.album else ""
 
         duration = track.duration or 0
 
@@ -137,7 +135,7 @@ class LrclibProvider(MetadataProvider):
             "duration": duration,
         }
 
-        self.logger.debug("Searching synchronized lyrics with params: %s", search_params)
+        self.logger.debug("Searching lyrics (sync-ed preferred) with params: %s", search_params)
 
         if data := await self._get_data(**search_params):
             synced_lyrics = data.get("syncedLyrics")
@@ -149,5 +147,31 @@ class LrclibProvider(MetadataProvider):
                 self.logger.debug("Found synchronized lyrics for %s by %s", track.name, artist_name)
                 return metadata
 
-        self.logger.debug("No synchronized lyrics found for %s by %s", track.name, artist_name)
+            else:
+                self.logger.debug(
+                    "No synchronized lyrics found for %s by %s with album name %s and with a "
+                    "duration within 2 secs of %s",
+                    track.name,
+                    artist_name,
+                    album_name,
+                    duration,
+                )
+
+            plain_lyrics = data.get("plainLyrics")
+
+            if plain_lyrics:
+                metadata = MediaItemMetadata()
+                metadata.lrc_lyrics = plain_lyrics
+
+                self.logger.debug("Found plain lyrics for %s by %s", track.name, artist_name)
+                return metadata
+            else:
+                self.logger.debug(
+                    "No plain lyrics found for %s by %s with album name %s and with a "
+                    "duration within 2 secs of %s",
+                    track.name,
+                    artist_name,
+                    album_name,
+                    duration,
+                )
         return None

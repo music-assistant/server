@@ -44,10 +44,10 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.players.sync_groups import SyncGroupPlayer
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
-from music_assistant.models.player import SyncGroupPlayer
 
 from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
@@ -74,7 +74,9 @@ HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 
 SLOW_PROVIDERS = ("tidal", "ytmusic", "apple_music")
 
-CACHE_BASE_KEY: Final[str] = "audio_cache_path"
+CACHE_CATEGORY_AUDIO_CACHE: Final[int] = 99
+CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
+CACHE_PROVIDER: Final[str] = "audio"
 CACHE_FILES_IN_USE: set[str] = set()
 
 
@@ -119,7 +121,9 @@ class StreamCache:
         """Create the cache file (if needed)."""
         if self._cache_file is None:
             if cached_cache_path := await self.mass.cache.get(
-                self.streamdetails.uri, base_key=CACHE_BASE_KEY
+                key=self.streamdetails.uri,
+                provider=CACHE_PROVIDER,
+                category=CACHE_CATEGORY_AUDIO_CACHE,
             ):
                 # we have a mapping stored for this uri, prefer that
                 self._cache_file = cached_cache_path
@@ -137,7 +141,10 @@ class StreamCache:
                     self.mass.streams.audio_cache_dir, cache_id
                 )
                 await self.mass.cache.set(
-                    self.streamdetails.uri, cache_file, base_key=CACHE_BASE_KEY
+                    key=self.streamdetails.uri,
+                    data=cache_file,
+                    provider=CACHE_PROVIDER,
+                    category=CACHE_CATEGORY_AUDIO_CACHE,
                 )
         # mark file as in-use to prevent it being deleted
         CACHE_FILES_IN_USE.add(self._cache_file)
@@ -1030,8 +1037,9 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
     - unfolded URL as string
     - StreamType to determine ICY (radio) or HLS stream.
     """
-    cache_base_key = "resolved_radio_info"
-    if cache := await mass.cache.get(url, base_key=cache_base_key):
+    if cache := await mass.cache.get(
+        key=url, provider=CACHE_PROVIDER, category=CACHE_CATEGORY_RESOLVED_RADIO_URL
+    ):
         return cast("tuple[str, StreamType]", cache)
     stream_type = StreamType.HTTP
     resolved_url = url
@@ -1073,7 +1081,13 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, Str
 
     result = (resolved_url, stream_type)
     cache_expiration = 3600 * 3
-    await mass.cache.set(url, result, expiration=cache_expiration, base_key=cache_base_key)
+    await mass.cache.set(
+        url,
+        result,
+        expiration=cache_expiration,
+        provider=CACHE_PROVIDER,
+        category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
+    )
     return result
 
 
@@ -1287,8 +1301,14 @@ async def get_file_stream(
 async def get_multi_file_stream(
     mass: MusicAssistant,  # noqa: ARG001
     streamdetails: StreamDetails,
+    seek_position: int = 0,
+    raise_ffmpeg_exception: bool = False,
 ) -> AsyncGenerator[bytes, None]:
-    """Return audio stream for a concatenation of multiple files."""
+    """Return audio stream for a concatenation of multiple files.
+
+    Arguments:
+    seek_position: The position to seek to in seconds
+    """
     files_list: list[str] = streamdetails.data
     # concat input files
     temp_file = f"/tmp/{shortuuid.random(20)}.txt"  # noqa: S108
@@ -1306,7 +1326,17 @@ async def get_multi_file_stream(
                 bit_depth=streamdetails.audio_format.bit_depth,
                 channels=streamdetails.audio_format.channels,
             ),
-            extra_input_args=["-safe", "0", "-f", "concat", "-i", temp_file],
+            extra_input_args=[
+                "-safe",
+                "0",
+                "-f",
+                "concat",
+                "-i",
+                temp_file,
+                "-ss",
+                str(seek_position),
+            ],
+            raise_ffmpeg_exception=raise_ffmpeg_exception,
         ):
             yield chunk
     finally:
@@ -1382,6 +1412,26 @@ async def get_silence(
     async with AsyncProcess(args, stdout=True) as ffmpeg_proc:
         async for chunk in ffmpeg_proc.iter_chunked():
             yield chunk
+
+
+async def resample_pcm_audio(
+    input_audio: bytes | AsyncGenerator[bytes, None],
+    input_format: AudioFormat,
+    output_format: AudioFormat,
+) -> AsyncGenerator[bytes, None]:
+    """Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg."""
+    LOGGER.debug(f"Resampling audio from {input_format} to {output_format}")
+
+    async def _yielder() -> AsyncGenerator[bytes, None]:
+        yield input_audio  # type: ignore[misc]
+
+    async for chunk in get_ffmpeg_stream(
+        audio_input=_yielder() if isinstance(input_audio, bytes) else input_audio,
+        input_format=input_format,
+        output_format=output_format,
+        raise_ffmpeg_exception=True,
+    ):
+        yield chunk
 
 
 def get_chunksize(

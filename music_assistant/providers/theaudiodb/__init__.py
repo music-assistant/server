@@ -88,7 +88,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return AudioDbMetadataProvider(mass, manifest, config)
+    return AudioDbMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -142,11 +142,6 @@ class AudioDbMetadataProvider(MetadataProvider):
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=1, period=1)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on theaudiodb."""
@@ -394,7 +389,7 @@ class AudioDbMetadataProvider(MetadataProvider):
             await self.mass.music.albums.update_item_in_library(track.album.item_id, track.album)
         return metadata
 
-    @use_cache(86400 * 30)
+    @use_cache(86400 * 90, persistent=True)  # Cache for 90 days
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"

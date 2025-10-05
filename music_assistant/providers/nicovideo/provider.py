@@ -24,7 +24,7 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant.providers.nicovideo.mixin_caller import MixinCaller
 
 if TYPE_CHECKING:
-    from music_assistant_models.enums import MediaType, ProviderFeature
+    from music_assistant_models.enums import MediaType
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -35,18 +35,6 @@ class NicovideoMusicProvider(
     *NICOVIDEO_MIXINS,  # type: ignore[misc]
 ):
     """Coordinator combining all nicovideo provider mixins."""
-
-    @property
-    @override
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        all_features: set[ProviderFeature] = set()
-
-        # Collect features from defined Mixins
-        for mixin_class in NICOVIDEO_MIXINS:
-            all_features.update(mixin_class.get_supported_features_for_mixin())
-
-        return all_features
 
     @override
     async def handle_async_init(self) -> None:

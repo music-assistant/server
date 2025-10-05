@@ -11,7 +11,6 @@ import re
 import shutil
 import socket
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
@@ -19,14 +18,15 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
 
 import chardet
 import ifaddr
+from music_assistant_models.enums import AlbumType
 from zeroconf import IPVersion
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import LIVE_INDICATORS, SOUNDTRACK_INDICATORS, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderModuleType
+    from music_assistant.models.core_controller import CoreController
+    from music_assistant.models.provider import Provider
 
 from dataclasses import fields, is_dataclass
 
@@ -150,6 +152,18 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
                 title = title.replace(title_part, "").strip()
                 return (title, version)
     return title, version
+
+
+def infer_album_type(title: str, version: str) -> AlbumType:
+    """Infer album type by looking for live or soundtrack indicators."""
+    combined = f"{title} {version}".lower()
+    for pat in LIVE_INDICATORS:
+        if re.search(pat, combined):
+            return AlbumType.LIVE
+    for pat in SOUNDTRACK_INDICATORS:
+        if re.search(pat, combined):
+            return AlbumType.SOUNDTRACK
+    return AlbumType.UNKNOWN
 
 
 def strip_ads(line: str) -> str:
@@ -633,6 +647,29 @@ def percentage(part: float, whole: float) -> int:
     return int(100 * float(part) / float(whole))
 
 
+def validate_announcement_chime_url(url: str) -> bool:
+    """Validate announcement chime URL format."""
+    if not url or not url.strip():
+        return True  # Empty URL is valid
+
+    try:
+        parsed = urlparse(url.strip())
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        if not parsed.netloc:
+            return False
+
+        path_lower = parsed.path.lower()
+        audio_extensions = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
+
+        return any(path_lower.endswith(ext) for ext in audio_extensions)
+
+    except Exception:
+        return False
+
+
 class TaskManager:
     """
     Helper class to run many tasks at once.
@@ -736,3 +773,24 @@ class TimedAsyncGenerator:
     def __aiter__(self):  # type: ignore[no-untyped-def]
         """Return the async iterator."""
         return self._factory()
+
+
+def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
+    func: Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
+    """Guard single request to a function."""
+
+    @functools.wraps(func)
+    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+        mass = self.mass
+        # create a task_id dynamically based on the function and args/kwargs
+        cache_key_parts = [func.__class__.__name__, func.__name__, *args]
+        for key in sorted(kwargs.keys()):
+            cache_key_parts.append(f"{key}{kwargs[key]}")
+        task_id = ".".join(map(str, cache_key_parts))
+        task: asyncio.Task[R] = mass.create_task(
+            func, self, *args, **kwargs, task_id=task_id, abort_existing=False
+        )
+        return await task
+
+    return wrapper

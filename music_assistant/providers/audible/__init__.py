@@ -49,12 +49,17 @@ CONF_SERIAL = "serial"
 CONF_LOGIN_URL = "login_url"
 CONF_LOCALE = "locale"
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_AUDIOBOOKS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return Audibleprovider(mass, manifest, config)
+    return Audibleprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -215,18 +220,16 @@ async def get_config_entries(
 class Audibleprovider(MusicProvider):
     """Implementation of a Audible Audiobook Provider."""
 
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize the Audible Audiobook Provider."""
-        super().__init__(mass, manifest, config)
+    locale: str
+    auth_file: str
+    _client: audible.AsyncClient | None = None
+
+    async def handle_async_init(self) -> None:
+        """Handle asynchronous initialization of the provider."""
         self.locale = cast("str", self.config.get_value(CONF_LOCALE) or "us")
         self.auth_file = cast("str", self.config.get_value(CONF_AUTH_FILE))
         self._client: audible.AsyncClient | None = None
         audible.log_helper.set_level(getLevelName(self.logger.level))
-
-    async def handle_async_init(self) -> None:
-        """Handle asynchronous initialization of the provider."""
         await self._login()
 
     # Cache for authenticators to avoid repeated file I/O
@@ -265,11 +268,6 @@ class Audibleprovider(MusicProvider):
         except Exception as e:
             self.logger.error(f"Failed to authenticate with Audible: {e}")
             raise LoginFailed("Failed to authenticate with Audible.")
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {ProviderFeature.BROWSE, ProviderFeature.LIBRARY_AUDIOBOOKS}
 
     @property
     def is_streaming_provider(self) -> bool:

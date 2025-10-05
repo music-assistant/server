@@ -135,6 +135,9 @@ class BuiltinPlayer(Player):
             self.player_id,
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.STOP),
         )
+        self._attr_active_source = None
+        self._attr_current_media = None
+        self.update_state()
 
     async def play(self) -> None:
         """Send PLAY command to player."""
@@ -175,7 +178,7 @@ class BuiltinPlayer(Player):
         url = f"builtin_player/flow/{self.player_id}.mp3"
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_active_source = media.queue_id
+        self._attr_active_source = media.source_id
         self.update_state()
         self.mass.signal_event(
             EventType.BUILTIN_PLAYER,
@@ -254,10 +257,10 @@ class BuiltinPlayer(Player):
         if queue is None or media is None:
             raise web.HTTPNotFound(reason="No active queue or media found!")
 
-        if media.queue_id is None:
+        if media.source_id is None:
             raise web.HTTPError  # TODO: better error
 
-        queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+        queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
 
         if queue_item is None:
             raise web.HTTPError  # TODO: better error

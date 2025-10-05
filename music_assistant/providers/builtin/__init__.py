@@ -6,13 +6,11 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import aiofiles
 import shortuuid
-from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -38,69 +36,62 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CACHE_CATEGORY_MEDIA_INFO, MASS_LOGO, VARIOUS_ARTISTS_FANART
+from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
+from .constants import (
+    ALL_FAVORITE_TRACKS,
+    BUILTIN_PLAYLISTS,
+    BUILTIN_PLAYLISTS_ENTRIES,
+    COLLAGE_IMAGE_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN,
+    CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN,
+    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS_HIDDEN,
+    CONF_ENTRY_LIBRARY_IMPORT_RADIOS_HIDDEN,
+    CONF_ENTRY_LIBRARY_IMPORT_TRACKS_HIDDEN,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
+    CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN,
+    CONF_KEY_PLAYLISTS,
+    CONF_KEY_RADIOS,
+    CONF_KEY_TRACKS,
+    DEFAULT_FANART,
+    DEFAULT_THUMB,
+    RANDOM_ALBUM,
+    RANDOM_ARTIST,
+    RANDOM_TRACKS,
+    RECENTLY_PLAYED,
+    StoredItem,
+)
+
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+CACHE_CATEGORY_MEDIA_INFO: Final[int] = 1
 
-class StoredItem(TypedDict):
-    """Definition of an media item (for the builtin provider) stored in persistent storage."""
-
-    item_id: str  # url or (locally accessible) file path (or id in case of playlist)
-    name: str
-    image_url: NotRequired[str]
-    last_updated: NotRequired[int]
-
-
-CONF_KEY_RADIOS = "stored_radios"
-CONF_KEY_TRACKS = "stored_tracks"
-CONF_KEY_PLAYLISTS = "stored_playlists"
-
-
-ALL_FAVORITE_TRACKS = "all_favorite_tracks"
-RANDOM_ARTIST = "random_artist"
-RANDOM_ALBUM = "random_album"
-RANDOM_TRACKS = "random_tracks"
-RECENTLY_PLAYED = "recently_played"
-
-BUILTIN_PLAYLISTS = {
-    ALL_FAVORITE_TRACKS: "All favorited tracks",
-    RANDOM_ARTIST: "Random Artist (from library)",
-    RANDOM_ALBUM: "Random Album (from library)",
-    RANDOM_TRACKS: "500 Random tracks (from library)",
-    RECENTLY_PLAYED: "Recently played tracks",
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.LIBRARY_RADIOS_EDIT,
+    ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
 }
-
-COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, RANDOM_TRACKS)
-
-DEFAULT_THUMB = MediaItemImage(
-    type=ImageType.THUMB,
-    path="logo.png",
-    provider="builtin",
-    remotely_accessible=False,
-)
-
-DEFAULT_FANART = MediaItemImage(
-    type=ImageType.FANART,
-    path="fanart.jpg",
-    provider="builtin",
-    remotely_accessible=False,
-)
 
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return BuiltinProvider(mass, manifest, config)
+    return BuiltinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -116,15 +107,17 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    return tuple(
-        ConfigEntry(
-            key=key,
-            type=ConfigEntryType.BOOLEAN,
-            label=name,
-            default_value=True,
-            category="builtin_playlists",
-        )
-        for key, name in BUILTIN_PLAYLISTS.items()
+    return (
+        *BUILTIN_PLAYLISTS_ENTRIES,
+        # hide some of the default (dynamic) entries for library management
+        CONF_ENTRY_LIBRARY_IMPORT_TRACKS_HIDDEN,
+        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS_HIDDEN,
+        CONF_ENTRY_LIBRARY_IMPORT_RADIOS_HIDDEN,
+        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS_HIDDEN,
+        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
+        CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD,
+        CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN,
+        CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN,
     )
 
 
@@ -162,20 +155,6 @@ class BuiltinProvider(MusicProvider):
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         return False
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_RADIOS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.LIBRARY_TRACKS_EDIT,
-            ProviderFeature.LIBRARY_RADIOS_EDIT,
-            ProviderFeature.PLAYLIST_CREATE,
-            ProviderFeature.PLAYLIST_TRACKS_EDIT,
-        }
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
@@ -249,7 +228,6 @@ class BuiltinProvider(MusicProvider):
                 },
                 owner="Music Assistant",
                 is_editable=False,
-                cache_checksum=str(int(time.time())),
                 metadata=MediaItemMetadata(
                     images=UniqueList([DEFAULT_THUMB])
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
@@ -275,7 +253,6 @@ class BuiltinProvider(MusicProvider):
             owner="Music Assistant",
             is_editable=True,
         )
-        playlist.cache_checksum = str(stored_item.get("last_updated"))
         if image_url := stored_item.get("image_url"):
             playlist.metadata.add_image(
                 MediaItemImage(
@@ -533,11 +510,9 @@ class BuiltinProvider(MusicProvider):
 
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
-        cache_category = CACHE_CATEGORY_MEDIA_INFO
-        cache_base_key = self.lookup_key
         # do we have some cached info for this url ?
         cached_info = await self.mass.cache.get(
-            url, category=cache_category, base_key=cache_base_key
+            url, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
         )
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
@@ -546,7 +521,7 @@ class BuiltinProvider(MusicProvider):
         if "authSig" in url:
             media_info.has_cover_image = False
         await self.mass.cache.set(
-            url, media_info.raw, category=cache_category, base_key=cache_base_key
+            url, media_info.raw, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
         )
         return media_info
 

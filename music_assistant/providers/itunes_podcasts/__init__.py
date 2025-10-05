@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import orjson
-import podcastparser
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -32,7 +31,12 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
+from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.podcast_parsers import (
+    get_podcastparser_dict,
+    parse_podcast,
+    parse_podcast_episode,
+)
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.itunes_podcasts.schema import (
@@ -58,12 +62,14 @@ CACHE_CATEGORY_PODCASTS = 0
 CACHE_CATEGORY_RECOMMENDATIONS = 1
 CACHE_KEY_TOP_PODCASTS = "top-podcasts"
 
+SUPPORTED_FEATURES = {ProviderFeature.SEARCH, ProviderFeature.RECOMMENDATIONS}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return ITunesPodcastsProvider(mass, manifest, config)
+    return ITunesPodcastsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -118,11 +124,6 @@ class ITunesPodcastsProvider(MusicProvider):
     throttler: ThrottlerManager
 
     @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {ProviderFeature.SEARCH, ProviderFeature.RECOMMENDATIONS}
-
-    @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
         # For streaming providers return True here but for local file based providers return False.
@@ -134,6 +135,7 @@ class ITunesPodcastsProvider(MusicProvider):
         # 20 requests per minute, be a bit below
         self.throttler = ThrottlerManager(rate_limit=18, period=60)
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
@@ -177,6 +179,10 @@ class ITunesPodcastsProvider(MusicProvider):
         podcast_list: list[Podcast] = []
         for result in results:
             if result.feed_url is None or result.track_name is None:
+                self.logger.info(
+                    "The podcast '%s' does not have a feed url. Please see the docs for more info.",
+                    result.track_name,
+                )
                 continue
             podcast = Podcast(
                 name=result.track_name,
@@ -325,22 +331,19 @@ class ITunesPodcastsProvider(MusicProvider):
     async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
             key=prov_podcast_id,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             default=None,
         )
         if parsed_podcast is None:
-            # see music-assistant/server@6aae82e
-            response = await self.mass.http_session.get(
-                prov_podcast_id, headers={"User-Agent": "Mozilla/5.0"}
-            )
-            if response.status != 200:
-                raise MediaNotFoundError
-            feed_data = await response.read()
-            feed_stream = BytesIO(feed_data)
-            parsed_podcast = podcastparser.parse(
-                prov_podcast_id, feed_stream, max_episodes=self.max_episodes
-            )
+            try:
+                parsed_podcast = await get_podcastparser_dict(
+                    session=self.mass.http_session,
+                    feed_url=prov_podcast_id,
+                    max_episodes=self.max_episodes,
+                )
+            except ClientError as exc:
+                raise MediaNotFoundError from exc
             await self._cache_set_podcast(feed_url=prov_podcast_id, parsed_podcast=parsed_podcast)
 
         # this is a dictionary from podcastparser
@@ -349,7 +352,7 @@ class ITunesPodcastsProvider(MusicProvider):
     async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
         await self.mass.cache.set(
             key=feed_url,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             data=parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day
@@ -358,7 +361,7 @@ class ITunesPodcastsProvider(MusicProvider):
     async def _cache_set_top_podcasts(self, top_podcast_helper: TopPodcastsHelper) -> None:
         await self.mass.cache.set(
             key=CACHE_KEY_TOP_PODCASTS,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_RECOMMENDATIONS,
             data=top_podcast_helper.to_dict(),
             expiration=60 * 60 * 6,  # 6 hours
@@ -367,7 +370,7 @@ class ITunesPodcastsProvider(MusicProvider):
     async def _cache_get_top_podcasts(self) -> list[PodcastSearchResult]:
         parsed_top_podcasts = await self.mass.cache.get(
             key=CACHE_KEY_TOP_PODCASTS,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_RECOMMENDATIONS,
         )
         if parsed_top_podcasts is not None:

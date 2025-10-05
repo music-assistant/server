@@ -16,11 +16,14 @@ from music_assistant.providers.nicovideo.provider_mixins.base import (
 class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
     """Search and recommendations methods for NicovideoMusicProvider."""
 
-    _supported_features = {
-        ProviderFeature.SEARCH,
-        ProviderFeature.RECOMMENDATIONS,
-        ProviderFeature.SIMILAR_TRACKS,
-    }
+    @override
+    def get_supported_features_for_mixin(self) -> set[ProviderFeature]:
+        """Return the features supported by this Provider mixin."""
+        return {
+            ProviderFeature.SEARCH,
+            ProviderFeature.RECOMMENDATIONS,
+            ProviderFeature.SIMILAR_TRACKS,
+        }
 
     @override
     async def search(

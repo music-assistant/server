@@ -38,7 +38,9 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.util import infer_album_type
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -48,14 +50,20 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.ARTIST_ALBUMS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = NugsProvider(mass, manifest, config)
-    await prov.handle_async_init()
-    return prov
+    return NugsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -94,17 +102,6 @@ class NugsProvider(MusicProvider):
     _auth_token: str | None = None
     _token_expiry: float = 0
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.ARTIST_ALBUMS,
-        }
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         await self.login()
@@ -130,6 +127,7 @@ class NugsProvider(MusicProvider):
             if item and item["id"]:
                 yield self._parse_playlist(item)
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details by id."""
         endpoint = f"/releases/recent?limit=1&artistIds={prov_artist_id}"
@@ -137,6 +135,7 @@ class NugsProvider(MusicProvider):
         artist_data = artist_response["items"][0]["artist"]
         return self._parse_artist(artist_data)
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         params = {
@@ -149,18 +148,21 @@ class NugsProvider(MusicProvider):
             if (item and item["id"])
         ]
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details by id."""
         endpoint = f"shows/{prov_album_id}"
         response = await self._get_data("catalog", endpoint)
         return self._parse_album(response["Response"])
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         endpoint = f"playlists/{prov_playlist_id}"
         response = await self._get_data("stash", endpoint)
         return self._parse_playlist(response["items"])
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         endpoint = f"shows/{prov_album_id}"
@@ -177,6 +179,7 @@ class NugsProvider(MusicProvider):
             if item["trackID"]
         ]
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -280,6 +283,9 @@ class NugsProvider(MusicProvider):
                 year = date.split("-")[0]
         if year:
             album.year = int(year)
+
+        # No album type info in this provider so try and infer it
+        album.album_type = infer_album_type(album.name, "")
 
         return album
 

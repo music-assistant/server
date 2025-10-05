@@ -31,6 +31,15 @@ class DemoPlayer(Player):
         }
         self._set_attributes()
 
+    async def on_config_updated(self) -> None:
+        """Handle logic when the player is loaded or updated."""
+        # OPTIONAL
+        # This method is optional and should be implemented if you need to handle
+        # any initialization logic after the config was initially loaded or updated.
+        # This is called after the player is registered and self.config was loaded.
+        # And also when the config was updated.
+        # You don't need to call update_state() here.
+
     @property
     def needs_poll(self) -> bool:
         """Return if the player needs to be polled for state updates."""
@@ -48,7 +57,7 @@ class DemoPlayer(Player):
         return 5 if self.playback_state == PlaybackState.PLAYING else 30
 
     @property
-    def source_list(self) -> list[PlayerSource]:
+    def _source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
         # OPTIONAL - required only if you specified PlayerFeature.SELECT_SOURCE
         # this is an optional property that you can implement if your
@@ -182,6 +191,8 @@ class DemoPlayer(Player):
         logger = self.provider.logger.getChild(self.player_id)
         logger.info("Received STOP command on player %s", self.display_name)
         self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
         self.update_state()
 
     async def pause(self) -> None:

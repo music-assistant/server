@@ -3,24 +3,62 @@
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    Audiobook,
     AudioFormat,
     MediaItemImage,
     Playlist,
+    Podcast,
+    PodcastEpisode,
     ProviderMapping,
     Track,
 )
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
 if TYPE_CHECKING:
     from .provider import SpotifyProvider
+
+
+def parse_images(
+    images_list: list[dict[str, Any]], lookup_key: str, exclude_generic: bool = False
+) -> UniqueList[MediaItemImage]:
+    """Parse images list into MediaItemImage objects."""
+    if not images_list:
+        return UniqueList([])
+
+    # Filter out generic images if requested (for artists)
+    filtered_images = []
+    for img in images_list:
+        img_url = img["url"]
+        if exclude_generic and "2a96cbd8b46e442fc41c2b86b821562f" in img_url:
+            continue
+        filtered_images.append(img)
+
+    if not filtered_images:
+        return UniqueList([])
+
+    # Spotify orders images from largest to smallest (640x640, 300x300, 64x64)
+    # Select the largest (highest quality) image - the first one
+    best_image = filtered_images[0]
+
+    return UniqueList(
+        [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=best_image["url"],
+                provider=lookup_key,
+                remotely_accessible=True,
+            )
+        ]
+    )
 
 
 def parse_artist(artist_obj: dict[str, Any], provider: SpotifyProvider) -> Artist:
@@ -40,21 +78,11 @@ def parse_artist(artist_obj: dict[str, Any], provider: SpotifyProvider) -> Artis
     )
     if "genres" in artist_obj:
         artist.metadata.genres = set(artist_obj["genres"])
-    if artist_obj.get("images"):
-        for img in artist_obj["images"]:
-            img_url = img["url"]
-            if "2a96cbd8b46e442fc41c2b86b821562f" not in img_url:
-                artist.metadata.images = UniqueList(
-                    [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=img_url,
-                            provider=provider.lookup_key,
-                            remotely_accessible=True,
-                        )
-                    ]
-                )
-                break
+
+    # Use unified image parsing with generic exclusion
+    artist.metadata.images = parse_images(
+        artist_obj.get("images", []), provider.lookup_key, exclude_generic=True
+    )
     return artist
 
 
@@ -89,19 +117,16 @@ def parse_album(album_obj: dict[str, Any], provider: SpotifyProvider) -> Album:
     with contextlib.suppress(ValueError):
         album.album_type = AlbumType(album_obj["album_type"])
 
+    # Override with inferred type if version indicates it
+    inferred_type = infer_album_type(album.name, album.version)
+    if inferred_type in (AlbumType.LIVE, AlbumType.SOUNDTRACK):
+        album.album_type = inferred_type
+
     if "genres" in album_obj:
         album.metadata.genres = set(album_obj["genres"])
-    if album_obj.get("images"):
-        album.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=album_obj["images"][0]["url"],
-                    provider=provider.lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
-        )
+
+    album.metadata.images = parse_images(album_obj.get("images", []), provider.lookup_key)
+
     if "label" in album_obj:
         album.metadata.label = album_obj["label"]
     if album_obj.get("release_date"):
@@ -131,10 +156,7 @@ def parse_track(
                 item_id=track_obj["id"],
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.OGG,
-                    bit_rate=320,
-                ),
+                audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
                 url=track_obj["external_urls"]["spotify"],
                 available=not track_obj["is_local"] and track_obj["is_playable"],
             )
@@ -159,17 +181,9 @@ def parse_track(
         track.metadata.preview = track_obj["preview_url"]
     if "album" in track_obj:
         track.album = parse_album(track_obj["album"], provider)
-        if track_obj["album"].get("images"):
-            track.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=track_obj["album"]["images"][0]["url"],
-                        provider=provider.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
+        track.metadata.images = parse_images(
+            track_obj["album"].get("images", []), provider.lookup_key
+        )
     if track_obj.get("copyright"):
         track.metadata.copyright = track_obj["copyright"]
     if track_obj.get("explicit"):
@@ -182,13 +196,19 @@ def parse_track(
 def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> Playlist:
     """Parse spotify playlist object to generic layout."""
     is_editable = (
-        playlist_obj["owner"]["id"] == provider._sp_user["id"] or playlist_obj["collaborative"]
-    )
+        provider._sp_user is not None and playlist_obj["owner"]["id"] == provider._sp_user["id"]
+    ) or playlist_obj["collaborative"]
+
+    # Get owner name with fallback
+    owner_name = playlist_obj["owner"].get("display_name")
+    if owner_name is None and provider._sp_user is not None:
+        owner_name = provider._sp_user["display_name"]
+
     playlist = Playlist(
         item_id=playlist_obj["id"],
         provider=provider.instance_id if is_editable else provider.lookup_key,
         name=playlist_obj["name"],
-        owner=playlist_obj["owner"]["display_name"],
+        owner=owner_name,
         provider_mappings={
             ProviderMapping(
                 item_id=playlist_obj["id"],
@@ -199,18 +219,190 @@ def parse_playlist(playlist_obj: dict[str, Any], provider: SpotifyProvider) -> P
         },
         is_editable=is_editable,
     )
-    if playlist_obj.get("images"):
-        playlist.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=playlist_obj["images"][0]["url"],
-                    provider=provider.lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
-        )
-    if playlist.owner is None:
-        playlist.owner = provider._sp_user["display_name"]
-    playlist.cache_checksum = str(playlist_obj["snapshot_id"])
+
+    playlist.metadata.images = parse_images(playlist_obj.get("images", []), provider.lookup_key)
     return playlist
+
+
+def parse_podcast(podcast_obj: dict[str, Any], provider: SpotifyProvider) -> Podcast:
+    """Parse spotify podcast (show) object to generic layout."""
+    podcast = Podcast(
+        item_id=podcast_obj["id"],
+        provider=provider.lookup_key,
+        name=podcast_obj["name"],
+        provider_mappings={
+            ProviderMapping(
+                item_id=podcast_obj["id"],
+                provider_domain=provider.domain,
+                provider_instance=provider.instance_id,
+                url=podcast_obj["external_urls"]["spotify"],
+            )
+        },
+        publisher=podcast_obj.get("publisher"),
+        total_episodes=podcast_obj.get("total_episodes"),
+    )
+
+    # Set metadata
+    if podcast_obj.get("description"):
+        podcast.metadata.description = podcast_obj["description"]
+
+    podcast.metadata.images = parse_images(podcast_obj.get("images", []), provider.lookup_key)
+
+    if "explicit" in podcast_obj:
+        podcast.metadata.explicit = podcast_obj["explicit"]
+
+    # Convert languages list to genres for categorization
+    if "languages" in podcast_obj:
+        podcast.metadata.genres = set(podcast_obj["languages"])
+
+    return podcast
+
+
+def parse_podcast_episode(
+    episode_obj: dict[str, Any], provider: SpotifyProvider, podcast: Podcast | None = None
+) -> PodcastEpisode:
+    """Parse spotify podcast episode object to generic layout."""
+    # Get or create a basic podcast reference if not provided
+    if podcast is None and "show" in episode_obj:
+        podcast = Podcast(
+            item_id=episode_obj["show"]["id"],
+            provider=provider.lookup_key,
+            name=episode_obj["show"]["name"],
+            provider_mappings={
+                ProviderMapping(
+                    item_id=episode_obj["show"]["id"],
+                    provider_domain=provider.domain,
+                    provider_instance=provider.instance_id,
+                    url=episode_obj["show"]["external_urls"]["spotify"],
+                )
+            },
+        )
+    elif podcast is None:
+        # Create a minimal podcast reference if none available
+        podcast = Podcast(
+            item_id="unknown",
+            provider=provider.lookup_key,
+            name="Unknown Podcast",
+            provider_mappings=set(),
+        )
+
+    episode = PodcastEpisode(
+        item_id=episode_obj["id"],
+        provider=provider.lookup_key,
+        name=episode_obj["name"],
+        duration=episode_obj["duration_ms"] // 1000 if episode_obj.get("duration_ms") else 0,
+        podcast=podcast,
+        position=0,
+        provider_mappings={
+            ProviderMapping(
+                item_id=episode_obj["id"],
+                provider_domain=provider.domain,
+                provider_instance=provider.instance_id,
+                audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=160),
+                url=episode_obj["external_urls"]["spotify"],
+            )
+        },
+    )
+
+    # Set description in metadata
+    if episode_obj.get("description"):
+        episode.metadata.description = episode_obj["description"]
+
+    # Add release date to metadata
+    if episode_obj.get("release_date"):
+        with contextlib.suppress(ValueError, TypeError):
+            date_str = episode_obj["release_date"].strip()
+
+            if len(date_str) == 4:
+                # Year only: "2023" -> "2023-01-01T00:00:00+00:00"
+                date_str = f"{date_str}-01-01T00:00:00+00:00"
+            elif len(date_str) == 10:
+                # Date only: "2023-12-25" -> "2023-12-25T00:00:00+00:00"
+                date_str = f"{date_str}T00:00:00+00:00"
+
+            episode.metadata.release_date = datetime.fromisoformat(date_str)
+
+    episode.metadata.images = parse_images(episode_obj.get("images", []), provider.lookup_key)
+
+    # Use podcast artwork if episode has none
+    if not episode.metadata.images and isinstance(podcast, Podcast) and podcast.metadata.images:
+        episode.metadata.images = podcast.metadata.images
+
+    if "explicit" in episode_obj:
+        episode.metadata.explicit = episode_obj["explicit"]
+
+    if "audio_preview_url" in episode_obj:
+        episode.metadata.preview = episode_obj["audio_preview_url"]
+
+    return episode
+
+
+def parse_audiobook(audiobook_obj: dict[str, Any], provider: SpotifyProvider) -> Audiobook:
+    """Parse spotify audiobook object to generic layout."""
+    audiobook = Audiobook(
+        item_id=audiobook_obj["id"],
+        provider=provider.lookup_key,
+        name=audiobook_obj["name"],
+        provider_mappings={
+            ProviderMapping(
+                item_id=audiobook_obj["id"],
+                provider_domain=provider.domain,
+                provider_instance=provider.instance_id,
+                audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
+                url=audiobook_obj["external_urls"]["spotify"],
+            )
+        },
+    )
+
+    if "duration_ms" in audiobook_obj:
+        provider.logger.debug(
+            f"Found duration_ms in audiobook object: {audiobook_obj['duration_ms']}"
+        )
+        audiobook.duration = audiobook_obj["duration_ms"] // 1000
+    else:
+        provider.logger.debug(
+            "No duration_ms found in main audiobook object - will calculate from chapters"
+        )
+        # Don't set duration here - let get_audiobook calculate it from chapters
+        audiobook.duration = 0
+
+    # Set authors
+    if "authors" in audiobook_obj:
+        for author_obj in audiobook_obj["authors"]:
+            if author_obj.get("name"):
+                audiobook.authors.append(author_obj["name"])
+
+    # Set narrators
+    if "narrators" in audiobook_obj:
+        for narrator_obj in audiobook_obj["narrators"]:
+            if narrator_obj.get("name"):
+                audiobook.narrators.append(narrator_obj["name"])
+
+    # Set metadata
+    if audiobook_obj.get("description"):
+        audiobook.metadata.description = audiobook_obj["description"]
+
+    if audiobook_obj.get("publisher"):
+        audiobook.publisher = audiobook_obj["publisher"]
+
+    audiobook.metadata.images = parse_images(audiobook_obj.get("images", []), provider.lookup_key)
+
+    if audiobook_obj.get("explicit"):
+        audiobook.metadata.explicit = audiobook_obj["explicit"]
+
+    if audiobook_obj.get("languages"):
+        audiobook.metadata.languages = audiobook_obj["languages"][0]
+
+    # Set publication date if available
+    if audiobook_obj.get("publication_date"):
+        with contextlib.suppress(ValueError, TypeError):
+            date_str = audiobook_obj["publication_date"].strip()
+            if len(date_str) == 4:
+                # Year only: "2023" -> "2023-01-01T00:00:00+00:00"
+                date_str = f"{date_str}-01-01T00:00:00+00:00"
+            elif len(date_str) == 10:
+                # Date only: "2023-12-25" -> "2023-12-25T00:00:00+00:00"
+                date_str = f"{date_str}T00:00:00+00:00"
+            audiobook.metadata.release_date = datetime.fromisoformat(date_str)
+
+    return audiobook

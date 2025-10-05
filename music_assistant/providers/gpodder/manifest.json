@@ -3,7 +3,7 @@
   "domain": "gpodder",
   "stage": "stable",
   "name": "gPodder",
-  "description": "gPodder podcast provider",
+  "description": "Subscribe to and fetch podcasts from gPodder.",
   "codeowners": ["@fmunkes"],
   "documentation": "https://music-assistant.io/music-providers/gpodder",
   "multi_instance": true

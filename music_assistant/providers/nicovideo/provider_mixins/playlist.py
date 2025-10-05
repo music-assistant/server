@@ -25,11 +25,14 @@ from music_assistant.providers.nicovideo.provider_mixins.base import (
 class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     """Mixin class for handling playlist-related operations in NicovideoMusicProvider."""
 
-    _supported_features = {
-        ProviderFeature.LIBRARY_PLAYLISTS,
-        ProviderFeature.PLAYLIST_TRACKS_EDIT,
-        ProviderFeature.PLAYLIST_CREATE,
-    }
+    @override
+    def get_supported_features_for_mixin(self) -> set[ProviderFeature]:
+        """Return the features supported by this Provider mixin."""
+        return {
+            ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            ProviderFeature.PLAYLIST_CREATE,
+        }
 
     @override
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:

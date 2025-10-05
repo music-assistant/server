@@ -48,13 +48,17 @@ async def get_album(prov_album_id: str, language: str = "en") -> dict[str, str]:
 
 
 async def get_playlist(
-    prov_playlist_id: str, headers: dict[str, str], language: str = "en", user: str | None = None
+    prov_playlist_id: str,
+    headers: dict[str, str],
+    language: str = "en",
+    user: str | None = None,
+    limit=None,
 ) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_playlist():
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
-        playlist = ytm.get_playlist(playlistId=prov_playlist_id, limit=None)
+        playlist = ytm.get_playlist(playlistId=prov_playlist_id, limit=limit)
         playlist["checksum"] = get_playlist_checksum(playlist)
         # Fix missing playlist id in some edge cases
         playlist["id"] = prov_playlist_id if not playlist.get("id") else playlist["id"]
