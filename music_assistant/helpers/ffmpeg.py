@@ -255,6 +255,10 @@ def get_ffmpeg_args(  # noqa: PLR0915
         "-ignore_unknown",
         "-protocol_whitelist",
         "file,hls,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp,concat",
+        "-probesize",
+        "8096",
+        "-analyzeduration",
+        "500000",  # 1 seconds should be enough to detect the format
     ]
     # collect input args
     if "-f" in extra_input_args:

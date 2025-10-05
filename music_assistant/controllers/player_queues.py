@@ -59,7 +59,6 @@ from music_assistant_models.queue_item import QueueItem
 from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_FLOW_MODE,
-    CONF_SMART_FADES_MODE,
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
@@ -69,7 +68,6 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -853,9 +851,12 @@ class PlayerQueuesController(CoreController):
                 # all attempts to find a playable item failed
                 raise MediaNotFoundError("No playable item found to start playback")
 
+            flow_mode = queue.flow_mode
+            if queue_item.media_type in (MediaType.RADIO, MediaType.PLUGIN_SOURCE):
+                flow_mode = False
             await self.mass.players.play_media(
                 player_id=queue_id,
-                media=await self.player_media_from_queue_item(queue_item, queue.flow_mode),
+                media=await self.player_media_from_queue_item(queue_item, flow_mode),
             )
             await asyncio.sleep(2)
             self._transitioning_players.discard(queue_id)
@@ -1157,14 +1158,6 @@ class PlayerQueuesController(CoreController):
             fade_in=fade_in,
             prefer_album_loudness=playing_album_tracks,
         )
-        # allow stripping silence from the begin/end of the track if crossfade is enabled
-        # this will allow for (much) smoother crossfades
-        if (
-            await self.mass.config.get_player_config_value(queue_id, CONF_SMART_FADES_MODE)
-            != SmartFadesMode.DISABLED
-        ):
-            queue_item.streamdetails.strip_silence_end = True
-            queue_item.streamdetails.strip_silence_begin = not is_start
 
     def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
         """Call when a player has (started) loading a track in the buffer."""
@@ -1570,7 +1563,6 @@ class PlayerQueuesController(CoreController):
         Preload the streamdetails for the next item in the queue/buffer.
 
         This basically ensures the item is playable and fetches the stream details.
-        If caching is enabled, this will also start filling the stream cache.
         If an error occurs, the item will be skipped and the next item will be loaded.
         """
         queue = self._queues[queue_id]
