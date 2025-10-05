@@ -18,7 +18,7 @@ import numpy.typing as npt
 import shortuuid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.helpers.audio import crossfade_pcm_parts
+from music_assistant.helpers.audio import crossfade_pcm_parts, strip_silence
 from music_assistant.helpers.process import communicate
 from music_assistant.helpers.util import remove_file
 from music_assistant.models.smart_fades import (
@@ -258,6 +258,21 @@ class SmartFadesMixer:
             # Note that this should not happen since we check this before calling mix()
             # but just to be sure...
             return fade_out_part + fade_in_part
+
+        # strip silence from end of audio of fade_out_part
+        fade_out_part = await strip_silence(
+            self.mass,
+            fade_out_part,
+            pcm_format=pcm_format,
+            reverse=True,
+        )
+        # strip silence from begin of audio of fade_in_part
+        fade_in_part = await strip_silence(
+            self.mass,
+            fade_in_part,
+            pcm_format=pcm_format,
+            reverse=False,
+        )
         if mode == SmartFadesMode.STANDARD_CROSSFADE:
             # crossfade with standard crossfade
             return await self._default_crossfade(

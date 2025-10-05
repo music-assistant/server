@@ -137,6 +137,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
             f"<dc:title>{escape_metadata(title)}</dc:title>"
             f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
             f"<dc:queueItemId>{escape_metadata(media.uri)}</dc:queueItemId>"
+            f"<dc:description>Music Assistant</dc:description>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
             f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
             f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_metadata(media.uri)}</res>'

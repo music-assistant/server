@@ -278,7 +278,6 @@ class BuiltinPlayer(Player):
             bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
             channels=DEFAULT_PCM_FORMAT.channels,
         )
-
         async for chunk in get_ffmpeg_stream(
             audio_input=self.mass.streams.get_queue_flow_stream(
                 queue=queue,

@@ -619,7 +619,12 @@ class OpenSonicProvider(MusicProvider):
             allow_seek=True,
             can_seek=self._seek_support,
             media_type=media_type,
-            audio_format=AudioFormat(content_type=ContentType.try_parse(mime_type)),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(mime_type),
+                sample_rate=item.sampling_rate if item.sampling_rate else 44100,
+                bit_depth=item.bit_depth if item.bit_depth else 16,
+                channels=item.channel_count if item.channel_count else 2,
+            ),
             stream_type=StreamType.CUSTOM,
             duration=item.duration if item.duration else 0,
         )
