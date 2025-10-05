@@ -410,8 +410,21 @@ class SonosPlayer(Player):
         if not media.duration:
             # enforce mp3 here because Sonos really does not support FLAC streams without duration
             media.uri = media.uri.replace(".flac", ".mp3")
+        if media.source_id and media.queue_item_id:
+            object_id = f"mass:{media.source_id}:{media.queue_item_id}"
+        else:
+            object_id = media.uri
         await self.client.player.group.play_stream_url(
-            media.uri, {"name": media.title, "type": "track"}
+            media.uri,
+            {
+                "name": media.title,
+                "type": "station",
+                "imageUrl": media.image_url,
+                "id": {
+                    "objectId": object_id,
+                },
+                "service": {"name": "Music Assistant", "id": "mass"},
+            },
         )
 
     async def select_source(self, source: str) -> None:
@@ -590,6 +603,12 @@ class SonosPlayer(Player):
         container_type = active_group.container_type
         active_service = active_group.active_service
         container = active_group.playback_metadata.get("container")
+        if (
+            not active_service
+            and container
+            and container.get("service", {}).get("id") == MusicService.MUSIC_ASSISTANT
+        ):
+            active_service = MusicService.MUSIC_ASSISTANT
         if container_type == ContainerType.LINEIN:
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
@@ -609,7 +628,10 @@ class SonosPlayer(Player):
                 return
             else:
                 self._attr_active_source = SOURCE_AIRPLAY
-        elif container_type == ContainerType.STATION:
+        elif (
+            container_type == ContainerType.STATION
+            and active_service != MusicService.MUSIC_ASSISTANT
+        ):
             self._attr_active_source = SOURCE_RADIO
             # add radio to source list if not yet there
             if SOURCE_RADIO not in [x.id for x in self._attr_source_list]:
@@ -620,8 +642,10 @@ class SonosPlayer(Player):
             if SOURCE_SPOTIFY not in [x.id for x in self._attr_source_list]:
                 self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_SPOTIFY])
         elif active_service == MusicService.MUSIC_ASSISTANT:
-            if object_id := container.get("id", {}).get("objectId"):
-                self._attr_active_source = object_id.split(":")[-1]
+            if (object_id := container.get("id", {}).get("objectId")) and object_id.startswith(
+                "mass:"
+            ):
+                self._attr_active_source = object_id.split(":")[1]
             else:
                 self._attr_active_source = None
         # its playing some service we did not yet map
