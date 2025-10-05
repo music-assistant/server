@@ -501,7 +501,7 @@ async def get_media_stream(
             "Started media stream for %s"
             " - using streamtype: %s"
             " - volume normalization: %s"
-            " - pcm format: %s"
+            " - output format: %s"
             " - ffmpeg PID: %s",
             streamdetails.uri,
             streamdetails.stream_type,
