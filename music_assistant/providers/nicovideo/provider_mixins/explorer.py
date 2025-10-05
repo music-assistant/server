@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import override
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import RecommendationFolder, SearchResults, Track
 from music_assistant_models.unique_list import UniqueList
 
@@ -15,15 +15,6 @@ from music_assistant.providers.nicovideo.provider_mixins.base import (
 
 class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
     """Search and recommendations methods for NicovideoMusicProvider."""
-
-    @override
-    def get_supported_features_for_mixin(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider mixin."""
-        return {
-            ProviderFeature.SEARCH,
-            ProviderFeature.RECOMMENDATIONS,
-            ProviderFeature.SIMILAR_TRACKS,
-        }
 
     @override
     async def search(

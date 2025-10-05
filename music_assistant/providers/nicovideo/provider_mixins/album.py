@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, override
 
-from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.util import TaskManager
@@ -24,13 +23,6 @@ if TYPE_CHECKING:
 
 class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
     """Album-related methods for NicovideoMusicProvider."""
-
-    @override
-    def get_supported_features_for_mixin(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider mixin."""
-        return {
-            ProviderFeature.LIBRARY_ALBUMS,
-        }
 
     @override
     async def get_album(self, prov_album_id: str) -> Album:

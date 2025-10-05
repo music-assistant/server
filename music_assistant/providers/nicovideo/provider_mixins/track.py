@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, override
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers.nicovideo.provider_mixins.base import (
@@ -19,14 +19,6 @@ if TYPE_CHECKING:
 
 class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
     """Track-related methods for NicovideoMusicProvider."""
-
-    @override
-    def get_supported_features_for_mixin(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider mixin."""
-        return {
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_TRACKS_EDIT,
-        }
 
     @override
     async def get_track(self, prov_track_id: str) -> Track:

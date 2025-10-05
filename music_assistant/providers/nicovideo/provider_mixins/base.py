@@ -13,7 +13,7 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from music_assistant_models.enums import MediaType, ProviderFeature
+    from music_assistant_models.enums import MediaType
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -42,11 +42,6 @@ class NicovideoMusicProviderMixinBase(MusicProvider):
 
     async def unload_for_mixin(self, is_removed: bool = False) -> None:
         """Handle unload/close for this mixin."""
-
-    def get_supported_features_for_mixin(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider mixin."""
-        # Return empty set by default - subclasses can override
-        return set()
 
     async def get_stream_details_for_mixin(
         self, item_id: str, media_type: MediaType
