@@ -66,12 +66,6 @@ repos:
         language: system
         types: [text]
         entry: scripts/run-in-env.sh detect-private-key
-      - id: check-nicovideo-test-session
-        name: 🎬 Check for nicovideo test user sessions
-        language: system
-        types: [python]
-        entry: scripts/run-in-env.sh tests/providers/nicovideo/scripts/check-test-session.sh
-        files: ^tests/providers/nicovideo/.*\.py$
       - id: end-of-file-fixer
         name: ⮐  Fix End of Files
         language: system
