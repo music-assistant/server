@@ -24,7 +24,6 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
-    MediaType,
     PlaybackState,
     PlayerFeature,
     RepeatMode,
@@ -51,7 +50,6 @@ from music_assistant.providers.sonos.const import (
     SOURCE_SPOTIFY,
     SOURCE_TV,
 )
-from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
@@ -392,16 +390,7 @@ class SonosPlayer(Player):
             await self._play_media_airplay(airplay_player, media)
             return
 
-        if media.media_type in (
-            MediaType.PLUGIN_SOURCE,
-            MediaType.FLOW_STREAM,
-        ) or (media.source_id and media.source_id.startswith(UGP_PREFIX)):
-            # flow stream or plugin source playback
-            # always use the legacy (UPNP) playback method for this
-            await self._play_media_legacy(media)
-            return
-
-        if media.source_id and media.queue_item_id:
+        if media.source_id and media.queue_item_id and media.duration:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
@@ -418,8 +407,9 @@ class SonosPlayer(Player):
         # All other playback types
         # play a single uri/url
         # note that this most probably will only work for (long running) radio streams
-        # enforce mp3 here because Sonos really does not support FLAC streams without duration
-        media.uri = media.uri.replace(".flac", ".mp3")
+        if not media.duration:
+            # enforce mp3 here because Sonos really does not support FLAC streams without duration
+            media.uri = media.uri.replace(".flac", ".mp3")
         await self.client.player.group.play_stream_url(
             media.uri, {"name": media.title, "type": "track"}
         )
@@ -564,7 +554,7 @@ class SonosPlayer(Player):
             # player is group coordinator
             active_group = self.client.player.group
             if len(self.client.player.group_members) > 1:
-                self._attr_group_members = self.client.player.group_members
+                self._attr_group_members = [*self.client.player.group_members]
             else:
                 self._attr_group_members.clear()
             # append airplay child's to group childs
@@ -709,7 +699,7 @@ class SonosPlayer(Player):
             await self.client.connect()
         except (ConnectionFailed, ClientConnectorError) as err:
             self.logger.warning("Failed to connect to Sonos player: %s", err)
-            if not retry_on_fail or not self.mass_player:
+            if not retry_on_fail or not self.mass.players.get(self.player_id):
                 raise
             self._attr_available = False
             self.update_state()
@@ -856,6 +846,8 @@ class SonosPlayer(Player):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA using the legacy upnp api."""
+        # enforce mp3 here because Sonos really does not support FLAC streams without duration
+        media.uri = media.uri.replace(".flac", ".mp3")
         xml_data, soap_action = get_xml_soap_set_url(media)
         player_ip = self.device_info.ip_address
         async with self.mass.http_session_no_ssl.post(
@@ -871,5 +863,5 @@ class SonosPlayer(Player):
                 raise PlayerCommandFailed(
                     f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
                 )
-            await self.cmd_play(self.player_id)
+            await self.play()
             return
