@@ -45,7 +45,7 @@ from music_assistant_models.media_items import (
     UniqueList,
     is_track,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import (
     CONF_PATH,
@@ -1705,9 +1705,12 @@ class LocalFileSystemProvider(MusicProvider):
                 item_id=item_id,
                 audio_format=prov_mapping.audio_format,
                 media_type=MediaType.AUDIOBOOK,
-                stream_type=StreamType.MULTI_FILE,
+                stream_type=StreamType.LOCAL_FILE,
                 duration=duration,
-                data=[self.get_absolute_path(x[0]) for x in file_based_chapters],
+                path=[
+                    MultiPartPath(path=self.get_absolute_path(path), duration=duration)
+                    for path, duration in file_based_chapters
+                ],
                 allow_seek=True,
             )
 

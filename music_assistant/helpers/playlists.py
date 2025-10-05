@@ -116,7 +116,7 @@ def parse_pls(pls_data: str) -> list[PlaylistItem]:
     except configparser.Error as err:
         raise InvalidDataError("Can't parse playlist") from err
 
-    if "playlist" not in pls_parser or pls_parser["playlist"].getint("Version") != 2:
+    if "playlist" not in pls_parser:
         raise InvalidDataError("Invalid playlist")
 
     try:

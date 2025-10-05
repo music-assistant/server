@@ -653,6 +653,8 @@ class YoutubeMusicProvider(MusicProvider):
                 icon=determine_recommendation_icon(section["title"]),
             )
             for recommended_item in section.get("contents", []):
+                if not recommended_item:
+                    continue  # yeah this seems to happen sometimes ?!
                 if recommended_item.get("videoId"):
                     # Probably a track
                     try:

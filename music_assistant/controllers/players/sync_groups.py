@@ -284,7 +284,7 @@ class SyncGroupPlayer(GroupPlayer):
             ):
                 await self._handle_member_collisions(member)
                 if not member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await member.power(True)
+                    await self.mass.players.cmd_power(member.player_id, True)
             # Set up the sync group with the new leader
             await self._handle_leader_transition(new_leader)
         elif prev_power and not powered:
@@ -295,7 +295,7 @@ class SyncGroupPlayer(GroupPlayer):
                 self, only_powered=True, active_only=True
             ):
                 if member.powered and member.power_control != PLAYER_CONTROL_NONE:
-                    await member.power(False)
+                    await self.mass.players.cmd_power(member.player_id, False)
 
         if not powered:
             # Reset to unfiltered static members list when powered off

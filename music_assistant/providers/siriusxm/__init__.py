@@ -25,6 +25,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from tenacity import RetryError
@@ -120,8 +121,10 @@ class SiriusXMProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        username: str = self.config.get_value(CONF_SXM_USERNAME)
-        password: str = self.config.get_value(CONF_SXM_PASSWORD)
+        username = self.config.get_value(CONF_SXM_USERNAME)
+        assert isinstance(username, str)  # for type checker
+        password = self.config.get_value(CONF_SXM_PASSWORD)
+        assert isinstance(password, str)  # for type checker
 
         region: RegionChoice = (
             RegionChoice.US if self.config.get_value(CONF_SXM_REGION) == "US" else RegionChoice.CA
@@ -204,7 +207,7 @@ class SiriusXMProvider(MusicProvider):
                 yield self._parse_radio(channel)
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
-    async def get_radio(self, prov_radio_id: str) -> Radio:  # type: ignore[return]
+    async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         if prov_radio_id not in self._channels_by_id:
             raise MediaNotFoundError("Station not found")
@@ -256,6 +259,10 @@ class SiriusXMProvider(MusicProvider):
         live_data = XMLiveChannel.from_dict(live_channel_raw)
 
         self.logger.debug(f"Got update for SiriusXM channel {live_data.id}")
+
+        if self._current_stream_details is None:
+            return
+
         current_channel = self._current_stream_details.item_id
 
         if live_data.id != current_channel:
@@ -340,10 +347,10 @@ class SiriusXMProvider(MusicProvider):
                 )
             )
 
-        radio.metadata.images = images
-        radio.metadata.links = [MediaItemLink(type=LinkType.WEBSITE, url=channel.url)]
+        radio.metadata.images = UniqueList(images) if images else None
+        radio.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=channel.url)}
         radio.metadata.description = channel.medium_description
         radio.metadata.explicit = bool(channel.is_mature)
-        radio.metadata.genres = [cat.name for cat in channel.categories]
+        radio.metadata.genres = {cat.name for cat in channel.categories}
 
         return radio

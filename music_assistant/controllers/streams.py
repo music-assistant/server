@@ -33,7 +33,6 @@ from music_assistant_models.player_queue import PlayLogEntry
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
-    CONF_ALLOW_AUDIO_CACHE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE_DURATION,
@@ -55,8 +54,8 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.players.player_controller import AnnounceData
+from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
-    CACHE_FILES_IN_USE,
     get_chunksize,
     get_media_stream,
     get_player_filter_params,
@@ -64,7 +63,6 @@ from music_assistant.helpers.audio import (
     get_stream_details,
     resample_pcm_audio,
 )
-from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.smart_fades import (
@@ -72,13 +70,7 @@ from music_assistant.helpers.smart_fades import (
     SmartFadesMixer,
     SmartFadesMode,
 )
-from music_assistant.helpers.util import (
-    get_folder_size,
-    get_free_space,
-    get_free_space_percentage,
-    get_ip_addresses,
-    select_free_port,
-)
+from music_assistant.helpers.util import get_ip_addresses, select_free_port
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.plugin import PluginProvider
@@ -136,9 +128,6 @@ class StreamsController(CoreController):
         )
         self.manifest.icon = "cast-audio"
         self.announcements: dict[str, AnnounceData] = {}
-        # prefer /tmp/.audio as audio cache dir
-        self._audio_cache_dir = os.path.join("/tmp/.audio")  # noqa: S108
-        self.allow_cache_default = "auto"
         self._crossfade_data: dict[str, CrossfadeData] = {}
         self._bind_ip: str = "0.0.0.0"
         self._smart_fades_mixer = SmartFadesMixer(self.mass)
@@ -152,11 +141,6 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
-
-    @property
-    def audio_cache_dir(self) -> str:
-        """Return the directory where (temporary) audio cache files are stored."""
-        return self._audio_cache_dir
 
     async def get_config_entries(
         self,
@@ -237,28 +221,6 @@ class StreamsController(CoreController):
                 category="advanced",
                 required=False,
             ),
-            ConfigEntry(
-                key=CONF_ALLOW_AUDIO_CACHE,
-                type=ConfigEntryType.STRING,
-                default_value=self.allow_cache_default,
-                options=[
-                    ConfigValueOption("Always", "always"),
-                    ConfigValueOption("Disabled", "disabled"),
-                    ConfigValueOption("Auto", "auto"),
-                ],
-                label="Allow caching of remote/cloudbased audio streams",
-                description="To ensure smooth(er) playback as well as fast seeking, "
-                "Music Assistant can cache audio streams on disk. \n"
-                "On systems with limited diskspace, this can be disabled, "
-                "but may result in less smooth playback or slower seeking.\n\n"
-                "**Always:** Enforce caching of audio streams at all times "
-                "(as long as there is enough free space).\n"
-                "**Disabled:** Never cache audio streams.\n"
-                "**Auto:** Let Music Assistant decide if caching "
-                "should be used on a per-item base.",
-                category="advanced",
-                required=True,
-            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -268,18 +230,6 @@ class StreamsController(CoreController):
         FFMPEG_LOGGER.setLevel(self.logger.level)
         # perform check for ffmpeg version
         await check_ffmpeg_version()
-        if self.mass.running_as_hass_addon:
-            # When running as HAOS add-on, we run /tmp as tmpfs so we need
-            # to pick another temporary location which is not /tmp.
-            # We prefer the root/user dir because it will be cleaned up on a reboot
-            self._audio_cache_dir = os.path.join(os.path.expanduser("~"), ".audio")
-        if not await asyncio.to_thread(os.path.isdir, self._audio_cache_dir):
-            await asyncio.to_thread(os.makedirs, self._audio_cache_dir)
-        # enable cache by default if we have enough free space only
-        disk_percentage_free = await get_free_space_percentage(self._audio_cache_dir)
-        self.allow_cache_default = "auto" if disk_percentage_free > 25 else "disabled"
-        # schedule cleanup of old audio cache files
-        await self._clean_audio_cache()
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
@@ -441,20 +391,16 @@ class StreamsController(CoreController):
         if request.method != "GET":
             return resp
 
-        # work out pcm format based on output format
-        pcm_format = AudioFormat(
-            content_type=DEFAULT_PCM_FORMAT.content_type,
-            sample_rate=output_format.sample_rate,
-            # always use f32 internally for extra headroom for filters etc
-            bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
-            channels=2,
-        )
-        smart_fades_mode = await self.mass.config.get_player_config_value(
-            queue.queue_id, CONF_SMART_FADES_MODE
-        )
-        standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_CROSSFADE_DURATION, 10
-        )
+        if queue_item.media_type != MediaType.TRACK:
+            # no crossfade on non-tracks
+            smart_fades_mode = SmartFadesMode.DISABLED
+        else:
+            smart_fades_mode = await self.mass.config.get_player_config_value(
+                queue.queue_id, CONF_SMART_FADES_MODE
+            )
+            standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 10
+            )
         if (
             smart_fades_mode != SmartFadesMode.DISABLED
             and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features
@@ -470,28 +416,43 @@ class StreamsController(CoreController):
             # crossfade is enabled, use special crossfaded single item stream
             # where the crossfade of the next track is present in the stream of
             # a single track. This only works if the player supports gapless playback.
-            audio_input = self.get_queue_item_stream_with_smartfade(
-                queue_item=queue_item,
-                pcm_format=pcm_format,
-                session_id=session_id,
-                smart_fades_mode=smart_fades_mode,
-                standard_crossfade_duration=standard_crossfade_duration,
+            # work out pcm format based on output format
+            pcm_format = AudioFormat(
+                content_type=DEFAULT_PCM_FORMAT.content_type,
+                sample_rate=output_format.sample_rate,
+                # always use f32 internally for extra headroom for filters etc
+                bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
+                channels=2,
+            )
+            audio_input = get_ffmpeg_stream(
+                audio_input=self.get_queue_item_stream_with_smartfade(
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    session_id=session_id,
+                    smart_fades_mode=smart_fades_mode,
+                    standard_crossfade_duration=standard_crossfade_duration,
+                ),
+                input_format=pcm_format,
+                output_format=output_format,
+                filter_params=get_player_filter_params(
+                    self.mass, queue_player.player_id, pcm_format, output_format
+                ),
             )
         else:
+            # no crossfade, just a regular single item stream
+            # no need to convert to pcm first, request output format directly
             audio_input = self.get_queue_item_stream(
                 queue_item=queue_item,
-                pcm_format=pcm_format,
+                output_format=output_format,
+                filter_params=get_player_filter_params(
+                    self.mass,
+                    queue_player.player_id,
+                    queue_item.streamdetails.audio_format,
+                    output_format,
+                ),
             )
 
-        async for chunk in get_ffmpeg_stream(
-            audio_input=audio_input,
-            input_format=pcm_format,
-            output_format=output_format,
-            filter_params=get_player_filter_params(
-                self.mass, queue_player.player_id, pcm_format, output_format
-            ),
-            chunk_size=get_chunksize(output_format),
-        ):
+        async for chunk in audio_input:
             try:
                 await resp.write(chunk)
             except (BrokenPipeError, ConnectionResetError, ConnectionError):
@@ -816,17 +777,24 @@ class StreamsController(CoreController):
         pcm_sample_size = int(
             pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels
         )
-        smart_fades_mode = await self.mass.config.get_player_config_value(
-            queue.queue_id, CONF_SMART_FADES_MODE
-        )
-        standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_CROSSFADE_DURATION, 10
-        )
+        if start_queue_item.media_type != MediaType.TRACK:
+            # no crossfade on non-tracks
+            # NOTE that we shouldn't be using flow mode for non-tracks at all,
+            # but just to be sure, we specifically disable crossfade here
+            smart_fades_mode = SmartFadesMode.DISABLED
+            standard_crossfade_duration = 0
+        else:
+            smart_fades_mode = await self.mass.config.get_player_config_value(
+                queue.queue_id, CONF_SMART_FADES_MODE
+            )
+            standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 10
+            )
         self.logger.info(
-            "Start Queue Flow stream for Queue %s - %s: %s",
-            smart_fades_mode,
+            "Start Queue Flow stream for Queue %s - crossfade: %s %s",
             queue.display_name,
-            f"{standard_crossfade_duration}s"
+            smart_fades_mode,
+            f"({standard_crossfade_duration}s)"
             if smart_fades_mode == SmartFadesMode.STANDARD_CROSSFADE
             else "",
         )
@@ -868,7 +836,7 @@ class StreamsController(CoreController):
             # handle incoming audio chunks
             async for chunk in self.get_queue_item_stream(
                 queue_track,
-                pcm_format=pcm_format,
+                output_format=pcm_format,
             ):
                 # buffer size needs to be big enough to include the crossfade part
                 req_buffer_size = (
@@ -910,9 +878,7 @@ class StreamsController(CoreController):
                         )
                     # send crossfade_part (as one big chunk)
                     yield crossfade_part
-
                     del crossfade_part
-
                     # also write the leftover bytes from the crossfade action
                     if remaining_bytes:
                         yield remaining_bytes
@@ -935,7 +901,9 @@ class StreamsController(CoreController):
                 yield last_fadeout_part
                 bytes_written += len(last_fadeout_part)
                 last_fadeout_part = b""
-            if self._crossfade_allowed(queue_track, flow_mode=True):
+            if self._crossfade_allowed(
+                queue_track, smart_fades_mode=smart_fades_mode, flow_mode=True
+            ):
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_size:]
                 last_streamdetails = queue_track.streamdetails
@@ -998,8 +966,6 @@ class StreamsController(CoreController):
             # afterwards play the TTS itself.
             #
             # For this to be effective the player itself needs to be able to start playback fast.
-            # If the returned stream is used as input to ffmpeg we should pass -probesize 8096.
-            #
             # Finally, if the output_format is non-PCM, raw concatenation can be problematic.
             # So far players seem to tolerate this, but it might break some player in the future.
 
@@ -1014,13 +980,11 @@ class StreamsController(CoreController):
         # work out output format/details
         fmt = announcement_url.rsplit(".")[-1]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
-        extra_input_args = ["-probesize", "8096"]  # start the stream before reading all TTS input
         async for chunk in get_ffmpeg_stream(
             audio_input=announcement_url,
             input_format=audio_format,
             output_format=output_format,
             filter_params=filter_params,
-            extra_input_args=extra_input_args,
         ):
             yield chunk
 
@@ -1068,13 +1032,14 @@ class StreamsController(CoreController):
     async def get_queue_item_stream(
         self,
         queue_item: QueueItem,
-        pcm_format: AudioFormat,
+        output_format: AudioFormat,
+        filter_params: list[str] | None = None,
     ) -> AsyncGenerator[bytes, None]:
-        """Get the audio stream for a single queue item as raw PCM audio."""
+        """Get the audio stream for a single queue item."""
         # collect all arguments for ffmpeg
         streamdetails = queue_item.streamdetails
         assert streamdetails
-        filter_params = []
+        filter_params = filter_params or []
 
         # handle volume normalization
         gain_correct: float | None = None
@@ -1106,20 +1071,11 @@ class StreamsController(CoreController):
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
 
-        if streamdetails.media_type == MediaType.RADIO or not streamdetails.duration:
-            # pad some silence before the radio/live stream starts to create some headroom
-            # for radio stations (or other live streams) that do not provide any look ahead buffer
-            # without this, some radio streams jitter a lot, especially with dynamic normalization,
-            # if the stream does not provide a look ahead buffer
-            async for silence in get_silence(4, pcm_format):
-                yield silence
-                del silence
-
         first_chunk_received = False
         async for chunk in get_media_stream(
             self.mass,
             streamdetails=streamdetails,
-            pcm_format=pcm_format,
+            output_format=output_format,
             filter_params=filter_params,
         ):
             if not first_chunk_received:
@@ -1204,7 +1160,9 @@ class StreamsController(CoreController):
 
         #### HANDLE END OF TRACK
 
-        if not self._crossfade_allowed(queue_item, flow_mode=False):
+        if not self._crossfade_allowed(
+            queue_item, smart_fades_mode=smart_fades_mode, flow_mode=False
+        ):
             # no crossfade enabled/allowed, just yield the buffer last part
             bytes_written += len(buffer)
             yield buffer
@@ -1353,36 +1311,12 @@ class StreamsController(CoreController):
             channels=2,
         )
 
-    async def _clean_audio_cache(self) -> None:
-        """Clean up audio cache periodically."""
-        free_space_in_cache_dir = await get_free_space(self._audio_cache_dir)
-        # calculate max cache size based on free space in cache dir
-        max_cache_size = min(15, free_space_in_cache_dir * 0.2)
-        cache_enabled = await self.mass.config.get_core_config_value(
-            self.domain, CONF_ALLOW_AUDIO_CACHE
-        )
-        if cache_enabled == "disabled":
-            max_cache_size = 0.001
-
-        def _clean_old_files(foldersize: float) -> None:
-            files: list[os.DirEntry] = [x for x in os.scandir(self._audio_cache_dir) if x.is_file()]
-            files.sort(key=lambda x: x.stat().st_atime)
-            for _file in files:
-                if _file.path in CACHE_FILES_IN_USE:
-                    continue
-                foldersize -= _file.stat().st_size / float(1 << 30)
-                os.remove(_file.path)
-                if foldersize < max_cache_size:
-                    return
-
-        foldersize = await get_folder_size(self._audio_cache_dir)
-        if foldersize > max_cache_size:
-            await asyncio.to_thread(_clean_old_files, foldersize)
-        # reschedule self
-        self.mass.call_later(3600, self._clean_audio_cache)
-
-    def _crossfade_allowed(self, queue_item: QueueItem, flow_mode: bool = False) -> bool:
+    def _crossfade_allowed(
+        self, queue_item: QueueItem, smart_fades_mode: SmartFadesMode, flow_mode: bool = False
+    ) -> bool:
         """Get the crossfade config for a queue item."""
+        if smart_fades_mode == SmartFadesMode.DISABLED:
+            return False
         if not (queue_player := self.mass.players.get(queue_item.queue_id)):
             return False  # just a guard
         if queue_item.media_type != MediaType.TRACK:

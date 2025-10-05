@@ -28,12 +28,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.models.music_provider import MusicProvider
 
-from .helpers import (
-    InternetArchiveClient,
-    clean_text,
-    extract_year,
-    parse_duration,
-)
+from .helpers import InternetArchiveClient, clean_text, extract_year, parse_duration
 from .parsers import (
     add_item_image,
     artist_exists,
@@ -951,7 +946,7 @@ class InternetArchiveProvider(MusicProvider):
         if "#" not in prov_episode_id:
             raise MediaNotFoundError(f"Invalid episode ID format: {prov_episode_id}")
 
-        podcast_id, filename = prov_episode_id.split("#", 1)
+        podcast_id, _ = prov_episode_id.split("#", 1)
 
         async for episode in self.get_podcast_episodes(podcast_id):
             if episode.item_id == prov_episode_id:

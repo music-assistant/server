@@ -140,9 +140,9 @@ query Livestream($coreId: String!) {
 
 
 show_length_query = gql("""
-query Show($showId: ID!) {
+query Show($showId: ID!, $filter: ItemFilter) {
   show(id: $showId) {
-    items {
+    items(filter: $filter) {
       totalCount
     }
   }
@@ -152,13 +152,12 @@ query Show($showId: ID!) {
 
 show_query = gql(
     """
-query Show($showId: ID!, $first: Int, $offset: Int) {
+query Show($showId: ID!, $first: Int, $offset: Int, $filter: ItemFilter) {
   show(id: $showId) {
     synopsis
     title
     showType
-    items(first: $first, offset: $offset) {
-      totalCount
+    items(first: $first, offset: $offset, filter: $filter) {
       nodes {
         duration
         title
