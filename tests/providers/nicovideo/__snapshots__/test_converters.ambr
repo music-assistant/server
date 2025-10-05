@@ -16,6 +16,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -47,6 +48,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -71,6 +73,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -107,6 +110,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '527007',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -138,6 +142,7 @@
             'description': None,
             'explicit': None,
             'genres': None,
+            'grouping': None,
             'images': None,
             'label': None,
             'languages': None,
@@ -169,6 +174,7 @@
               }),
               'available': True,
               'details': None,
+              'in_library': None,
               'item_id': '68461151',
               'provider_domain': 'nicovideo',
               'provider_instance': 'nicovideo_test',
@@ -193,6 +199,7 @@
         'description': 'This is a dummy description for testing purposes.',
         'explicit': None,
         'genres': None,
+        'grouping': None,
         'images': None,
         'label': None,
         'languages': None,
@@ -229,6 +236,7 @@
           }),
           'available': True,
           'details': None,
+          'in_library': None,
           'item_id': '527007',
           'provider_domain': 'nicovideo',
           'provider_instance': 'nicovideo_test',
@@ -258,6 +266,7 @@
               'description': None,
               'explicit': None,
               'genres': None,
+              'grouping': None,
               'images': list([
                 dict({
                   'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -301,6 +310,7 @@
                 }),
                 'available': True,
                 'details': None,
+                'in_library': None,
                 'item_id': '68461151',
                 'provider_domain': 'nicovideo',
                 'provider_instance': 'nicovideo_test',
@@ -328,6 +338,7 @@
           'description': 'This is a dummy description for testing purposes.',
           'explicit': False,
           'genres': None,
+          'grouping': None,
           'images': list([
             dict({
               'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -377,6 +388,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': 'sm45285955',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -409,6 +421,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -440,6 +453,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -464,6 +478,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -500,6 +515,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '527007',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -527,6 +543,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -570,6 +587,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '4',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -596,6 +614,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -639,6 +658,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '68461151',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -668,6 +688,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -711,6 +732,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -738,6 +760,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -787,6 +810,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'sm45285955',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -817,6 +841,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -860,6 +885,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -887,6 +913,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -936,6 +963,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'sm45285955',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -951,7 +979,6 @@
 # ---
 # name: test_converter_with_fixture[playlists/following_mylists.json]
   dict({
-    'cache_checksum': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -965,6 +992,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1009,6 +1037,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '78597499',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -1023,7 +1052,6 @@
 # ---
 # name: test_converter_with_fixture[playlists/own_mylists.json]
   dict({
-    'cache_checksum': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1037,6 +1065,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1081,6 +1110,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '78597499',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -1096,7 +1126,6 @@
 # name: test_converter_with_fixture[playlists/single_mylist_details.json]
   dict({
     'playlist': dict({
-      'cache_checksum': None,
       'external_ids': list([
       ]),
       'favorite': False,
@@ -1110,6 +1139,7 @@
         'description': 'This is a dummy description for testing purposes.',
         'explicit': None,
         'genres': None,
+        'grouping': None,
         'images': list([
           dict({
             'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1154,6 +1184,7 @@
           }),
           'available': True,
           'details': None,
+          'in_library': None,
           'item_id': '78597499',
           'provider_domain': 'nicovideo',
           'provider_instance': 'nicovideo_test',
@@ -1182,6 +1213,7 @@
               'description': None,
               'explicit': None,
               'genres': None,
+              'grouping': None,
               'images': list([
                 dict({
                   'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1225,6 +1257,7 @@
                 }),
                 'available': True,
                 'details': None,
+                'in_library': None,
                 'item_id': '68461151',
                 'provider_domain': 'nicovideo',
                 'provider_instance': 'nicovideo_test',
@@ -1252,6 +1285,7 @@
           'description': 'This is a dummy description for testing purposes.',
           'explicit': False,
           'genres': None,
+          'grouping': None,
           'images': list([
             dict({
               'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1301,6 +1335,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': 'sm45285955',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -1318,7 +1353,6 @@
 # ---
 # name: test_converter_with_fixture[search/mylist_search.json]
   dict({
-    'cache_checksum': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1332,6 +1366,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1376,6 +1411,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '78597499',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -1405,6 +1441,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -1436,6 +1473,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -1460,6 +1498,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -1496,6 +1535,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '527007',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -1526,6 +1566,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1569,6 +1610,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -1596,6 +1638,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1645,6 +1688,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'sm45285955',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -1675,6 +1719,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1718,6 +1763,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -1745,6 +1791,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1794,6 +1841,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'sm45285955',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -1861,6 +1909,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -1904,6 +1953,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -1931,6 +1981,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -1980,6 +2031,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'sm45285955',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -2010,6 +2062,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2053,6 +2106,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -2080,6 +2134,7 @@
       'description': 'This is a dummy description for testing purposes.',
       'explicit': False,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
@@ -2129,6 +2184,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'sm45285955',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
@@ -2160,6 +2216,7 @@
             'description': None,
             'explicit': None,
             'genres': None,
+            'grouping': None,
             'images': list([
               dict({
                 'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2203,6 +2260,7 @@
               }),
               'available': True,
               'details': None,
+              'in_library': None,
               'item_id': '68461151',
               'provider_domain': 'nicovideo',
               'provider_instance': 'nicovideo_test',
@@ -2227,6 +2285,7 @@
         'description': 'This is a dummy description for testing purposes.',
         'explicit': None,
         'genres': None,
+        'grouping': None,
         'images': None,
         'label': None,
         'languages': None,
@@ -2263,6 +2322,7 @@
           }),
           'available': True,
           'details': None,
+          'in_library': None,
           'item_id': '527007',
           'provider_domain': 'nicovideo',
           'provider_instance': 'nicovideo_test',
@@ -2289,6 +2349,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': list([
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
@@ -2332,6 +2393,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': '68461151',
             'provider_domain': 'nicovideo',
             'provider_instance': 'nicovideo_test',
@@ -2363,6 +2425,7 @@
         'テスト',
         'テスト動画',
       ]),
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006',
@@ -2418,6 +2481,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'sm45285955',
         'provider_domain': 'nicovideo',
         'provider_instance': 'nicovideo_test',
