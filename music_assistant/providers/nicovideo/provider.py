@@ -21,58 +21,77 @@ from typing import TYPE_CHECKING, override
 
 from music_assistant_models.errors import MediaNotFoundError
 
-from music_assistant.providers.nicovideo.mixin_caller import MixinCaller
-
 if TYPE_CHECKING:
     from music_assistant_models.enums import MediaType
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.providers.nicovideo.provider_mixins import NICOVIDEO_MIXINS
+from music_assistant.providers.nicovideo.provider_mixins import (
+    NicovideoMusicProviderAlbumMixin,
+    NicovideoMusicProviderArtistMixin,
+    NicovideoMusicProviderCoreMixin,
+    NicovideoMusicProviderExplorerMixin,
+    NicovideoMusicProviderPlaylistMixin,
+    NicovideoMusicProviderTrackMixin,
+)
+
+# Tuple of mixin classes in inheritance order.
+# Used for provider-wide operations that span all mixins (e.g. init, unload)
+NICOVIDEO_MIXINS = (
+    NicovideoMusicProviderCoreMixin,
+    NicovideoMusicProviderTrackMixin,
+    NicovideoMusicProviderPlaylistMixin,
+    NicovideoMusicProviderArtistMixin,
+    NicovideoMusicProviderAlbumMixin,
+    NicovideoMusicProviderExplorerMixin,
+)
 
 
 class NicovideoMusicProvider(
-    *NICOVIDEO_MIXINS,  # type: ignore[misc]
+    NicovideoMusicProviderCoreMixin,
+    NicovideoMusicProviderTrackMixin,
+    NicovideoMusicProviderPlaylistMixin,
+    NicovideoMusicProviderArtistMixin,
+    NicovideoMusicProviderAlbumMixin,
+    NicovideoMusicProviderExplorerMixin,
 ):
     """Coordinator combining all nicovideo provider mixins."""
 
     @override
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        await MixinCaller(self).invoke_all(
-            lambda mixin_class: mixin_class.handle_async_init_for_mixin
-        )
+        for mixin_class in NICOVIDEO_MIXINS:
+            await mixin_class.handle_async_init_for_mixin(self)
 
     @override
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        await MixinCaller(self, is_reverse=True).invoke_all(
-            lambda mixin_class: mixin_class.unload_for_mixin, is_removed
-        )
+        for mixin_class in NICOVIDEO_MIXINS[::-1]:
+            await mixin_class.unload_for_mixin(self, is_removed)
 
     @override
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details (streaming URL and format) for given item."""
-        return await MixinCaller(self).invoke_first_valid_or_raise(
-            MediaNotFoundError("Stream unknown"),
-            lambda mixin_class: mixin_class.get_stream_details_for_mixin,
-            item_id,
-            media_type,
-        )
+        for mixin_class in NICOVIDEO_MIXINS:
+            result = await mixin_class.get_stream_details_for_mixin(self, item_id, media_type)
+            if result is not None:
+                return result
+        raise MediaNotFoundError("Stream unknown")
 
     @override
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
-        return await MixinCaller(self).invoke_first_valid(
-            False, lambda mixin_class: mixin_class.library_add_for_mixin, item
-        )
+        for mixin_class in NICOVIDEO_MIXINS:
+            result = await mixin_class.library_add_for_mixin(self, item)
+            if result is not None:
+                return result
+        return False
 
     @override
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from provider's library. Return true on success."""
-        return await MixinCaller(self).invoke_first_valid(
-            False,
-            lambda mixin_class: mixin_class.library_remove_for_mixin,
-            prov_item_id,
-            media_type,
-        )
+        for mixin_class in NICOVIDEO_MIXINS:
+            result = await mixin_class.library_remove_for_mixin(self, prov_item_id, media_type)
+            if result is not None:
+                return result
+        return False
