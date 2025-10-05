@@ -24,7 +24,6 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
-    MediaType,
     PlaybackState,
     PlayerFeature,
     RepeatMode,
@@ -51,7 +50,6 @@ from music_assistant.providers.sonos.const import (
     SOURCE_SPOTIFY,
     SOURCE_TV,
 )
-from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
@@ -392,16 +390,7 @@ class SonosPlayer(Player):
             await self._play_media_airplay(airplay_player, media)
             return
 
-        if media.media_type in (
-            MediaType.PLUGIN_SOURCE,
-            MediaType.FLOW_STREAM,
-        ) or (media.source_id and media.source_id.startswith(UGP_PREFIX)):
-            # flow stream or plugin source playback
-            # always use the legacy (UPNP) playback method for this
-            await self._play_media_legacy(media)
-            return
-
-        if media.source_id and media.queue_item_id:
+        if media.source_id and media.queue_item_id and media.duration:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
@@ -418,10 +407,24 @@ class SonosPlayer(Player):
         # All other playback types
         # play a single uri/url
         # note that this most probably will only work for (long running) radio streams
-        # enforce mp3 here because Sonos really does not support FLAC streams without duration
-        media.uri = media.uri.replace(".flac", ".mp3")
+        if not media.duration:
+            # enforce mp3 here because Sonos really does not support FLAC streams without duration
+            media.uri = media.uri.replace(".flac", ".mp3")
+        if media.source_id and media.queue_item_id:
+            object_id = f"mass:{media.source_id}:{media.queue_item_id}"
+        else:
+            object_id = media.uri
         await self.client.player.group.play_stream_url(
-            media.uri, {"name": media.title, "type": "track"}
+            media.uri,
+            {
+                "name": media.title,
+                "type": "station",
+                "imageUrl": media.image_url,
+                "id": {
+                    "objectId": object_id,
+                },
+                "service": {"name": "Music Assistant", "id": "mass"},
+            },
         )
 
     async def select_source(self, source: str) -> None:
@@ -564,7 +567,7 @@ class SonosPlayer(Player):
             # player is group coordinator
             active_group = self.client.player.group
             if len(self.client.player.group_members) > 1:
-                self._attr_group_members = self.client.player.group_members
+                self._attr_group_members = list(self.client.player.group_members)
             else:
                 self._attr_group_members.clear()
             # append airplay child's to group childs
@@ -600,6 +603,12 @@ class SonosPlayer(Player):
         container_type = active_group.container_type
         active_service = active_group.active_service
         container = active_group.playback_metadata.get("container")
+        if (
+            not active_service
+            and container
+            and container.get("service", {}).get("id") == MusicService.MUSIC_ASSISTANT
+        ):
+            active_service = MusicService.MUSIC_ASSISTANT
         if container_type == ContainerType.LINEIN:
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
@@ -619,7 +628,10 @@ class SonosPlayer(Player):
                 return
             else:
                 self._attr_active_source = SOURCE_AIRPLAY
-        elif container_type == ContainerType.STATION:
+        elif (
+            container_type == ContainerType.STATION
+            and active_service != MusicService.MUSIC_ASSISTANT
+        ):
             self._attr_active_source = SOURCE_RADIO
             # add radio to source list if not yet there
             if SOURCE_RADIO not in [x.id for x in self._attr_source_list]:
@@ -630,8 +642,10 @@ class SonosPlayer(Player):
             if SOURCE_SPOTIFY not in [x.id for x in self._attr_source_list]:
                 self._attr_source_list.append(PLAYER_SOURCE_MAP[SOURCE_SPOTIFY])
         elif active_service == MusicService.MUSIC_ASSISTANT:
-            if object_id := container.get("id", {}).get("objectId"):
-                self._attr_active_source = object_id.split(":")[-1]
+            if (object_id := container.get("id", {}).get("objectId")) and object_id.startswith(
+                "mass:"
+            ):
+                self._attr_active_source = object_id.split(":")[1]
             else:
                 self._attr_active_source = None
         # its playing some service we did not yet map
@@ -709,7 +723,7 @@ class SonosPlayer(Player):
             await self.client.connect()
         except (ConnectionFailed, ClientConnectorError) as err:
             self.logger.warning("Failed to connect to Sonos player: %s", err)
-            if not retry_on_fail or not self.mass_player:
+            if not retry_on_fail or not self.mass.players.get(self.player_id):
                 raise
             self._attr_available = False
             self.update_state()
@@ -856,6 +870,8 @@ class SonosPlayer(Player):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA using the legacy upnp api."""
+        # enforce mp3 here because Sonos really does not support FLAC streams without duration
+        media.uri = media.uri.replace(".flac", ".mp3")
         xml_data, soap_action = get_xml_soap_set_url(media)
         player_ip = self.device_info.ip_address
         async with self.mass.http_session_no_ssl.post(
@@ -871,5 +887,5 @@ class SonosPlayer(Player):
                 raise PlayerCommandFailed(
                     f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
                 )
-            await self.cmd_play(self.player_id)
+            await self.play()
             return

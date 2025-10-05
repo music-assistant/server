@@ -1951,11 +1951,10 @@ class PlayerQueuesController(CoreController):
         if player.current_media.source_id == queue_id and player.current_media.queue_item_id:
             return player.current_media.queue_item_id
         # special case for sonos players
-        if (
-            player.current_media.uri == f"mass:queue:{queue_id}"
-            and player.current_media.queue_item_id
-        ):
-            return player.current_media.queue_item_id
+        if player.current_media.uri.startswith(f"mass:{queue_id}"):
+            if player.current_media.queue_item_id:
+                return player.current_media.queue_item_id
+            return player.current_media.uri.split(":")[-1]
         # try to extract the item id from a mass stream url
         if (
             player.current_media.uri
