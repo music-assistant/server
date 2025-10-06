@@ -32,7 +32,7 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import (
     CONF_PASSWORD,
@@ -388,39 +388,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             )
 
         return webdav_url
-
-    def _calculate_start_chapter(
-        self, chapters_data: list[tuple[str, float]], seek_position: int
-    ) -> int:
-        """Calculate which chapter to start from based on seek position."""
-        # Define a small tolerance margin (e.g., 100 milliseconds)
-        # This handles cases where seek_position is slightly less than the chapter's start time
-        tolerance_seconds = 2.0
-
-        if seek_position <= 0:
-            return 0
-
-        accumulated_duration = 0.0
-
-        for i, (_, chapter_duration) in enumerate(chapters_data):
-            chapter_end_time = accumulated_duration + chapter_duration
-
-            # If the seek is within TOLERANCE of the next chapter's start time,
-            # treat it as the next chapter's start time.
-
-            # This is the time when chapter i ends, and chapter i+1 begins.
-
-            if seek_position >= chapter_end_time - tolerance_seconds:
-                # If seek_position is at or just before the chapter end time (within tolerance),
-                # we treat it as seeking to the NEXT chapter.
-                accumulated_duration = chapter_end_time
-                continue
-
-            # Otherwise, the seek position is clearly within the bounds of chapter i.
-            return i
-
-        # Seek position beyond total duration - start from last chapter
-        return max(0, len(chapters_data) - 1)
 
     async def _scandir(self, path: str) -> list[FileSystemItem]:
         """List WebDAV directory contents."""
@@ -899,25 +866,24 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         prov_mapping = next(x for x in library_item.provider_mappings if x.item_id == item_id)
         file_item = await self.resolve(item_id)
 
-        # Check for multi-file audiobook
+        # Check for multi-file audiobook chapters
         file_based_chapters = await self._get_audiobook_chapters_from_cache(item_id, file_item)
 
         if file_based_chapters:
-            # Multi-file audiobook - use CUSTOM stream type
-            chapter_urls = [self._build_authenticated_url(ch[0]) for ch in file_based_chapters]
+            # Multi-file audiobook - use HTTP with MultiPartPath list
+            chapter_paths = [
+                MultiPartPath(path=self._build_authenticated_url(ch[0]), duration=ch[1])
+                for ch in file_based_chapters
+            ]
             return StreamDetails(
                 provider=self.instance_id,
                 item_id=item_id,
                 audio_format=prov_mapping.audio_format,
                 media_type=MediaType.AUDIOBOOK,
-                stream_type=StreamType.CUSTOM,  # CUSTOM not MULTI_FILE
+                stream_type=StreamType.HTTP,
                 duration=library_item.duration,
-                data={  # data dict, not path list
-                    "chapters": chapter_urls,
-                    "chapters_data": file_based_chapters,
-                },
+                path=chapter_paths,
                 allow_seek=True,
-                can_seek=True,
             )
 
         # Single file audiobook
@@ -1072,43 +1038,3 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             )
 
         return episode
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Get audio stream for WebDAV items."""
-        if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
-            async for chunk in self._stream_multifile_audiobook(streamdetails, seek_position):
-                yield chunk
-        else:
-            raise NotImplementedError("Use HTTP stream type for single files")
-
-    async def _stream_multifile_audiobook(
-        self, streamdetails: StreamDetails, seek_position: int
-    ) -> AsyncGenerator[bytes, None]:
-        """Stream multi-file audiobook chapters."""
-        chapter_urls = streamdetails.data.get("chapters", [])
-        chapters_data = streamdetails.data.get("chapters_data", [])
-        start_chapter = self._calculate_start_chapter(chapters_data, seek_position)
-
-        # Use session with appropriate SSL setting and longer timeout for streaming
-        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
-        # Set a longer timeout for reading large audiobook files
-        timeout = aiohttp.ClientTimeout(total=0, sock_read=5 * 60)  # 5 minute read timeout
-
-        chapters_yielded = False
-        for i in range(start_chapter, len(chapter_urls)):
-            try:
-                async with session.get(chapter_urls[i], timeout=timeout) as response:
-                    response.raise_for_status()
-                    async for chunk in response.content.iter_chunked(8192):
-                        chapters_yielded = True
-                        yield chunk
-            except Exception as e:
-                self.logger.exception(f"Chapter {i + 1} streaming failed: {e}")
-                continue
-
-        if not chapters_yielded:
-            raise MediaNotFoundError(
-                f"Failed to stream any chapters for audiobook {streamdetails.item_id}"
-            )
