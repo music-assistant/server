@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
@@ -24,7 +25,12 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
@@ -420,3 +426,47 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             )
 
         return webdav_url
+
+    async def sync_library(self, media_type: MediaType, import_as_favorite: bool = False) -> None:
+        """Run library sync for WebDAV provider."""
+        assert self.mass.music.database
+        start_time = time.time()
+
+        if getattr(self, "sync_running", False):
+            self.logger.warning("Library sync already running for %s", self.name)
+            return
+
+        self.logger.info("Started Library sync for %s", self.name)
+
+        file_checksums: dict[str, str] = {}
+        query = (
+            f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{self.instance_id}' "
+            f"AND media_type in ('track', 'playlist', 'audiobook', 'podcast_episode')"
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
+            file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
+
+        cur_filenames: set[str] = set()
+        prev_filenames: set[str] = set(file_checksums.keys())
+
+        self.sync_running = True
+        try:
+            # Use async WebDAV scanning instead of os.scandir
+            await self._scan_recursive("", cur_filenames, file_checksums, import_as_favorite)
+        finally:
+            self.sync_running = False
+
+        end_time = time.time()
+        self.logger.info(
+            "Library sync for %s completed in %.2f seconds",
+            self.name,
+            end_time - start_time,
+        )
+
+        # Work out deletions - use parent's method
+        deleted_files = prev_filenames - cur_filenames
+        await self._process_deletions(deleted_files)
+
+        # Process orphaned albums and artists - use parent's method
+        await self._process_orphaned_albums_and_artists()
