@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import UnplayableMediaError
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
@@ -11,11 +9,7 @@ from niconico.objects.video.watch import (  # noqa: TC002 - Using by StreamConve
     WatchData,
     WatchMediaDomandAudio,
 )
-
-if TYPE_CHECKING:
-    from pydantic import BaseModel
-else:
-    from pydantic import BaseModel
+from pydantic import BaseModel
 
 from music_assistant.providers.nicovideo.constants import NICOVIDEO_USER_AGENT
 from music_assistant.providers.nicovideo.converters.base import NicovideoConverterBase

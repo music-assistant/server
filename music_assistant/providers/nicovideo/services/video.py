@@ -87,8 +87,7 @@ class NicovideoVideoService(NicovideoBaseService):
         if not hls_url:
             raise UnplayableMediaError("Failed to get HLS content URL")
 
-        result: str = hls_url
-        return result
+        return hls_url
 
     async def _get_stream_data(self, video_id: str) -> StreamConversionData:
         """Get StreamConversionData for a video."""

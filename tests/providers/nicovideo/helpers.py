@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 from unittest.mock import Mock
 
 from pydantic import BaseModel
@@ -95,8 +95,7 @@ def to_dict_for_fixture[T: BaseModel](response: FixtureAPIResult[T]) -> JsonCont
     if isinstance(response, BaseModel):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            result: dict[str, Any] | list[Any] = response.model_dump(by_alias=True)
-            return result
+            return response.model_dump(by_alias=True)
     data: JsonList = []
     for item in response:
         with warnings.catch_warnings():
@@ -114,8 +113,7 @@ def stabilize_dynamic_fields_for_fixture[T: BaseModel](
     to ensure fixtures are stable across different API response states.
     """
     if isinstance(data, list):
-        result: list[T] = [_stabilize_model_counts(item) for item in data]
-        return result
+        return [_stabilize_model_counts(item) for item in data]
     return _stabilize_model_counts(data)
 
 

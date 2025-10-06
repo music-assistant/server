@@ -27,8 +27,7 @@ class NicovideoAuthService(NicovideoBaseService):
     @property
     def is_logged_in(self) -> bool:
         """Check if the user is logged in to niconico."""
-        result: bool = self.niconico_py_client.logined
-        return result
+        return self.niconico_py_client.logined
 
     async def try_login(self) -> bool:
         """Attempt to login to niconico with the configured credentials."""
