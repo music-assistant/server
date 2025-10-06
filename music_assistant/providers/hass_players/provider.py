@@ -7,6 +7,7 @@ Requires the Home Assistant Plugin.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant.mass import MusicAssistant
@@ -31,7 +32,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
     """Home Assistant PlayerProvider for Music Assistant."""
 
     hass_prov: HomeAssistantProvider
-    on_unload_callbacks: list[callable] | None = None
+    on_unload_callbacks: list[Callable[[], None]] | None = None
 
     def __init__(
         self,

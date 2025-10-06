@@ -109,7 +109,7 @@ class HomeAssistantPlayer(Player):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = await super().get_config_entries()
-        base_entries = (*base_entries, *DEFAULT_PLAYER_CONFIG_ENTRIES)
+        base_entries = [*base_entries, *DEFAULT_PLAYER_CONFIG_ENTRIES]
         if self.extra_data.get("esphome_supported_audio_formats"):
             # optimized config for new ESPHome mediaplayer
             supported_sample_rates: list[int] = []
@@ -133,32 +133,42 @@ class HomeAssistantPlayer(Player):
                 # simply use the default config of the media pipeline
                 supported_sample_rates = [48000]
                 supported_bit_depths = [16]
-            return [
+
+            config_entries = [
                 *base_entries,
                 # New ESPHome mediaplayer (used in Voice PE) uses FLAC 48khz/16 bits
                 CONF_ENTRY_FLOW_MODE_ENFORCED,
                 CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-                create_output_codec_config_entry(True, codec),
-                CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-                create_sample_rates_config_entry(
-                    supported_sample_rates=supported_sample_rates,
-                    supported_bit_depths=supported_bit_depths,
-                    hidden=True,
-                ),
-                # although the Voice PE supports announcements,
-                # it does not support volume for announcements
-                *HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
             ]
+
+            if codec is not None:
+                config_entries.append(create_output_codec_config_entry(True, codec))
+
+            config_entries.extend(
+                [
+                    CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
+                    create_sample_rates_config_entry(
+                        supported_sample_rates=supported_sample_rates,
+                        supported_bit_depths=supported_bit_depths,
+                        hidden=True,
+                    ),
+                    # although the Voice PE supports announcements,
+                    # it does not support volume for announcements
+                    *HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
+                ]
+            )
+
+            return config_entries
 
         # add alert if player is a known player type that has a native provider in MA
         if self.extra_data.get("hass_domain") in WARN_HASS_INTEGRATIONS:
-            base_entries = (CONF_ENTRY_WARN_HASS_INTEGRATION, *base_entries)
+            base_entries = [CONF_ENTRY_WARN_HASS_INTEGRATION, *base_entries]
 
         # enable flow mode by default if player does not report enqueue support
         if MediaPlayerEntityFeature.MEDIA_ENQUEUE not in self.extra_data["hass_supported_features"]:
-            base_entries = (*base_entries, CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED)
+            base_entries = [*base_entries, CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED]
 
-        return list(base_entries)
+        return base_entries
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
@@ -223,7 +233,7 @@ class HomeAssistantPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        extra_data = {
+        extra_data: dict[str, Any] = {
             # passing metadata to the player
             # so far only supported by google cast, but maybe others can follow
             "metadata": {
