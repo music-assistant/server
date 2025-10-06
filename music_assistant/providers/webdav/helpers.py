@@ -175,13 +175,35 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
 
 
 async def webdav_test_connection(
-    session: aiohttp.ClientSession,  # Pass session in instead of creating
-    url: str,
-    auth: aiohttp.BasicAuth | None = None,
+    base_url: str,
+    username: str | None,
+    password: str | None,
+    verify_ssl: bool,
     timeout: int = 10,
 ) -> None:
     """Test WebDAV connection and authentication."""
-    await webdav_propfind(session, url, depth=0, timeout=timeout, auth=auth)
+    auth = aiohttp.BasicAuth(username, password) if username else None
+    connector = aiohttp.TCPConnector(ssl=verify_ssl)
+
+    async with aiohttp.ClientSession(
+        auth=auth,
+        connector=connector,
+        timeout=aiohttp.ClientTimeout(total=timeout),
+    ) as session:
+        try:
+            items = await webdav_propfind(session, base_url, depth=0)
+            if not items and base_url.rstrip("/") != base_url:
+                # Try without trailing slash
+                items = await webdav_propfind(session, base_url.rstrip("/"), depth=0)
+            # Success if we got any response
+        except aiohttp.ClientResponseError as err:
+            if err.status == 401:
+                raise LoginFailed("Invalid username or password")
+            if err.status == 404:
+                raise SetupFailedError(f"WebDAV path not found: {base_url}")
+            raise SetupFailedError(f"WebDAV connection failed: {err}")
+        except aiohttp.ClientError as err:
+            raise SetupFailedError(f"Cannot connect to WebDAV server: {err}")
 
 
 def normalize_webdav_url(url: str) -> str:
