@@ -74,8 +74,6 @@ class NicovideoStreamConverter(NicovideoConverterBase):
             extra_input_args=extra_args,
             allow_seek=True,
             can_seek=True,
-            # If an expiring URL is used, it may not play when pausing and resuming.
-            enable_cache=True,
         )
 
     def _build_extra_input_args(self, domand_bid: str) -> list[str]:
