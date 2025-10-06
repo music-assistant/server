@@ -27,10 +27,10 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.process import AsyncProcess, check_output
+from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider, PluginSource
 from music_assistant.providers.spotify.helpers import get_librespot_binary
 
@@ -48,6 +48,8 @@ CONF_HANDOFF_MODE = "handoff_mode"
 CONNECT_ITEM_ID = "spotify_connect"
 
 EVENTS_SCRIPT = pathlib.Path(__file__).parent.resolve().joinpath("events.py")
+
+SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
 
 async def setup(
@@ -113,7 +115,7 @@ class SpotifyConnectProvider(PluginProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self.mass_player_id = cast("str", self.config.get_value(CONF_MASS_PLAYER_ID))
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
         self._librespot_bin: str | None = None
@@ -157,11 +159,7 @@ class SpotifyConnectProvider(PluginProvider):
                 self._handle_custom_webservice,
             ),
         ]
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {ProviderFeature.AUDIO_SOURCE}
+        self._runner_error_count = 0
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -248,8 +246,11 @@ class SpotifyConnectProvider(PluginProvider):
             if not self._librespot_started.is_set():
                 self.unload_with_error("Unable to initialize librespot daemon.")
             # auto restart if not stopped manually
-            if not self._stop_called and self._librespot_started.is_set():
-                self._setup_player_daemon()
+            elif not self._stop_called and self._runner_error_count >= 5:
+                self.unload_with_error("Librespot daemon failed to start multiple times.")
+            elif not self._stop_called:
+                self._runner_error_count += 1
+                self.mass.call_later(2, self._setup_player_daemon)
 
     def _setup_player_daemon(self) -> None:
         """Handle setup of the spotify connect daemon for a player."""

@@ -44,7 +44,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return FanartTvMetadataProvider(mass, manifest, config)
+    return FanartTvMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -100,11 +100,6 @@ class FanartTvMetadataProvider(MetadataProvider):
         else:
             self.throttler = Throttler(rate_limit=1, period=30)
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
-
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on fanart.tv."""
         if not artist.mbid:
@@ -158,7 +153,7 @@ class FanartTvMetadataProvider(MetadataProvider):
                     return metadata
         return None
 
-    @use_cache(86400 * 30)
+    @use_cache(86400 * 60)  # Cache for 60 days
     async def _get_data(self, endpoint: str, **kwargs: str) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
@@ -169,7 +164,9 @@ class FanartTvMetadataProvider(MetadataProvider):
             headers["client_key"] = client_key
         async with (
             self.throttler,
-            self.mass.http_session.get(url, params=kwargs, headers=headers, ssl=False) as response,
+            self.mass.http_session_no_ssl.get(
+                url, params=kwargs, headers=headers, ssl=False
+            ) as response,
         ):
             try:
                 result = await response.json()

@@ -16,15 +16,10 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import AsyncGenerator
-from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-import podcastparser
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-    ProviderConfig,
-)
+from aiohttp.client_exceptions import ClientError
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -38,27 +33,18 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
 )
-from music_assistant_models.media_items import (
-    AudioFormat,
-    MediaItemType,
-    Podcast,
-    PodcastEpisode,
-)
+from music_assistant_models.media_items import AudioFormat, MediaItemType, Podcast, PodcastEpisode
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.podcast_parsers import (
+    get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
     parse_podcast,
     parse_podcast_episode,
 )
 from music_assistant.models.music_provider import MusicProvider
 
-from .client import (
-    EpisodeActionDelete,
-    EpisodeActionNew,
-    EpisodeActionPlay,
-    GPodderClient,
-)
+from .client import EpisodeActionDelete, EpisodeActionNew, EpisodeActionPlay, GPodderClient
 
 if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
@@ -90,12 +76,17 @@ CACHE_KEY_TIMESTAMP = (
 )
 CACHE_KEY_FEEDS = "feeds"  # list[str] : all available rss feed urls
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.BROWSE,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return GPodder(mass, manifest, config)
+    return GPodder(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -138,7 +129,7 @@ async def get_config_entries(
             await asyncio.sleep(1)
 
     authenticated_nc = True
-    if values.get(CONF_TOKEN_NC, None) is None:
+    if values.get(CONF_TOKEN_NC) is None:
         authenticated_nc = False
 
     using_gpodder = bool(values.get(CONF_USING_GPODDER, False))
@@ -262,14 +253,6 @@ async def get_config_entries(
 class GPodder(MusicProvider):
     """gPodder MusicProvider."""
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Features supported by this Provider."""
-        return {
-            ProviderFeature.LIBRARY_PODCASTS,
-            ProviderFeature.BROWSE,
-        }
-
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
         base_url = str(self.config.get_value(CONF_URL))
@@ -305,7 +288,7 @@ class GPodder(MusicProvider):
 
         timestamps = await self.mass.cache.get(
             key=CACHE_KEY_TIMESTAMP,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_OTHER,
             default=None,
         )
@@ -323,7 +306,7 @@ class GPodder(MusicProvider):
 
         feeds = await self.mass.cache.get(
             key=CACHE_KEY_FEEDS,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_OTHER,
             default=None,
         )
@@ -344,7 +327,6 @@ class GPodder(MusicProvider):
         return False
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
-        # ruff: noqa: PLR0915
         """Retrieve library/subscribed podcasts from the provider."""
         try:
             subscriptions = await self._client.get_subscriptions()
@@ -367,8 +349,12 @@ class GPodder(MusicProvider):
             self.logger.debug("Adding podcast with feed %s to library", feed_url)
             # parse podcast
             try:
-                parsed_podcast = await self._get_podcast(feed_url)
-            except RuntimeError:
+                parsed_podcast = await get_podcastparser_dict(
+                    session=self.mass.http_session,
+                    feed_url=feed_url,
+                    max_episodes=self.max_episodes,
+                )
+            except ClientError:
                 self.logger.warning(f"Was unable to obtain podcast with feed {feed_url}")
                 continue
             await self._cache_set_podcast(feed_url, parsed_podcast)
@@ -621,24 +607,19 @@ class GPodder(MusicProvider):
                 return stream_url
         return None
 
-    async def _get_podcast(self, feed_url: str) -> dict[str, Any]:
-        # see music-assistant/server@6aae82e
-        response = await self.mass.http_session.get(feed_url, headers={"User-Agent": "Mozilla/5.0"})
-        if response.status != 200:
-            raise RuntimeError
-        feed_data = await response.read()
-        feed_stream = BytesIO(feed_data)
-        return podcastparser.parse(feed_url, feed_stream, max_episodes=self.max_episodes)  # type: ignore[no-any-return]
-
     async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
             key=prov_podcast_id,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCAST_ITEMS,
             default=None,
         )
         if parsed_podcast is None:
-            parsed_podcast = await self._get_podcast(feed_url=prov_podcast_id)
+            parsed_podcast = await get_podcastparser_dict(
+                session=self.mass.http_session,
+                feed_url=prov_podcast_id,
+                max_episodes=self.max_episodes,
+            )
             await self._cache_set_podcast(feed_url=prov_podcast_id, parsed_podcast=parsed_podcast)
 
         # this is a dictionary from podcastparser
@@ -647,7 +628,7 @@ class GPodder(MusicProvider):
     async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
         await self.mass.cache.set(
             key=feed_url,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCAST_ITEMS,
             data=parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day
@@ -657,7 +638,7 @@ class GPodder(MusicProvider):
         # seven days default
         await self.mass.cache.set(
             key=CACHE_KEY_TIMESTAMP,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_OTHER,
             data=[self.timestamp_subscriptions, self.timestamp_actions],
         )
@@ -666,7 +647,7 @@ class GPodder(MusicProvider):
         # seven days default
         await self.mass.cache.set(
             key=CACHE_KEY_FEEDS,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_OTHER,
             data=self.feeds,
         )

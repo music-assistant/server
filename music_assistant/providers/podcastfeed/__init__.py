@@ -10,10 +10,10 @@ multiple instances with each one feed must exist.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
 import podcastparser
+from aiohttp.client_exceptions import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -23,11 +23,22 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import InvalidProviderURI, MediaNotFoundError
-from music_assistant_models.media_items import AudioFormat, Podcast, PodcastEpisode
+from music_assistant_models.media_items import (
+    AudioFormat,
+    MediaItemImage,
+    Podcast,
+    PodcastEpisode,
+    UniqueList,
+)
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import create_safe_string
-from music_assistant.helpers.podcast_parsers import parse_podcast, parse_podcast_episode
+from music_assistant.helpers.podcast_parsers import (
+    get_podcastparser_dict,
+    parse_podcast,
+    parse_podcast_episode,
+)
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -41,6 +52,11 @@ CONF_FEED_URL = "feed_url"
 
 CACHE_CATEGORY_PODCASTS = 0
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_PODCASTS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -49,7 +65,7 @@ async def setup(
     if not config.get_value(CONF_FEED_URL):
         msg = "No podcast feed set"
         raise InvalidProviderURI(msg)
-    return PodcastMusicprovider(mass, manifest, config)
+    return PodcastMusicprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -79,14 +95,6 @@ async def get_config_entries(
 class PodcastMusicprovider(MusicProvider):
     """Podcast RSS Feed Music Provider."""
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.BROWSE,
-            ProviderFeature.LIBRARY_PODCASTS,
-        }
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.feed_url = podcastparser.normalize_feed_url(str(self.config.get_value(CONF_FEED_URL)))
@@ -97,8 +105,8 @@ class PodcastMusicprovider(MusicProvider):
 
         try:
             self.parsed_podcast: dict[str, Any] = await self._cache_get_podcast()
-        except RuntimeError as exc:
-            raise RuntimeError("Invalid URL") from exc
+        except ClientError as exc:
+            raise MediaNotFoundError("Invalid URL") from exc
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -131,12 +139,14 @@ class PodcastMusicprovider(MusicProvider):
         await self._cache_set_podcast()
         yield await self._parse_podcast()
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full artist details by id."""
         if prov_podcast_id != self.podcast_id:
             raise RuntimeError(f"Podcast id not in provider: {prov_podcast_id}")
         return await self._parse_podcast()
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         """Get (full) podcast episode details by id."""
         for idx, episode in enumerate(self.parsed_podcast["episodes"]):
@@ -160,6 +170,7 @@ class PodcastMusicprovider(MusicProvider):
             if mass_episode := self._parse_episode(episode, idx):
                 yield mass_episode
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         for episode in self.parsed_podcast["episodes"]:
@@ -176,6 +187,10 @@ class PodcastMusicprovider(MusicProvider):
                     path=stream_url,
                     can_seek=True,
                     allow_seek=True,
+                    extra_input_args=[
+                        "-user_agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    ],
                 )
         raise MediaNotFoundError("Stream not found")
 
@@ -194,7 +209,7 @@ class PodcastMusicprovider(MusicProvider):
     def _parse_episode(
         self, episode_obj: dict[str, Any], fallback_position: int
     ) -> PodcastEpisode | None:
-        return parse_podcast_episode(
+        episode_result = parse_podcast_episode(
             episode=episode_obj,
             prov_podcast_id=self.podcast_id,
             episode_cnt=fallback_position,
@@ -204,24 +219,30 @@ class PodcastMusicprovider(MusicProvider):
             instance_id=self.instance_id,
             mass_item_id=episode_obj["guid"],
         )
+        # Override remotely_accessible as these providers can have unreliable image URLs
+        if episode_result and episode_result.metadata.images:
+            new_images = []
+            for img in episode_result.metadata.images:
+                new_images.append(
+                    MediaItemImage(
+                        type=img.type,
+                        path=img.path,
+                        provider=img.provider,
+                        remotely_accessible=False,  # Force through imageproxy
+                    )
+                )
+            episode_result.metadata.images = UniqueList(new_images)
+
+        return episode_result
 
     async def _get_podcast(self) -> dict[str, Any]:
-        # without user agent, some feeds can not be retrieved
-        # https://github.com/music-assistant/support/issues/3596
         assert self.feed_url is not None
-        response = await self.mass.http_session.get(
-            self.feed_url, headers={"User-Agent": "Mozilla/5.0"}
-        )
-        if response.status != 200:
-            raise RuntimeError
-        feed_data = await response.read()
-        feed_stream = BytesIO(feed_data)
-        return podcastparser.parse(self.feed_url, feed_stream)  # type:ignore [no-any-return]
+        return await get_podcastparser_dict(session=self.mass.http_session, feed_url=self.feed_url)
 
     async def _cache_get_podcast(self) -> dict[str, Any]:
         parsed_podcast = await self.mass.cache.get(
             key=self.podcast_id,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             default=None,
         )
@@ -234,8 +255,34 @@ class PodcastMusicprovider(MusicProvider):
     async def _cache_set_podcast(self) -> None:
         await self.mass.cache.set(
             key=self.podcast_id,
-            base_key=self.lookup_key,
+            provider=self.instance_id,
             category=CACHE_CATEGORY_PODCASTS,
             data=self.parsed_podcast,
             expiration=60 * 60 * 24,  # 1 day
         )
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Resolve image for RSS provider with fallback to podcast cover."""
+        if not path.startswith("http"):
+            return path
+
+        try:
+            async with self.mass.http_session.get(path, raise_for_status=True) as response:
+                # Check if we got actual image content
+                content_type = response.headers.get("content-type", "").lower()
+                if not content_type.startswith(("image/", "application/octet-stream")):
+                    # Not an image - likely redirected to error page
+                    raise ClientError(f"Invalid content type: {content_type}")
+
+                return await response.read()
+
+        except (ClientError, Exception):
+            # Try podcast cover fallback
+            podcast_cover = self.parsed_podcast.get("cover_url")
+            if podcast_cover and isinstance(podcast_cover, str) and podcast_cover != path:
+                async with self.mass.http_session.get(
+                    podcast_cover, raise_for_status=True
+                ) as response:
+                    return await response.read()
+
+            raise MediaNotFoundError(f"Episode image not found: {path}")

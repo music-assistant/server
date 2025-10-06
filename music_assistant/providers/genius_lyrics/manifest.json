@@ -1,0 +1,12 @@
+{
+  "type": "metadata",
+  "domain": "genius_lyrics",
+  "stage": "beta",
+  "name": "Genius Lyrics",
+  "description": "Alternative lyrics source, pulling song lyrics from Genius to supplement other providers.",
+  "codeowners": ["@robert-alfaro"],
+  "requirements": ["lyricsgenius==3.7.2"],
+  "documentation": "https://www.music-assistant.io/metadata/",
+  "multi_instance": false,
+  "icon": "mdi-script-text"
+}

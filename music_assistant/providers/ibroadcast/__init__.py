@@ -8,7 +8,6 @@ from aiohttp import ClientSession
 from ibroadcastaio import IBroadcastClient
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    AlbumType,
     ConfigEntryType,
     ContentType,
     ImageType,
@@ -37,7 +36,8 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.helpers.util import parse_title_and_version
+from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = {
@@ -67,7 +67,7 @@ async def setup(
     if not config.get_value(CONF_USERNAME) or not config.get_value(CONF_PASSWORD):
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
-    return IBroadcastProvider(mass, manifest, config)
+    return IBroadcastProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -121,11 +121,6 @@ class IBroadcastProvider(MusicProvider):
             # temporary call to refresh library until ibroadcast provides a detailed api
             await self._client.refresh_library()
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
-
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from ibroadcast."""
         for album in (await self._client.get_albums()).values():
@@ -135,6 +130,7 @@ class IBroadcastProvider(MusicProvider):
                 self.logger.debug("Parse album failed: %s", album, exc_info=error)
                 continue
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         album_obj = await self._client.get_album(int(prov_album_id))
@@ -149,6 +145,7 @@ class IBroadcastProvider(MusicProvider):
                 self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
                 continue
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         albums_objs = [
@@ -165,16 +162,19 @@ class IBroadcastProvider(MusicProvider):
                 continue
         return albums
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         album = await self._client.get_album(int(prov_album_id))
         return await self._get_tracks(album["tracks"])
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         track_obj = await self._client.get_track(int(prov_track_id))
         return await self._parse_track(track_obj)
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._client.get_artist(int(prov_artist_id))
@@ -211,6 +211,7 @@ class IBroadcastProvider(MusicProvider):
             if playlist["type"] != "recently-played" and playlist["type"] != "thumbsup":
                 yield await self._parse_playlist(playlist)
 
+    @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         playlist_obj = await self._client.get_playlist(int(prov_playlist_id))
@@ -220,6 +221,7 @@ class IBroadcastProvider(MusicProvider):
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         tracks: list[Track] = []
@@ -338,8 +340,9 @@ class IBroadcastProvider(MusicProvider):
 
         if "rating" in album_obj and album_obj["rating"] == 5:
             album.favorite = True
-        # iBroadcast doesn't seem to know album type
-        album.album_type = AlbumType.UNKNOWN
+        # iBroadcast doesn't seem to know album type - try inference
+        album.album_type = infer_album_type(name, version)
+
         # There is only an artwork in the tracks, lets get the first track one
         artwork_url = await self._client.get_album_artwork_url(album_id)
         if artwork_url:

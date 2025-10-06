@@ -11,7 +11,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant.constants import MASS_LOGO_ONLINE
 
 if TYPE_CHECKING:
-    from music_assistant_models.player import PlayerMedia
+    from music_assistant.models.player import PlayerMedia
 
 
 # ruff: noqa: E501
@@ -137,6 +137,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
             f"<dc:title>{escape_metadata(title)}</dc:title>"
             f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
             f"<dc:queueItemId>{escape_metadata(media.uri)}</dc:queueItemId>"
+            f"<dc:description>Music Assistant</dc:description>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
             f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
             f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_metadata(media.uri)}</res>'
@@ -149,7 +150,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
 
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">'
-        f'<item id="{media.queue_item_id or xmlescape(media.uri)}" restricted="true" parentID="{media.queue_id or ""}">'
+        f'<item id="{media.queue_item_id or xmlescape(media.uri)}" restricted="true" parentID="{media.source_id or ""}">'
         f"<dc:title>{escape_metadata(media.title or media.uri)}</dc:title>"
         f"<dc:creator>{escape_metadata(media.artist or '')}</dc:creator>"
         f"<upnp:album>{escape_metadata(media.album or '')}</upnp:album>"

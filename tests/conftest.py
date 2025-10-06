@@ -19,12 +19,14 @@ def caplog_fixture(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture
 @pytest.fixture
 async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
     """Start a Music Assistant in test mode."""
-    storage_path = tmp_path / "root"
+    storage_path = tmp_path / "data"
+    cache_path = tmp_path / "cache"
     storage_path.mkdir(parents=True)
+    cache_path.mkdir(parents=True)
 
     logging.getLogger("aiosqlite").level = logging.INFO
 
-    mass = MusicAssistant(str(storage_path))
+    mass = MusicAssistant(str(storage_path), str(cache_path))
 
     await mass.start()
 

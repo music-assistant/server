@@ -69,7 +69,7 @@ class RadioController(MediaControllerBase[Radio]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, item.provider_mappings)
+        await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         return db_id
 
@@ -103,9 +103,9 @@ class RadioController(MediaControllerBase[Radio]):
         provider_mappings = (
             update.provider_mappings
             if overwrite
-            else {*cur_item.provider_mappings, *update.provider_mappings}
+            else {*update.provider_mappings, *cur_item.provider_mappings}
         )
-        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def radio_mode_base_tracks(
@@ -117,3 +117,10 @@ class RadioController(MediaControllerBase[Radio]):
         """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         msg = "Dynamic tracks not supported for Radio MediaItem"
         raise NotImplementedError(msg)
+
+    async def match_providers(self, db_item: Radio) -> None:
+        """Try to find match on all (streaming) providers for the provided (database) item.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        raise NotImplementedError

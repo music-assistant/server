@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import IntFlag
 
-from music_assistant_models.enums import PlayerState
+from music_assistant_models.enums import PlaybackState
 
 
 class MediaPlayerEntityFeature(IntFlag):
@@ -35,14 +35,14 @@ class MediaPlayerEntityFeature(IntFlag):
 
 
 StateMap = {
-    "playing": PlayerState.PLAYING,
-    "paused": PlayerState.PAUSED,
-    "buffering": PlayerState.PLAYING,
-    "idle": PlayerState.IDLE,
-    "off": PlayerState.IDLE,
-    "standby": PlayerState.IDLE,
-    "unknown": PlayerState.IDLE,
-    "unavailable": PlayerState.IDLE,
+    "playing": PlaybackState.PLAYING,
+    "paused": PlaybackState.PAUSED,
+    "buffering": PlaybackState.PLAYING,
+    "idle": PlaybackState.IDLE,
+    "off": PlaybackState.IDLE,
+    "standby": PlaybackState.IDLE,
+    "unknown": PlaybackState.IDLE,
+    "unavailable": PlaybackState.IDLE,
 }
 
 # HA states that we consider as "powered off"

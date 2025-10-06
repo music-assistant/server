@@ -1,12 +1,12 @@
 {
   "type": "plugin",
   "domain": "listenbrainz_scrobble",
-  "stage": "beta",
+  "stage": "stable",
   "name": "ListenBrainz Scrobbler",
-  "description": "Scrobble your music to ListenBrainz",
+  "description": "Scrobbles your listening history to ListenBrainz — an open, community-driven alternative to Last.fm.",
   "codeowners": ["@music-assistant"],
   "documentation": "https://music-assistant.io/plugins/listenbrainz_scrobble/",
   "multi_instance": false,
   "builtin": false,
-  "requirements": ["liblistenbrainz==0.5.6"]
+  "requirements": ["liblistenbrainz==0.6.0"]
 }

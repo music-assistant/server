@@ -11,7 +11,6 @@ import re
 import shutil
 import socket
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import suppress
@@ -19,14 +18,15 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, ParamSpec, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
 from urllib.parse import urlparse
 
 import chardet
 import ifaddr
+from music_assistant_models.enums import AlbumType
 from zeroconf import IPVersion
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import LIVE_INDICATORS, SOUNDTRACK_INDICATORS, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import check_output
 
 if TYPE_CHECKING:
@@ -37,6 +37,10 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderModuleType
+    from music_assistant.models.core_controller import CoreController
+    from music_assistant.models.provider import Provider
+
+from dataclasses import fields, is_dataclass
 
 LOGGER = logging.getLogger(__name__)
 
@@ -148,6 +152,18 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
                 title = title.replace(title_part, "").strip()
                 return (title, version)
     return title, version
+
+
+def infer_album_type(title: str, version: str) -> AlbumType:
+    """Infer album type by looking for live or soundtrack indicators."""
+    combined = f"{title} {version}".lower()
+    for pat in LIVE_INDICATORS:
+        if re.search(pat, combined):
+            return AlbumType.LIVE
+    for pat in SOUNDTRACK_INDICATORS:
+        if re.search(pat, combined):
+            return AlbumType.SOUNDTRACK
+    return AlbumType.UNKNOWN
 
 
 def strip_ads(line: str) -> str:
@@ -286,7 +302,12 @@ async def is_port_in_use(port: int) -> bool:
                 return True
         return False
 
-    return await asyncio.to_thread(_is_port_in_use)
+    try:
+        if await check_output(f"lsof -i :{port}"):
+            return True
+    except Exception:
+        # lsof not available (or some other error), fallback to socket check
+        return await asyncio.to_thread(_is_port_in_use)
 
 
 async def select_free_port(range_start: int, range_end: int) -> int:
@@ -336,17 +357,17 @@ async def get_folder_size(folderpath: str) -> float:
 def get_changed_keys(
     dict1: dict[str, Any],
     dict2: dict[str, Any],
-    ignore_keys: list[str] | None = None,
     recursive: bool = False,
 ) -> set[str]:
     """Compare 2 dicts and return set of changed keys."""
-    return set(get_changed_values(dict1, dict2, ignore_keys, recursive).keys())
+    # TODO: Check with Marcel whether we should calculate new dicts based on ignore_keys
+    return set(get_changed_dict_values(dict1, dict2, recursive).keys())
+    # return set(get_changed_dict_values(dict1, dict2, ignore_keys, recursive).keys())
 
 
-def get_changed_values(
+def get_changed_dict_values(
     dict1: dict[str, Any],
     dict2: dict[str, Any],
-    ignore_keys: list[str] | None = None,
     recursive: bool = False,
 ) -> dict[str, tuple[Any, Any]]:
     """
@@ -362,22 +383,52 @@ def get_changed_values(
         return {key: (None, value) for key, value in dict1.items()}
     changed_values = {}
     for key, value in dict2.items():
-        if ignore_keys and key in ignore_keys:
+        if isinstance(value, dict) and isinstance(dict1[key], dict) and recursive:
+            changed_subvalues = get_changed_dict_values(dict1[key], value, recursive)
+            for subkey, subvalue in changed_subvalues.items():
+                changed_values[f"{key}.{subkey}"] = subvalue
             continue
         if key not in dict1:
             changed_values[key] = (None, value)
-        elif isinstance(value, dict) or isinstance(dict1[key], dict):
-            changed_subvalues = get_changed_values(dict1[key], value, ignore_keys, recursive)
-            if recursive:
-                changed_values.update(changed_subvalues)
-            elif changed_subvalues:
-                changed_values[key] = (dict1[key], value)
-        elif dict1[key] != value:
+            continue
+        if dict1[key] != value:
             changed_values[key] = (dict1[key], value)
     return changed_values
 
 
-def empty_queue(q: asyncio.Queue[T]) -> None:
+def get_changed_dataclass_values(
+    obj1: T,
+    obj2: T,
+    recursive: bool = False,
+) -> dict[str, tuple[Any, Any]]:
+    """
+    Compare 2 dataclass instances of the same type and return dict of changed field values.
+
+    dict key is the changed field name, value is tuple of old and new values.
+    """
+    if not (is_dataclass(obj1) and is_dataclass(obj2)):
+        raise ValueError("Both objects must be dataclass instances")
+
+    changed_values: dict[str, tuple[Any, Any]] = {}
+    for field in fields(obj1):
+        val1 = getattr(obj1, field.name, None)
+        val2 = getattr(obj2, field.name, None)
+        if recursive and is_dataclass(val1) and is_dataclass(val2):
+            sub_changes = get_changed_dataclass_values(val1, val2, recursive)
+            for sub_field, sub_value in sub_changes.items():
+                changed_values[f"{field.name}.{sub_field}"] = sub_value
+            continue
+        if recursive and isinstance(val1, dict) and isinstance(val2, dict):
+            sub_changes = get_changed_dict_values(val1, val2, recursive=recursive)
+            for sub_field, sub_value in sub_changes.items():
+                changed_values[f"{field.name}.{sub_field}"] = sub_value
+            continue
+        if val1 != val2:
+            changed_values[field.name] = (val1, val2)
+    return changed_values
+
+
+def empty_queue[T](q: asyncio.Queue[T]) -> None:
     """Empty an asyncio Queue."""
     for _ in range(q.qsize()):
         try:
@@ -392,21 +443,6 @@ async def install_package(package: str) -> None:
     LOGGER.debug("Installing python package %s", package)
     args = ["uv", "pip", "install", "--no-cache", "--find-links", HA_WHEELS, package]
     return_code, output = await check_output(*args)
-
-    if return_code != 0 and "Permission denied" in output.decode():
-        # try again with regular pip
-        # uv pip seems to have issues with permissions on docker installs
-        args = [
-            "pip",
-            "install",
-            "--no-cache-dir",
-            "--no-input",
-            "--find-links",
-            HA_WHEELS,
-            package,
-        ]
-        return_code, output = await check_output(*args)
-
     if return_code != 0:
         msg = f"Failed to install package {package}\n{output.decode()}"
         raise RuntimeError(msg)
@@ -611,6 +647,29 @@ def percentage(part: float, whole: float) -> int:
     return int(100 * float(part) / float(whole))
 
 
+def validate_announcement_chime_url(url: str) -> bool:
+    """Validate announcement chime URL format."""
+    if not url or not url.strip():
+        return True  # Empty URL is valid
+
+    try:
+        parsed = urlparse(url.strip())
+
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        if not parsed.netloc:
+            return False
+
+        path_lower = parsed.path.lower()
+        audio_extensions = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
+
+        return any(path_lower.endswith(ext) for ext in audio_extensions)
+
+    except Exception:
+        return False
+
+
 class TaskManager:
     """
     Helper class to run many tasks at once.
@@ -666,7 +725,7 @@ _R = TypeVar("_R")
 _P = ParamSpec("_P")
 
 
-def lock(
+def lock[**P, R](  # type: ignore[valid-type]
     func: Callable[_P, Awaitable[_R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
     """Call async function using a Lock."""
@@ -714,3 +773,24 @@ class TimedAsyncGenerator:
     def __aiter__(self):  # type: ignore[no-untyped-def]
         """Return the async iterator."""
         return self._factory()
+
+
+def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
+    func: Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
+    """Guard single request to a function."""
+
+    @functools.wraps(func)
+    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+        mass = self.mass
+        # create a task_id dynamically based on the function and args/kwargs
+        cache_key_parts = [func.__class__.__name__, func.__name__, *args]
+        for key in sorted(kwargs.keys()):
+            cache_key_parts.append(f"{key}{kwargs[key]}")
+        task_id = ".".join(map(str, cache_key_parts))
+        task: asyncio.Task[R] = mass.create_task(
+            func, self, *args, **kwargs, task_id=task_id, abort_existing=False
+        )
+        return await task
+
+    return wrapper

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pathlib
 import threading
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast
@@ -12,7 +13,6 @@ from uuid import uuid4
 
 import aiofiles
 from aiofiles.os import wrap
-from aiohttp import ClientSession, TCPConnector
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.enums import EventType, ProviderType
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
@@ -42,9 +42,10 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.metadata import MetaDataController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.player_queues import PlayerQueuesController
-from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.players.player_controller import PlayerController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.webserver import WebserverController
+from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.images import get_icon_string
 from music_assistant.helpers.util import (
@@ -61,6 +62,7 @@ from music_assistant.models.player_provider import PlayerProvider
 if TYPE_CHECKING:
     from types import TracebackType
 
+    from aiohttp import ClientSession
     from music_assistant_models.config_entries import ProviderConfig
 
     from music_assistant.models.core_controller import CoreController
@@ -77,7 +79,6 @@ EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
 ]
 
-ENABLE_DEBUG = os.environ.get("PYTHONDEVMODE") == "1"
 LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -100,7 +101,6 @@ class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
     loop: asyncio.AbstractEventLoop
-    http_session: ClientSession
     aiozc: AsyncZeroconf
     config: ConfigController
     webserver: WebserverController
@@ -112,10 +112,10 @@ class MusicAssistant:
     streams: StreamsController
     _aiobrowser: AsyncServiceBrowser
 
-    def __init__(self, storage_path: str, safe_mode: bool = False) -> None:
+    def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
         self.storage_path = storage_path
-        self.cache_path = os.path.join(storage_path, ".cache")
+        self.cache_path = cache_path
         self.safe_mode = safe_mode
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
@@ -127,24 +127,22 @@ class MusicAssistant:
         self.closing = False
         self.running_as_hass_addon: bool = False
         self.version: str = "0.0.0"
+        self.dev_mode = (
+            os.environ.get("PYTHONDEVMODE") == "1"
+            or pathlib.Path(__file__).parent.resolve().parent.resolve().joinpath(".venv").exists()
+        )
+        self._http_session: ClientSession | None = None
+        self._http_session_no_ssl: ClientSession | None = None
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
+        self.loop_thread_id = getattr(self.loop, "_thread_id")  # noqa: B009
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
         # create shared zeroconf instance
         # TODO: enumerate interfaces and enable IPv6 support
         self.aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only, interfaces=InterfaceChoice.Default)
-        # create shared aiohttp ClientSession
-        self.http_session = ClientSession(
-            loop=self.loop,
-            connector=TCPConnector(
-                ssl=False,
-                limit=4096,
-                limit_per_host=100,
-            ),
-        )
         # load all available providers from manifest files
         await self.__load_provider_manifests()
         # setup config controller first and fetch important config values
@@ -212,8 +210,14 @@ class MusicAssistant:
         await self.config.close()
         await self.cache.close()
         # close/cleanup shared http session
-        if self.http_session:
-            await self.http_session.close()
+        if self._http_session:
+            self._http_session.detach()
+            if self._http_session.connector:
+                await self._http_session.connector.close()
+        if self._http_session_no_ssl:
+            self._http_session_no_ssl.detach()
+            if self._http_session_no_ssl.connector:
+                await self._http_session_no_ssl.connector.close()
 
     @property
     def server_id(self) -> str:
@@ -221,6 +225,28 @@ class MusicAssistant:
         if not self.config.initialized:
             return ""
         return self.config.get(CONF_SERVER_ID)  # type: ignore[no-any-return]
+
+    @property
+    def http_session(self) -> ClientSession:
+        """
+        Return the shared HTTP Client session (with SSL).
+
+        NOTE: May only be called from the event loop.
+        """
+        if self._http_session is None:
+            self._http_session = create_clientsession(self, verify_ssl=True)
+        return self._http_session
+
+    @property
+    def http_session_no_ssl(self) -> ClientSession:
+        """
+        Return the shared HTTP Client session (without SSL).
+
+        NOTE: May only be called from the event loop thread.
+        """
+        if self._http_session_no_ssl is None:
+            self._http_session_no_ssl = create_clientsession(self, verify_ssl=False)
+        return self._http_session_no_ssl
 
     @api_command("info")
     def get_server_info(self) -> ServerInfoMessage:
@@ -296,10 +322,7 @@ class MusicAssistant:
         if self.closing:
             return
 
-        if ENABLE_DEBUG and not isinstance(threading.current_thread(), threading._MainThread):  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "Non-Async operation detected: This method may only be called from the eventloop."
-            )
+        self.verify_event_loop_thread("signal_event")
 
         if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
             # do not log queue time updated events because that is too chatty
@@ -347,7 +370,7 @@ class MusicAssistant:
 
     def create_task(
         self,
-        target: Callable[[MassEvent], Coroutine[Any, Any, None]] | Awaitable[_R],
+        target: Callable[..., Coroutine[Any, Any, _R]] | Awaitable[_R],
         *args: Any,
         task_id: str | None = None,
         abort_existing: bool = False,
@@ -363,10 +386,7 @@ class MusicAssistant:
                 existing.cancel()
             else:
                 return existing
-        if ENABLE_DEBUG and not isinstance(threading.current_thread(), threading._MainThread):  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "Non-Async operation detected: This method may only be called from the eventloop."
-            )
+        self.verify_event_loop_thread("create_task")
 
         if asyncio.iscoroutinefunction(target):
             # coroutine function
@@ -416,16 +436,13 @@ class MusicAssistant:
 
         Use task_id for debouncing.
         """
+        self.verify_event_loop_thread("call_later")
+
         if not task_id:
             task_id = uuid4().hex
 
         if existing := self._tracked_timers.get(task_id):
             existing.cancel()
-
-        if ENABLE_DEBUG and not isinstance(threading.current_thread(), threading._MainThread):  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "Non-Async operation detected: This method may only be called from the eventloop."
-            )
 
         def _create_task(_target: Coroutine[Any, Any, _R]) -> None:
             self._tracked_timers.pop(task_id)
@@ -563,25 +580,24 @@ class MusicAssistant:
 
     async def unload_provider(self, instance_id: str, is_removed: bool = False) -> None:
         """Unload a provider."""
+        self.music.unschedule_provider_sync(instance_id)
         if provider := self._providers.get(instance_id):
             # remove mdns discovery if needed
             if provider.manifest.mdns_discovery:
                 for mdns_type in provider.manifest.mdns_discovery:
                     self._aiobrowser.types.discard(mdns_type)
-            # make sure to stop any running sync tasks first
-            for sync_task in self.music.in_progress_syncs:
-                if sync_task.provider_instance == instance_id:
-                    if sync_task.task:
-                        sync_task.task.cancel()
+            if isinstance(provider, PlayerProvider):
+                await self.players.on_provider_unload(provider)
+            if isinstance(provider, MusicProvider):
+                await self.music.on_provider_unload(provider)
             # check if there are no other providers dependent of this provider
             for dep_prov in self.providers:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
             if is_player_provider(provider):
-                # mark all players of this provider as unavailable
+                # unregister all players of this provider
                 for player in provider.players:
-                    player.available = False
-                    self.players.update(player.player_id)
+                    await self.players.unregister(player.player_id, permanent=is_removed)
             try:
                 await provider.unload(is_removed)
             except Exception as err:
@@ -597,6 +613,13 @@ class MusicAssistant:
         """Unload a provider when it got into trouble which needs user interaction."""
         self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", error)
         await self.unload_provider(instance_id)
+
+    def verify_event_loop_thread(self, what: str) -> None:
+        """Report and raise if we are not running in the event loop thread."""
+        if self.loop_thread_id != threading.get_ident():
+            raise RuntimeError(
+                f"Non-Async operation detected: {what} may only be called from the eventloop."
+            )
 
     def _register_api_commands(self) -> None:
         """Register all methods decorated as api_command within a class(instance)."""
@@ -620,6 +643,9 @@ class MusicAssistant:
         """Load providers from config."""
         # create default config for any 'builtin' providers (e.g. URL provider)
         for prov_manifest in self._provider_manifests.values():
+            if prov_manifest.type == ProviderType.CORE:
+                # core controllers are not real providers
+                continue
             if not prov_manifest.builtin:
                 continue
             await self.config.create_builtin_provider_config(prov_manifest.domain)
@@ -692,6 +718,10 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         await self._update_available_providers_cache()
+        if isinstance(provider, MusicProvider):
+            await self.music.on_provider_loaded(provider)
+        if isinstance(provider, PlayerProvider):
+            await self.players.on_provider_loaded(provider)
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""
@@ -699,7 +729,7 @@ class MusicAssistant:
         async def load_provider_manifest(provider_domain: str, provider_path: str) -> None:
             """Preload all available provider manifest files."""
             # get files in subdirectory
-            for file_str in os.listdir(provider_path):  # noqa: PTH208, RUF100
+            for file_str in await asyncio.to_thread(os.listdir, provider_path):  # noqa: PTH208, RUF100
                 file_path = os.path.join(provider_path, file_str)
                 if not await isfile(file_path):
                     continue
@@ -732,11 +762,13 @@ class MusicAssistant:
                     )
 
         async with TaskManager(self) as tg:
-            for dir_str in os.listdir(PROVIDERS_PATH):  # noqa: PTH208, RUF100
-                if dir_str.startswith(("_", ".")):
+            for dir_str in await asyncio.to_thread(os.listdir, PROVIDERS_PATH):  # noqa: PTH208, RUF100
+                if dir_str.startswith("."):
+                    # skip hidden directories
                     continue
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)
-                if dir_str == "test" and not ENABLE_DEBUG:
+                if dir_str.startswith("_") and not self.dev_mode:
+                    # only load demo/test providers if debug mode is enabled (e.g. for development)
                     continue
                 if not await isdir(dir_path):
                     continue
@@ -855,16 +887,3 @@ class MusicAssistant:
             await mkdirs(self.storage_path)
         if not await isdir(self.cache_path):
             await mkdirs(self.cache_path)
-        # cleanup old cache files from their old locations
-        # TODO: Remove this code after MA version 2.5+
-        old_cache_db = os.path.join(self.storage_path, "cache.db")
-        if await isfile(old_cache_db):
-            await rmfile(old_cache_db)
-        for filename in await listdir(self.storage_path):
-            if filename.startswith(("spotify", "collage")):
-                old_loc = os.path.join(self.storage_path, filename)
-                new_loc = os.path.join(self.cache_path, filename)
-                if await isfile(new_loc):
-                    await rmfile(old_loc)
-                else:
-                    await rename(old_loc, new_loc)

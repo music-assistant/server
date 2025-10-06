@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "ard_audiothek",
+  "name": "ARD Audiothek",
+  "description": "Stream radio shows, news, and podcasts from ARD’s Audiothek (Germany’s public broadcaster).",
+  "codeowners": ["@jfeil"],
+  "requirements": ["gql[all]==4.0.0"],
+  "documentation": "https://music-assistant.io/music-providers/ard-audiothek/",
+  "multi_instance": true,
+  "stage": "beta"
+}

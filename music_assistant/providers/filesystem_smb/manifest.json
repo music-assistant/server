@@ -3,7 +3,7 @@
   "domain": "filesystem_smb",
   "stage": "stable",
   "name": "Filesystem (remote share)",
-  "description": "Support for music files that are present on remote SMB/CIFS.",
+  "description": "Play music and audiobooks stored on SMB connected network drives.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/filesystem/",

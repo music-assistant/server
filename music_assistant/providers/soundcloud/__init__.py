@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -21,6 +21,7 @@ from music_assistant_models.media_items import (
     MediaItemImage,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
     UniqueList,
@@ -28,6 +29,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from soundcloudpy import SoundcloudAsyncAPI
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
@@ -42,6 +44,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 
@@ -62,7 +65,7 @@ async def setup(
     if not config.get_value(CONF_CLIENT_ID) or not config.get_value(CONF_AUTHORIZATION):
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
-    return SoundcloudMusicProvider(mass, manifest, config)
+    return SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -111,11 +114,7 @@ class SoundcloudMusicProvider(MusicProvider):
         self._me = await self._soundcloud.get_account_details()
         self._user_id = self._me["id"]
 
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
-
+    @use_cache(3600 * 48)  # Cache for 48 hours
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
@@ -185,8 +184,8 @@ class SoundcloudMusicProvider(MusicProvider):
                 continue
 
             try:
-                playlist = await self._soundcloud.get_playlist_details(
-                    playlist_id=raw_playlist["id"],
+                playlist = await self._get_playlist_object(
+                    prov_playlist_id=raw_playlist["id"],
                 )
 
                 yield await self._parse_playlist(playlist)
@@ -224,6 +223,50 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get available recommendations."""
+        # Part 1, the mixed selections
+        recommendations = await self._soundcloud.get_mixed_selection(20)
+        folders = []
+        for collection in recommendations.get("collection", []):
+            folder = RecommendationFolder(
+                name=collection["title"],
+                item_id=f"{self.instance_id}_{collection['id']}",
+                provider=self.lookup_key,
+                icon="mdi-playlist-music",
+            )
+            for playlist in collection.get("items").get("collection", []):
+                # Each items can be a track, playlist, album or artist but seems playlists only
+                if playlist.get("kind") == "system-playlist":
+                    folder.items.append(await self._parse_playlist(playlist))
+                else:
+                    self.logger.debug(
+                        "Unknown item type in collection for SoundCloud: %s", playlist.get("kind")
+                    )
+                    continue
+            folders.append(folder)
+        # Part 2, the subscribed feed
+        feed = await self._soundcloud.get_subscribe_feed(20)
+        if feed and "collection" in feed:
+            folder = RecommendationFolder(
+                name="SoundCloud Feed",
+                item_id=f"{self.instance_id}_sc_subscribed_feed",
+                provider=self.lookup_key,
+                icon="mdi-rss",
+            )
+            for item in feed["collection"]:
+                if item.get("type") == "track" or item.get("type") == "track-repost":
+                    folder.items.append(await self._parse_track(item.get("track")))
+                else:
+                    self.logger.debug(
+                        "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
+                    )
+                    continue
+            folders.append(folder)
+        return folders
+
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._soundcloud.get_user_details(prov_artist_id)
@@ -234,6 +277,7 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse artist failed: %s", artist_obj, exc_info=error)
         return artist
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         track_obj = await self._soundcloud.get_track_details(prov_track_id)
@@ -243,22 +287,35 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse track failed: %s", track_obj, exc_info=error)
         return track
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        playlist_obj = await self._soundcloud.get_playlist_details(prov_playlist_id)
+        playlist_obj = await self._get_playlist_object(prov_playlist_id)
         try:
             playlist = await self._parse_playlist(playlist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
+    async def _get_playlist_object(self, prov_playlist_id: str) -> dict[str, Any]:
+        """Get playlist object from Soundcloud API based on playlist ID type."""
+        if prov_playlist_id.startswith("soundcloud:system-playlists"):
+            # Handle system playlists
+            result = await self._soundcloud.get_system_playlist_details(prov_playlist_id)
+            return cast("dict[str, Any]", result)
+        else:
+            # Handle regular playlists
+            result = await self._soundcloud.get_playlist_details(prov_playlist_id)
+            return cast("dict[str, Any]", result)
+
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
         if page > 0:
             # TODO: soundcloud doesn't seem to support paging for playlist tracks ?!
             return result
-        playlist_obj = await self._soundcloud.get_playlist_details(prov_playlist_id)
+        playlist_obj = await self._get_playlist_object(prov_playlist_id)
         if "tracks" not in playlist_obj:
             return result
         for index, item in enumerate(playlist_obj["tracks"], 1):
@@ -278,6 +335,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 continue
         return result
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of (max 500) tracks for the given artist."""
         tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 500)
@@ -293,6 +351,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 continue
         return tracks
 
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         tracks_obj = await self._soundcloud.get_recommended(prov_track_id, limit)
@@ -308,6 +367,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return tracks
 
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         url: str = await self._soundcloud.get_stream_url(track_id=item_id, presets=["mp3"])
@@ -369,6 +429,9 @@ class SoundcloudMusicProvider(MusicProvider):
     async def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         """Parse a Soundcloud Playlist response to a Playlist object."""
         playlist_id = str(playlist_obj["id"])
+        # Remove the "Related tracks" prefix from the playlist name
+        playlist_obj["title"] = playlist_obj["title"].removeprefix("Related tracks: ")
+
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.domain,

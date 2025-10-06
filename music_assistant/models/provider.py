@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, final
 
+from music_assistant_models.errors import UnsupportedFeaturedException
+
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
@@ -21,12 +23,17 @@ class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
 
     def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
     ) -> None:
         """Initialize MusicProvider."""
         self.mass = mass
         self.manifest = manifest
         self.config = config
+        self._supported_features = supported_features or set()
         mass_logger = logging.getLogger(MASS_LOGGER_NAME)
         self.logger = mass_logger.getChild(self.domain)
         log_level = str(config.get_value(CONF_LOG_LEVEL))
@@ -44,7 +51,8 @@ class Provider:
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
-        return set()
+        # should not be overridden in normal circumstances
+        return self._supported_features
 
     @property
     def lookup_key(self) -> str:
@@ -149,3 +157,14 @@ class Provider:
             "available": self.available,
             "is_streaming_provider": getattr(self, "is_streaming_provider", None),
         }
+
+    def supports_feature(self, feature: ProviderFeature) -> bool:
+        """Return True if this provider supports the given feature."""
+        return feature in self.supported_features
+
+    def check_feature(self, feature: ProviderFeature) -> None:
+        """Check if this provider supports the given feature."""
+        if not self.supports_feature(feature):
+            raise UnsupportedFeaturedException(
+                f"Provider {self.name} does not support feature {feature.name}"
+            )

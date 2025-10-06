@@ -3,7 +3,7 @@
   "domain": "airplay",
   "stage": "stable",
   "name": "AirPlay",
-  "description": "Support for players that support the AirPlay protocol.",
+  "description": "Stream to AirPlay-enabled devices on your local network.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://music-assistant.io/player-support/airplay/",

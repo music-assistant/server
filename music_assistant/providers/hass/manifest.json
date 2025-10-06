@@ -3,7 +3,7 @@
   "domain": "hass",
   "stage": "stable",
   "name": "Home Assistant",
-  "description": "Connect Music Assistant to Home Assistant.",
+  "description": "Connects Music Assistant with Home Assistant for automation, integration, and enhanced smart-home control.",
   "codeowners": ["@music-assistant"],
   "documentation": "",
   "multi_instance": false,

@@ -25,7 +25,7 @@ from hass_client.utils import (
     get_websocket_url,
 )
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 from music_assistant_models.player_control import PlayerControl
 
@@ -53,12 +53,16 @@ CONF_POWER_CONTROLS = "power_controls"
 CONF_MUTE_CONTROLS = "mute_controls"
 CONF_VOLUME_CONTROLS = "volume_controls"
 
+SUPPORTED_FEATURES: set[ProviderFeature] = (
+    set()
+)  # we don't have any special supported features (yet)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return HomeAssistantProvider(mass, manifest, config)
+    return HomeAssistantProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -304,9 +308,11 @@ class HomeAssistantProvider(PluginProvider):
         url = get_websocket_url(self.config.get_value(CONF_URL))
         token = self.config.get_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
-        self.hass = HomeAssistantClient(url, token, self.mass.http_session)
+        ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
+        self.hass = HomeAssistantClient(url, token, http_session)
         try:
-            await self.hass.connect(ssl=bool(self.config.get_value(CONF_VERIFY_SSL)))
+            await self.hass.connect()
         except BaseHassClientError as err:
             err_msg = str(err) or err.__class__.__name__
             raise SetupFailedError(err_msg) from err

@@ -35,17 +35,30 @@ def get_arguments() -> argparse.Namespace:
     """Arguments handling."""
     parser = argparse.ArgumentParser(description="MusicAssistant")
 
-    default_data_dir = os.getenv("APPDATA") if os.name == "nt" else os.path.expanduser("~")
-    if not default_data_dir:
-        parser.error("Unable to find default data dir")
-    default_data_dir = os.path.join(default_data_dir, ".musicassistant")
+    # determine default data directory
+    if xdg_data_home := os.getenv("XDG_DATA_HOME"):
+        default_data_dir = os.path.join(xdg_data_home, "music-assistant")
+    else:
+        default_data_dir = os.path.join(os.path.expanduser("~"), ".musicassistant")
+    # determine default cache directory
+    if xdg_cache_home := os.getenv("XDG_CACHE_HOME"):
+        default_cache_dir = os.path.join(xdg_cache_home, "music-assistant")
+    else:
+        default_cache_dir = os.path.join(default_data_dir, ".cache")
 
     parser.add_argument(
+        "--data-dir",
         "-c",
         "--config",
-        metavar="path_to_config_dir",
+        metavar="path_to_data_dir",
         default=default_data_dir,
-        help="Directory that contains the MusicAssistant configuration",
+        help="Directory that contains MusicAssistant persistent data",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        metavar="path_to_cache_dir",
+        default=default_cache_dir,
+        help="Directory that contains MusicAssistant cache data [optional]",
     )
     parser.add_argument(
         "--log-level",
@@ -59,6 +72,7 @@ def get_arguments() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         help="Start in safe mode (core controllers only, no providers)",
     )
+
     return parser.parse_args()
 
 
@@ -117,6 +131,7 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
     logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
+    logging.getLogger("numba").setLevel(logging.WARNING)
 
     sys.excepthook = lambda *args: logging.getLogger(None).exception(
         "Uncaught exception",
@@ -174,13 +189,17 @@ def main() -> None:
     """Start MusicAssistant."""
     # parse arguments
     args = get_arguments()
-    data_dir = args.config
-    if not os.path.isdir(data_dir):
-        os.makedirs(data_dir)
 
-    # TEMP: override options though hass config file
+    data_dir = args.data_dir
+    cache_dir = args.cache_dir
+
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Override options though hass add-on config file
     hass_options_file = os.path.join(data_dir, "options.json")
     if os.path.isfile(hass_options_file):
+        # we are running as a hass add-on
         with open(hass_options_file, "rb") as _file:
             hass_options = json_loads(_file.read())
     else:
@@ -195,7 +214,7 @@ def main() -> None:
 
     # setup logger
     logger = setup_logger(data_dir, log_level)
-    mass = MusicAssistant(data_dir, safe_mode)
+    mass = MusicAssistant(data_dir, cache_dir, safe_mode)
 
     # enable alpine subprocess workaround
     _enable_posix_spawn()

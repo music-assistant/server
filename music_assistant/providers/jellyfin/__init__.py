@@ -25,6 +25,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import UNKNOWN_ARTIST_ID_MBID
+from music_assistant.controllers.cache import use_cache
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
@@ -59,12 +60,23 @@ CONF_PASSWORD = "password"
 CONF_VERIFY_SSL = "verify_ssl"
 FAKE_ARTIST_PREFIX = "_fake://"
 
+SUPPORTED_FEATURES = {
+    ProviderFeature.LIBRARY_ARTISTS,
+    ProviderFeature.LIBRARY_ALBUMS,
+    ProviderFeature.LIBRARY_TRACKS,
+    ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.SIMILAR_TRACKS,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return JellyfinProvider(mass, manifest, config)
+    return JellyfinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(
@@ -139,9 +151,11 @@ class JellyfinProvider(MusicProvider):
         # to be an opaque identifier
 
         device_id = hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
+        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        http_session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
 
         session_config = SessionConfiguration(
-            session=self.mass.http_session,
+            session=http_session,
             url=str(self.config.get_value(CONF_URL)),
             verify_ssl=bool(self.config.get_value(CONF_VERIFY_SSL)),
             app_name=USER_APP_NAME,
@@ -158,20 +172,6 @@ class JellyfinProvider(MusicProvider):
             )
         except Exception as err:
             raise LoginFailed(f"Authentication failed: {err}") from err
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return a list of supported features."""
-        return {
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.SIMILAR_TRACKS,
-        }
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -234,13 +234,14 @@ class JellyfinProvider(MusicProvider):
             playlists.append(parse_playlist(self.instance_id, self._client, item))
         return playlists
 
+    @use_cache(60 * 15)  # Cache for 15 minutes
     async def search(
         self,
         search_query: str,
         media_types: list[MediaType],
         limit: int = 20,
     ) -> SearchResults:
-        """Perform search on the plex library.
+        """Perform search on the Jellyfin library.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
@@ -342,6 +343,7 @@ class JellyfinProvider(MusicProvider):
             raise MediaNotFoundError(f"Item {prov_album_id} not found")
         return parse_album(self.logger, self.instance_id, self._client, album)
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         jellyfin_album_tracks = (
@@ -355,6 +357,7 @@ class JellyfinProvider(MusicProvider):
             for jellyfin_album_track in jellyfin_album_tracks["Items"]
         ]
 
+    @use_cache(60 * 15)  # Cache for 15 minutes
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         if prov_artist_id == UNKNOWN_ARTIST_MAPPING.item_id:
@@ -379,6 +382,7 @@ class JellyfinProvider(MusicProvider):
             raise MediaNotFoundError(f"Item {prov_artist_id} not found")
         return parse_artist(self.logger, self.instance_id, self._client, jellyfin_artist)
 
+    @use_cache(60 * 15)  # Cache for 15 minutes
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         try:
@@ -387,6 +391,7 @@ class JellyfinProvider(MusicProvider):
             raise MediaNotFoundError(f"Item {prov_track_id} not found")
         return parse_track(self.logger, self.instance_id, self._client, track)
 
+    @use_cache(60 * 15)  # Cache for 15 minutes
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         try:
@@ -395,6 +400,7 @@ class JellyfinProvider(MusicProvider):
             raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
         return parse_playlist(self.instance_id, self._client, playlist)
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -420,6 +426,7 @@ class JellyfinProvider(MusicProvider):
                 )
         return result
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         if not prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
@@ -454,6 +461,7 @@ class JellyfinProvider(MusicProvider):
             allow_seek=True,
         )
 
+    @use_cache(3600)  # Cache for 1 hour
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         resp = await self._client.get_similar_tracks(

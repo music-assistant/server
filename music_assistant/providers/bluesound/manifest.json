@@ -1,11 +1,11 @@
 {
   "type": "player",
   "domain": "bluesound",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Bluesound",
-  "description": "BluOS Player provider for Music Assistant.",
+  "description": "Send high-resolution audio to Bluesound speakers and multiroom systems.",
   "codeowners": ["@cyanogenbot"],
-  "requirements": ["pyblu==2.0.1"],
+  "requirements": ["pyblu==2.0.5"],
   "documentation": "https://music-assistant.io/player-support/bluesound/",
-  "mdns_discovery": ["_musc._tcp.local."]
+  "mdns_discovery": ["_musc._tcp.local.","_musp._tcp.local."]
 }

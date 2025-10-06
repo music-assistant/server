@@ -66,7 +66,7 @@ def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[s
             params_str = ",".join(f":{x}" for x in subparams)
             result_query = result_query.replace(f" :{key}", f" ({params_str})")
         else:
-            result_params[key] = params[key]
+            result_params[key] = value
     return (result_query, result_params)
 
 
@@ -204,6 +204,16 @@ class DatabaseConnection:
         """Insert or replace data in given table."""
         return await self.insert(table=table, values=values, allow_replace=True)
 
+    async def upsert(self, table: str, values: dict[str, Any]) -> None:
+        """Upsert data in given table."""
+        keys = tuple(values.keys())
+        sql_query = (
+            f"INSERT INTO {table}({','.join(keys)}) VALUES ({','.join(f':{x}' for x in keys)})"
+        )
+        sql_query += f" ON CONFLICT DO UPDATE SET {','.join(f'{x}=:{x}' for x in keys)}"
+        await self._db.execute(sql_query, values)
+        await self._db.commit()
+
     async def update(
         self,
         table: str,
@@ -225,7 +235,7 @@ class DatabaseConnection:
         self, table: str, match: dict[str, Any] | None = None, query: str | None = None
     ) -> None:
         """Delete data in given table."""
-        assert not (query and "where" in query.lower())
+        assert not (match and query), "Cannot use both match and query"
         sql_query = f"DELETE FROM {table} "
         if match:
             sql_query += " WHERE " + " AND ".join(f"{x} = :{x}" for x in match)

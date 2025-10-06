@@ -16,6 +16,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -47,6 +48,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': 'fake_artist_unknown',
             'provider_domain': 'opensubsonic',
             'provider_instance': 'xx-instance-id-xx',
@@ -78,6 +80,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -116,6 +119,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'ad0f112b6dcf83de5e9cae85d07f0d35',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -146,6 +150,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -177,6 +182,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': 'fake_artist_unknown',
             'provider_domain': 'opensubsonic',
             'provider_instance': 'xx-instance-id-xx',
@@ -208,6 +214,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -252,6 +259,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'ad0f112b6dcf83de5e9cae85d07f0d35',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -334,6 +342,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -372,6 +381,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'ad0f112b6dcf83de5e9cae85d07f0d35',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -454,6 +464,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
@@ -498,6 +509,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'ad0f112b6dcf83de5e9cae85d07f0d35',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -529,6 +541,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://demo.org/image.jpg',
@@ -573,6 +586,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '37ec820ca7193e17040c98f7da7c4b51',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -603,6 +617,7 @@
       'description': 'Empty biography',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://demo.org/image.jpg',
@@ -653,6 +668,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '37ec820ca7193e17040c98f7da7c4b51',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -683,6 +699,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://demo.org/image.jpg',
@@ -727,6 +744,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '37ec820ca7193e17040c98f7da7c4b51',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -757,6 +775,7 @@
       'description': 'Empty biography',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'https://demo.org/image.jpg',
@@ -807,6 +826,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '37ec820ca7193e17040c98f7da7c4b51',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -833,6 +853,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'ar-100000002',
@@ -871,6 +892,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '100000002',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -897,6 +919,7 @@
       'description': 'Empty biography',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'ar-100000002',
@@ -941,6 +964,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '100000002',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -969,6 +993,7 @@
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1005,6 +1030,7 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'explicit': None,
         'genres': None,
+        'grouping': None,
         'images': list([
           dict({
             'path': 'pd-5',
@@ -1043,6 +1069,7 @@
           }),
           'available': True,
           'details': None,
+          'in_library': None,
           'item_id': 'pd-5',
           'provider_domain': 'opensubsonic',
           'provider_instance': 'xx-instance-id-xx',
@@ -1071,6 +1098,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'pd-5$!$pe-1860',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -1100,6 +1128,7 @@
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1136,6 +1165,7 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'explicit': None,
         'genres': None,
+        'grouping': None,
         'images': list([
           dict({
             'path': 'pd-5',
@@ -1174,6 +1204,7 @@
           }),
           'available': True,
           'details': None,
+          'in_library': None,
           'item_id': 'pd-5',
           'provider_domain': 'opensubsonic',
           'provider_instance': 'xx-instance-id-xx',
@@ -1202,6 +1233,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'pd-5$!$pe-1860',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -1231,6 +1263,7 @@
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1267,6 +1300,7 @@
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'explicit': None,
         'genres': None,
+        'grouping': None,
         'images': list([
           dict({
             'path': 'pd-5',
@@ -1305,6 +1339,7 @@
           }),
           'available': True,
           'details': None,
+          'in_library': None,
           'item_id': 'pd-5',
           'provider_domain': 'opensubsonic',
           'provider_instance': 'xx-instance-id-xx',
@@ -1333,6 +1368,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'pd-5$!$pe-1860',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -1348,7 +1384,6 @@
 # ---
 # name: test_parse_playlist[gonic-sample.playlist]
   dict({
-    'cache_checksum': None,
     'external_ids': list([
     ]),
     'favorite': False,
@@ -1362,6 +1397,7 @@
       'description': None,
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'al-2250',
@@ -1401,6 +1437,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'Mi8xNzQzNzg5NTk5MzM1LTE3NDM3ODk1OTkzMzUubTN1',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -1427,6 +1464,7 @@
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1465,6 +1503,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'pd-5',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -1493,6 +1532,7 @@
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'explicit': None,
       'genres': None,
+      'grouping': None,
       'images': list([
         dict({
           'path': 'pd-5',
@@ -1531,6 +1571,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': 'pd-5',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -1576,6 +1617,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -1607,6 +1649,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': 'fake_artist_unknown',
             'provider_domain': 'opensubsonic',
             'provider_instance': 'xx-instance-id-xx',
@@ -1630,6 +1673,7 @@
     'favorite': True,
     'is_playable': True,
     'item_id': '082f435a363c32c57d5edb6a678a28d4',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
@@ -1640,6 +1684,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -1675,6 +1720,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '082f435a363c32c57d5edb6a678a28d4',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -1772,6 +1818,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -1803,6 +1850,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': 'fake_artist_unknown',
             'provider_domain': 'opensubsonic',
             'provider_instance': 'xx-instance-id-xx',
@@ -1826,6 +1874,7 @@
     'favorite': True,
     'is_playable': True,
     'item_id': '082f435a363c32c57d5edb6a678a28d4',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
@@ -1836,6 +1885,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -1871,6 +1921,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '082f435a363c32c57d5edb6a678a28d4',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -1915,6 +1966,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -1946,6 +1998,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': 'MA-NAVIDROME-The New Deal',
             'provider_domain': 'opensubsonic',
             'provider_instance': 'xx-instance-id-xx',
@@ -1969,6 +2022,7 @@
     'favorite': True,
     'is_playable': True,
     'item_id': '082f435a363c32c57d5edb6a678a28d4',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
@@ -1979,6 +2033,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -2014,6 +2069,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '082f435a363c32c57d5edb6a678a28d4',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -2111,6 +2167,7 @@
           'description': None,
           'explicit': None,
           'genres': None,
+          'grouping': None,
           'images': None,
           'label': None,
           'languages': None,
@@ -2142,6 +2199,7 @@
             }),
             'available': True,
             'details': None,
+            'in_library': None,
             'item_id': 'MA-NAVIDROME-The New Deal',
             'provider_domain': 'opensubsonic',
             'provider_instance': 'xx-instance-id-xx',
@@ -2165,6 +2223,7 @@
     'favorite': True,
     'is_playable': True,
     'item_id': '082f435a363c32c57d5edb6a678a28d4',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
@@ -2175,6 +2234,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -2210,6 +2270,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '082f435a363c32c57d5edb6a678a28d4',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -2298,6 +2359,7 @@
     'favorite': True,
     'is_playable': True,
     'item_id': '082f435a363c32c57d5edb6a678a28d4',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
@@ -2308,6 +2370,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -2343,6 +2406,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '082f435a363c32c57d5edb6a678a28d4',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',
@@ -2484,6 +2548,7 @@
     'favorite': True,
     'is_playable': True,
     'item_id': '082f435a363c32c57d5edb6a678a28d4',
+    'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
@@ -2494,6 +2559,7 @@
         'East coast',
         'Hip-Hop',
       ]),
+      'grouping': None,
       'images': None,
       'label': None,
       'languages': None,
@@ -2529,6 +2595,7 @@
         }),
         'available': True,
         'details': None,
+        'in_library': None,
         'item_id': '082f435a363c32c57d5edb6a678a28d4',
         'provider_domain': 'opensubsonic',
         'provider_instance': 'xx-instance-id-xx',

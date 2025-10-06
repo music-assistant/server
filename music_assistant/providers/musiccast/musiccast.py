@@ -134,11 +134,10 @@ class MusicCastZoneDevice:
         return None
 
     @property
-    def media_position_updated_at(self) -> float | None:
+    def media_position_updated_at(self) -> datetime | None:
         """When was the position of the current playing media valid."""
         if self.is_netusb:
-            stamp: datetime = cast("datetime", self.device.data.netusb_play_time_updated)
-            return stamp.timestamp()
+            return cast("datetime", self.device.data.netusb_play_time_updated)
 
         return None
 
