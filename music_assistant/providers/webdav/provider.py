@@ -179,13 +179,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items."""
-        if self.media_content_type == "podcasts":
-            return await self.mass.music.podcasts.library_items(provider=self.instance_id)
-        if self.media_content_type == "audiobooks":
-            return await self.mass.music.audiobooks.library_items(provider=self.instance_id)
-
-        items: list[MediaItemType | ItemMapping | BrowseFolder] = []
         item_path = path.split("://", 1)[1] if "://" in path else ""
+
+        # For all paths (including subpaths for audiobooks/podcasts), browse actual folders
+        items: list[MediaItemType | ItemMapping | BrowseFolder] = []
 
         try:
             filesystem_items = await self._scandir(item_path)
@@ -226,36 +223,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             self.logger.error(f"Failed to browse WebDAV path {item_path}: {err}")
 
         return items
-
-    async def get_item_by_uri(self, uri: str) -> MediaItemType:
-        """Get a single media item by URI."""
-        item_path = uri.split("://", 1)[1] if "://" in uri else uri
-        file_item = await self.resolve(item_path)
-
-        # Folders aren't returned by get_item_by_uri - MA handles them differently
-        if file_item.is_dir:
-            raise MediaNotFoundError(f"Cannot get media item for directory: {item_path}")
-
-        # Determine type from extension and return appropriate item
-        ext = (
-            PurePosixPath(file_item.filename).suffix.lstrip(".").lower()
-            if "." in file_item.filename
-            else None
-        )
-
-        if ext in TRACK_EXTENSIONS:
-            return await self.get_track(item_path)
-
-        if ext in PLAYLIST_EXTENSIONS:
-            raise NotImplementedError("Playlist retrieval not yet implemented")
-
-        if ext in AUDIOBOOK_EXTENSIONS and self.media_content_type == "audiobooks":
-            raise NotImplementedError("Audiobook retrieval not yet implemented")
-
-        if ext in PODCAST_EPISODE_EXTENSIONS and self.media_content_type == "podcasts":
-            raise NotImplementedError("Podcast episode retrieval not yet implemented")
-
-        raise MediaNotFoundError(f"Unsupported file type: {file_item.filename}")
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
@@ -303,13 +270,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             audiobook.item_id = prov_audiobook_id
 
         return audiobook
-
-    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
-        """Get full podcast details by id."""
-        async for episode in self.get_podcast_episodes(prov_podcast_id):
-            assert isinstance(episode.podcast, Podcast)
-            return episode.podcast
-        raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
 
     async def get_podcast_episodes(
         self,
@@ -1131,10 +1091,15 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         chapters_data = streamdetails.data.get("chapters_data", [])
         start_chapter = self._calculate_start_chapter(chapters_data, seek_position)
 
+        # Use session with appropriate SSL setting and longer timeout for streaming
+        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+        # Set a longer timeout for reading large audiobook files
+        timeout = aiohttp.ClientTimeout(total=0, sock_read=5 * 60)  # 5 minute read timeout
+
         chapters_yielded = False
         for i in range(start_chapter, len(chapter_urls)):
             try:
-                async with self.mass.http_session.get(chapter_urls[i]) as response:
+                async with session.get(chapter_urls[i], timeout=timeout) as response:
                     response.raise_for_status()
                     async for chunk in response.content.iter_chunked(8192):
                         chapters_yielded = True
