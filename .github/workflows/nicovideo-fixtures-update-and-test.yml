@@ -47,53 +47,31 @@ jobs:
         with:
           path: |
             ~/.cache/pip
-            ~/.cache/uv
           key: ${{ runner.os }}-python-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml', '**/requirements*.txt') }}
           restore-keys: |
             ${{ runner.os }}-python-${{ env.PYTHON_VERSION }}-
             ${{ runner.os }}-python-
-
-      - name: Cache virtual environment
-        id: cache-venv
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: ${{ runner.os }}-venv-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml', '**/requirements*.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-venv-${{ env.PYTHON_VERSION }}-
 
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Set up development environment
+      - name: Install Python dependencies
         run: |
-          if [ ! -d ".venv" ] || [ "${{ steps.cache-venv.outputs.cache-hit }}" != "true" ]; then
-            ./scripts/setup.sh
-          else
-            echo "Using cached virtual environment"
-          fi
+          python -m pip install --upgrade pip build setuptools
+          pip install .[server] .[test] -r requirements_all.txt
 
       - name: Verify environment setup
         run: |
-          source .venv/bin/activate
           python --version
           pip --version
           echo "Environment setup completed successfully"
-
-      - name: Save virtual environment cache
-        if: steps.cache-venv.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .venv
-          key: ${{ runner.os }}-venv-${{ env.PYTHON_VERSION }}-${{ hashFiles('**/pyproject.toml', '**/requirements*.txt') }}
 
       - name: Update NicoVideo fixtures
         env:
           NICONICO_SESSION: ${{ secrets.NICONICO_SESSION }}
         run: |
-          source .venv/bin/activate
           cd tests/providers/nicovideo/fixtures/scripts
           set -o pipefail
           python main.py 2>&1 | tee fixture-update.log
@@ -113,7 +91,6 @@ jobs:
       - name: Run NicoVideo Tests
         if: steps.check_changes.outputs.changes == 'true' && (github.event.inputs.run_tests == 'true' || github.event_name == 'schedule' || github.event_name == 'push')
         run: |
-          source .venv/bin/activate
           pytest --durations 10 \
                  --cov-report term-missing \
                  --cov=music_assistant.providers.nicovideo \
