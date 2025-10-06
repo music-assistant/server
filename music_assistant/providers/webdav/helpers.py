@@ -42,6 +42,7 @@ async def webdav_propfind(
     url: str,
     depth: int = 1,
     timeout: int = 30,
+    auth: aiohttp.BasicAuth | None = None,
 ) -> list[WebDAVItem]:
     """
     Execute a PROPFIND request on a WebDAV resource.
@@ -80,6 +81,7 @@ async def webdav_propfind(
             url,
             headers=headers,
             data=body,
+            auth=auth,
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as resp:
             if resp.status == 401:
@@ -173,43 +175,13 @@ def _parse_propfind_response(response_text: str, base_url: str) -> list[WebDAVIt
 
 
 async def webdav_test_connection(
+    session: aiohttp.ClientSession,  # Pass session in instead of creating
     url: str,
-    username: str | None = None,
-    password: str | None = None,
-    verify_ssl: bool = True,
+    auth: aiohttp.BasicAuth | None = None,
     timeout: int = 10,
 ) -> None:
-    """
-    Test WebDAV connection and authentication.
-
-    Args:
-        url: WebDAV server URL
-        username: Optional username
-        password: Optional password
-        verify_ssl: Whether to verify SSL certificates
-        timeout: Connection timeout
-
-    Raises:
-        LoginFailed: Authentication or connection failed
-        SetupFailedError: Server configuration issues
-    """
-    auth = None
-    if username:
-        auth = aiohttp.BasicAuth(username, password or "")
-
-    connector = aiohttp.TCPConnector(ssl=verify_ssl)
-
-    try:
-        async with aiohttp.ClientSession(
-            auth=auth,
-            connector=connector,
-            timeout=aiohttp.ClientTimeout(total=timeout),
-        ) as session:
-            # Try a simple PROPFIND to test connectivity
-            await webdav_propfind(session, url, depth=0, timeout=timeout)
-    finally:
-        if connector:
-            await connector.close()
+    """Test WebDAV connection and authentication."""
+    await webdav_propfind(session, url, depth=0, timeout=timeout, auth=auth)
 
 
 def normalize_webdav_url(url: str) -> str:

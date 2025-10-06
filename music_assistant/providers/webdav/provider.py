@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import aiohttp
-from music_assistant_models.enums import ImageType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
@@ -40,7 +40,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.tags import AudioTags, async_parse_tags
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import CACHE_CATEGORY_AUDIOBOOK_CHAPTERS
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
@@ -56,14 +56,8 @@ from .constants import (
     PODCAST_EPISODE_EXTENSIONS,
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
-    WEBDAV_TIMEOUT,
 )
 from .helpers import build_webdav_url, webdav_propfind, webdav_test_connection
-from .parsers import (
-    parse_audiobook_from_tags,
-    parse_podcast_episode_from_tags,
-    parse_track_from_tags,
-)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -88,7 +82,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         self.username = cast("str | None", config.get_value(CONF_USERNAME))
         self.password = cast("str | None", config.get_value(CONF_PASSWORD))
         self.verify_ssl = cast("bool", config.get_value(CONF_VERIFY_SSL))
-        self._session: aiohttp.ClientSession | None = None
         self.media_content_type = cast("str", config.get_value(CONF_CONTENT_TYPE))
         self.sync_running: bool = False
         self.processed_audiobook_folders: set[str] = set()
@@ -104,33 +97,21 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         except Exception:
             return "WebDAV"
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        """Get or create HTTP session with proper authentication."""
-        if self._session and not self._session.closed:
-            return self._session
-
-        auth = None
+    @property
+    def _auth(self) -> aiohttp.BasicAuth | None:
+        """Get BasicAuth for WebDAV requests."""
         if self.username:
-            auth = aiohttp.BasicAuth(self.username, self.password or "")
-
-        connector = aiohttp.TCPConnector(ssl=self.verify_ssl)
-
-        self._session = aiohttp.ClientSession(
-            auth=auth,
-            connector=connector,
-            timeout=aiohttp.ClientTimeout(total=WEBDAV_TIMEOUT),
-        )
-
-        return self._session
+            return aiohttp.BasicAuth(self.username, self.password or "")
+        return None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         try:
+            session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
             await webdav_test_connection(
+                session,
                 self.base_url,
-                self.username,
-                self.password,
-                self.verify_ssl,
+                auth=self._auth,
                 timeout=10,
             )
         except (LoginFailed, SetupFailedError):
@@ -140,12 +121,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
         self.write_access = False
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
-        if self._session and not self._session.closed:
-            await self._session.close()
-        await super().unload(is_removed)
-
     async def exists(self, file_path: str) -> bool:
         """Return bool if this WebDAV resource exists."""
         if not file_path:
@@ -153,8 +128,8 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
         try:
             webdav_url = build_webdav_url(self.base_url, file_path)
-            session = await self._get_session()
-            items = await webdav_propfind(session, webdav_url, depth=0)
+            session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
+            items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
             return len(items) > 0 or webdav_url.rstrip("/") == self.base_url.rstrip("/")
         except (LoginFailed, SetupFailedError):
             raise
@@ -168,10 +143,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve WebDAV path to FileSystemItem."""
         webdav_url = build_webdav_url(self.base_url, file_path)
-        session = await self._get_session()
+        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
 
         try:
-            items = await webdav_propfind(session, webdav_url, depth=0)
+            items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
             if not items:
                 if webdav_url.rstrip("/") == self.base_url.rstrip("/"):
                     return FileSystemItem(
@@ -285,19 +260,9 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         file_item = await self.resolve(prov_track_id)
-
-        # Build authenticated URL for ffprobe
-        parsed = urlparse(file_item.absolute_path)
-        if self.username and self.password:
-            netloc = f"{self.username}:{self.password}@{parsed.netloc}"
-            auth_url = urlunparse(
-                (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
-            )
-        else:
-            auth_url = file_item.absolute_path
-
+        auth_url = self._build_authenticated_url(prov_track_id)
         tags = await async_parse_tags(auth_url, file_item.file_size)
-        return parse_track_from_tags(file_item, tags, self.instance_id, self.domain, self.config)
+        return await self._parse_track(file_item, tags, full_album_metadata=True)
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album by id - reconstructed from tracks."""
@@ -318,38 +283,22 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         """Get full audiobook details by id."""
         file_item = await self.resolve(prov_audiobook_id)
 
-        # If it's a folder (multi-file audiobook), get the first file
         if file_item.is_dir:
             items = await self._scandir(prov_audiobook_id)
             audiobook_files = [f for f in items if not f.is_dir and f.ext in AUDIOBOOK_EXTENSIONS]
             if not audiobook_files:
                 raise MediaNotFoundError(f"No audiobook files found in folder: {prov_audiobook_id}")
 
-            # Use first file for metadata
             sorted_files = sorted(audiobook_files, key=lambda x: x.filename)
             file_item = sorted_files[0]
             file_path = file_item.relative_path
         else:
-            # Single file audiobook
             file_path = prov_audiobook_id
 
-        # Build authenticated URL for ffprobe
-        webdav_url = build_webdav_url(self.base_url, file_path)
-        parsed = urlparse(webdav_url)
-        if self.username and self.password:
-            netloc = f"{self.username}:{self.password}@{parsed.netloc}"
-            auth_url = urlunparse(
-                (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
-            )
-        else:
-            auth_url = webdav_url
-
+        auth_url = self._build_authenticated_url(file_path)
         tags = await async_parse_tags(auth_url, file_item.file_size)
-        audiobook = parse_audiobook_from_tags(
-            file_item, tags, self.instance_id, self.domain, self.config
-        )
+        audiobook = self._build_audiobook_from_tags(file_item, tags)  # Use custom builder
 
-        # For multi-file audiobooks, override the item_id to be the folder
         if file_item.relative_path != prov_audiobook_id:
             audiobook.item_id = prov_audiobook_id
 
@@ -357,35 +306,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id."""
-        # For podcasts, the ID is the folder path containing episodes
-        # Scan for any episode file to get podcast metadata
-        items = await self._scandir(prov_podcast_id)
-        episode_files = [f for f in items if not f.is_dir and f.ext in PODCAST_EPISODE_EXTENSIONS]
-
-        if not episode_files:
-            raise MediaNotFoundError(f"No podcast episodes found in: {prov_podcast_id}")
-
-        # Parse first episode to get podcast metadata
-        first_episode_file = sorted(episode_files, key=lambda x: x.filename)[0]
-
-        webdav_url = build_webdav_url(self.base_url, first_episode_file.relative_path)
-        parsed = urlparse(webdav_url)
-        if self.username and self.password:
-            netloc = f"{self.username}:{self.password}@{parsed.netloc}"
-            auth_url = urlunparse(
-                (parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment)
-            )
-        else:
-            auth_url = webdav_url
-
-        tags = await async_parse_tags(auth_url, first_episode_file.file_size)
-        episode = parse_podcast_episode_from_tags(
-            first_episode_file, tags, self.instance_id, self.domain
-        )
-
-        # Return the podcast object from the episode
-        assert isinstance(episode.podcast, Podcast)
-        return episode.podcast
+        async for episode in self.get_podcast_episodes(prov_podcast_id):
+            assert isinstance(episode.podcast, Podcast)
+            return episode.podcast
+        raise MediaNotFoundError(f"Podcast not found: {prov_podcast_id}")
 
     async def get_podcast_episodes(
         self,
@@ -396,28 +320,29 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         episode_files = [f for f in items if not f.is_dir and f.ext in PODCAST_EPISODE_EXTENSIONS]
 
         for episode_file in sorted(episode_files, key=lambda x: x.filename):
-            webdav_url = build_webdav_url(self.base_url, episode_file.relative_path)
-            parsed = urlparse(webdav_url)
-            if self.username and self.password:
-                netloc = f"{self.username}:{self.password}@{parsed.netloc}"
-                auth_url = urlunparse(
-                    (
-                        parsed.scheme,
-                        netloc,
-                        parsed.path,
-                        parsed.params,
-                        parsed.query,
-                        parsed.fragment,
-                    )
-                )
-            else:
-                auth_url = webdav_url
-
+            auth_url = self._build_authenticated_url(episode_file.relative_path)
             tags = await async_parse_tags(auth_url, episode_file.file_size)
-            episode = parse_podcast_episode_from_tags(
-                episode_file, tags, self.instance_id, self.domain
-            )
+            episode = self._build_podcast_episode_from_tags(
+                episode_file, tags
+            )  # Use custom builder
             yield episode
+
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get full podcast episode details by id."""
+        file_item = await self.resolve(prov_episode_id)
+        auth_url = self._build_authenticated_url(prov_episode_id)
+        tags = await async_parse_tags(auth_url, file_item.file_size)
+        episode = self._build_podcast_episode_from_tags(file_item, tags)
+
+        # Add folder images to podcast
+        podcast_folder = str(PurePosixPath(prov_episode_id).parent)
+        folder_images = await self._get_local_images(podcast_folder)
+
+        assert isinstance(episode.podcast, Podcast)
+        if folder_images:
+            episode.podcast.metadata.images = folder_images
+
+        return episode
 
     async def sync_library(self, media_type: MediaType, import_as_favorite: bool = False) -> None:
         """Run library sync for WebDAV provider."""
@@ -462,82 +387,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             self.sync_running = False
             self.logger.info(f"Completed library sync for WebDAV provider {self.name}")
 
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Return the content details for the given media when it will be streamed."""
-        if media_type == MediaType.TRACK:
-            return await self._get_track_stream_details(item_id)
-        elif media_type == MediaType.AUDIOBOOK:
-            return await self._get_audiobook_stream_details(item_id)
-        elif media_type == MediaType.PODCAST_EPISODE:
-            return await self._get_podcast_stream_details(item_id)
-        else:
-            raise NotImplementedError(f"Streaming not implemented for {media_type}")
-
-    async def _get_track_stream_details(self, item_id: str) -> StreamDetails:
-        """Get stream details for a track."""
-        track = await self.mass.music.tracks.get_library_item_by_prov_id(item_id, self.instance_id)
-        if track is None:
-            self.logger.debug(f"Track not in library, parsing from file: {item_id}")
-            track = await self.get_track(item_id)
-
-        return await self._build_http_stream_details(item_id, track, MediaType.TRACK)
-
-    async def _get_audiobook_stream_details(self, item_id: str) -> StreamDetails:
-        """Get stream details for an audiobook."""
-        # Get or parse audiobook
-        audiobook = await self.mass.music.audiobooks.get_library_item_by_prov_id(
-            item_id, self.instance_id
-        )
-        if audiobook is None:
-            audiobook = await self._parse_audiobook_from_file(item_id)
-
-        # Get audio format
-        prov_mapping = next((x for x in audiobook.provider_mappings if x.item_id == item_id), None)
-        audio_format = prov_mapping.audio_format if prov_mapping else AudioFormat()
-
-        # Check if multi-file audiobook
-        file_item = await self.resolve(item_id)
-        file_based_chapters = await self._get_audiobook_chapters_from_cache(item_id, file_item)
-
-        if file_based_chapters:
-            return await self._build_multifile_audiobook_stream(
-                item_id, audiobook, audio_format, file_based_chapters
-            )
-
-        # Single-file audiobook
-        return await self._build_http_stream_details(item_id, audiobook, MediaType.AUDIOBOOK)
-
-    async def _get_podcast_stream_details(self, item_id: str) -> StreamDetails:
-        """Get stream details for a podcast episode."""
-        try:
-            file_item = await self.resolve(item_id)
-            auth_url = self._build_authenticated_url(item_id)
-
-            tags = await async_parse_tags(auth_url, file_item.file_size)
-            episode = parse_podcast_episode_from_tags(
-                file_item, tags, self.instance_id, self.domain
-            )
-
-            return await self._build_http_stream_details(
-                item_id, episode, MediaType.PODCAST_EPISODE
-            )
-
-        except Exception as err:
-            self.logger.exception(f"Failed to process podcast episode {item_id}: {err}")
-            raise MediaNotFoundError(f"Failed to process podcast episode: {item_id}") from err
-
-    async def _parse_audiobook_from_file(self, item_id: str) -> Audiobook:
-        """Parse audiobook from file when not in library."""
-        file_item = await self.resolve(item_id)
-        auth_url = self._build_authenticated_url(item_id)
-        tags = await async_parse_tags(auth_url, file_item.file_size)
-        audiobook = await self._parse_audiobook(file_item, tags)
-
-        if not audiobook:
-            raise MediaNotFoundError(f"Audiobook not found: {item_id}")
-
-        return audiobook
-
     async def _get_audiobook_chapters_from_cache(
         self, item_id: str, file_item: FileSystemItem
     ) -> list[tuple[str, float]] | None:
@@ -565,68 +414,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 )
         return cast("list[tuple[str, float]] | None", file_based_chapters)
 
-    async def _build_multifile_audiobook_stream(
-        self,
-        item_id: str,
-        audiobook: Audiobook,
-        audio_format: AudioFormat,
-        file_based_chapters: list[tuple[str, float]],
-    ) -> StreamDetails:
-        """Build stream details for multi-file audiobook."""
-        chapter_urls = []
-        for chapter_path, _ in file_based_chapters:
-            auth_url = self._build_authenticated_url(chapter_path)
-            chapter_urls.append(auth_url)
-
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=item_id,
-            audio_format=audio_format,
-            media_type=MediaType.AUDIOBOOK,
-            stream_type=StreamType.CUSTOM,
-            duration=audiobook.duration,
-            data={
-                "chapters": chapter_urls,
-                "chapters_data": file_based_chapters,
-            },
-            allow_seek=True,
-            can_seek=True,
-        )
-
-    async def _build_http_stream_details(
-        self,
-        item_id: str,
-        library_item: Track | Audiobook | PodcastEpisode,
-        media_type: MediaType,
-    ) -> StreamDetails:
-        """Build stream details for single HTTP file."""
-        auth_url = self._build_authenticated_url(item_id)
-
-        prov_mapping = next(
-            (x for x in library_item.provider_mappings if x.item_id == item_id), None
-        )
-        audio_format = prov_mapping.audio_format if prov_mapping else AudioFormat()
-
-        file_size = None
-        try:
-            file_item = await self.resolve(item_id)
-            file_size = file_item.file_size
-        except Exception as err:
-            self.logger.debug(f"Could not get file size for {item_id}: {err}")
-
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=item_id,
-            audio_format=audio_format,
-            media_type=media_type,
-            stream_type=StreamType.HTTP,
-            duration=library_item.duration,
-            size=file_size,
-            path=auth_url,
-            can_seek=True,
-            allow_seek=True,
-        )
-
     def _build_authenticated_url(self, file_path: str) -> str:
         """Build authenticated WebDAV URL with properly encoded credentials."""
         webdav_url = build_webdav_url(self.base_url, file_path)
@@ -641,47 +428,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             )
 
         return webdav_url
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Get audio stream for WebDAV items."""
-        if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
-            async for chunk in self._stream_multifile_audiobook(streamdetails, seek_position):
-                yield chunk
-        else:
-            raise NotImplementedError("Use HTTP stream type for single files")
-
-    async def _stream_multifile_audiobook(
-        self, streamdetails: StreamDetails, seek_position: int
-    ) -> AsyncGenerator[bytes, None]:
-        """Stream multi-file audiobook chapters."""
-        chapter_urls = streamdetails.data.get("chapters", [])
-        chapters_data = streamdetails.data.get("chapters_data", [])
-
-        # Calculate starting chapter
-        start_chapter = self._calculate_start_chapter(chapters_data, seek_position)
-
-        # Stream chapters
-        chapters_yielded = False
-        for i in range(start_chapter, len(chapter_urls)):
-            chapter_url = chapter_urls[i]
-
-            try:
-                async with self.mass.http_session.get(chapter_url) as response:
-                    response.raise_for_status()
-                    async for chunk in response.content.iter_chunked(8192):
-                        chapters_yielded = True
-                        yield chunk
-
-            except Exception as e:
-                self.logger.exception(f"Chapter {i + 1} streaming failed: {e}")
-                continue
-
-        if not chapters_yielded:
-            raise MediaNotFoundError(
-                f"Failed to stream any chapters for audiobook {streamdetails.item_id}"
-            )
 
     def _calculate_start_chapter(
         self, chapters_data: list[tuple[str, float]], seek_position: int
@@ -719,10 +465,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def _scandir(self, path: str) -> list[FileSystemItem]:
         """List WebDAV directory contents."""
         webdav_url = build_webdav_url(self.base_url, path)
-        session = await self._get_session()
+        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
 
         try:
-            webdav_items = await webdav_propfind(session, webdav_url, depth=1)
+            webdav_items = await webdav_propfind(session, webdav_url, depth=1, auth=self._auth)
             filesystem_items: list[FileSystemItem] = []
 
             for webdav_item in webdav_items:
@@ -897,28 +643,9 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def _process_track(self, item: FileSystemItem, prev_checksum: str | None) -> None:
         """Process a track item."""
         try:
-            # Build full WebDAV URL from relative path
-            webdav_url = build_webdav_url(self.base_url, item.relative_path)
-
-            # Add authentication to URL for ffprobe
-            parsed = urlparse(webdav_url)
-            if self.username and self.password:
-                netloc = f"{self.username}:{self.password}@{parsed.netloc}"
-                auth_url = urlunparse(
-                    (
-                        parsed.scheme,
-                        netloc,
-                        parsed.path,
-                        parsed.params,
-                        parsed.query,
-                        parsed.fragment,
-                    )
-                )
-            else:
-                auth_url = webdav_url
-
+            auth_url = self._build_authenticated_url(item.relative_path)
             tags = await async_parse_tags(auth_url, item.file_size)
-            track = parse_track_from_tags(item, tags, self.instance_id, self.domain, self.config)
+            track = await self._parse_track(item, tags)
 
             # Add folder images to album if present
             if track.album and isinstance(track.album, Album):
@@ -930,7 +657,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 # Add folder images to album artists
                 for artist in track.album.artists:
                     if isinstance(artist, Artist) and not artist.metadata.images:
-                        # Try to get artist folder from provider mapping URL
                         artist_mapping = next(
                             (
                                 m
@@ -967,8 +693,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             await self.mass.music.tracks.add_item_to_library(
                 track, overwrite_existing=prev_checksum is not None
             )
-        except (LoginFailed, SetupFailedError, ProviderUnavailableError) as err:
-            self.logger.error(f"Provider error processing WebDAV track {item.relative_path}: {err}")
+        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
             raise
         except aiohttp.ClientError as err:
             self.logger.error(
@@ -980,37 +705,13 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def _process_audiobook(self, item: FileSystemItem, prev_checksum: str | None) -> None:
         """Process an audiobook item."""
         try:
-            # Build full WebDAV URL from relative path
-            webdav_url = build_webdav_url(self.base_url, item.relative_path)
-
-            # Add authentication to URL for ffprobe
-            parsed = urlparse(webdav_url)
-            if self.username and self.password:
-                netloc = f"{self.username}:{self.password}@{parsed.netloc}"
-                auth_url = urlunparse(
-                    (
-                        parsed.scheme,
-                        netloc,
-                        parsed.path,
-                        parsed.params,
-                        parsed.query,
-                        parsed.fragment,
-                    )
-                )
-            else:
-                auth_url = webdav_url
-
+            auth_url = self._build_authenticated_url(item.relative_path)
             tags = await async_parse_tags(auth_url, item.file_size)
-            audiobook = parse_audiobook_from_tags(
-                item, tags, self.instance_id, self.domain, self.config
-            )
+            audiobook = self._build_audiobook_from_tags(item, tags)  # Use custom builder
             await self.mass.music.audiobooks.add_item_to_library(
                 audiobook, overwrite_existing=prev_checksum is not None
             )
-        except (LoginFailed, SetupFailedError, ProviderUnavailableError) as err:
-            self.logger.error(
-                f"Provider error processing WebDAV audiobook {item.relative_path}: {err}"
-            )
+        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
             raise
         except aiohttp.ClientError as err:
             self.logger.error(
@@ -1027,34 +728,14 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     ) -> None:
         """Process a multi-file audiobook folder."""
         try:
-            # Sort files by name
             sorted_files = sorted(audiobook_files, key=lambda x: x.filename)
-
-            # Parse first file to get audiobook metadata
             first_file = sorted_files[0]
-            webdav_url = build_webdav_url(self.base_url, first_file.relative_path)
-            parsed = urlparse(webdav_url)
-            if self.username and self.password:
-                netloc = f"{self.username}:{self.password}@{parsed.netloc}"
-                auth_url = urlunparse(
-                    (
-                        parsed.scheme,
-                        netloc,
-                        parsed.path,
-                        parsed.params,
-                        parsed.query,
-                        parsed.fragment,
-                    )
-                )
-            else:
-                auth_url = webdav_url
 
+            auth_url = self._build_authenticated_url(first_file.relative_path)
             tags = await async_parse_tags(auth_url, first_file.file_size)
 
-            # Create audiobook from folder
-            audiobook = parse_audiobook_from_tags(
-                first_file, tags, self.instance_id, self.domain, self.config
-            )
+            # Use custom builder instead of parent's _parse_audiobook
+            audiobook = self._build_audiobook_from_tags(first_file, tags)
 
             # Override item_id to be the folder
             audiobook.item_id = folder_path
@@ -1072,23 +753,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             total_duration = 0.0
 
             for idx, file_item in enumerate(sorted_files, start=1):
-                file_url = build_webdav_url(self.base_url, file_item.relative_path)
-                parsed = urlparse(file_url)
-                if self.username and self.password:
-                    netloc = f"{self.username}:{self.password}@{parsed.netloc}"
-                    file_auth_url = urlunparse(
-                        (
-                            parsed.scheme,
-                            netloc,
-                            parsed.path,
-                            parsed.params,
-                            parsed.query,
-                            parsed.fragment,
-                        )
-                    )
-                else:
-                    file_auth_url = file_url
-
+                file_auth_url = self._build_authenticated_url(file_item.relative_path)
                 file_tags = await async_parse_tags(file_auth_url, file_item.file_size)
                 duration = file_tags.duration or 0
 
@@ -1119,15 +784,11 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             if folder_images:
                 audiobook.metadata.images = folder_images
 
-            # Store audiobook
             await self.mass.music.audiobooks.add_item_to_library(
                 audiobook, overwrite_existing=prev_checksum is not None
             )
 
-        except (LoginFailed, SetupFailedError, ProviderUnavailableError) as err:
-            self.logger.error(
-                f"Provider error processing multi-file audiobook {folder_path}: {err}"
-            )
+        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
             raise
         except aiohttp.ClientError as err:
             self.logger.error(
@@ -1139,40 +800,21 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     async def _process_podcast(self, item: FileSystemItem, prev_checksum: str | None) -> None:
         """Process a podcast episode item."""
         try:
-            # Build full WebDAV URL from relative path
-            webdav_url = build_webdav_url(self.base_url, item.relative_path)
-
-            # Add authentication to URL for ffprobe
-            parsed = urlparse(webdav_url)
-            if self.username and self.password:
-                netloc = f"{self.username}:{self.password}@{parsed.netloc}"
-                auth_url = urlunparse(
-                    (
-                        parsed.scheme,
-                        netloc,
-                        parsed.path,
-                        parsed.params,
-                        parsed.query,
-                        parsed.fragment,
-                    )
-                )
-            else:
-                auth_url = webdav_url
-
+            auth_url = self._build_authenticated_url(item.relative_path)
             tags = await async_parse_tags(auth_url, item.file_size)
-            episode = parse_podcast_episode_from_tags(item, tags, self.instance_id, self.domain)
+            episode = self._build_podcast_episode_from_tags(item, tags)  # Use custom builder
+
             podcast_folder = str(PurePosixPath(item.relative_path).parent)
             folder_images = await self._get_local_images(podcast_folder)
+
             assert isinstance(episode.podcast, Podcast)
             if folder_images:
                 episode.podcast.metadata.images = folder_images
+
             await self.mass.music.podcasts.add_item_to_library(
                 episode.podcast, overwrite_existing=prev_checksum is not None
             )
-        except (LoginFailed, SetupFailedError, ProviderUnavailableError) as err:
-            self.logger.error(
-                f"Provider error processing WebDAV podcast {item.relative_path}: {err}"
-            )
+        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
             raise
         except aiohttp.ClientError as err:
             self.logger.error(
@@ -1222,12 +864,286 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve image path to actual image data or URL."""
-        # Build WebDAV URL
         webdav_url = build_webdav_url(self.base_url, path)
+        session = self.mass.http_session if self.verify_ssl else self.mass.http_session_no_ssl
 
-        # Fetch the image data with authentication
-        session = await self._get_session()
-        async with session.get(webdav_url) as resp:
+        async with session.get(webdav_url, auth=self._auth) as resp:
             if resp.status != 200:
                 raise MediaNotFoundError(f"Image not found: {path}")
             return await resp.read()
+
+    async def _get_stream_details_for_track(self, item_id: str) -> StreamDetails:
+        """Return the streamdetails for a track/song."""
+        library_item = await self.mass.music.tracks.get_library_item_by_prov_id(
+            item_id, self.instance_id
+        )
+        if library_item is None:
+            file_item = await self.resolve(item_id)
+            auth_url = self._build_authenticated_url(item_id)
+            tags = await async_parse_tags(auth_url, file_item.file_size)
+            library_item = await self._parse_track(file_item, tags)
+
+        prov_mapping = next(x for x in library_item.provider_mappings if x.item_id == item_id)
+        file_item = await self.resolve(item_id)
+        auth_url = self._build_authenticated_url(item_id)
+
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=prov_mapping.audio_format,
+            media_type=MediaType.TRACK,
+            stream_type=StreamType.HTTP,  # CRITICAL: HTTP not LOCAL_FILE
+            duration=library_item.duration,
+            size=file_item.file_size,
+            path=auth_url,  # CRITICAL: authenticated URL
+            can_seek=True,
+            allow_seek=True,
+        )
+
+    async def _get_stream_details_for_podcast_episode(self, item_id: str) -> StreamDetails:
+        """Return the streamdetails for a podcast episode."""
+        file_item = await self.resolve(item_id)
+        auth_url = self._build_authenticated_url(item_id)
+        tags = await async_parse_tags(auth_url, file_item.file_size)
+
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(file_item.ext or tags.format),
+                sample_rate=tags.sample_rate,
+                bit_depth=tags.bits_per_sample,
+                channels=tags.channels,
+                bit_rate=tags.bit_rate,
+            ),
+            media_type=MediaType.PODCAST_EPISODE,
+            stream_type=StreamType.HTTP,
+            duration=int(tags.duration or 0),
+            size=file_item.file_size,
+            path=auth_url,
+            allow_seek=True,
+            can_seek=True,
+        )
+
+    async def _get_stream_details_for_audiobook(self, item_id: str) -> StreamDetails:
+        """Return the streamdetails for an audiobook."""
+        library_item = await self.mass.music.audiobooks.get_library_item_by_prov_id(
+            item_id, self.instance_id
+        )
+        if library_item is None:
+            file_item = await self.resolve(item_id)
+            auth_url = self._build_authenticated_url(item_id)
+            tags = await async_parse_tags(auth_url, file_item.file_size)
+            library_item = self._build_audiobook_from_tags(file_item, tags)
+
+        prov_mapping = next(x for x in library_item.provider_mappings if x.item_id == item_id)
+        file_item = await self.resolve(item_id)
+
+        # Check for multi-file audiobook
+        file_based_chapters = await self._get_audiobook_chapters_from_cache(item_id, file_item)
+
+        if file_based_chapters:
+            # Multi-file audiobook - use CUSTOM stream type
+            chapter_urls = [self._build_authenticated_url(ch[0]) for ch in file_based_chapters]
+            return StreamDetails(
+                provider=self.instance_id,
+                item_id=item_id,
+                audio_format=prov_mapping.audio_format,
+                media_type=MediaType.AUDIOBOOK,
+                stream_type=StreamType.CUSTOM,  # CUSTOM not MULTI_FILE
+                duration=library_item.duration,
+                data={  # data dict, not path list
+                    "chapters": chapter_urls,
+                    "chapters_data": file_based_chapters,
+                },
+                allow_seek=True,
+                can_seek=True,
+            )
+
+        # Single file audiobook
+        auth_url = self._build_authenticated_url(item_id)
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=prov_mapping.audio_format,
+            media_type=MediaType.AUDIOBOOK,
+            stream_type=StreamType.HTTP,
+            duration=library_item.duration,
+            size=file_item.file_size,
+            path=auth_url,
+            can_seek=True,
+            allow_seek=True,
+        )
+
+    def _build_audiobook_from_tags(self, file_item: FileSystemItem, tags: AudioTags) -> Audiobook:
+        """Build audiobook from tags without filesystem operations."""
+        book_name = tags.album or tags.title
+
+        audiobook = Audiobook(
+            item_id=file_item.relative_path,
+            provider=self.instance_id,
+            name=book_name,
+            sort_name=tags.album_sort or tags.title_sort,
+            version=tags.version,
+            duration=int(tags.duration or 0),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=file_item.relative_path,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        sample_rate=tags.sample_rate,
+                        bit_depth=tags.bits_per_sample,
+                        channels=tags.channels,
+                        bit_rate=tags.bit_rate,
+                    ),
+                    details=file_item.checksum,
+                )
+            },
+        )
+
+        # Set authors and metadata
+        audiobook.authors.set(tags.writers or tags.album_artists or tags.artists)
+        audiobook.metadata.genres = set(tags.genres)
+        audiobook.metadata.copyright = tags.get("copyright")
+        audiobook.metadata.description = tags.get("comment")
+
+        if tags.musicbrainz_recordingid:
+            audiobook.mbid = tags.musicbrainz_recordingid
+
+        # Handle embedded chapters
+        if tags.chapters:
+            audiobook.metadata.chapters = [
+                MediaItemChapter(
+                    position=chapter.chapter_id,
+                    name=chapter.title or f"Chapter {chapter.chapter_id}",
+                    start=chapter.position_start,
+                    end=chapter.position_end,
+                )
+                for chapter in tags.chapters
+            ]
+
+        # Handle embedded cover image
+        if tags.has_cover_image:
+            audiobook.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=file_item.relative_path,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
+            )
+
+        return audiobook
+
+    def _build_podcast_episode_from_tags(
+        self, file_item: FileSystemItem, tags: AudioTags
+    ) -> PodcastEpisode:
+        """Build podcast episode from tags without filesystem operations."""
+        podcast_name = tags.album or PurePosixPath(file_item.relative_path).parent.name
+        podcast_path = str(PurePosixPath(file_item.relative_path).parent)
+
+        episode = PodcastEpisode(
+            item_id=file_item.relative_path,
+            provider=self.instance_id,
+            name=tags.title,
+            sort_name=tags.title_sort,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=file_item.relative_path,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.try_parse(file_item.ext or tags.format),
+                        sample_rate=tags.sample_rate,
+                        bit_depth=tags.bits_per_sample,
+                        channels=tags.channels,
+                        bit_rate=tags.bit_rate,
+                    ),
+                    details=file_item.checksum,
+                )
+            },
+            position=tags.track or 0,
+            duration=int(tags.duration or 0),
+            podcast=Podcast(
+                item_id=podcast_path,
+                provider=self.instance_id,
+                name=podcast_name,
+                sort_name=tags.album_sort,
+                publisher=tags.get("publisher"),
+                total_episodes=0,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=podcast_path,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            ),
+        )
+
+        # Set metadata
+        episode.metadata.genres = set(tags.genres)
+        episode.metadata.copyright = tags.get("copyright")
+        episode.metadata.description = tags.get("comment")
+
+        # Handle chapters
+        if tags.chapters:
+            episode.metadata.chapters = [
+                MediaItemChapter(
+                    position=chapter.chapter_id,
+                    name=chapter.title or f"Chapter {chapter.chapter_id}",
+                    start=chapter.position_start,
+                    end=chapter.position_end,
+                )
+                for chapter in tags.chapters
+            ]
+
+        # Handle embedded cover
+        if tags.has_cover_image:
+            episode.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=file_item.relative_path,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
+            )
+
+        return episode
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Get audio stream for WebDAV items."""
+        if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
+            async for chunk in self._stream_multifile_audiobook(streamdetails, seek_position):
+                yield chunk
+        else:
+            raise NotImplementedError("Use HTTP stream type for single files")
+
+    async def _stream_multifile_audiobook(
+        self, streamdetails: StreamDetails, seek_position: int
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream multi-file audiobook chapters."""
+        chapter_urls = streamdetails.data.get("chapters", [])
+        chapters_data = streamdetails.data.get("chapters_data", [])
+        start_chapter = self._calculate_start_chapter(chapters_data, seek_position)
+
+        chapters_yielded = False
+        for i in range(start_chapter, len(chapter_urls)):
+            try:
+                async with self.mass.http_session.get(chapter_urls[i]) as response:
+                    response.raise_for_status()
+                    async for chunk in response.content.iter_chunked(8192):
+                        chapters_yielded = True
+                        yield chunk
+            except Exception as e:
+                self.logger.exception(f"Chapter {i + 1} streaming failed: {e}")
+                continue
+
+        if not chapters_yielded:
+            raise MediaNotFoundError(
+                f"Failed to stream any chapters for audiobook {streamdetails.item_id}"
+            )
