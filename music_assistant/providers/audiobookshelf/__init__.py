@@ -47,7 +47,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import AudioError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
@@ -58,10 +58,9 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.media_items.media_item import RecommendationFolder
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.audio import get_multi_file_stream
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
@@ -88,7 +87,6 @@ from .constants import (
 from .helpers import LibrariesHelper, LibraryHelper, ProgressGuard
 
 if TYPE_CHECKING:
-    from aioaudiobookshelf.schema.audio import AudioTrack as AbsAudioTrack
     from aioaudiobookshelf.schema.events_socket import LibraryItemRemoved
     from aioaudiobookshelf.schema.media_progress import MediaProgress
     from aioaudiobookshelf.schema.user import User
@@ -543,6 +541,8 @@ for more details.
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream of item."""
+        # ensure we have a valid token
+        await self.reauthenticate()
         if media_type == MediaType.PODCAST_EPISODE:
             return await self._get_stream_details_episode(item_id)
         elif media_type == MediaType.AUDIOBOOK:
@@ -566,115 +566,23 @@ for more details.
         if abs_audiobook.media.tracks[0].metadata is not None:
             content_type = ContentType.try_parse(abs_audiobook.media.tracks[0].metadata.ext)
 
+        file_parts: list[MultiPartPath] = []
+        base_url = str(self.config.get_value(CONF_URL))
+        for track in tracks:
+            stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
+            file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
+
         return StreamDetails(
             provider=self.lookup_key,
             item_id=abs_audiobook.id_,
             audio_format=AudioFormat(content_type=content_type),
             media_type=MediaType.AUDIOBOOK,
-            stream_type=StreamType.CUSTOM,
+            stream_type=StreamType.HTTP,
             duration=int(abs_audiobook.media.duration),
             data=tracks,
             can_seek=True,
             allow_seek=True,
         )
-
-    def _get_track_from_position(
-        self, tracks: list[AbsAudioTrack], seek_position: int
-    ) -> tuple[list[AbsAudioTrack] | None, int]:
-        """Get the remaining tracks list from a timestamp.
-
-        Arguments:
-        tracks: The list of Audiobookshelf tracks
-        seek_position: The seeking position in seconds of the tracklist
-
-        Returns:
-            In a tuple, A list of audiobookshelf tracks, starting with the one at the requested seek
-        position and the position in seconds to seek to in the first track.
-            A tuple of None and 0 if the track wasn't found
-        """
-        for i, track in enumerate(tracks):
-            offset = int(track.start_offset)
-            duration = int(track.duration)
-            if offset + duration < seek_position:
-                continue
-
-            position = int(seek_position) - offset
-
-            # Seeking in some tracks is inaccurate, making the seek to a chapter land on the end of
-            # the previous track. If we're within 2 second of the end, skip the current track
-            if position + 2 >= duration:
-                self.logger.debug(
-                    f"Skipping {track.title} due to seek position being at the end: {position}"
-                )
-                continue
-
-            position = max(position, 0)
-
-            return tracks[i:], position
-        return None, 0
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Retrieve the audio track at the requested position.
-
-        Arguments:
-        streamdetails: The stream to be used
-        seek_position: The seeking position in seconds
-        """
-
-        async def _get_audio_stream() -> AsyncGenerator[bytes, None]:
-            tracks, position = self._get_track_from_position(streamdetails.data, seek_position)
-            if not tracks:
-                raise MediaNotFoundError(f"Track not found at seek position {seek_position}.")
-
-            self.logger.debug(
-                f"Skipped {len(streamdetails.data) - len(tracks)} tracks"
-                " while seeking to position {seek_position}."
-            )
-            base_url = str(self.config.get_value(CONF_URL))
-            track_urls = []
-            for track in tracks:
-                stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
-                track_urls.append(stream_url)
-
-            async for chunk in get_multi_file_stream(
-                mass=self.mass,
-                streamdetails=StreamDetails(
-                    provider=self.lookup_key,
-                    item_id=streamdetails.item_id,
-                    audio_format=streamdetails.audio_format,
-                    media_type=MediaType.AUDIOBOOK,
-                    stream_type=StreamType.MULTI_FILE,
-                    duration=streamdetails.duration,
-                    data=track_urls,
-                    can_seek=True,
-                    allow_seek=True,
-                ),
-                seek_position=position,
-                raise_ffmpeg_exception=True,
-            ):
-                yield chunk
-
-        # Should our token expire, we try to refresh them and continue streaming once.
-        _refreshed = False
-        while True:
-            try:
-                async for chunk in _get_audio_stream():
-                    _refreshed = False
-                    yield chunk
-                break
-            except AudioError as err:
-                if not _refreshed:
-                    self.logger.debug("FFmpeg raised an error. Trying to refresh token.")
-                    try:
-                        await self._client.session_config.refresh()
-                    except RefreshTokenExpiredError:
-                        await self.reauthenticate()
-                    _refreshed = True
-                else:
-                    self.logger.error(err)
-                    break
 
     async def _get_stream_details_episode(self, podcast_id: str) -> StreamDetails:
         """Streamdetails of a podcast episode.
@@ -695,6 +603,8 @@ for more details.
         content_type = ContentType.UNKNOWN
         if abs_episode.audio_track.metadata is not None:
             content_type = ContentType.try_parse(abs_episode.audio_track.metadata.ext)
+        base_url = str(self.config.get_value(CONF_URL))
+        stream_url = f"{base_url}{abs_episode.audio_track.content_url}?token={self._client.token}"
         return StreamDetails(
             provider=self.lookup_key,
             item_id=podcast_id,
@@ -702,10 +612,10 @@ for more details.
                 content_type=content_type,
             ),
             media_type=MediaType.PODCAST_EPISODE,
-            stream_type=StreamType.CUSTOM,
+            stream_type=StreamType.HTTP,
             can_seek=True,
             allow_seek=True,
-            data=[abs_episode.audio_track],
+            path=stream_url,
         )
 
     @handle_refresh_token

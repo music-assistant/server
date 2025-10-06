@@ -221,28 +221,6 @@ class StreamsController(CoreController):
                 category="advanced",
                 required=False,
             ),
-            # ConfigEntry(
-            #     key=CONF_ALLOW_AUDIO_CACHE,
-            #     type=ConfigEntryType.STRING,
-            #     default_value=self.allow_cache_default,
-            #     options=[
-            #         ConfigValueOption("Always", "always"),
-            #         ConfigValueOption("Disabled", "disabled"),
-            #         ConfigValueOption("Auto", "auto"),
-            #     ],
-            #     label="Allow caching of remote/cloudbased audio streams",
-            #     description="To ensure smooth(er) playback as well as fast seeking, "
-            #     "Music Assistant can cache audio streams on disk. \n"
-            #     "On systems with limited diskspace, this can be disabled, "
-            #     "but may result in less smooth playback or slower seeking.\n\n"
-            #     "**Always:** Enforce caching of audio streams at all times "
-            #     "(as long as there is enough free space).\n"
-            #     "**Disabled:** Never cache audio streams.\n"
-            #     "**Auto:** Let Music Assistant decide if caching "
-            #     "should be used on a per-item base.",
-            #     category="advanced",
-            #     required=True,
-            # ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -413,20 +391,16 @@ class StreamsController(CoreController):
         if request.method != "GET":
             return resp
 
-        # work out pcm format based on output format
-        pcm_format = AudioFormat(
-            content_type=DEFAULT_PCM_FORMAT.content_type,
-            sample_rate=output_format.sample_rate,
-            # always use f32 internally for extra headroom for filters etc
-            bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
-            channels=2,
-        )
-        smart_fades_mode = await self.mass.config.get_player_config_value(
-            queue.queue_id, CONF_SMART_FADES_MODE
-        )
-        standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_CROSSFADE_DURATION, 10
-        )
+        if queue_item.media_type != MediaType.TRACK:
+            # no crossfade on non-tracks
+            smart_fades_mode = SmartFadesMode.DISABLED
+        else:
+            smart_fades_mode = await self.mass.config.get_player_config_value(
+                queue.queue_id, CONF_SMART_FADES_MODE
+            )
+            standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 10
+            )
         if (
             smart_fades_mode != SmartFadesMode.DISABLED
             and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features
@@ -442,28 +416,43 @@ class StreamsController(CoreController):
             # crossfade is enabled, use special crossfaded single item stream
             # where the crossfade of the next track is present in the stream of
             # a single track. This only works if the player supports gapless playback.
-            audio_input = self.get_queue_item_stream_with_smartfade(
-                queue_item=queue_item,
-                pcm_format=pcm_format,
-                session_id=session_id,
-                smart_fades_mode=smart_fades_mode,
-                standard_crossfade_duration=standard_crossfade_duration,
+            # work out pcm format based on output format
+            pcm_format = AudioFormat(
+                content_type=DEFAULT_PCM_FORMAT.content_type,
+                sample_rate=output_format.sample_rate,
+                # always use f32 internally for extra headroom for filters etc
+                bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
+                channels=2,
+            )
+            audio_input = get_ffmpeg_stream(
+                audio_input=self.get_queue_item_stream_with_smartfade(
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    session_id=session_id,
+                    smart_fades_mode=smart_fades_mode,
+                    standard_crossfade_duration=standard_crossfade_duration,
+                ),
+                input_format=pcm_format,
+                output_format=output_format,
+                filter_params=get_player_filter_params(
+                    self.mass, queue_player.player_id, pcm_format, output_format
+                ),
             )
         else:
+            # no crossfade, just a regular single item stream
+            # no need to convert to pcm first, request output format directly
             audio_input = self.get_queue_item_stream(
                 queue_item=queue_item,
-                pcm_format=pcm_format,
+                output_format=output_format,
+                filter_params=get_player_filter_params(
+                    self.mass,
+                    queue_player.player_id,
+                    queue_item.streamdetails.audio_format,
+                    output_format,
+                ),
             )
 
-        async for chunk in get_ffmpeg_stream(
-            audio_input=audio_input,
-            input_format=pcm_format,
-            output_format=output_format,
-            filter_params=get_player_filter_params(
-                self.mass, queue_player.player_id, pcm_format, output_format
-            ),
-            chunk_size=get_chunksize(output_format),
-        ):
+        async for chunk in audio_input:
             try:
                 await resp.write(chunk)
             except (BrokenPipeError, ConnectionResetError, ConnectionError):
@@ -788,12 +777,19 @@ class StreamsController(CoreController):
         pcm_sample_size = int(
             pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels
         )
-        smart_fades_mode = await self.mass.config.get_player_config_value(
-            queue.queue_id, CONF_SMART_FADES_MODE
-        )
-        standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_CROSSFADE_DURATION, 10
-        )
+        if start_queue_item.media_type != MediaType.TRACK:
+            # no crossfade on non-tracks
+            # NOTE that we shouldn't be using flow mode for non-tracks at all,
+            # but just to be sure, we specifically disable crossfade here
+            smart_fades_mode = SmartFadesMode.DISABLED
+            standard_crossfade_duration = 0
+        else:
+            smart_fades_mode = await self.mass.config.get_player_config_value(
+                queue.queue_id, CONF_SMART_FADES_MODE
+            )
+            standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 10
+            )
         self.logger.info(
             "Start Queue Flow stream for Queue %s - crossfade: %s %s",
             queue.display_name,
@@ -840,7 +836,7 @@ class StreamsController(CoreController):
             # handle incoming audio chunks
             async for chunk in self.get_queue_item_stream(
                 queue_track,
-                pcm_format=pcm_format,
+                output_format=pcm_format,
             ):
                 # buffer size needs to be big enough to include the crossfade part
                 req_buffer_size = (
@@ -970,8 +966,6 @@ class StreamsController(CoreController):
             # afterwards play the TTS itself.
             #
             # For this to be effective the player itself needs to be able to start playback fast.
-            # If the returned stream is used as input to ffmpeg we should pass -probesize 8096.
-            #
             # Finally, if the output_format is non-PCM, raw concatenation can be problematic.
             # So far players seem to tolerate this, but it might break some player in the future.
 
@@ -986,13 +980,11 @@ class StreamsController(CoreController):
         # work out output format/details
         fmt = announcement_url.rsplit(".")[-1]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
-        extra_input_args = ["-probesize", "8096"]  # start the stream before reading all TTS input
         async for chunk in get_ffmpeg_stream(
             audio_input=announcement_url,
             input_format=audio_format,
             output_format=output_format,
             filter_params=filter_params,
-            extra_input_args=extra_input_args,
         ):
             yield chunk
 
@@ -1040,13 +1032,14 @@ class StreamsController(CoreController):
     async def get_queue_item_stream(
         self,
         queue_item: QueueItem,
-        pcm_format: AudioFormat,
+        output_format: AudioFormat,
+        filter_params: list[str] | None = None,
     ) -> AsyncGenerator[bytes, None]:
-        """Get the audio stream for a single queue item as raw PCM audio."""
+        """Get the audio stream for a single queue item."""
         # collect all arguments for ffmpeg
         streamdetails = queue_item.streamdetails
         assert streamdetails
-        filter_params = []
+        filter_params = filter_params or []
 
         # handle volume normalization
         gain_correct: float | None = None
@@ -1078,21 +1071,11 @@ class StreamsController(CoreController):
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
 
-        # if streamdetails.media_type == MediaType.RADIO or not streamdetails.duration:
-        #     # pad some silence before the radio/live stream starts to create some headroom
-        #     # for radio stations (or other live streams) that do not provide any look ahead buffer
-        #     # without this, some radio streams jitter a lot,
-        #     # especially with dynamic normalization,
-        #     # if the stream does not provide a look ahead buffer
-        #     async for silence in get_silence(4, pcm_format):
-        #         yield silence
-        #         del silence
-
         first_chunk_received = False
         async for chunk in get_media_stream(
             self.mass,
             streamdetails=streamdetails,
-            pcm_format=pcm_format,
+            output_format=output_format,
             filter_params=filter_params,
         ):
             if not first_chunk_received:
