@@ -1878,6 +1878,7 @@
     'stream_metadata': dict({
       'album': 'テストシリーズ68461151-527007',
       'artist': 'ゲスト',
+      'description': None,
       'duration': None,
       'image_url': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006',
       'title': 'APIテスト用',
@@ -1885,8 +1886,6 @@
     }),
     'stream_title': 'ゲスト - APIテスト用',
     'stream_type': 'http',
-    'strip_silence_begin': False,
-    'strip_silence_end': False,
     'target_loudness': None,
     'volume_normalization_gain_correct': None,
     'volume_normalization_mode': None,
