@@ -46,7 +46,7 @@ podcastparser==0.6.10
 propcache>=0.2.1
 py-opensonic==7.0.2
 pyblu==2.0.5
-PyChromecast==14.0.7
+PyChromecast==14.0.9
 pycryptodome==3.23.0
 pylast==6.0.0
 python-fullykiosk==0.0.14
