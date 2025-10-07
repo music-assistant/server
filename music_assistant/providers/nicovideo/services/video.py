@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from urllib.parse import urljoin
 
-from music_assistant_models.errors import UnplayableMediaError
+from music_assistant_models.errors import InvalidDataError, UnplayableMediaError
 
-from music_assistant.providers.nicovideo.constants import SENSITIVE_CONTENTS
+from music_assistant.providers.nicovideo.constants import (
+    NICOVIDEO_USER_AGENT,
+    SENSITIVE_CONTENTS,
+)
 from music_assistant.providers.nicovideo.converters.stream import (
     StreamConversionData,
 )
@@ -89,6 +93,61 @@ class NicovideoVideoService(NicovideoBaseService):
 
         return hls_url
 
+    async def _fetch_hls_m3u8_text(self, hls_url: str, domand_bid: str) -> str:
+        """Fetch HLS m3u8 playlist text.
+
+        Args:
+            hls_url: URL to the HLS playlist (master or media)
+            domand_bid: Authentication cookie value
+
+        Returns:
+            Media playlist text (not parsed)
+        """
+        headers = {
+            "User-Agent": NICOVIDEO_USER_AGENT,
+            "Cookie": f"domand_bid={domand_bid}",
+        }
+        session = self.service_manager.provider.mass.http_session
+
+        # Fetch master playlist
+        async with session.get(hls_url, headers=headers) as response:
+            response.raise_for_status()
+            master_m3u8_text = await response.text()
+
+        # Check if this is already a media playlist (has #EXTINF)
+        if "#EXTINF:" in master_m3u8_text:
+            return master_m3u8_text
+
+        # Extract media playlist URL from master playlist
+        media_playlist_url = self._extract_media_playlist_url(master_m3u8_text, hls_url)
+
+        # Fetch media playlist
+        async with session.get(media_playlist_url, headers=headers) as response:
+            response.raise_for_status()
+            return await response.text()
+
+    def _extract_media_playlist_url(self, master_m3u8: str, base_url: str) -> str:
+        """Extract media playlist URL from master playlist.
+
+        Args:
+            master_m3u8: Master playlist text
+            base_url: Base URL for resolving relative URLs
+
+        Returns:
+            Absolute URL to media playlist
+        """
+        lines = master_m3u8.split("\n")
+        for i, line in enumerate(lines):
+            # Look for stream info line followed by URL
+            if line.startswith("#EXT-X-STREAM-INF:"):
+                if i + 1 < len(lines):
+                    media_url = lines[i + 1].strip()
+                    if media_url and not media_url.startswith("#"):
+                        # Resolve relative URL if needed
+                        return urljoin(base_url, media_url)
+        msg = f"No media playlist URL found in master playlist from {base_url}"
+        raise InvalidDataError(msg)
+
     async def _get_stream_data(self, video_id: str) -> StreamConversionData:
         """Get StreamConversionData for a video."""
         # 1. Fetch watch data
@@ -109,12 +168,16 @@ class NicovideoVideoService(NicovideoBaseService):
         if not domand_bid:
             raise UnplayableMediaError("Failed to fetch domand_bid")
 
-        # 5. Create conversion data for converter
+        # 5. Fetch HLS playlist text
+        m3u8_text = await self._fetch_hls_m3u8_text(hls_url, domand_bid)
+
+        # 6. Create conversion data for converter (parsing will happen in converter)
         return StreamConversionData(
             watch_data=watch_data,
             selected_audio=selected_audio,
             hls_url=hls_url,
             domand_bid=domand_bid,
+            m3u8_text=m3u8_text,
         )
 
     async def get_stream_details(self, video_id: str) -> StreamDetails:

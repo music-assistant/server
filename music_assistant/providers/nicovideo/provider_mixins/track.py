@@ -5,9 +5,17 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, override
 
-from music_assistant_models.enums import MediaType
+import shortuuid
+from aiohttp import web
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
+from music_assistant.providers.nicovideo.converters.stream import NicovideoStreamData
+from music_assistant.providers.nicovideo.helpers.hls_processor import (
+    NicovideoHLSProcessor,
+)
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
@@ -77,6 +85,56 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             return None
 
         return await self.service_manager.video.get_stream_details(item_id)
+
+    @override
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Get audio stream with dynamic m3u8 generation for optimized seeking.
+
+        Args:
+            streamdetails: Stream details containing domand_bid and parsed_m3u8 in data field
+            seek_position: Position to seek to in seconds
+
+        Yields:
+            Audio data bytes
+        """
+        if not isinstance(streamdetails.data, NicovideoStreamData):
+            msg = f"Invalid stream data type: {type(streamdetails.data)}"
+            raise TypeError(msg)
+
+        stream_data = streamdetails.data
+        processor = NicovideoHLSProcessor(stream_data)
+        stream_context = processor.create_stream_context(seek_position)
+
+        # Register dynamic route to serve m3u8
+        route_id = shortuuid.random(20)
+        route_path = f"/nicovideo_m3u8/{route_id}.m3u8"
+        m3u8_url = f"{self.mass.streams.base_url}{route_path}"
+
+        async def _serve_m3u8(_request: web.Request) -> web.Response:
+            return web.Response(
+                text=stream_context.dynamic_m3u8_text,
+                content_type="application/vnd.apple.mpegurl",
+            )
+
+        unregister = self.mass.streams.register_dynamic_route(route_path, _serve_m3u8)
+
+        try:
+            async for chunk in get_ffmpeg_stream(
+                audio_input=m3u8_url,
+                input_format=streamdetails.audio_format,
+                output_format=AudioFormat(
+                    content_type=ContentType.NUT,
+                    sample_rate=streamdetails.audio_format.sample_rate,
+                    bit_depth=streamdetails.audio_format.bit_depth,
+                    channels=streamdetails.audio_format.channels,
+                ),
+                extra_input_args=stream_context.extra_input_args,
+            ):
+                yield chunk
+        finally:
+            unregister()
 
     @override
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
