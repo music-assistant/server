@@ -588,7 +588,8 @@ class OpenSonicProvider(MusicProvider):
 
         elif media_type == MediaType.PODCAST_EPISODE:
             item = await self._get_podcast_episode(item_id)
-            mime_type = item.content_type
+
+            mime_type = item.transcoded_content_type or item.content_type
 
             self.logger.debug(
                 "Fetching stream details for podcast episode '%s' with format '%s'",
@@ -599,7 +600,6 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Unsupported media type encountered '{media_type}'"
             raise UnsupportedFeaturedException(msg)
 
-        # For mp4 or m4a files, better to let ffmpeg detect the codec in use so mark them unknown
         if mime_type and mime_type.endswith("mp4"):
             self.logger.warning(
                 "Due to the streaming method used by the subsonic API, M4A files "
@@ -673,9 +673,7 @@ class OpenSonicProvider(MusicProvider):
             return
 
         # Otherwise, create a new bookmark for this item or update the existing one
-        # MA provides a position in seconds but expects it back in milliseconds, while
-        # the Open Subsonic spec expects a position in milliseconds but returns it in
-        # seconds, go figure.
+        # MA provides a position in seconds but expects it back in milliseconds
         await self._run_async(
             self.conn.create_bookmark,
             mid=ep_id,
@@ -701,16 +699,11 @@ class OpenSonicProvider(MusicProvider):
 
         _, ep_id = item_id.split(EP_CHAN_SEP)
 
-        try:
-            bookmarks: list[SonicBookmark] = await self._run_async(self.conn.get_bookmarks)
-        except ParameterError:
-            # This is the current return from gonic 0.16.4 for all calls to getBookmarks see:
-            # https://github.com/sentriz/gonic/issues/578
-            return (False, 0)
+        bookmarks: list[SonicBookmark] = await self._run_async(self.conn.get_bookmarks)
 
         for mark in bookmarks:
             if mark.entry.id == ep_id:
-                return (False, mark.position * 1000)
+                return (False, mark.position)
         # If we get here, there is no bookmark
         return (False, 0)
 
