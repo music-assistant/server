@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import os.path
+import stat
 import time
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterator, Sequence
@@ -281,8 +282,7 @@ class LocalFileSystemProvider(MusicProvider):
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""
-        abs_path = self.get_absolute_path(item_path)
-        for item in await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=True):
+        for item in await self._scandir_impl(item_path):
             if not item.is_dir and ("." not in item.filename or not item.ext):
                 # skip system files and files without extension
                 continue
@@ -757,7 +757,7 @@ class LocalFileSystemProvider(MusicProvider):
                 episodes.append(episode)
 
         async with TaskManager(self.mass, 25) as tm:
-            for item in await asyncio.to_thread(sorted_scandir, self.base_path, prov_podcast_id):
+            for item in await self._scandir_impl(prov_podcast_id):
                 if "." not in item.relative_path or item.is_dir:
                     continue
                 if item.ext not in PODCAST_EPISODE_EXTENSIONS:
@@ -1181,8 +1181,7 @@ class LocalFileSystemProvider(MusicProvider):
         # try to fetch additional metadata from the folder
         if not audio_book.image or not audio_book.metadata.description:
             # try to get an image by traversing files in the same folder
-            abs_path = self.get_absolute_path(file_item.parent_path)
-            for _item in await asyncio.to_thread(sorted_scandir, self.base_path, abs_path):
+            for _item in await self._scandir_impl(file_item.parent_path):
                 if "." not in _item.relative_path or _item.is_dir:
                     continue
                 if _item.ext in IMAGE_EXTENSIONS and not audio_book.image:
@@ -1256,6 +1255,7 @@ class LocalFileSystemProvider(MusicProvider):
                 name=podcast_name,
                 sort_name=tags.album_sort,
                 publisher=tags.tags.get("publisher"),
+                total_episodes=0,
                 provider_mappings={
                     ProviderMapping(
                         item_id=podcast_path,
@@ -1515,8 +1515,7 @@ class LocalFileSystemProvider(MusicProvider):
         if extra_thumb_names is None:
             extra_thumb_names = ()
         images: UniqueList[MediaItemImage] = UniqueList()
-        abs_path = self.get_absolute_path(folder)
-        folder_files = await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=False)
+        folder_files = await self._scandir_impl(folder)
         for item in folder_files:
             if "." not in item.relative_path or item.is_dir or not item.ext:
                 continue
@@ -1573,40 +1572,13 @@ class LocalFileSystemProvider(MusicProvider):
         except Exception as err:
             self.logger.debug("Write access disabled: %s", str(err))
 
-    async def resolve(
-        self,
-        file_path: str,
-    ) -> FileSystemItem:
+    async def resolve(self, file_path: str) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem."""
-        absolute_path = self.get_absolute_path(file_path)
-
-        def _create_item() -> FileSystemItem:
-            if os.path.isdir(absolute_path):
-                return FileSystemItem(
-                    filename=os.path.basename(file_path),
-                    relative_path=get_relative_path(self.base_path, file_path),
-                    absolute_path=absolute_path,
-                    is_dir=True,
-                )
-            stat = os.stat(absolute_path, follow_symlinks=False)
-            return FileSystemItem(
-                filename=os.path.basename(file_path),
-                relative_path=get_relative_path(self.base_path, file_path),
-                absolute_path=absolute_path,
-                is_dir=False,
-                checksum=str(int(stat.st_mtime)),
-                file_size=stat.st_size,
-            )
-
-        # run in thread because strictly taken this may be blocking IO
-        return await asyncio.to_thread(_create_item)
+        return await self._resolve_impl(file_path)
 
     async def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
-        if not file_path:
-            return False  # guard
-        abs_path = self.get_absolute_path(file_path)
-        return bool(await exists(abs_path))
+        return await self._exists_impl(file_path)
 
     def get_absolute_path(self, file_path: str) -> str:
         """Return absolute path for given file path."""
@@ -1753,10 +1725,7 @@ class LocalFileSystemProvider(MusicProvider):
             # where each file is a portion/chapter of the audiobook
             # try to gather the chapters by traversing files in the same folder
             chapter_file_tags: list[AudioTags] = []
-            abs_path = self.get_absolute_path(audiobook_file_item.parent_path)
-            for item in await asyncio.to_thread(
-                sorted_scandir, self.base_path, abs_path, sort=True
-            ):
+            for item in await self._scandir_impl(audiobook_file_item.parent_path):
                 if "." not in item.relative_path or item.is_dir:
                     continue
                 if item.ext not in AUDIOBOOK_EXTENSIONS:
@@ -1820,3 +1789,39 @@ class LocalFileSystemProvider(MusicProvider):
             category=CACHE_CATEGORY_PODCAST_METADATA,
         )
         return data
+
+    async def _exists_impl(self, file_path: str) -> bool:
+        """Check if file/directory exists - override for network storage."""
+        if not file_path:
+            return False
+        abs_path = self.get_absolute_path(file_path)
+        return bool(await exists(abs_path))
+
+    async def _resolve_impl(self, file_path: str) -> FileSystemItem:
+        """Resolve path to FileSystemItem - override for network storage."""
+        absolute_path = self.get_absolute_path(file_path)
+
+        def _create_item() -> FileSystemItem:
+            if os.path.isdir(absolute_path):
+                return FileSystemItem(
+                    filename=os.path.basename(file_path),
+                    relative_path=get_relative_path(self.base_path, file_path),
+                    absolute_path=absolute_path,
+                    is_dir=True,
+                )
+            stat_info = os.stat(absolute_path, follow_symlinks=False)
+            return FileSystemItem(
+                filename=os.path.basename(file_path),
+                relative_path=get_relative_path(self.base_path, file_path),
+                absolute_path=absolute_path,
+                is_dir=False,
+                checksum=str(int(stat_info.st_mtime)),
+                file_size=stat_info.st_size,
+            )
+
+        return await asyncio.to_thread(_create_item)
+
+    async def _scandir_impl(self, path: str) -> list[FileSystemItem]:
+        """List directory contents - override for network storage."""
+        abs_path = self.get_absolute_path(path)
+        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path)
