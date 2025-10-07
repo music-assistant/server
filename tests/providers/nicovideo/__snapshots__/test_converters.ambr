@@ -1885,7 +1885,7 @@
       'uri': None,
     }),
     'stream_title': 'ゲスト - APIテスト用',
-    'stream_type': 'http',
+    'stream_type': 'custom',
     'target_loudness': None,
     'volume_normalization_gain_correct': None,
     'volume_normalization_mode': None,

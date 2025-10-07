@@ -100,7 +100,11 @@
         },
         "channel": [],
         "owner": [],
-        "viewer": null
+        "viewer": {
+          "revision": 1,
+          "count": 1,
+          "items": []
+        }
       },
       "isAttentionRequired": false,
       "nvComment": {
@@ -153,7 +157,7 @@
         "videos": [
           {
             "id": "video-h264-1080p",
-            "isAvailable": false,
+            "isAvailable": true,
             "label": "1080p",
             "bitRate": 25878,
             "width": 1466,
@@ -330,7 +334,7 @@
             ]
           }
         ],
-        "isStoryboardAvailable": false,
+        "isStoryboardAvailable": true,
         "accessRightKey": "dummy.jwt.token.for.testing"
       },
       "delivery": null,
@@ -346,7 +350,9 @@
       "isVideosPublic": true,
       "isMylistsPublic": true,
       "videoLiveNotice": null,
-      "viewer": null
+      "viewer": {
+        "isFollowing": false
+      }
     },
     "payment": {
       "video": {
@@ -379,8 +385,8 @@
         "bannerIn": null,
         "overlay": null
       },
-      "showOwnerMenu": false,
-      "showOwnerThreadCoEditingLink": false,
+      "showOwnerMenu": true,
+      "showOwnerThreadCoEditingLink": true,
       "showMymemoryEditingLink": false,
       "channelGtmContainerId": "GTM-K8M6VGZ"
     },
@@ -475,11 +481,15 @@
       "hasR18Tag": false,
       "isPublishedNicoscript": false,
       "edit": {
-        "isEditable": false,
-        "uneditableReason": "NEED_LOGIN",
+        "isEditable": true,
+        "uneditableReason": null,
         "editKey": "dummy.jwt.token.for.testing"
       },
-      "viewer": null
+      "viewer": {
+        "isEditable": true,
+        "uneditableReason": null,
+        "editKey": "dummy.jwt.token.for.testing"
+      }
     },
     "video": {
       "id": "sm45285955",
@@ -509,7 +519,13 @@
       "isAuthenticationRequired": false,
       "isEmbedPlayerAllowed": true,
       "isGiftAllowed": true,
-      "viewer": null,
+      "viewer": {
+        "isOwner": true,
+        "like": {
+          "isLiked": true,
+          "count": null
+        }
+      },
       "watchableUserTypeForPayment": "all",
       "commentableUserTypeForPayment": "all"
     },
@@ -523,7 +539,9 @@
         "nicosid": "dummy_nicosid_for_testing",
         "lang": "ja-jp",
         "watchTrackId": "dummy_track_id_for_testing",
-        "genre": "other"
+        "genre": "other",
+        "gender": "4",
+        "age": 65
       },
       "items": [
         {
@@ -552,7 +570,17 @@
       "reason": "non_premium_user_ads"
     },
     "videoLive": null,
-    "viewer": null,
+    "viewer": {
+      "id": 68461151,
+      "nickname": "ゲスト",
+      "isPremium": false,
+      "allowSensitiveContents": true,
+      "existence": {
+        "age": 65,
+        "prefecture": "北海道",
+        "sex": "unanswered"
+      }
+    },
     "waku": {
       "information": null,
       "bgImages": [],
@@ -627,5 +655,6 @@
     ]
   },
   "hls_url": "https://dummy.hls.url/for/testing",
-  "domand_bid": "dummy_domand_bid_for_testing"
+  "domand_bid": "dummy_domand_bid_for_testing",
+  "m3u8_text": "dummy_m3u8_text_for_testing"
 }

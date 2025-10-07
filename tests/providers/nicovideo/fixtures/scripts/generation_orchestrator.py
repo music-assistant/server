@@ -8,6 +8,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any, override
 from unittest.mock import Mock
 
+import aiohttp
 from niconico import NicoNico
 from niconico.exceptions import LoginFailureError
 from pydantic import BaseModel, ValidationError
@@ -123,9 +124,26 @@ class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
             logger.info("Login successful!")
 
             logger.info("=== Generating nicovideo fixtures ===")
-            service_manager = NicovideoServiceManager(Mock(), Mock())
-            data_generators = FixtureDataGenerators(self, client, service_manager, limit=self.limit)
-            await data_generators.generate_all_fixtures()
+
+            # Create a mock provider with real http_session
+            mock_provider = Mock()
+            mock_mass = Mock()
+            mock_logger = Mock()
+
+            # Create real aiohttp session for http requests
+            async with aiohttp.ClientSession() as session:
+                mock_mass.http_session = session
+                mock_provider.mass = mock_mass
+                mock_provider.logger = mock_logger
+
+                service_manager = NicovideoServiceManager(mock_provider, Mock())
+                # Override the niconico_py_client with the authenticated client
+                service_manager.niconico_py_client = client
+
+                data_generators = FixtureDataGenerators(
+                    self, client, service_manager, limit=self.limit
+                )
+                await data_generators.generate_all_fixtures()
 
             logger.info("=== Generating fixture types file ===")
             self.path_to_type_mapping.generate_fixture_types_file()
