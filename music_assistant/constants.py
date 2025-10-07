@@ -993,7 +993,7 @@ LIVE_INDICATORS = [
 
 SOUNDTRACK_INDICATORS = [
     r"\bsoundtrack\b",  # Catches all soundtrack variations
-    r"\bmusic from the motion picture\b",
+    r"\bmusic from the .* motion picture\b",
     r"\boriginal score\b",
     r"\bthe score\b",
     r"\bfilm score\b",
