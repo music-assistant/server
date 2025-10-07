@@ -367,7 +367,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    # @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         # Grab the full playlist by default
@@ -393,7 +393,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    # @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
         if page > 0:
@@ -885,8 +885,9 @@ class YoutubeMusicProvider(MusicProvider):
                     ),
                 )
             },
-            disc_number=0,  # not supported on YTM?
-            track_number=track_obj.get("trackNumber", 0),
+            # Disc / Track info is not available in YTM
+            disc_number=0,
+            track_number=0,
         )
 
         if track_obj.get("artists"):
