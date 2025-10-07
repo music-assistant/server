@@ -18,10 +18,10 @@ alexapy==1.29.8
 async-upnp-client==0.45.0
 audible==0.10.0
 bidict==0.23.1
-certifi==2025.8.3
+certifi==2025.10.5
 chardet>=5.2.0
 colorlog==6.9.0
-cryptography==46.0.1
+cryptography==46.0.2
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 duration-parser==1.0.1
@@ -66,4 +66,4 @@ uv>=0.8.0
 websocket-client==1.8.0
 xmltodict==1.0.2
 ytmusicapi==1.11.1
-zeroconf==0.147.2
+zeroconf==0.148.0

@@ -82,7 +82,13 @@ class ChromecastInfo:
         self.is_dynamic_group = self.uuid in dynamic_groups
         if self.uuid in multichannel_groups:
             self.is_multichannel_group = True
-        elif multichannel_groups:
+        elif (
+            multichannel_groups
+            # Prevent a multichannel group being marked as a multichannel child
+            # if not in UUID list
+            and self.cast_type != "group"
+            and self.model_name != "Google Cast Group"
+        ):
             self.is_multichannel_child = True
 
 
