@@ -7,7 +7,6 @@ import contextlib
 import logging
 import os
 import os.path
-import stat
 import time
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterator, Sequence
