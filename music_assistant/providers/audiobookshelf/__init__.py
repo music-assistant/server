@@ -579,7 +579,7 @@ for more details.
             media_type=MediaType.AUDIOBOOK,
             stream_type=StreamType.HTTP,
             duration=int(abs_audiobook.media.duration),
-            data=tracks,
+            path=file_parts,
             can_seek=True,
             allow_seek=True,
         )
