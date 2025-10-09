@@ -322,7 +322,7 @@ class YoutubeMusicProvider(MusicProvider):
         for podcast in podcasts_obj:
             yield self._parse_podcast(podcast)
 
-    # @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         if album_obj := await get_album(prov_album_id=prov_album_id, language=self.language):
@@ -330,7 +330,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
-    # @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         album_obj = await get_album(prov_album_id=prov_album_id, language=self.language)
