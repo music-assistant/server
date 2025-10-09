@@ -541,8 +541,6 @@ for more details.
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream of item."""
-        # ensure we have a valid token
-        await self.reauthenticate()
         if media_type == MediaType.PODCAST_EPISODE:
             return await self._get_stream_details_episode(item_id)
         elif media_type == MediaType.AUDIOBOOK:
