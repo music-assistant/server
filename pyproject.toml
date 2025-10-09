@@ -40,6 +40,7 @@ dependencies = [
   "uv>=0.8.0",
   "librosa==0.11.0",
   "gql[all]==4.0.0",
+  "aiovban>=0.6.3",
 ]
 description = "Music Assistant"
 license = {text = "Apache-2.0"}

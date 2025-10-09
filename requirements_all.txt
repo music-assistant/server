@@ -14,6 +14,7 @@ aiorun==2025.1.1
 aioslimproto==3.1.1
 aiosonos==0.1.9
 aiosqlite==0.21.0
+aiovban>=0.6.3
 alexapy==1.29.8
 async-upnp-client==0.45.0
 audible==0.10.0
