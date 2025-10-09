@@ -249,6 +249,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
             for provider_track in provider_tracks:
+                # In some cases (looking at you YTM) the disc/track number is not obtained from
+                # library_tracks. Ensure to update the disc/track number when interacting with
+                # album tracks
+                await self._set_album_track(db_id=library_album.item_id, track=provider_track)
                 if provider_track.item_id in unique_ids:
                     continue
                 unique_id = f"{provider_track.disc_number}.{provider_track.track_number}"
@@ -444,6 +448,36 @@ class AlbumsController(MediaControllerBase[Album]):
             },
         )
         return ItemMapping.from_item(db_artist)
+
+    async def _set_album_track(self, db_id: int, track: Track) -> None:
+        """Store Album Track info."""
+        db_track: Track | None = None
+        if track.provider == "library":
+            return
+        if existing := await self.mass.music.tracks.get_library_item_by_prov_id(
+            track.item_id, track.provider
+        ):
+            db_track = existing
+
+        if not db_track:
+            return
+
+        if (
+            db_track.disc_number == track.disc_number
+            and db_track.track_number == track.track_number
+        ):
+            return  # No need to update
+
+        # write (or update) record in album_tracks table
+        await self.mass.music.database.insert_or_replace(
+            DB_TABLE_ALBUM_TRACKS,
+            {
+                "album_id": db_id,
+                "track_id": int(db_track.item_id),
+                "track_number": track.track_number,
+                "disc_number": track.disc_number,
+            },
+        )
 
     async def match_providers(self, db_album: Album) -> None:
         """Try to find match on all (streaming) providers for the provided (database) album.
