@@ -141,6 +141,8 @@ class NicovideoHLSProcessor:
         Returns:
             HLSStreamContext with all streaming setup information
         """
+        # Stage 1: Calculate which segment contains the seek position (coarse seek)
+        # This avoids processing unnecessary segments before the target position
         start_segment_idx, offset_within_segment = self._calculate_start_segment(seek_position)
         if seek_position > 0:
             log_verbose(
@@ -152,12 +154,14 @@ class NicovideoHLSProcessor:
                 offset_within_segment,
             )
 
+        # Generate m3u8 playlist starting from the calculated segment
         dynamic_m3u8_text = self._generate_dynamic_m3u8(start_segment_idx)
 
         # Build FFmpeg extra input arguments
         headers = f"User-Agent: {NICOVIDEO_USER_AGENT}\r\nCookie: domand_bid={self.domand_bid}\r\n"
         extra_input_args = ["-headers", headers]
 
+        # Stage 2: Apply input-side -ss for fine-tuning within the segment
         if offset_within_segment > 0:
             extra_input_args.extend(["-ss", str(offset_within_segment)])
 

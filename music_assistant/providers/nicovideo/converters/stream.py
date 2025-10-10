@@ -176,6 +176,11 @@ class NicovideoStreamConverter(NicovideoConverterBase):
                 bit_rate=selected_audio.bit_rate,
             ),
             media_type=MediaType.TRACK,
+            # CUSTOM stream type enables optimized seeking for nicovideo's fMP4-based HLS:
+            # 1. Generate dynamic m3u8 starting near target position (coarse seek)
+            # 2. Use input-side -ss within segment boundary (fine-tune)
+            # Note: Input-side -ss can't cross segment boundaries; output-side could but
+            # would require full decode of all prior segments.
             stream_type=StreamType.CUSTOM,
             duration=watch_data.video.duration,
             stream_metadata=StreamMetadata(
