@@ -176,6 +176,7 @@ class OpenSonicProvider(MusicProvider):
 
     async def resolve_image(self, path: str) -> bytes | Any:
         """Return the image."""
+        self.logger.debug("Requesting cover art for '%s'", path)
 
         def _get_cover_art() -> bytes | Any:
             try:
