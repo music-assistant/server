@@ -682,8 +682,8 @@ class DLNAServerProvider(PluginProvider):
                 limit=limit, offset=offset, order_by="sort_name"
             )
             album_items = [
-                self._create_album_container(album, ALBUMS_CONTAINER_ID)
-                for album in albums  # type: ignore
+                self._create_album_container(album, ALBUMS_CONTAINER_ID)  # type: ignore
+                for album in albums
             ]
             total = await self.mass.music.albums.library_count()
             didl_xml = self._wrap_didl_items(album_items)
