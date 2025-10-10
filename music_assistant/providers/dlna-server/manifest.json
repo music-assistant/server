@@ -1,0 +1,12 @@
+{
+  "type": "plugin",
+  "domain": "dlna-server",
+  "stage": "beta",
+  "name": "DLNA Server",
+  "description": "Expose your Music Assistant library to other DLNA-compatible players and apps on your network.",
+  "codeowners": ["@ozgav"],
+  "documentation": "https://music-assistant.io/plugins/dlna-server/",
+  "multi_instance": false,
+  "builtin": false,
+  "requirements": []
+}
