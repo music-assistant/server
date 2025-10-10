@@ -104,7 +104,7 @@ class AlbumsController(MediaControllerBase[Album]):
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
         album_types: list[AlbumType] | None = None,
-    ) -> list[Artist]:
+    ) -> list[Album]:
         """Get in-database albums."""
         extra_query_params: dict[str, Any] = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
