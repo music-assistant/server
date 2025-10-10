@@ -1,4 +1,4 @@
-"""Fixture data generation handlers for different categories."""
+"""Fixture data collection handlers for different categories."""
 
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class FixtureDataGenerators:
-    """Handles API calls and data generation for different fixture categories."""
+class APIFixtureCollector:
+    """Collects fixture data by calling APIs for different categories."""
 
     def __init__(
         self,
@@ -37,11 +37,11 @@ class FixtureDataGenerators:
         self.service_manager = service_manager
         self.limit = limit
 
-    async def generate_tracks_fixtures(
+    async def collect_tracks_fixtures(
         self,
     ) -> None:
-        """Generate TRACKS category fixtures."""
-        logger.info("=== Generating TRACKS fixtures ===")
+        """Collect TRACKS category fixtures."""
+        logger.info("=== Collecting TRACKS fixtures ===")
 
         # Own videos
         await self.fixture_processor.process_fixture(
@@ -68,11 +68,11 @@ class FixtureDataGenerators:
             page_size=self.limit,
         )
 
-    async def generate_playlists_fixtures(
+    async def collect_playlists_fixtures(
         self,
     ) -> None:
-        """Generate PLAYLISTS category fixtures."""
-        logger.info("=== Generating PLAYLISTS fixtures ===")
+        """Collect PLAYLISTS category fixtures."""
+        logger.info("=== Collecting PLAYLISTS fixtures ===")
 
         # Own mylists (used as library playlists in provider)
         await self.fixture_processor.process_fixture(
@@ -98,11 +98,11 @@ class FixtureDataGenerators:
             page=1,
         )
 
-    async def generate_albums_fixtures(
+    async def collect_albums_fixtures(
         self,
     ) -> None:
-        """Generate ALBUMS category fixtures."""
-        logger.info("=== Generating ALBUMS fixtures ===")
+        """Collect ALBUMS category fixtures."""
+        logger.info("=== Collecting ALBUMS fixtures ===")
 
         # Own series (used as library albums in provider)
         await self.fixture_processor.process_fixture(
@@ -131,11 +131,11 @@ class FixtureDataGenerators:
             page_size=self.limit,
         )
 
-    async def generate_artists_fixtures(
+    async def collect_artists_fixtures(
         self,
     ) -> None:
-        """Generate ARTISTS category fixtures."""
-        logger.info("=== Generating ARTISTS fixtures ===")
+        """Collect ARTISTS category fixtures."""
+        logger.info("=== Collecting ARTISTS fixtures ===")
 
         # Following users (used as library artists in provider)
         await self.fixture_processor.process_fixture(
@@ -150,11 +150,11 @@ class FixtureDataGenerators:
             str(SAMPLE_USER_ID),
         )
 
-    async def generate_search_fixtures(
+    async def collect_search_fixtures(
         self,
     ) -> None:
-        """Generate SEARCH category fixtures."""
-        logger.info("=== Generating SEARCH fixtures ===")
+        """Collect SEARCH category fixtures."""
+        logger.info("=== Collecting SEARCH fixtures ===")
 
         # Video search
         await self.fixture_processor.process_fixture(
@@ -202,11 +202,11 @@ class FixtureDataGenerators:
             types=["series"],
         )
 
-    async def generate_history_fixtures(
+    async def collect_history_fixtures(
         self,
     ) -> None:
-        """Generate HISTORY category fixtures."""
-        logger.info("=== Generating HISTORY fixtures ===")
+        """Collect HISTORY category fixtures."""
+        logger.info("=== Collecting HISTORY fixtures ===")
 
         # History
         await self.fixture_processor.process_fixture(
@@ -224,11 +224,11 @@ class FixtureDataGenerators:
             page_size=self.limit,
         )
 
-    async def generate_stream_fixtures(
+    async def collect_stream_fixtures(
         self,
     ) -> None:
-        """Generate STREAM category fixtures."""
-        logger.info("=== Generating STREAM fixtures ===")
+        """Collect STREAM category fixtures."""
+        logger.info("=== Collecting STREAM fixtures ===")
 
         # Stream details
         # Note: Using private method for test fixture generation
@@ -240,19 +240,19 @@ class FixtureDataGenerators:
             SAMPLE_VIDEO_ID,
         )
 
-    async def generate_all_fixtures(
+    async def collect_all_fixtures(
         self,
     ) -> None:
-        """Generate all fixtures using the provided client."""
-        logger.info("Starting fixture generation...")
+        """Collect all fixtures using the provided client."""
+        logger.info("Starting fixture collection...")
 
-        # Generate fixtures for each category
-        await self.generate_tracks_fixtures()
-        await self.generate_playlists_fixtures()
-        await self.generate_albums_fixtures()
-        await self.generate_artists_fixtures()
-        await self.generate_search_fixtures()
-        await self.generate_history_fixtures()
-        await self.generate_stream_fixtures()
+        # Collect fixtures for each category
+        await self.collect_tracks_fixtures()
+        await self.collect_playlists_fixtures()
+        await self.collect_albums_fixtures()
+        await self.collect_artists_fixtures()
+        await self.collect_search_fixtures()
+        await self.collect_history_fixtures()
+        await self.collect_stream_fixtures()
 
-        logger.info("=== All fixtures generated successfully! ===")
+        logger.info("=== All fixtures collected successfully! ===")

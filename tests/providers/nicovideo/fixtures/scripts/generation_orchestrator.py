@@ -14,18 +14,19 @@ from niconico.exceptions import LoginFailureError
 from pydantic import BaseModel, ValidationError
 
 from music_assistant.providers.nicovideo.services.manager import NicovideoServiceManager
-from tests.providers.nicovideo.constants import GENERATED_FIXTURES_DIR
-from tests.providers.nicovideo.fixtures.scripts.data_generators import (
-    FixtureDataGenerators,
-)
-from tests.providers.nicovideo.fixtures.scripts.data_saver import (
-    FixtureDataSaver,
+from tests.providers.nicovideo.constants import GENERATED_DIR, GENERATED_FIXTURES_DIR
+from tests.providers.nicovideo.fixtures.scripts.api_fixture_collector import (
+    APIFixtureCollector,
 )
 from tests.providers.nicovideo.fixtures.scripts.field_stabilizer import (
     FieldStabilizer,
 )
-from tests.providers.nicovideo.fixtures.scripts.path_to_type_mapper import (
-    PathToTypeMapper,
+from tests.providers.nicovideo.fixtures.scripts.fixture_saver import (
+    FixtureSaver,
+)
+from tests.providers.nicovideo.fixtures.scripts.fixture_type_mapping import (
+    FixtureTypeMappingCollector,
+    FixtureTypeMappingFileGenerator,
 )
 from tests.providers.nicovideo.helpers import (
     to_dict_for_fixture,
@@ -47,8 +48,8 @@ class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
     """Main orchestrator for fixture generation process.
 
     Implements FixtureProcessorProtocol to expose only the necessary interface
-    to FixtureDataGenerators, preventing tight coupling to internal components
-    (field_stabilizer, data_saver, path_to_type_mapping).
+    to APIFixtureCollector, preventing tight coupling to internal components
+    (field_stabilizer, fixture_saver, fixture_type_mapping).
     """
 
     def __init__(self) -> None:
@@ -56,8 +57,8 @@ class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
         self.limit = FIXTURE_LIMIT
 
         # Initialize components with clear responsibilities
-        self.path_to_type_mapping = PathToTypeMapper()
-        self.data_saver = FixtureDataSaver()
+        self.type_mapping_collector = FixtureTypeMappingCollector()
+        self.fixture_saver = FixtureSaver()
         self.field_stabilizer = FieldStabilizer()
 
     @override
@@ -96,14 +97,14 @@ class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
             response = self.field_stabilizer.stabilize(response)
 
             # Record type mapping for automatic generation
-            self.path_to_type_mapping.record_type_mapping(response, category, name)
+            self.type_mapping_collector.record_type_mapping(response, category, name)
 
             # Convert to JSON serializable format
             data = to_dict_for_fixture(response)
 
             # Save fixture data
             fixture_path = GENERATED_FIXTURES_DIR / category / f"{name}.json"
-            self.data_saver.save_fixture_data(data, fixture_path)
+            self.fixture_saver.save_fixture_data(data, fixture_path)
 
             # Return original response object
             return response
@@ -131,7 +132,7 @@ class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
             client.login_with_session(test_user_session)
             logger.info("Login successful!")
 
-            logger.info("=== Generating nicovideo fixtures ===")
+            logger.info("=== Collecting nicovideo fixtures ===")
 
             # Create a mock provider with real http_session
             mock_provider = Mock()
@@ -148,18 +149,19 @@ class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
                 # Override the niconico_py_client with the authenticated client
                 service_manager.niconico_py_client = client
 
-                data_generators = FixtureDataGenerators(
-                    self, client, service_manager, limit=self.limit
-                )
-                await data_generators.generate_all_fixtures()
+                api_collector = APIFixtureCollector(self, client, service_manager, limit=self.limit)
+                await api_collector.collect_all_fixtures()
 
             logger.info("=== Generating fixture types file ===")
-            self.path_to_type_mapping.generate_fixture_types_file()
+            generator = FixtureTypeMappingFileGenerator(
+                self.type_mapping_collector.get_all_mappings()
+            )
+            generator.generate_file(GENERATED_DIR / "fixture_types.py")
 
-            logger.info("=== All fixtures generated successfully! ===")
+            logger.info("=== All fixtures collected successfully! ===")
 
             # Show diff summary
-            self.data_saver.log_summary()
+            self.fixture_saver.log_summary()
 
         except LoginFailureError as e:
             logger.error(f"Login failed: {e}")

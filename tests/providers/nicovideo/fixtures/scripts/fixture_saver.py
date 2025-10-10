@@ -14,8 +14,8 @@ from tests.providers.nicovideo.types import JsonContainer
 logger = logging.getLogger(__name__)
 
 
-class FixtureDataSaver:
-    """Handles fixture data saving with integrated diff tracking."""
+class FixtureSaver:
+    """Saves fixture data with integrated diff tracking."""
 
     def __init__(self) -> None:
         """Initialize the fixture data saver with diff tracking."""

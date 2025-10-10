@@ -1,4 +1,45 @@
-"""Generated converter tests using fixture test mappings."""
+"""Generated converter tests using fixture test mappings.
+
+This module provides automated converter testing for the Nicovideo provider.
+The test system is type-safe with automatic fixture updates and parameterized
+converter/type specification through common test functions.
+
+Type System:
+    - API Responses: Pydantic BaseModel (for JSON validation and fixture saving)
+    - Converter Results: mashumaro DataClassDictMixin (for snapshot serialization)
+
+Architecture Overview:
+    1. Fixture Collection (fixtures/scripts/api_fixture_collector.py):
+       - Collects API responses by calling Niconico APIs
+       - Saves responses as JSON fixtures in generated/fixtures/
+
+    2. Type Mapping (fixtures/fixture_type_mapping.py):
+       - Maps fixture paths to their Pydantic types
+       - Auto-generates generated/fixture_types.py
+
+    3. Converter Mapping (fixtures/api_response_converter_mapping.py):
+       - Defines which converter function to use for each API response type
+       - Registry provides O(1) type -> converter lookup
+
+    4. Test Execution (this file):
+       - Loads fixtures using FixtureLoader
+       - Applies converters via mapping registry
+       - Validates results against snapshots
+
+
+Adding New API Endpoints:
+    See: tests/providers/nicovideo/fixtures/scripts/api_fixture_collector.py
+    Add collection method and call from collect_all_fixtures()
+    Note: API response types must inherit from Pydantic BaseModel
+
+
+Adding New Converters:
+    1. Implement converter: music_assistant/providers/nicovideo/converters/
+       Note: Return types must inherit from mashumaro DataClassDictMixin
+    2. Register: music_assistant/providers/nicovideo/converters/manager.py
+    3. Add mapping: tests/providers/nicovideo/fixtures/api_response_converter_mapping.py
+
+"""
 
 from __future__ import annotations
 
@@ -8,7 +49,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from tests.providers.nicovideo.fixtures.fixture_manager import FixtureManager
 from tests.providers.nicovideo.helpers import (
     to_dict_for_snapshot,
 )
@@ -18,10 +58,11 @@ if TYPE_CHECKING:
     from syrupy.assertion import SnapshotAssertion
 
     from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
-    from tests.providers.nicovideo.fixtures.type_to_converter_mapping import (
+    from tests.providers.nicovideo.fixtures.api_response_converter_mapping import (
+        APIResponseConverterMappingRegistry,
         SnapshotableItem,
-        TypeToConverterMappingRegistry,
     )
+    from tests.providers.nicovideo.fixtures.fixture_loader import FixtureLoader
 
 
 from .constants import GENERATED_FIXTURES_DIR
@@ -32,16 +73,16 @@ class ConverterTestRunner:
 
     def __init__(
         self,
-        mapping_registry: TypeToConverterMappingRegistry,
+        mapping_registry: APIResponseConverterMappingRegistry,
         converter_manager: NicovideoConverterManager,
-        fixture_manager: FixtureManager,
+        fixture_loader: FixtureLoader,
         snapshot: SnapshotAssertion,
         fixtures_dir: Path,
     ) -> None:
         """Initialize the test runner."""
         self.mapping_registry = mapping_registry
         self.converter_manager = converter_manager
-        self.fixture_manager = fixture_manager
+        self.fixture_loader = fixture_loader
         self.snapshot = snapshot
         self.fixtures_dir = fixtures_dir
         self.failed_tests: list[str] = []
@@ -68,7 +109,7 @@ class ConverterTestRunner:
 
         try:
             # Load fixture data
-            fixture_data = self.fixture_manager.load_fixture(relative_path)
+            fixture_data = self.fixture_loader.load_fixture(relative_path)
             if fixture_data is None:
                 self.failed_tests.append(f"{fixture_name}: Failed to load fixture")
                 return
@@ -79,7 +120,7 @@ class ConverterTestRunner:
                 fixture_id = (
                     f"{fixture_name}[{fixture_index}]" if len(fixture_list) > 1 else fixture_name
                 )
-                # fixture is BaseModel type from FixtureManager.load_fixture
+                # fixture is BaseModel type from FixtureLoader.load_fixture
                 self._process_single_fixture(fixture_id, fixture)
 
         except Exception as e:
@@ -160,16 +201,16 @@ class ConverterTestRunner:
 
 
 def test_converter_with_fixture(
-    mapping_registry: TypeToConverterMappingRegistry,
+    mapping_registry: APIResponseConverterMappingRegistry,
     converter_manager: NicovideoConverterManager,
-    fixture_manager: FixtureManager,
+    fixture_loader: FixtureLoader,
     snapshot: SnapshotAssertion,
 ) -> None:
     """Execute converter tests for all fixture files."""
     runner = ConverterTestRunner(
         mapping_registry=mapping_registry,
         converter_manager=converter_manager,
-        fixture_manager=fixture_manager,
+        fixture_loader=fixture_loader,
         snapshot=snapshot,
         fixtures_dir=GENERATED_FIXTURES_DIR,
     )

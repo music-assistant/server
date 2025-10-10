@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from mashumaro import DataClassDictMixin
 from niconico.objects.nvapi import (
@@ -38,7 +38,7 @@ type ConvertedResult = SnapshotableItem | list[SnapshotableItem] | None
 
 
 @dataclass(frozen=True)
-class TypeToConverterMapping[T: BaseModel]:
+class APIResponseConverterMapping[T: BaseModel]:
     """Maps API type to converter function."""
 
     source_type: type[T]
@@ -46,17 +46,17 @@ class TypeToConverterMapping[T: BaseModel]:
 
 
 # API type to converter function mappings
-TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
+API_RESPONSE_CONVERTER_MAPPINGS = (
     # Track Types
-    TypeToConverterMapping[EssentialVideo](
+    APIResponseConverterMapping(
         source_type=EssentialVideo,
         convert_func=lambda data, cm: cm.track.convert_by_essential_video(data),
     ),
-    TypeToConverterMapping[WatchData](
+    APIResponseConverterMapping(
         source_type=WatchData,
         convert_func=lambda data, cm: cm.track.convert_by_watch_data(data),
     ),
-    TypeToConverterMapping[UserVideosData](
+    APIResponseConverterMapping(
         source_type=UserVideosData,
         convert_func=lambda data, cm: [
             track
@@ -64,7 +64,7 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
             if (track := cm.track.convert_by_essential_video(item.essential)) is not None
         ],
     ),
-    TypeToConverterMapping[OwnVideosData](
+    APIResponseConverterMapping(
         source_type=OwnVideosData,
         convert_func=lambda data, cm: [
             track
@@ -73,42 +73,42 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
         ],
     ),
     # Playlist Types
-    TypeToConverterMapping[Mylist](
+    APIResponseConverterMapping(
         source_type=Mylist,
         convert_func=lambda data, cm: cm.playlist.convert_with_tracks_by_mylist(data),
     ),
-    TypeToConverterMapping[UserMylistItem](
+    APIResponseConverterMapping(
         source_type=UserMylistItem,
         convert_func=lambda data, cm: cm.playlist.convert_by_mylist(data),
     ),
-    TypeToConverterMapping[FollowingMylistsData](
+    APIResponseConverterMapping(
         source_type=FollowingMylistsData,
         convert_func=lambda data, cm: [
             cm.playlist.convert_following_by_mylist(item) for item in data.mylists
         ],
     ),
     # Album Types
-    TypeToConverterMapping[SeriesData](
+    APIResponseConverterMapping(
         source_type=SeriesData,
         convert_func=lambda data, cm: cm.album.convert_series_to_album_with_tracks(data),
     ),
-    TypeToConverterMapping[UserSeriesItem](
+    APIResponseConverterMapping(
         source_type=UserSeriesItem,
         convert_func=lambda data, cm: cm.album.convert_by_series(data),
     ),
     # Artist Types
-    TypeToConverterMapping[RelationshipUsersData](
+    APIResponseConverterMapping(
         source_type=RelationshipUsersData,
         convert_func=lambda data, cm: [
             cm.artist.convert_by_owner_or_user(item) for item in data.items
         ],
     ),
-    TypeToConverterMapping[NicoUser](
+    APIResponseConverterMapping(
         source_type=NicoUser,
         convert_func=lambda data, cm: cm.artist.convert_by_owner_or_user(data),
     ),
     # Search Types
-    TypeToConverterMapping[VideoSearchData](
+    APIResponseConverterMapping(
         source_type=VideoSearchData,
         convert_func=lambda data, cm: [
             track
@@ -116,7 +116,7 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
             if (track := cm.track.convert_by_essential_video(item)) is not None
         ],
     ),
-    TypeToConverterMapping[ListSearchData](
+    APIResponseConverterMapping(
         source_type=ListSearchData,
         convert_func=lambda data, cm: [
             cm.playlist.convert_by_mylist(item)
@@ -126,7 +126,7 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
         ],
     ),
     # History Types
-    TypeToConverterMapping[HistoryData](
+    APIResponseConverterMapping(
         source_type=HistoryData,
         convert_func=lambda data, cm: [
             track
@@ -134,7 +134,7 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
             if (track := cm.track.convert_by_essential_video(item.video)) is not None
         ],
     ),
-    TypeToConverterMapping[LikeHistoryData](
+    APIResponseConverterMapping(
         source_type=LikeHistoryData,
         convert_func=lambda data, cm: [
             track
@@ -143,7 +143,7 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
         ],
     ),
     # Recommendation Types
-    TypeToConverterMapping[RecommendData](
+    APIResponseConverterMapping(
         source_type=RecommendData,
         convert_func=lambda data, cm: [
             track
@@ -153,22 +153,24 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
         ],
     ),
     # Stream Types
-    TypeToConverterMapping[StreamConversionData](
+    APIResponseConverterMapping(
         source_type=StreamConversionData,
         convert_func=lambda data, cm: cm.stream.convert_from_conversion_data(data),
     ),
-]
+)
 
 
-class TypeToConverterMappingRegistry:
+class APIResponseConverterMappingRegistry:
     """Maps API response types to converter functions."""
 
     def __init__(self) -> None:
         """Initialize the registry."""
-        self._registry: dict[type, TypeToConverterMapping[BaseModel]] = {}
-        for mapping in TYPE_TO_CONVERTER_MAPPINGS:
-            self._registry[mapping.source_type] = cast("TypeToConverterMapping[BaseModel]", mapping)
+        self._registry: dict[type, APIResponseConverterMapping[BaseModel]] = {}
+        for mapping in API_RESPONSE_CONVERTER_MAPPINGS:
+            self._registry[mapping.source_type] = cast(
+                "APIResponseConverterMapping[BaseModel]", mapping
+            )
 
-    def get_by_type(self, source_type: type) -> TypeToConverterMapping[BaseModel] | None:
+    def get_by_type(self, source_type: type) -> APIResponseConverterMapping[BaseModel] | None:
         """Get mapping by type with O(1) lookup."""
         return self._registry.get(source_type)

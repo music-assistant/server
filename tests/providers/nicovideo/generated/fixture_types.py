@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-# Import all necessary types for fixture mapping
 from niconico.objects.nvapi import (
     FollowingMylistsData,
     HistoryData,

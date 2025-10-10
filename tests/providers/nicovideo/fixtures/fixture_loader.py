@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 from tests.providers.nicovideo.types import JsonContainer
 
 
-class FixtureManager:
-    """Manages loading and handling of test fixtures with type validation."""
+class FixtureLoader:
+    """Loads and validates test fixtures with type validation."""
 
     def __init__(self, fixtures_dir: pathlib.Path) -> None:
         """Initialize the fixture manager with the directory containing fixtures."""
