@@ -30,7 +30,6 @@ from music_assistant.providers.nicovideo.converters.stream import (
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
-    from tests.providers.nicovideo.types import FixtureAPIResultOptional
 
 
 # Type definitions for converter results
@@ -168,37 +167,8 @@ class TypeToConverterMappingRegistry:
         """Initialize the registry."""
         self._registry: dict[type, TypeToConverterMapping[BaseModel]] = {}
         for mapping in TYPE_TO_CONVERTER_MAPPINGS:
-            self.register(mapping)
-
-    def register[T: BaseModel](self, mapping: TypeToConverterMapping[T]) -> None:
-        """Register mapping."""
-        self._registry[mapping.source_type] = cast("TypeToConverterMapping[BaseModel]", mapping)
+            self._registry[mapping.source_type] = cast("TypeToConverterMapping[BaseModel]", mapping)
 
     def get_by_type(self, source_type: type) -> TypeToConverterMapping[BaseModel] | None:
-        """O(1) type-based search."""
+        """Get mapping by type with O(1) lookup."""
         return self._registry.get(source_type)
-
-    def get_by_data[T: BaseModel](
-        self, api_data: FixtureAPIResultOptional[T]
-    ) -> TypeToConverterMapping[BaseModel] | None:
-        """Get mapping and data type for the API data."""
-        if api_data is None:
-            return None
-
-        # Determine the type to look up
-        if isinstance(api_data, BaseModel):
-            lookup_type = type(api_data)
-        elif isinstance(api_data, list) and api_data:
-            lookup_type = type(api_data[0])
-        else:
-            return None
-
-        mapping = self.get_by_type(lookup_type)
-        if mapping is None:
-            return None
-
-        return mapping
-
-    def get_all_mappings(self) -> list[TypeToConverterMapping[BaseModel]]:
-        """Get all mappings."""
-        return list(self._registry.values())

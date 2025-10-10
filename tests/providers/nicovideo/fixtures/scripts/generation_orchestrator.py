@@ -21,11 +21,13 @@ from tests.providers.nicovideo.fixtures.scripts.data_generators import (
 from tests.providers.nicovideo.fixtures.scripts.data_saver import (
     FixtureDataSaver,
 )
+from tests.providers.nicovideo.fixtures.scripts.field_stabilizer import (
+    FieldStabilizer,
+)
 from tests.providers.nicovideo.fixtures.scripts.path_to_type_mapper import (
     PathToTypeMapper,
 )
 from tests.providers.nicovideo.helpers import (
-    stabilize_dynamic_fields_for_fixture,
     to_dict_for_fixture,
 )
 from tests.providers.nicovideo.types import (
@@ -42,7 +44,12 @@ FIXTURE_LIMIT = 1
 
 
 class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
-    """Main orchestrator for fixture generation process."""
+    """Main orchestrator for fixture generation process.
+
+    Implements FixtureProcessorProtocol to expose only the necessary interface
+    to FixtureDataGenerators, preventing tight coupling to internal components
+    (field_stabilizer, data_saver, path_to_type_mapping).
+    """
 
     def __init__(self) -> None:
         """Initialize the fixture generation orchestrator."""
@@ -51,6 +58,7 @@ class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
         # Initialize components with clear responsibilities
         self.path_to_type_mapping = PathToTypeMapper()
         self.data_saver = FixtureDataSaver()
+        self.field_stabilizer = FieldStabilizer()
 
     @override
     async def process_fixture[T: BaseModel, **P](
@@ -85,7 +93,7 @@ class FixtureGenerationOrchestrator(FixtureProcessorProtocol):
                 response = response[: self.limit]
 
             # Stabilize the response data before processing
-            response = stabilize_dynamic_fields_for_fixture(response)
+            response = self.field_stabilizer.stabilize(response)
 
             # Record type mapping for automatic generation
             self.path_to_type_mapping.record_type_mapping(response, category, name)

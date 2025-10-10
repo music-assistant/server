@@ -3,33 +3,19 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypeVar
 from unittest.mock import Mock
 
 from pydantic import BaseModel
 
-from tests.providers.nicovideo.constants import (
-    DUMMY_COUNT,
-    STABILIZATION_RULES,
-)
+from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
 from tests.providers.nicovideo.types import FixtureAPIResult, JsonContainer, JsonDict, JsonList
 
 if TYPE_CHECKING:
     from mashumaro import DataClassDictMixin
     from pydantic import JsonValue
 
-from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
-
 T = TypeVar("T")
-
-
-@dataclass
-class StabilizationContext:
-    """Context for field stabilization processing."""
-
-    in_count_property: bool = False
-    field_path: list[str] = field(default_factory=list)
 
 
 def create_converter_manager() -> NicovideoConverterManager:
@@ -101,66 +87,4 @@ def to_dict_for_fixture[T: BaseModel](response: FixtureAPIResult[T]) -> JsonCont
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             data.append(item.model_dump(by_alias=True))
-    return data
-
-
-def stabilize_dynamic_fields_for_fixture[T: BaseModel](
-    data: FixtureAPIResult[T],
-) -> FixtureAPIResult[T]:
-    """Stabilize dynamic fields in API responses for consistent fixture generation.
-
-    This function replaces all count-related numeric values with DUMMY_COUNT
-    to ensure fixtures are stable across different API response states.
-    """
-    if isinstance(data, list):
-        return [_stabilize_model_counts(item) for item in data]
-    return _stabilize_model_counts(data)
-
-
-def _stabilize_model_counts[T: BaseModel](data: T) -> T:
-    """Stabilize count values in a single Pydantic model."""
-    # For Pydantic models, create a copy and update fields
-    data_dict = data.model_dump(by_alias=True)
-    stabilized_dict = _stabilize_all_fields(data_dict, StabilizationContext())
-    return data.__class__.model_validate(stabilized_dict)
-
-
-def _stabilize_all_fields(data: JsonValue, context: StabilizationContext) -> JsonValue:
-    """Stabilize both dynamic fields and count values in a single recursive pass."""
-    if isinstance(data, dict):
-        stabilized: JsonDict = {}
-        for key, value in data.items():
-            # Create new context for this field
-            new_field_path = [*context.field_path, key]
-            is_count_key = "count" in key.lower()
-            new_in_count_property = context.in_count_property or is_count_key
-
-            new_context = StabilizationContext(
-                in_count_property=new_in_count_property,
-                field_path=new_field_path,
-            )
-
-            # Check if any stabilization rule matches this field
-            matched_rule = None
-            for rule in STABILIZATION_RULES:
-                if rule.matches(key):
-                    matched_rule = rule
-                    break
-
-            if matched_rule is not None:
-                # Apply the stabilization rule
-                stabilized[key] = matched_rule.replacement_value
-            else:
-                # Recursively process nested data with updated context
-                stabilized[key] = _stabilize_all_fields(value, new_context)
-        return stabilized
-
-    elif isinstance(data, list):
-        return [_stabilize_all_fields(item, context) for item in data]
-
-    elif context.in_count_property and isinstance(data, (int, float)):
-        # If we're inside a count property, convert all numbers to DUMMY_COUNT
-        return DUMMY_COUNT
-
-    # Return other values as-is
     return data

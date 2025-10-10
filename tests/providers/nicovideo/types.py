@@ -34,7 +34,12 @@ type JsonContainer = JsonDict | JsonList
 
 
 class FixtureProcessorProtocol(Protocol):
-    """Protocol for fixture saving operations."""
+    """Protocol for fixture processing operations.
+
+    Defines minimal interface for fixture generation, allowing components
+    to depend only on process_fixture rather than full orchestrator implementation.
+    This enables loose coupling and alternative implementations.
+    """
 
     async def process_fixture[T: BaseModel, **P](
         self,

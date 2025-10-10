@@ -101,20 +101,25 @@ class ConverterTestRunner:
                 self.skipped_tests.append(f"{fixture_id}: No conversion result")
                 return
 
-            # Convert to list for iteration
-            if isinstance(converted_result, list):
-                converted_list = converted_result
-            else:
-                converted_list = [converted_result]
-
-            for converted_index, converted in enumerate(converted_list):
-                snapshot_id = (
-                    f"{fixture_id}_{converted_index}" if len(converted_list) > 1 else fixture_id
-                )
-                self._process_converted_result(snapshot_id, converted)
+            # Process all converted items (handles both single and list results)
+            self._process_all_converted_items(fixture_id, converted_result)
 
         except Exception as e:
             self.failed_tests.append(f"{fixture_id}: {e}")
+
+    def _process_all_converted_items(
+        self,
+        base_fixture_id: str,
+        converted_result: SnapshotableItem | list[SnapshotableItem],
+    ) -> None:
+        """Process all items in converted result (handles both single and list)."""
+        # Convert to list for uniform processing
+        items = converted_result if isinstance(converted_result, list) else [converted_result]
+
+        for idx, item in enumerate(items):
+            # Generate unique snapshot ID for each item
+            snapshot_id = f"{base_fixture_id}_{idx}" if len(items) > 1 else base_fixture_id
+            self._process_converted_result(snapshot_id, item)
 
     def _process_converted_result(
         self,
