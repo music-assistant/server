@@ -13,8 +13,8 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.providers.nicovideo.converters.stream import NicovideoStreamData
-from music_assistant.providers.nicovideo.helpers.hls_processor import (
-    NicovideoHLSProcessor,
+from music_assistant.providers.nicovideo.helpers.hls_seek_optimizer import (
+    HLSSeekOptimizer,
 )
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
@@ -87,10 +87,10 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Get audio stream with dynamic m3u8 generation for optimized seeking.
+        """Get audio stream with dynamic playlist generation for optimized seeking.
 
         Args:
-            streamdetails: Stream details containing domand_bid and parsed_m3u8 in data field
+            streamdetails: Stream details containing domand_bid and parsed_playlist in data field
             seek_position: Position to seek to in seconds
 
         Yields:
@@ -100,26 +100,27 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
             msg = f"Invalid stream data type: {type(streamdetails.data)}"
             raise TypeError(msg)
 
-        stream_data = streamdetails.data
-        processor = NicovideoHLSProcessor(stream_data)
-        stream_context = processor.create_stream_context(seek_position)
+        hls_data = streamdetails.data
+        processor = HLSSeekOptimizer(hls_data)
+        optimized_context = processor.create_stream_context(seek_position)
 
-        # Register dynamic route to serve m3u8
+        # Register dynamic route to serve HLS playlist
         route_id = shortuuid.random(20)
         route_path = f"/nicovideo_m3u8/{route_id}.m3u8"
-        m3u8_url = f"{self.mass.streams.base_url}{route_path}"
+        playlist_url = f"{self.mass.streams.base_url}{route_path}"
 
-        async def _serve_m3u8(_request: web.Request) -> web.Response:
+        async def _serve_hls_playlist(_request: web.Request) -> web.Response:
+            """Serve dynamically generated HLS playlist (.m3u8) file for seeking."""
             return web.Response(
-                text=stream_context.dynamic_m3u8_text,
+                text=optimized_context.dynamic_playlist_text,
                 content_type="application/vnd.apple.mpegurl",
             )
 
-        unregister = self.mass.streams.register_dynamic_route(route_path, _serve_m3u8)
+        unregister = self.mass.streams.register_dynamic_route(route_path, _serve_hls_playlist)
 
         try:
             async for chunk in get_ffmpeg_stream(
-                audio_input=m3u8_url,
+                audio_input=playlist_url,
                 input_format=streamdetails.audio_format,
                 output_format=AudioFormat(
                     content_type=ContentType.NUT,
@@ -127,7 +128,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
                     bit_depth=streamdetails.audio_format.bit_depth,
                     channels=streamdetails.audio_format.channels,
                 ),
-                extra_input_args=stream_context.extra_input_args,
+                extra_input_args=optimized_context.extra_input_args,
             ):
                 yield chunk
         finally:

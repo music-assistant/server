@@ -1,4 +1,4 @@
-"""HLS streaming processor for nicovideo provider."""
+"""HLS seek optimizer for nicovideo provider."""
 
 from __future__ import annotations
 
@@ -7,49 +7,53 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from music_assistant.providers.nicovideo.constants import NICOVIDEO_USER_AGENT
+from music_assistant.providers.nicovideo.constants import (
+    DOMAND_BID_COOKIE_NAME,
+    NICOVIDEO_USER_AGENT,
+)
 from music_assistant.providers.nicovideo.helpers.utils import log_verbose
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.converters.stream import NicovideoStreamData
+    from music_assistant.providers.nicovideo.helpers.hls_models import ParsedHLSPlaylist
 
 LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class HLSStreamContext:
-    """Context for HLS streaming setup.
+class SeekOptimizedStreamContext:
+    """Context for seek-optimized HLS streaming.
 
-    Contains all information needed to set up streaming:
-    - Dynamic m3u8 content to serve
+    Contains all information needed to set up streaming with fast seeking:
+    - Dynamic playlist content to serve
     - FFmpeg extra input arguments (headers, seeking)
     """
 
-    dynamic_m3u8_text: str
+    dynamic_playlist_text: str
     extra_input_args: list[str]
 
 
-class NicovideoHLSProcessor:
-    """Processor for HLS streaming operations.
+class HLSSeekOptimizer:
+    """Optimizes HLS streaming with fast seeking support.
 
-    Handles dynamic m3u8 generation and FFmpeg argument preparation
-    for optimized seeking in nicovideo streams.
+    Generates dynamic HLS playlists and FFmpeg arguments for efficient
+    seeking by calculating optimal segment start positions.
 
-    This class takes pre-parsed m3u8 data and generates streaming context
-    based on seek position.
+    This eliminates the need to decode all segments before the target position,
+    enabling instant seeking in long nicovideo streams.
     """
 
     def __init__(
         self,
-        stream_data: NicovideoStreamData,
+        hls_data: NicovideoStreamData,
     ) -> None:
-        """Initialize HLS processor with stream data.
+        """Initialize seek optimizer with HLS data.
 
         Args:
-            stream_data: Stream data containing parsed m3u8 and authentication info
+            hls_data: HLS streaming data containing parsed playlist and authentication info
         """
-        self.parsed_m3u8 = stream_data.parsed_m3u8
-        self.domand_bid = stream_data.domand_bid
+        self.parsed_playlist: ParsedHLSPlaylist = hls_data.parsed_hls_playlist
+        self.domand_bid = hls_data.domand_bid
 
     def _calculate_start_segment(self, seek_position: int) -> tuple[int, float]:
         """Calculate which segment to start from based on seek position.
@@ -66,7 +70,7 @@ class NicovideoHLSProcessor:
             return (0, 0.0)
 
         accumulated_time = 0.0
-        for idx, segment in enumerate(self.parsed_m3u8.segments):
+        for idx, segment in enumerate(self.parsed_playlist.segments):
             # Extract duration from #EXTINF:5.967528,
             match = re.search(r"#EXTINF:([0-9.]+)", segment.duration_line)
             if match:
@@ -78,25 +82,25 @@ class NicovideoHLSProcessor:
                 accumulated_time += segment_duration
 
         # If seek position is beyond total duration, start from last segment
-        return (max(0, len(self.parsed_m3u8.segments) - 1), 0.0)
+        return (max(0, len(self.parsed_playlist.segments) - 1), 0.0)
 
-    def _generate_dynamic_m3u8(self, start_segment_idx: int) -> str:
-        """Generate dynamic m3u8 with segments from start_segment_idx onward.
+    def _generate_dynamic_playlist(self, start_segment_idx: int) -> str:
+        """Generate dynamic HLS playlist with segments from start_segment_idx onward.
 
         Args:
             start_segment_idx: Index to start from
 
         Returns:
-            Dynamic m3u8 text
+            Dynamic HLS playlist text
         """
         lines = []
 
         # Add header lines
-        lines.extend(self.parsed_m3u8.header_lines)
+        lines.extend(self.parsed_playlist.header_lines)
 
         # Calculate target duration from segments (rounded up)
         max_duration = 6  # Default fallback
-        for segment in self.parsed_m3u8.segments:
+        for segment in self.parsed_playlist.segments:
             match = re.search(r"#EXTINF:([0-9.]+)", segment.duration_line)
             if match:
                 duration = float(match.group(1))
@@ -112,15 +116,15 @@ class NicovideoHLSProcessor:
         )
 
         # Add init segment
-        if self.parsed_m3u8.init_segment_url:
-            lines.append(f'#EXT-X-MAP:URI="{self.parsed_m3u8.init_segment_url}"')
+        if self.parsed_playlist.init_segment_url:
+            lines.append(f'#EXT-X-MAP:URI="{self.parsed_playlist.init_segment_url}"')
 
         # Add encryption key if present
-        if self.parsed_m3u8.encryption_key_line:
-            lines.append(self.parsed_m3u8.encryption_key_line)
+        if self.parsed_playlist.encryption_key_line:
+            lines.append(self.parsed_playlist.encryption_key_line)
 
         # Add segments from start_segment_idx onward
-        for segment in self.parsed_m3u8.segments[start_segment_idx:]:
+        for segment in self.parsed_playlist.segments[start_segment_idx:]:
             lines.append(segment.duration_line)
             lines.append(segment.segment_url)
 
@@ -129,17 +133,17 @@ class NicovideoHLSProcessor:
 
         return "\n".join(lines)
 
-    def create_stream_context(self, seek_position: int) -> HLSStreamContext:
-        """Create streaming context with all necessary information.
+    def create_stream_context(self, seek_position: int) -> SeekOptimizedStreamContext:
+        """Create seek-optimized streaming context.
 
-        This method combines segment calculation, m3u8 generation,
-        and FFmpeg arguments preparation.
+        This method combines segment calculation, playlist generation,
+        and FFmpeg arguments preparation for fast seeking.
 
         Args:
             seek_position: Position to seek to in seconds
 
         Returns:
-            HLSStreamContext with all streaming setup information
+            SeekOptimizedStreamContext with all streaming setup information
         """
         # Stage 1: Calculate which segment contains the seek position (coarse seek)
         # This avoids processing unnecessary segments before the target position
@@ -150,22 +154,25 @@ class NicovideoHLSProcessor:
                 "HLS seek: position=%ds → segment %d/%d (offset %.2fs)",
                 seek_position,
                 start_segment_idx,
-                len(self.parsed_m3u8.segments),
+                len(self.parsed_playlist.segments),
                 offset_within_segment,
             )
 
-        # Generate m3u8 playlist starting from the calculated segment
-        dynamic_m3u8_text = self._generate_dynamic_m3u8(start_segment_idx)
+        # Generate HLS playlist starting from the calculated segment
+        dynamic_playlist_text = self._generate_dynamic_playlist(start_segment_idx)
 
         # Build FFmpeg extra input arguments
-        headers = f"User-Agent: {NICOVIDEO_USER_AGENT}\r\nCookie: domand_bid={self.domand_bid}\r\n"
+        headers = (
+            f"User-Agent: {NICOVIDEO_USER_AGENT}\r\n"
+            f"Cookie: {DOMAND_BID_COOKIE_NAME}={self.domand_bid}\r\n"
+        )
         extra_input_args = ["-headers", headers]
 
         # Stage 2: Apply input-side -ss for fine-tuning within the segment
         if offset_within_segment > 0:
             extra_input_args.extend(["-ss", str(offset_within_segment)])
 
-        return HLSStreamContext(
-            dynamic_m3u8_text=dynamic_m3u8_text,
+        return SeekOptimizedStreamContext(
+            dynamic_playlist_text=dynamic_playlist_text,
             extra_input_args=extra_input_args,
         )

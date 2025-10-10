@@ -231,10 +231,12 @@ class FixtureDataGenerators:
         logger.info("=== Generating STREAM fixtures ===")
 
         # Stream details
+        # Note: Using private method for test fixture generation
+        # to obtain StreamConversionData directly
         await self.fixture_processor.process_fixture(
             "stream",
             "stream_data",
-            self.service_manager.video._get_stream_data,
+            self.service_manager.video._prepare_conversion_data,
             SAMPLE_VIDEO_ID,
         )
 

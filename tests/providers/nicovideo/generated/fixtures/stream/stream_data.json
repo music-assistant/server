@@ -656,5 +656,5 @@
   },
   "hls_url": "https://dummy.hls.url/for/testing",
   "domand_bid": "dummy_domand_bid_for_testing",
-  "m3u8_text": "dummy_m3u8_text_for_testing"
+  "hls_playlist_text": "dummy_hls_playlist_text_for_testing"
 }

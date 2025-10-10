@@ -1,8 +1,12 @@
 """Helper functions for nicovideo provider."""
 
-from music_assistant.providers.nicovideo.helpers.hls_processor import (
-    HLSStreamContext,
-    NicovideoHLSProcessor,
+from music_assistant.providers.nicovideo.helpers.hls_models import (
+    HLSSegment,
+    ParsedHLSPlaylist,
+)
+from music_assistant.providers.nicovideo.helpers.hls_seek_optimizer import (
+    HLSSeekOptimizer,
+    SeekOptimizedStreamContext,
 )
 from music_assistant.providers.nicovideo.helpers.utils import (
     AlbumWithTracks,
@@ -14,9 +18,11 @@ from music_assistant.providers.nicovideo.helpers.utils import (
 
 __all__ = [
     "AlbumWithTracks",
-    "HLSStreamContext",
-    "NicovideoHLSProcessor",
+    "HLSSeekOptimizer",
+    "HLSSegment",
+    "ParsedHLSPlaylist",
     "PlaylistWithTracks",
+    "SeekOptimizedStreamContext",
     "cache_track",
     "create_audio_format",
     "log_verbose",

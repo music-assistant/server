@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 from music_assistant_models.errors import InvalidDataError, UnplayableMediaError
 
 from music_assistant.providers.nicovideo.constants import (
+    DOMAND_BID_COOKIE_NAME,
     NICOVIDEO_USER_AGENT,
     SENSITIVE_CONTENTS,
 )
@@ -62,6 +63,50 @@ class NicovideoVideoService(NicovideoBaseService):
 
         return None
 
+    async def get_stream_details(self, video_id: str) -> StreamDetails:
+        """Get StreamDetails for a video using WatchData and converter."""
+        conversion_data = await self._prepare_conversion_data(video_id)
+        return self.converter_manager.stream.convert_from_conversion_data(conversion_data)
+
+    async def like_video(self, video_id: str) -> bool:
+        """Like a video."""
+        result = await self.service_manager._call_with_throttler(
+            self.niconico_py_client.video.like_video, video_id
+        )
+        return bool(result)
+
+    async def _prepare_conversion_data(self, video_id: str) -> StreamConversionData:
+        """Prepare StreamConversionData for a video."""
+        # 1. Fetch watch data
+        watch_data = await self.service_manager._call_with_throttler(
+            self.niconico_py_client.video.watch.get_watch_data, video_id
+        )
+        if not watch_data:
+            raise UnplayableMediaError("Failed to fetch watch data")
+
+        # 2. Select best available audio
+        selected_audio = self._select_best_audio(watch_data)
+
+        # 3. Get HLS URL for selected audio
+        hls_url = await self._get_hls_url(watch_data, selected_audio)
+
+        # 4. Get domand_bid for ffmpeg headers
+        domand_bid = self.niconico_py_client.session.cookies.get(DOMAND_BID_COOKIE_NAME)
+        if not domand_bid:
+            raise UnplayableMediaError("Failed to fetch domand_bid")
+
+        # 5. Fetch HLS playlist text
+        playlist_text = await self._fetch_media_playlist_text(hls_url, domand_bid)
+
+        # 6. Return conversion data
+        return StreamConversionData(
+            watch_data=watch_data,
+            selected_audio=selected_audio,
+            hls_url=hls_url,
+            domand_bid=domand_bid,
+            hls_playlist_text=playlist_text,
+        )
+
     def _select_best_audio(self, watch_data: WatchData) -> WatchMediaDomandAudio:
         """Select the best available audio from WatchData."""
         best_audio = None
@@ -93,8 +138,8 @@ class NicovideoVideoService(NicovideoBaseService):
 
         return hls_url
 
-    async def _fetch_hls_m3u8_text(self, hls_url: str, domand_bid: str) -> str:
-        """Fetch HLS m3u8 playlist text.
+    async def _fetch_media_playlist_text(self, hls_url: str, domand_bid: str) -> str:
+        """Fetch media playlist text from HLS stream.
 
         Args:
             hls_url: URL to the HLS playlist (master or media)
@@ -105,38 +150,38 @@ class NicovideoVideoService(NicovideoBaseService):
         """
         headers = {
             "User-Agent": NICOVIDEO_USER_AGENT,
-            "Cookie": f"domand_bid={domand_bid}",
+            "Cookie": f"{DOMAND_BID_COOKIE_NAME}={domand_bid}",
         }
         session = self.service_manager.provider.mass.http_session
 
         # Fetch master playlist
         async with session.get(hls_url, headers=headers) as response:
             response.raise_for_status()
-            master_m3u8_text = await response.text()
+            master_playlist_text = await response.text()
 
         # Check if this is already a media playlist (has #EXTINF)
-        if "#EXTINF:" in master_m3u8_text:
-            return master_m3u8_text
+        if "#EXTINF:" in master_playlist_text:
+            return master_playlist_text
 
         # Extract media playlist URL from master playlist
-        media_playlist_url = self._extract_media_playlist_url(master_m3u8_text, hls_url)
+        media_playlist_url = self._extract_media_playlist_url(master_playlist_text, hls_url)
 
         # Fetch media playlist
         async with session.get(media_playlist_url, headers=headers) as response:
             response.raise_for_status()
             return await response.text()
 
-    def _extract_media_playlist_url(self, master_m3u8: str, base_url: str) -> str:
+    def _extract_media_playlist_url(self, master_playlist: str, base_url: str) -> str:
         """Extract media playlist URL from master playlist.
 
         Args:
-            master_m3u8: Master playlist text
+            master_playlist: Master playlist text
             base_url: Base URL for resolving relative URLs
 
         Returns:
             Absolute URL to media playlist
         """
-        lines = master_m3u8.split("\n")
+        lines = master_playlist.split("\n")
         for i, line in enumerate(lines):
             # Look for stream info line followed by URL
             if line.startswith("#EXT-X-STREAM-INF:"):
@@ -147,47 +192,3 @@ class NicovideoVideoService(NicovideoBaseService):
                         return urljoin(base_url, media_url)
         msg = f"No media playlist URL found in master playlist from {base_url}"
         raise InvalidDataError(msg)
-
-    async def _get_stream_data(self, video_id: str) -> StreamConversionData:
-        """Get StreamConversionData for a video."""
-        # 1. Fetch watch data
-        watch_data = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.video.watch.get_watch_data, video_id
-        )
-        if not watch_data:
-            raise UnplayableMediaError("Failed to fetch watch data")
-
-        # 2. Select best available audio
-        selected_audio = self._select_best_audio(watch_data)
-
-        # 3. Get HLS URL for selected audio
-        hls_url = await self._get_hls_url(watch_data, selected_audio)
-
-        # 4. Get domand_bid for ffmpeg headers
-        domand_bid = self.niconico_py_client.session.cookies.get("domand_bid")
-        if not domand_bid:
-            raise UnplayableMediaError("Failed to fetch domand_bid")
-
-        # 5. Fetch HLS playlist text
-        m3u8_text = await self._fetch_hls_m3u8_text(hls_url, domand_bid)
-
-        # 6. Create conversion data for converter (parsing will happen in converter)
-        return StreamConversionData(
-            watch_data=watch_data,
-            selected_audio=selected_audio,
-            hls_url=hls_url,
-            domand_bid=domand_bid,
-            m3u8_text=m3u8_text,
-        )
-
-    async def get_stream_details(self, video_id: str) -> StreamDetails:
-        """Get StreamDetails for a video using WatchData and converter."""
-        stream_data = await self._get_stream_data(video_id)
-        return self.converter_manager.stream.convert_by_stream_data(stream_data)
-
-    async def like_video(self, video_id: str) -> bool:
-        """Like a video."""
-        result = await self.service_manager._call_with_throttler(
-            self.niconico_py_client.video.like_video, video_id
-        )
-        return bool(result)

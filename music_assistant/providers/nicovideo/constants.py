@@ -20,6 +20,7 @@ class ApiPriority(Enum):
 
 # Network constants
 NICOVIDEO_USER_AGENT = "Music Assistant/1.0"
+DOMAND_BID_COOKIE_NAME = "domand_bid"
 
 # Audio format constants based on niconico official specifications
 # Sources:

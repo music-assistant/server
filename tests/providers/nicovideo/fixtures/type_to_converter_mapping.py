@@ -156,7 +156,7 @@ TYPE_TO_CONVERTER_MAPPINGS: list[TypeToConverterMapping[Any]] = [
     # Stream Types
     TypeToConverterMapping[StreamConversionData](
         source_type=StreamConversionData,
-        convert_func=lambda data, cm: cm.stream.convert_by_stream_data(data),
+        convert_func=lambda data, cm: cm.stream.convert_from_conversion_data(data),
     ),
 ]
 

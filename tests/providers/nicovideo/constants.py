@@ -5,6 +5,8 @@ from __future__ import annotations
 import pathlib
 from dataclasses import dataclass
 
+from music_assistant.providers.nicovideo.constants import DOMAND_BID_COOKIE_NAME
+
 # Test fixtures directories
 _BASE_DIR = pathlib.Path(__file__).parent
 GENERATED_DIR = _BASE_DIR / "generated"
@@ -51,8 +53,8 @@ STABILIZATION_RULES: list[StabilizationInfo] = [
     ),
     StabilizationInfo("playbackPosition", 0.0),
     StabilizationInfo("hls_url", "https://dummy.hls.url/for/testing"),
-    StabilizationInfo("domand_bid", "dummy_domand_bid_for_testing"),
-    StabilizationInfo("m3u8_text", "dummy_m3u8_text_for_testing"),
+    StabilizationInfo(DOMAND_BID_COOKIE_NAME, "dummy_domand_bid_for_testing"),
+    StabilizationInfo("hls_playlist_text", "dummy_hls_playlist_text_for_testing"),
     StabilizationInfo("threadKey", "dummy.jwt.token.for.testing"),
     StabilizationInfo("accessRightKey", "dummy.jwt.token.for.testing"),
     StabilizationInfo("editKey", "dummy.jwt.token.for.testing"),
