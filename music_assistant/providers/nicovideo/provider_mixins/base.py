@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from music_assistant_models.enums import MediaType
     from music_assistant_models.media_items import MediaItemType
-    from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.models.music_provider import MusicProvider
 
@@ -42,12 +41,6 @@ class NicovideoMusicProviderMixinBase(MusicProvider):
 
     async def unload_for_mixin(self, is_removed: bool = False) -> None:
         """Handle unload/close for this mixin."""
-
-    async def get_stream_details_for_mixin(
-        self, item_id: str, media_type: MediaType
-    ) -> StreamDetails | None:
-        """Get stream details (streaming URL and format) for given item."""
-        return None  # Default implementation: this mixin doesn't handle streams
 
     async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
         """Add item to library. Return True/False on success/failure, None if not handled."""

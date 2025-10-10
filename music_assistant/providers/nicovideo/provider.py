@@ -19,12 +19,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, override
 
-from music_assistant_models.errors import MediaNotFoundError
-
 if TYPE_CHECKING:
     from music_assistant_models.enums import MediaType
     from music_assistant_models.media_items import MediaItemType
-    from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.providers.nicovideo.provider_mixins import (
     NicovideoMusicProviderAlbumMixin,
@@ -68,15 +65,6 @@ class NicovideoMusicProvider(
         """Handle unload/close of the provider."""
         for mixin_class in NICOVIDEO_MIXINS[::-1]:
             await mixin_class.unload_for_mixin(self, is_removed)
-
-    @override
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get stream details (streaming URL and format) for given item."""
-        for mixin_class in NICOVIDEO_MIXINS:
-            result = await mixin_class.get_stream_details_for_mixin(self, item_id, media_type)
-            if result is not None:
-                return result
-        raise MediaNotFoundError("Stream unknown")
 
     @override
     async def library_add(self, item: MediaItemType) -> bool:

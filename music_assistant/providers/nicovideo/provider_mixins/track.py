@@ -77,13 +77,10 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
                 yield track
 
     @override
-    async def get_stream_details_for_mixin(
-        self, item_id: str, media_type: MediaType
-    ) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details (streaming URL and format) for given item."""
         if media_type is not MediaType.TRACK:
-            return None
-
+            raise MediaNotFoundError(f"Media type {media_type} is not supported for stream details")
         return await self.service_manager.video.get_stream_details(item_id)
 
     @override
