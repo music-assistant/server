@@ -203,7 +203,7 @@ class SpotifyProvider(MusicProvider):
                 yield parse_playlist(item, self)
 
     @use_cache()
-    async def search(
+    async def search(  # noqa: PLR0915
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
@@ -665,20 +665,13 @@ class SpotifyProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return content details for the given track/episode/audiobook when it will be streamed."""
         if media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
-            chapters_data = await self._get_audiobook_chapters_data(item_id)
-            if not chapters_data:
-                raise MediaNotFoundError(f"No chapters found for audiobook {item_id}")
-
-            # Calculate total duration and convert to seconds for StreamDetails
-            total_duration_ms = sum(chapter.get("duration_ms", 0) for chapter in chapters_data)
-            duration_seconds = total_duration_ms // 1000
-
-            # Create chapter URIs for streaming
-            chapter_uris = []
-            for chapter in chapters_data:
-                chapter_id = chapter["id"]
-                chapter_uri = f"spotify://episode:{chapter_id}"
-                chapter_uris.append(chapter_uri)
+            # Don't fetch chapters here - do it lazily during streaming
+            # Just get basic info for duration estimate
+            try:
+                audiobook_obj = await self._get_data(f"audiobooks/{item_id}")
+                duration_seconds = audiobook_obj.get("duration_ms", 0) // 1000
+            except Exception:
+                duration_seconds = 0
 
             return StreamDetails(
                 item_id=item_id,
@@ -689,7 +682,7 @@ class SpotifyProvider(MusicProvider):
                 allow_seek=True,
                 can_seek=True,
                 duration=duration_seconds,
-                data={"chapters": chapter_uris, "chapters_data": chapters_data},
+                data={"fetch_chapters_on_stream": True},  # Flag to fetch during streaming
             )
 
         # For all other media types (tracks, podcast episodes)
@@ -708,20 +701,23 @@ class SpotifyProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Get audio stream from Spotify via librespot."""
         if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
-            chapter_uris = streamdetails.data.get("chapters", [])
-            chapters_data = streamdetails.data.get("chapters_data", [])
+            # Fetch chapters NOW if not already provided
+            if streamdetails.data.get("fetch_chapters_on_stream"):
+                chapters_data = await self._get_audiobook_chapters_data(streamdetails.item_id)
+                chapter_uris = [f"spotify://episode:{ch['id']}" for ch in chapters_data]
+            else:
+                chapter_uris = streamdetails.data.get("chapters", [])
+                chapters_data = streamdetails.data.get("chapters_data", [])
 
-            # Calculate which chapter to start from based on seek_position
+            # Calculate start chapter
             seek_position_ms = seek_position * 1000
             current_seek_ms = seek_position_ms
             start_chapter = 0
 
             if seek_position > 0 and chapters_data:
                 accumulated_duration_ms = 0
-
                 for i, chapter_data in enumerate(chapters_data):
                     chapter_duration_ms = chapter_data.get("duration_ms", 0)
-
                     if accumulated_duration_ms + chapter_duration_ms > seek_position_ms:
                         start_chapter = i
                         current_seek_ms = seek_position_ms - accumulated_duration_ms
@@ -731,20 +727,59 @@ class SpotifyProvider(MusicProvider):
                     start_chapter = len(chapter_uris) - 1
                     current_seek_ms = 0
 
-            # Convert back to seconds for librespot
             current_seek_seconds = int(current_seek_ms // 1000)
 
-            # Stream chapters starting from the calculated position
-            for i in range(start_chapter, len(chapter_uris)):
-                chapter_uri = chapter_uris[i]
-                chapter_seek = current_seek_seconds if i == start_chapter else 0
+            # Try streaming with quick_fail for faster fallback detection
+            first_chunk_received = False
+            try:
+                for i in range(start_chapter, len(chapter_uris)):
+                    chapter_uri = chapter_uris[i]
+                    chapter_seek = current_seek_seconds if i == start_chapter else 0
 
-                try:
-                    async for chunk in self.streamer.stream_spotify_uri(chapter_uri, chapter_seek):
+                    # Use quick_fail=True for first chapter to enable faster fallback
+                    use_quick_fail = i == start_chapter
+                    async for chunk in self.streamer.stream_spotify_uri(
+                        chapter_uri, chapter_seek, quick_fail=use_quick_fail
+                    ):
+                        first_chunk_received = True
                         yield chunk
-                except Exception as e:
-                    self.logger.error(f"Chapter {i + 1} streaming failed: {e}")
-                    continue
+
+                    # If we haven't received any chunks by now, trigger fallback
+                    if not first_chunk_received:
+                        raise Exception(f"No audio data received for chapter {i + 1}")
+
+                return  # Success
+
+            except Exception as e:
+                # Try fallback if we haven't successfully streamed any data yet
+                if not first_chunk_received:
+                    self.logger.warning(
+                        f"Audiobook streaming failed on {self.instance_id}: "
+                        f"{e}. Trying other instances..."
+                    )
+
+                    for provider in self.mass.music.providers:
+                        if (
+                            provider.domain == "spotify"
+                            and provider.instance_id != self.instance_id
+                            and isinstance(provider, SpotifyProvider)
+                            and provider.audiobooks_supported
+                        ):
+                            try:
+                                async for chunk in provider.get_audio_stream(
+                                    streamdetails, seek_position
+                                ):
+                                    yield chunk
+                                return
+                            except Exception as retry_error:
+                                self.logger.debug(
+                                    f"Instance {provider.instance_id} also failed: {retry_error}"
+                                )
+                                continue
+
+                raise UnsupportedFeaturedException(
+                    f"No Spotify instance can play this audiobook. Original error: {e}"
+                )
         else:
             # Handle normal tracks and podcast episodes
             async for chunk in self.streamer.get_audio_stream(streamdetails, seek_position):
@@ -770,6 +805,7 @@ class SpotifyProvider(MusicProvider):
             "refresh_token": refresh_token,
             "client_id": client_id,
         }
+        err = "Unknown error"
         for _ in range(2):
             async with self.mass.http_session.post(
                 "https://accounts.spotify.com/api/token", data=params
