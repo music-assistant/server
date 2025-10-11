@@ -110,6 +110,8 @@ class BluesoundPlayer(Player):
         if play_state == "stop":
             self._set_polling_dynamic()
         self._attr_playback_state = PlaybackState.IDLE
+        self._attr_active_source = None
+        self._attr_current_media = None
         self.update_state()
 
     async def play(self) -> None:

@@ -210,7 +210,7 @@ class SonosPlayerProvider(PlayerProvider):
             return web.Response(status=501)
         mass_queue = self.mass.player_queues.get_active_queue(sonos_player_id)
         context_version = request.query.get("contextVersion") or "1"
-        queue_version = str(int(mass_queue.items_last_updated))
+        queue_version = str(int(mass_queue.items_last_updated)) if mass_queue else "0"
         result = {"contextVersion": context_version, "queueVersion": queue_version}
         return web.json_response(result)
 
@@ -237,7 +237,7 @@ class SonosPlayerProvider(PlayerProvider):
                 "service": {"name": "Music Assistant", "id": "mass"},
                 "id": {
                     "serviceId": "mass",
-                    "objectId": f"mass:queue:{mass_queue.queue_id}",
+                    "objectId": f"mass:{mass_queue.queue_id}",
                     "accountId": "",
                 },
             },

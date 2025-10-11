@@ -35,6 +35,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SYNC_ADJUST,
     DEFAULT_PCM_FORMAT,
+    VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -194,6 +195,8 @@ class SqueezelitePlayer(Player):
         async with TaskManager(self.mass) as tg:
             for client in self._get_sync_clients():
                 tg.create_task(client.stop())
+        self._attr_active_source = None
+        self.update_state()
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
@@ -350,7 +353,7 @@ class SqueezelitePlayer(Player):
         if players_added and self.current_media and self.playback_state == PlaybackState.PLAYING:
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
-            self.mass.create_task(self.play_media(self.current_media))
+            self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
 
     def handle_slim_event(self, event: SlimEvent) -> None:
         """Handle player event from slimproto server."""
@@ -396,7 +399,7 @@ class SqueezelitePlayer(Player):
                 artist=metadata.get("artist"),
                 image_url=metadata.get("image_url"),
                 duration=metadata.get("duration"),
-                queue_id=metadata.get("queue_id"),
+                source_id=metadata.get("source_id"),
                 queue_item_id=metadata.get("queue_item_id"),
             )
         else:
@@ -419,7 +422,7 @@ class SqueezelitePlayer(Player):
             "artist": media.artist,
             "image_url": media.image_url,
             "duration": media.duration,
-            "queue_id": media.source_id,
+            "source_id": media.source_id,
             "queue_item_id": media.queue_item_id,
         }
         if queue := self.mass.player_queues.get(media.source_id):
@@ -539,7 +542,7 @@ class SqueezelitePlayer(Player):
             _, param = event_data.split(" ", 1)
             if param.isnumeric():
                 await self.mass.player_queues.seek(queue.queue_id, int(param))
-        self.logger.debug("CLI Event: %s", event_data)
+        self.logger.log(VERBOSE_LOG_LEVEL, "CLI Event: %s", event_data)
 
     def _handle_sync(self) -> None:
         """Synchronize audio of a sync slimplayer."""

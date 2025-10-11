@@ -18,10 +18,10 @@ alexapy==1.29.8
 async-upnp-client==0.45.0
 audible==0.10.0
 bidict==0.23.1
-certifi==2025.8.3
+certifi==2025.10.5
 chardet>=5.2.0
 colorlog==6.9.0
-cryptography==46.0.1
+cryptography==46.0.2
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 duration-parser==1.0.1
@@ -30,11 +30,14 @@ hass-client==1.2.0
 ibroadcastaio==0.4.0
 ifaddr==0.2.0
 liblistenbrainz==0.6.0
+librosa==0.11.0
+llvmlite==0.44.0
 lyricsgenius==3.7.2
 mashumaro==3.16
-music-assistant-frontend==2.16.1
-music-assistant-models==1.1.60
+music-assistant-frontend==2.16.5
+music-assistant-models==1.1.61
 mutagen==1.47.0
+numpy==2.2.6
 orjson==3.11.3
 pillow==11.3.0
 pkce==1.0.3
@@ -45,7 +48,7 @@ py-opensonic==7.0.2
 pyblu==2.0.5
 PyChromecast==14.0.7
 pycryptodome==3.23.0
-pylast==5.5.0
+pylast==6.0.0
 python-fullykiosk==0.0.14
 python-slugify==8.0.4
 pywidevine==1.8.0
@@ -60,6 +63,6 @@ sxm==0.2.8
 unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.8.0
-xmltodict==0.14.2
+xmltodict==1.0.2
 ytmusicapi==1.11.1
-zeroconf==0.147.2
+zeroconf==0.148.0

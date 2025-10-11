@@ -8,5 +8,5 @@
   "documentation": "https://music-assistant.io/plugins/lastfm_scrobble/",
   "multi_instance": false,
   "builtin": false,
-  "requirements": ["pylast==5.5.0"]
+  "requirements": ["pylast==6.0.0"]
 }
