@@ -41,11 +41,17 @@ class LibrespotStreamer:
             yield chunk
 
     async def stream_spotify_uri(
-        self, spotify_uri: str, seek_position: int = 0
+        self, spotify_uri: str, seek_position: int = 0, quick_fail: bool = False
     ) -> AsyncGenerator[bytes, None]:
         """Stream a Spotify URI using librespot.
 
         This internal method handles the entire process, from authentication to playback.
+
+        Args:
+            spotify_uri: The Spotify URI to stream
+            seek_position: Position in seconds to start from
+            quick_fail: If True, use shorter timeout for faster failure
+                                 detection (useful for fallback scenarios)
         """
         # Validate that librespot binary is available
         if not self.provider._librespot_bin:
@@ -70,9 +76,15 @@ class LibrespotStreamer:
         if seek_position:
             args += ["--start-position", str(int(seek_position))]
 
-        # we retry twice in case librespot fails to start
-        for attempt in (1, 2):
-            log_librespot = self.provider.logger.isEnabledFor(VERBOSE_LOG_LEVEL) or attempt == 2
+        # Use shorter timeout if quick_fail is enabled (for audiobook fallback scenarios)
+        base_timeout = 3 if quick_fail else 5
+        max_attempts = 1 if quick_fail else 2
+
+        # we retry twice in case librespot fails to start (or once if quick_fail)
+        for attempt in range(1, max_attempts + 1):
+            log_librespot = (
+                self.provider.logger.isEnabledFor(VERBOSE_LOG_LEVEL) or attempt == max_attempts
+            )
             async with AsyncProcess(
                 args,
                 stdout=True,
@@ -82,13 +94,15 @@ class LibrespotStreamer:
                 # get first chunk with timeout, to catch the issue where librespot is not starting
                 # which seems to happen from time to time (but rarely)
                 try:
-                    chunk = await asyncio.wait_for(librespot_proc.read(64000), timeout=10 * attempt)
+                    chunk = await asyncio.wait_for(
+                        librespot_proc.read(64000), timeout=base_timeout * attempt
+                    )
                     if not chunk:
                         raise AudioError(f"No audio data received from librespot for {spotify_uri}")
                     yield chunk
                 except (TimeoutError, AudioError):
                     err_mesg = f"No audio received from librespot within timeout for {spotify_uri}"
-                    if attempt == 2:
+                    if attempt == max_attempts:
                         raise AudioError(err_mesg)
                     self.provider.logger.warning("%s - will retry once", err_mesg)
                     continue
