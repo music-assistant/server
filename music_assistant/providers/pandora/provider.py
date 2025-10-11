@@ -29,7 +29,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     Radio,
 )
-from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails, StreamMetadata
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
@@ -181,6 +181,12 @@ class PandoraProvider(MusicProvider):
         if not parts:
             raise UnplayableMediaError(f"No tracks available for station {item_id}")
 
+        stream_metadata = StreamMetadata(
+            title=("Pandora"),
+            artist=None,
+            album=None,
+            duration=None,
+        )
         return StreamDetails(
             item_id=item_id,
             provider=self.lookup_key,
@@ -195,6 +201,7 @@ class PandoraProvider(MusicProvider):
             allow_seek=False,
             can_seek=False,
             duration=int(total_duration),
+            stream_metadata=stream_metadata,
         )
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
