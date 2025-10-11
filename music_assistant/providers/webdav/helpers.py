@@ -182,7 +182,7 @@ async def webdav_test_connection(
     timeout: int = 10,
 ) -> None:
     """Test WebDAV connection and authentication."""
-    auth = aiohttp.BasicAuth(username, password) if username else None
+    auth = aiohttp.BasicAuth(username, password) if username and password else None
     connector = aiohttp.TCPConnector(ssl=verify_ssl)
 
     async with aiohttp.ClientSession(

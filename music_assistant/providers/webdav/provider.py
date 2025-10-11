@@ -186,7 +186,8 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
             for webdav_item in webdav_items:
                 self.logger.debug(
-                    f"Processing item: name={webdav_item.name}, href={webdav_item.href[:100]}, is_dir={webdav_item.is_dir}"
+                    f"Processing item: name={webdav_item.name}, "
+                    f"href={webdav_item.href[:100]}, is_dir={webdav_item.is_dir}"
                 )
 
                 if "#recycle" in webdav_item.name.lower():
@@ -210,7 +211,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 self.logger.debug(f"After skip check, processing: {webdav_item.name}")
 
                 # Calculate relative path by stripping base path
-                if href_path.startswith(base_path + "/") or href_path.startswith(base_path):
+                if href_path.startswith((base_path + "/", base_path)):
                     relative_path = href_path[len(base_path) :].strip("/")
                 else:
                     # Fallback: construct from current path + name
@@ -218,7 +219,8 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                         str(PurePosixPath(path) / decoded_name) if path else decoded_name
                     )
                 self.logger.debug(
-                    f"Item: {decoded_name}, href: {decoded_href[:80]}, relative_path: {relative_path}"
+                    f"Item: {decoded_name}, href: {decoded_href[:80]}, "
+                    f"relative_path: {relative_path}"
                 )
                 self.logger.debug(
                     f"Calculated relative_path: '{relative_path}' for {webdav_item.name}"
@@ -252,7 +254,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
             )
             raise ProviderUnavailableError(f"WebDAV server connection failed: {err}") from err
         except Exception as err:
-            self.logger.error(f"Failed to list WebDAV directory {path}: {err}", exc_info=True)
+            self.logger.exception(f"Failed to list WebDAV directory {path}: {err}")
 
             return []
 
