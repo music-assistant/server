@@ -456,9 +456,9 @@ class DLNAServerProvider(PluginProvider):
         except DefusedET.ParseError as err:
             self.logger.warning("Invalid XML in SOAP request: %s", err)
             return await self._soap_error(400, "Invalid XML")
-        except Exception as err:
+        except Exception:
             self.logger.exception("Error handling ContentDirectory control request")
-            return await self._soap_error(500, str(err))
+            return await self._soap_error(500, "Internal server error")
 
     async def _handle_connection_manager_control(self, request: web.Request) -> web.Response:
         """Handle ConnectionManager SOAP control requests."""
@@ -475,9 +475,9 @@ class DLNAServerProvider(PluginProvider):
 
             return await self._soap_error(401, "Invalid Action")
 
-        except Exception as err:
+        except Exception:
             self.logger.exception("Error handling ConnectionManager control request")
-            return await self._soap_error(500, str(err))
+            return await self._soap_error(500, "Internal server error")
 
     async def _handle_browse_action(self, action_elem: Element) -> web.Response:
         """Handle Browse SOAP action."""
@@ -619,9 +619,9 @@ class DLNAServerProvider(PluginProvider):
 
         except MediaNotFoundError:
             return web.Response(status=404, text="Track not found")
-        except Exception as err:
+        except Exception:
             self.logger.exception("Error streaming track")
-            return web.Response(status=500, text=str(err))
+            return web.Response(status=500, text="Internal server error")
 
     # ==================== DIDL/XML Helpers ====================
 
