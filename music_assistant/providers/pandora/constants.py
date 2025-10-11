@@ -5,28 +5,12 @@ from __future__ import annotations
 # Configuration Keys
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
-CONF_AUDIO_QUALITY = "audio_quality"
 
 # API Endpoints
 API_BASE_URL = "https://www.pandora.com/api/v1"
 LOGIN_ENDPOINT = f"{API_BASE_URL}/auth/login"
 STATIONS_ENDPOINT = f"{API_BASE_URL}/station/getStations"
-STATION_DETAILS_ENDPOINT = f"{API_BASE_URL}/station/getStationDetails"
 PLAYLIST_FRAGMENT_ENDPOINT = f"{API_BASE_URL}/playlist/getFragment"
-PROFILE_ENDPOINT = f"{API_BASE_URL}/listener/getProfile"
-SEARCH_ENDPOINT = f"{API_BASE_URL}/search/search"
-TRACK_FEEDBACK_ENDPOINT = f"{API_BASE_URL}/station/addFeedback"
-
-# Request Headers
-DEFAULT_HEADERS = {
-    "Content-Type": "application/json;charset=utf-8",
-    "User-Agent": "Music Assistant Pandora Provider/1.0",
-}
-
-# API Limits
-MAX_SEARCH_RESULTS = 50
-MAX_STATION_TRACKS = 100
-DEFAULT_PAGE_SIZE = 50
 
 # Error Codes from Pandora API
 PANDORA_ERROR_CODES = {

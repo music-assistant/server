@@ -9,6 +9,7 @@ import aiohttp
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
 )
 
@@ -21,7 +22,16 @@ def generate_csrf_token() -> str:
 
 
 def handle_pandora_error(response_data: dict[str, Any]) -> None:
-    """Handle Pandora API error responses."""
+    """Handle Pandora API error responses.
+
+    Maps Pandora API error codes to appropriate Music Assistant exceptions.
+
+    Raises:
+        LoginFailed: For authentication errors
+        MediaNotFoundError: For missing stations/tracks
+        ResourceTemporarilyUnavailable: For service availability issues
+        ProviderUnavailableError: For other API errors
+    """
     if response_data.get("errorCode") is not None:
         error_code = response_data["errorCode"]
         error_string = response_data.get("errorString", "UNKNOWN_ERROR")
@@ -30,37 +40,58 @@ def handle_pandora_error(response_data: dict[str, Any]) -> None:
         # Map specific error codes to Music Assistant exceptions
         if error_code in (12, 13, 1002):  # Invalid username/password/login
             raise LoginFailed(f"Login failed: {message}")
+
         if error_code in (4, 5):  # Station/track not found
             raise MediaNotFoundError(f"Media not found: {message}")
+
         if error_code in (9, 10):  # Service unavailable
             raise ResourceTemporarilyUnavailable(f"Service unavailable: {message}")
+
         if error_code in (1001, 1003):  # Auth token issues
             raise LoginFailed(f"Authentication error: {message}")
+
         # Get error description from our mapping
         error_desc = PANDORA_ERROR_CODES.get(error_code, error_string)
-        raise RuntimeError(f"Pandora API error {error_code} ({error_desc}): {message}")
+        raise ProviderUnavailableError(f"Pandora API error {error_code} ({error_desc}): {message}")
 
 
 async def get_csrf_token(session: aiohttp.ClientSession) -> str:
-    """Get CSRF token from Pandora website."""
+    """Get CSRF token from Pandora website.
+
+    Attempts to retrieve CSRF token from Pandora cookies.
+
+    Args:
+        session: aiohttp client session
+
+    Returns:
+        CSRF token string
+
+    Raises:
+        ResourceTemporarilyUnavailable: If network request fails or no token available
+    """
     try:
         async with session.head("https://www.pandora.com/") as response:
-            # Try to extract from cookies first
             if "csrftoken" in response.cookies:
                 return str(response.cookies["csrftoken"].value)
     except aiohttp.ClientError as e:
-        # Network issues - this is temporarily unavailable
-        raise ResourceTemporarilyUnavailable(f"Failed to get CSRF token from Pandora: {e}")
-    except Exception as e:
-        # Unexpected errors should also be treated as temporary issues
-        raise ResourceTemporarilyUnavailable(f"Unexpected error getting CSRF token: {e}")
+        raise ResourceTemporarilyUnavailable(f"Failed to get CSRF token from Pandora: {e}") from e
 
-    # If we get here, no CSRF token was found in cookies
-    return generate_csrf_token()
+    # No token found - service may be unavailable
+    raise ResourceTemporarilyUnavailable(
+        "Pandora did not provide a CSRF token. Service may be unavailable."
+    )
 
 
 def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[str, str]:
-    """Create authentication headers for Pandora API requests."""
+    """Create authentication headers for Pandora API requests.
+
+    Args:
+        csrf_token: CSRF token for request validation
+        auth_token: Optional authentication token for authenticated requests
+
+    Returns:
+        Dictionary of HTTP headers
+    """
     headers = {
         "Content-Type": "application/json;charset=utf-8",
         "X-CsrfToken": csrf_token,
@@ -72,20 +103,3 @@ def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[
         headers["X-AuthToken"] = auth_token
 
     return headers
-
-
-def format_duration(duration_ms: int | None) -> float:
-    """Convert duration from milliseconds to seconds."""
-    if duration_ms is None:
-        return 0.0
-    return duration_ms / 1000.0
-
-
-def safe_get(data: dict[str, Any], *keys: str, default: Any = None) -> Any:
-    """Safely get nested dictionary values."""
-    for key in keys:
-        if isinstance(data, dict) and key in data:
-            data = data[key]
-        else:
-            return default
-    return data
