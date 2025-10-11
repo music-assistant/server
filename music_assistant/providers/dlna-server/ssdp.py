@@ -51,13 +51,19 @@ class SSDPServer:
 
         self._transport: asyncio.DatagramTransport | None = None
         self._protocol: SSDPProtocol | None = None
-        self._alive_task: asyncio.Task | None = None
+        self._alive_task: asyncio.Task[None] | None = None
         self._running = False
 
     async def start(self) -> None:
         """Start the SSDP server."""
         if self._running:
             return
+
+        # Cancel any existing task from a previous incomplete stop
+        if self._alive_task and not self._alive_task.done():
+            self._alive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._alive_task
 
         self.logger.debug("Starting SSDP server")
 
@@ -87,8 +93,18 @@ class SSDPServer:
             sock = self._transport.get_extra_info("socket")
             group = socket.inet_aton(SSDP_MULTICAST_ADDR)
             mreq = group + socket.inet_aton("0.0.0.0")
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            try:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+            except OSError as err:
+                self.logger.warning(
+                    "Failed to join multicast group: %s. Discovery may not work.", err
+                )
+
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            except OSError as err:
+                self.logger.warning("Failed to set SO_REUSEADDR: %s", err)
 
             self._running = True
 
@@ -123,6 +139,10 @@ class SSDPServer:
         # Close transport
         if self._transport:
             self._transport.close()
+
+        # Clear references
+        self._protocol = None
+        self._transport = None
 
         self._running = False
         self.logger.info("SSDP server stopped")
@@ -259,7 +279,8 @@ class SSDPProtocol(asyncio.DatagramProtocol):
         """Handle M-SEARCH discovery request."""
         # Parse search target
         st = None
-        for line in message.split("\r\n"):
+        for raw_line in message.split("\r\n"):
+            line = raw_line.strip()
             if line.lower().startswith("st:"):
                 st = line.split(":", 1)[1].strip()
                 break

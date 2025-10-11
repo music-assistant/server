@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import urllib.parse
 import uuid
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
 from defusedxml import ElementTree as DefusedET
-from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError, SetupFailedError
+from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    SetupFailedError,
+    UnsupportedFeaturedException,
+)
 
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
@@ -23,14 +28,16 @@ from .ssdp import SSDPServer
 if TYPE_CHECKING:
     from xml.etree.ElementTree import Element
 
-    from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.media_items import Album, Artist, Track
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-SUPPORTED_FEATURES = set()  # No special features needed for this plugin
+SUPPORTED_FEATURES: set[ProviderFeature] = (
+    set()
+)  # we don't have any special supported features (yet)
 
 # DLNA/UPnP constants
 DEVICE_TYPE = "urn:schemas-upnp-org:device:MediaServer:1"
@@ -63,26 +70,23 @@ async def get_config_entries(
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,  # noqa: ARG001
     values: dict[str, str] | None = None,  # noqa: ARG001
-) -> tuple:
+) -> tuple[ConfigEntry, ...]:
     """Return Config entries for this provider."""
-    # No configuration needed - use standard everything
+    # No configuration needed for DLNA server
     return ()
 
 
 class DLNAServerProvider(PluginProvider):
     """DLNA Server Plugin Provider for Music Assistant."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the DLNA server provider."""
         super().__init__(*args, **kwargs)
-        self._ssdp_server = None
+        self._ssdp_server: SSDPServer | None = None
         self._server_uuid: str = str(uuid.uuid4())
         self._friendly_name = "Music Assistant"
         self._routes_registered = False
-
-    async def handle_async_init(self) -> None:
-        """Handle async initialization of the provider."""
-        # This is called right after setup, before loaded_in_mass
+        self.is_streaming_provider = False
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded into Music Assistant."""
@@ -97,7 +101,10 @@ class DLNAServerProvider(PluginProvider):
                 "DLNA Server started successfully - "
                 "Music Assistant is now discoverable as a DLNA Media Server"
             )
-        except Exception as err:
+        except OSError as err:  # Socket/network errors
+            self.logger.exception("Failed to start DLNA server due to network error")
+            raise SetupFailedError(f"Failed to start DLNA server: {err}") from err
+        except Exception as err:  # Unexpected errors
             self.logger.exception("Failed to start DLNA server")
             raise SetupFailedError("Failed to start DLNA server") from err
 
@@ -446,6 +453,9 @@ class DLNAServerProvider(PluginProvider):
 
             return await self._soap_error(401, "Invalid Action")
 
+        except DefusedET.ParseError as err:
+            self.logger.warning("Invalid XML in SOAP request: %s", err)
+            return await self._soap_error(400, "Invalid XML")
         except Exception as err:
             self.logger.exception("Error handling ContentDirectory control request")
             return await self._soap_error(500, str(err))
@@ -586,7 +596,7 @@ class DLNAServerProvider(PluginProvider):
             # Get the provider
             prov = self.mass.get_provider(provider_instance)
             if not prov or not isinstance(prov, MusicProvider):
-                return web.Response(status=404, text="Provider not found")
+                raise ProviderUnavailableError(f"Provider {provider_instance} not available")
 
             # Get stream details
             streamdetails = await prov.get_stream_details(prov_item_id, MediaType.TRACK)
@@ -596,7 +606,9 @@ class DLNAServerProvider(PluginProvider):
                 file_path = streamdetails.data.absolute_path
             else:
                 # Fallback for non-filesystem providers
-                return web.Response(status=400, text="Only local files supported")
+                raise UnsupportedFeaturedException(
+                    "Only local files are supported for DLNA streaming"
+                )
 
             self.logger.debug("Serving file: %s", file_path)
 
@@ -682,7 +694,7 @@ class DLNAServerProvider(PluginProvider):
                 limit=limit, offset=offset, order_by="sort_name"
             )
             album_items = [
-                self._create_album_container(album, ALBUMS_CONTAINER_ID)  # type: ignore
+                self._create_album_container(album, ALBUMS_CONTAINER_ID)  # type: ignore[arg-type]
                 for album in albums
             ]
             total = await self.mass.music.albums.library_count()
@@ -707,12 +719,12 @@ class DLNAServerProvider(PluginProvider):
             artist_id = parent_id[7:]
             albums = await self.mass.music.artists.albums(
                 artist_id, "library", in_library_only=True
-            )
+            )  # type: ignore[assignment]
             # Apply pagination manually since albums() doesn't support it
             paginated_albums = (
                 list(albums)[offset : offset + limit] if limit > 0 else list(albums)[offset:]
             )
-            album_items = [self._create_album_container(album) for album in paginated_albums]
+            album_items = [self._create_album_container(album) for album in paginated_albums]  # type: ignore[arg-type]
             didl_xml = self._wrap_didl_items(album_items)
             return didl_xml, len(album_items), len(albums)
 
@@ -900,7 +912,7 @@ class DLNAServerProvider(PluginProvider):
 
         # Add track number
         track_number_xml = ""
-        if track.position:
+        if track.track_number:
             track_number_xml = (
                 f"<upnp:originalTrackNumber>{track.position}</upnp:originalTrackNumber>"
             )
@@ -958,7 +970,7 @@ class DLNAServerProvider(PluginProvider):
     xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">
 </DIDL-Lite>"""
 
-    def _get_image_url(self, image) -> str:
+    def _get_image_url(self, image: MediaItemImage) -> str:
         """Get the URL for an image."""
         if image.remotely_accessible:
             return image.path
@@ -972,7 +984,7 @@ class DLNAServerProvider(PluginProvider):
             for provider in self.mass.music.providers:
                 # Check if this provider has a base_path attribute (filesystem providers do)
                 if hasattr(provider, "base_path"):
-                    base_path = provider.base_path  # type: ignore[attr-defined]
+                    base_path = provider.base_path
                     image_path = f"{base_path}/{image_path}"
                     break
 
