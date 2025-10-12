@@ -29,7 +29,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     Radio,
 )
-from music_assistant_models.streamdetails import MultiPartPath, StreamDetails, StreamMetadata
+from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
@@ -123,7 +123,7 @@ class PandoraProvider(MusicProvider):
         """Get stream details for a radio station.
 
         Builds a multi-file playlist by fetching multiple fragments from Pandora,
-        creating approximately 1-2 hours of continuous playback.
+        creating approximately 2-3 hours of continuous playback.
 
         Args:
             item_id: Station ID
@@ -144,16 +144,18 @@ class PandoraProvider(MusicProvider):
 
         parts = []
         total_duration = 0
-        target_duration = 7200  # 2 hours in seconds
-        max_fragments = 10
+        max_fragments = 30  # Fetch more fragments for longer uninterrupted playback
 
         try:
-            # Fetch fragments until we have enough duration
+            # Fetch fragments
             for fragment_count in range(max_fragments):
                 is_start = fragment_count == 0
                 fragment_data = await self._get_station_fragment(item_id, is_start=is_start)
 
                 if not fragment_data or not fragment_data.get("tracks"):
+                    self.logger.debug(
+                        "No more fragments available after %d fragments", fragment_count
+                    )
                     break
 
                 for track in fragment_data["tracks"]:
@@ -163,9 +165,6 @@ class PandoraProvider(MusicProvider):
                     if audio_url and track_duration:
                         parts.append(MultiPartPath(path=audio_url, duration=track_duration))
                         total_duration += track_duration
-
-                if total_duration >= target_duration:
-                    break
 
             self.logger.info(
                 "Built radio playlist for station %s: %d tracks, %.1f minutes total",
@@ -181,12 +180,6 @@ class PandoraProvider(MusicProvider):
         if not parts:
             raise UnplayableMediaError(f"No tracks available for station {item_id}")
 
-        stream_metadata = StreamMetadata(
-            title=("Pandora"),
-            artist=None,
-            album=None,
-            duration=None,
-        )
         return StreamDetails(
             item_id=item_id,
             provider=self.lookup_key,
@@ -201,7 +194,6 @@ class PandoraProvider(MusicProvider):
             allow_seek=False,
             can_seek=False,
             duration=int(total_duration),
-            stream_metadata=stream_metadata,
         )
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
