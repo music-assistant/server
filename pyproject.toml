@@ -129,7 +129,6 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/controllers/__init__.py$',
   '^music_assistant/controllers/cache.py$',
   '^music_assistant/controllers/config.py$',
   '^music_assistant/controllers/media/.*$',
@@ -140,11 +139,9 @@ exclude = [
   '^music_assistant/controllers/streams.py$',
   '^music_assistant/controllers/webserver.py',
   '^music_assistant/helpers/app_vars.py',
-  '^music_assistant/models/player_provider.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
   '^music_assistant/providers/chromecast/.*$',
-  '^music_assistant/providers/player_group/.*$',
   '^music_assistant/providers/qobuz/.*$',
   '^music_assistant/providers/siriusxm/.*$',
   '^music_assistant/providers/squeezelite/.*$',
