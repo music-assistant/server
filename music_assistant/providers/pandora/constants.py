@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-# Configuration Keys
-CONF_USERNAME = "username"
-CONF_PASSWORD = "password"
-
 # API Endpoints
 API_BASE_URL = "https://www.pandora.com/api/v1"
 LOGIN_ENDPOINT = f"{API_BASE_URL}/auth/login"

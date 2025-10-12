@@ -31,13 +31,12 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
-    CONF_PASSWORD,
-    CONF_USERNAME,
     LOGIN_ENDPOINT,
     PLAYLIST_FRAGMENT_ENDPOINT,
     STATIONS_ENDPOINT,
