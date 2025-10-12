@@ -694,8 +694,7 @@ class DLNAServerProvider(PluginProvider):
                 limit=limit, offset=offset, order_by="sort_name"
             )
             album_items = [
-                self._create_album_container(album, ALBUMS_CONTAINER_ID)  # type: ignore[arg-type]
-                for album in albums
+                self._create_album_container(album, ALBUMS_CONTAINER_ID) for album in albums
             ]
             total = await self.mass.music.albums.library_count()
             didl_xml = self._wrap_didl_items(album_items)
@@ -719,12 +718,12 @@ class DLNAServerProvider(PluginProvider):
             artist_id = parent_id[7:]
             albums = await self.mass.music.artists.albums(
                 artist_id, "library", in_library_only=True
-            )  # type: ignore[assignment]
+            )
             # Apply pagination manually since albums() doesn't support it
             paginated_albums = (
                 list(albums)[offset : offset + limit] if limit > 0 else list(albums)[offset:]
             )
-            album_items = [self._create_album_container(album) for album in paginated_albums]  # type: ignore[arg-type]
+            album_items = [self._create_album_container(album) for album in paginated_albums]
             didl_xml = self._wrap_didl_items(album_items)
             return didl_xml, len(album_items), len(albums)
 
