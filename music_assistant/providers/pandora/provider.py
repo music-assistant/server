@@ -144,7 +144,7 @@ class PandoraProvider(MusicProvider):
 
         parts = []
         total_duration = 0
-        max_fragments = 30  # Fetch more fragments for longer uninterrupted playback
+        max_fragments = 10
 
         try:
             # Fetch fragments
