@@ -29,8 +29,8 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS,
+    CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS,
 )
 
 from .provider import Provider
@@ -578,7 +578,7 @@ class MusicProvider(Provider):
             raise NotImplementedError
         return []
 
-    async def sync_library(self, media_type: MediaType, import_as_favorite: bool) -> None:
+    async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
         # this reference implementation may be overridden
         # with a provider specific approach if needed
@@ -587,19 +587,19 @@ class MusicProvider(Provider):
             raise UnsupportedFeaturedException("Library sync not supported for this media type")
 
         if media_type == MediaType.ARTIST:
-            cur_db_ids = await self._sync_library_artists(import_as_favorite)
+            cur_db_ids = await self._sync_library_artists()
         elif media_type == MediaType.ALBUM:
-            cur_db_ids = await self._sync_library_albums(import_as_favorite)
+            cur_db_ids = await self._sync_library_albums()
         elif media_type == MediaType.TRACK:
-            cur_db_ids = await self._sync_library_tracks(import_as_favorite)
+            cur_db_ids = await self._sync_library_tracks()
         elif media_type == MediaType.PLAYLIST:
-            cur_db_ids = await self._sync_library_playlists(import_as_favorite)
+            cur_db_ids = await self._sync_library_playlists()
         elif media_type == MediaType.PODCAST:
-            cur_db_ids = await self._sync_library_podcasts(import_as_favorite)
+            cur_db_ids = await self._sync_library_podcasts()
         elif media_type == MediaType.RADIO:
-            cur_db_ids = await self._sync_library_radios(import_as_favorite)
+            cur_db_ids = await self._sync_library_radios()
         elif media_type == MediaType.AUDIOBOOK:
-            cur_db_ids = await self._sync_library_audiobooks(import_as_favorite)
+            cur_db_ids = await self._sync_library_audiobooks()
         else:
             # this should not happen but catch it anyways
             raise UnsupportedFeaturedException(f"Unexpected media type to sync: {media_type}")
@@ -664,7 +664,7 @@ class MusicProvider(Provider):
             category=CACHE_CATEGORY_PREV_LIBRARY_IDS,
         )
 
-    async def _sync_library_artists(self, import_as_favorite: bool) -> set[int]:
+    async def _sync_library_artists(self) -> set[int]:
         """Sync Library Artists to Music Assistant library."""
         self.logger.debug("Start sync of Artists to Music Assistant library.")
         cur_db_ids: set[int] = set()
@@ -675,10 +675,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
-                    if import_as_favorite:
-                        prov_item.favorite = True
                     library_item = await self.mass.music.artists.add_item_to_library(prov_item)
-                elif not library_item.favorite and import_as_favorite:
+                elif not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.artists.set_favorite(library_item.item_id, True)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
@@ -696,13 +694,13 @@ class MusicProvider(Provider):
                 )
         return cur_db_ids
 
-    async def _sync_library_albums(self, import_as_favorite: bool) -> set[int]:
+    async def _sync_library_albums(self) -> set[int]:
         """Sync Library Albums to Music Assistant library."""
         self.logger.debug("Start sync of Albums to Music Assistant library.")
         cur_db_ids: set[int] = set()
         conf_sync_album_tracks = self.config.get_value(
-            CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS.key,
-            CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS.default_value,
+            CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
+            CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
         )
         sync_album_tracks = bool(conf_sync_album_tracks)
         async for prov_item in self.get_library_albums():
@@ -712,10 +710,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
-                    if import_as_favorite:
-                        prov_item.favorite = True
                     library_item = await self.mass.music.albums.add_item_to_library(prov_item)
-                elif not library_item.favorite and import_as_favorite:
+                elif not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.albums.set_favorite(library_item.item_id, True)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
@@ -763,7 +759,7 @@ class MusicProvider(Provider):
                     str(err),
                 )
 
-    async def _sync_library_audiobooks(self, import_as_favorite: bool) -> set[int]:
+    async def _sync_library_audiobooks(self) -> set[int]:
         """Sync Library Audiobooks to Music Assistant library."""
         self.logger.debug("Start sync of Audiobooks to Music Assistant library.")
         cur_db_ids: set[int] = set()
@@ -774,10 +770,9 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
-                    if import_as_favorite:
-                        prov_item.favorite = True
+
                     library_item = await self.mass.music.audiobooks.add_item_to_library(prov_item)
-                elif not library_item.favorite and import_as_favorite:
+                elif not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.audiobooks.set_favorite(library_item.item_id, True)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
@@ -809,12 +804,12 @@ class MusicProvider(Provider):
                 )
         return cur_db_ids
 
-    async def _sync_library_playlists(self, import_as_favorite: bool) -> set[int]:
+    async def _sync_library_playlists(self) -> set[int]:
         """Sync Library Playlists to Music Assistant library."""
         self.logger.debug("Start sync of Playlists to Music Assistant library.")
         conf_sync_playlist_tracks = self.config.get_value(
-            CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS.key,
-            CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS.default_value,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS.key,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS.default_value,
         )
         conf_sync_playlist_tracks = cast("list[str]", conf_sync_playlist_tracks)
         cur_db_ids: set[int] = set()
@@ -825,10 +820,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
-                    if import_as_favorite:
-                        prov_item.favorite = True
                     library_item = await self.mass.music.playlists.add_item_to_library(prov_item)
-                elif not library_item.favorite and import_as_favorite:
+                elif not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.playlists.set_favorite(library_item.item_id, True)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
@@ -879,7 +872,7 @@ class MusicProvider(Provider):
                     str(err),
                 )
 
-    async def _sync_library_tracks(self, import_as_favorite: bool) -> set[int]:
+    async def _sync_library_tracks(self) -> set[int]:
         """Sync Library Tracks to Music Assistant library."""
         self.logger.debug("Start sync of Tracks to Music Assistant library.")
         cur_db_ids: set[int] = set()
@@ -898,15 +891,13 @@ class MusicProvider(Provider):
                     continue
                 if not library_item:
                     # add item to the library
-                    if import_as_favorite:
-                        prov_item.favorite = True
                     library_item = await self.mass.music.tracks.add_item_to_library(prov_item)
                 elif library_item.available != prov_item.available:
                     # existing library item but availability changed
                     library_item = await self.mass.music.tracks.update_item_in_library(
                         library_item.item_id, prov_item
                     )
-                elif not library_item.favorite and import_as_favorite:
+                elif not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.tracks.set_favorite(library_item.item_id, True)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
@@ -924,7 +915,7 @@ class MusicProvider(Provider):
                 )
         return cur_db_ids
 
-    async def _sync_library_podcasts(self, import_as_favorite: bool) -> set[int]:
+    async def _sync_library_podcasts(self) -> set[int]:
         """Sync Library Podcasts to Music Assistant library."""
         self.logger.debug("Start sync of Podcasts to Music Assistant library.")
         cur_db_ids: set[int] = set()
@@ -935,15 +926,13 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
-                    if import_as_favorite:
-                        prov_item.favorite = True
                     library_item = await self.mass.music.podcasts.add_item_to_library(prov_item)
                 elif library_item.available != prov_item.available:
                     # existing library item but availability changed
                     library_item = await self.mass.music.podcasts.update_item_in_library(
                         library_item.item_id, prov_item
                     )
-                elif not library_item.favorite and import_as_favorite:
+                elif not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.podcasts.set_favorite(library_item.item_id, True)
                 elif not self._check_provider_mappings(library_item, prov_item, True):
@@ -968,7 +957,7 @@ class MusicProvider(Provider):
                 )
         return cur_db_ids
 
-    async def _sync_library_radios(self, import_as_favorite: bool) -> set[int]:
+    async def _sync_library_radios(self) -> set[int]:
         """Sync Library Radios to Music Assistant library."""
         self.logger.debug("Start sync of Radios to Music Assistant library.")
         cur_db_ids: set[int] = set()
@@ -979,10 +968,8 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
-                    if import_as_favorite:
-                        prov_item.favorite = True
                     library_item = await self.mass.music.radio.add_item_to_library(prov_item)
-                elif not library_item.favorite and import_as_favorite:
+                elif not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.radio.set_favorite(library_item.item_id, True)
                 elif not self._check_provider_mappings(library_item, prov_item, True):

@@ -343,7 +343,7 @@ for more details.
         return False
 
     @handle_refresh_token
-    async def sync_library(self, media_type: MediaType, import_as_favorite: bool) -> None:
+    async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""
         libraries = await self._client.get_all_libraries()
         if len(libraries) == 0:
@@ -356,7 +356,7 @@ for more details.
                 and media_type == MediaType.PODCAST
             ):
                 self.libraries.podcasts[library.id_] = LibraryHelper(name=library.name)
-        await super().sync_library(media_type, import_as_favorite)
+        await super().sync_library(media_type)
         await self._cache_set_helper_libraries()
 
         # update playlog

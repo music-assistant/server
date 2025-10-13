@@ -302,9 +302,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts=[f"WHERE album_tracks.album_id = {item_id}"],
         )
 
-    async def add_item_mapping_as_album_to_library(
-        self, item: ItemMapping, import_as_favorite: bool = False
-    ) -> Album:
+    async def add_item_mapping_as_album_to_library(self, item: ItemMapping) -> Album:
         """
         Add an ItemMapping as an Album to the library.
 
