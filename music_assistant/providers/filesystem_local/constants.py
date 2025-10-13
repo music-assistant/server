@@ -53,7 +53,7 @@ CONF_ENTRY_CONTENT_TYPE_READ_ONLY = ConfigEntry.from_dict(
 
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
     key="library_sync_tracks",
-    type=ConfigEntryType.STRING,
+    type=ConfigEntryType.BOOLEAN,
     label="Import tracks/files into the Music Assistant library",
     description="Define how/if you want to import tracks/files from the filesystem "
     "into the Music Assistant Library. \nWhen not importing into the library, "
@@ -67,7 +67,7 @@ CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
 )
 CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS = ConfigEntry(
     key="library_sync_playlists",
-    type=ConfigEntryType.STRING,
+    type=ConfigEntryType.BOOLEAN,
     label="Import playlists (m3u files) into the Music Assistant library",
     description="Define how/if you want to import playlists (m3u files) from the filesystem "
     "into the Music Assistant Library. \nWhen not importing into the library, "
@@ -79,7 +79,7 @@ CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS = ConfigEntry(
 )
 CONF_ENTRY_LIBRARY_SYNC_PODCASTS = ConfigEntry(
     key="library_sync_podcasts",
-    type=ConfigEntryType.STRING,
+    type=ConfigEntryType.BOOLEAN,
     label="Import Podcasts(files) into the Music Assistant library",
     description="Define how/if you want to import Podcasts(files) from the filesystem "
     "into the Music Assistant Library. \nWhen not importing into the library, "
@@ -91,7 +91,7 @@ CONF_ENTRY_LIBRARY_SYNC_PODCASTS = ConfigEntry(
 )
 CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
     key="library_sync_audiobooks",
-    type=ConfigEntryType.STRING,
+    type=ConfigEntryType.BOOLEAN,
     label="Import Audiobooks(files) into the Music Assistant library",
     description="Define how/if you want to import Audiobooks(files) from the filesystem "
     "into the Music Assistant Library. \nWhen not importing into the library, "
