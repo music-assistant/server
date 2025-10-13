@@ -255,7 +255,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 db_track = next(
                     (x for x in db_items if x.sort_name == provider_track.sort_name), None
                 )
-                if db_track and db_track.track_number == 0 and db_track.track_number != provider_track.track_number:
+                if (db_track and
+                      db_track.track_number == 0 and
+                      db_track.track_number != provider_track.track_number):
                     await self._set_album_track(
                         db_id=library_album.item_id,
                         db_track_id=db_track.item_id,
