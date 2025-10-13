@@ -31,8 +31,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError, Station
 
 from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_EXPORT_ADD,
-    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
+    CONF_ENTRY_LIBRARY_SYNC_BACK,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
 )
@@ -69,18 +68,11 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN = ConfigEntry.from_dict(
         "default_value": 180,
     }
 )
-CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN = ConfigEntry.from_dict(
+CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN = ConfigEntry.from_dict(
     {
-        **CONF_ENTRY_LIBRARY_EXPORT_ADD.to_dict(),
+        **CONF_ENTRY_LIBRARY_SYNC_BACK.to_dict(),
         "hidden": True,
-        "default_value": "export_library",
-    }
-)
-CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_LIBRARY_EXPORT_REMOVE.to_dict(),
-        "hidden": True,
-        "default_value": "export_library",
+        "default_value": True,
     }
 )
 
@@ -121,8 +113,7 @@ async def get_config_entries(
         # hide some of the default (dynamic) entries for library management
         CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
         CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN,
-        CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN,
-        CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN,
+        CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
     )
 
 

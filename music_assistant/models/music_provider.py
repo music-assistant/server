@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
+    CONF_ENTRY_LIBRARY_SYNC_BACK,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS,
 )
 
@@ -311,6 +312,51 @@ class MusicProvider(Provider):
             self.name,
         )
         return True
+
+    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
+        """
+        Set favorite status for item in provider's library.
+
+        Only called if provider supports ProviderFeature.FAVORITE_*_EDIT.
+
+        Note that this should only be implemented by a provider implementation if
+        the provider differentiates between 'in library' and 'favorited' items.
+        """
+        if (
+            media_type == MediaType.ARTIST
+            and ProviderFeature.FAVORITE_ARTISTS_EDIT in self.supported_features
+        ):
+            raise NotImplementedError
+        if (
+            media_type == MediaType.ALBUM
+            and ProviderFeature.FAVORITE_ALBUMS_EDIT in self.supported_features
+        ):
+            raise NotImplementedError
+        if (
+            media_type == MediaType.TRACK
+            and ProviderFeature.FAVORITE_TRACKS_EDIT in self.supported_features
+        ):
+            raise NotImplementedError
+        if (
+            media_type == MediaType.PLAYLIST
+            and ProviderFeature.FAVORITE_PLAYLISTS_EDIT in self.supported_features
+        ):
+            raise NotImplementedError
+        if (
+            media_type == MediaType.RADIO
+            and ProviderFeature.FAVORITE_RADIOS_EDIT in self.supported_features
+        ):
+            raise NotImplementedError
+        if (
+            media_type == MediaType.AUDIOBOOK
+            and ProviderFeature.FAVORITE_AUDIOBOOKS_EDIT in self.supported_features
+        ):
+            raise NotImplementedError
+        if (
+            media_type == MediaType.PODCAST
+            and ProviderFeature.FAVORITE_PODCASTS_EDIT in self.supported_features
+        ):
+            raise NotImplementedError
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist.
@@ -1025,6 +1071,31 @@ class MusicProvider(Provider):
             return ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT in self.supported_features
         if media_type == MediaType.PODCAST:
             return ProviderFeature.LIBRARY_PODCASTS_EDIT in self.supported_features
+        return False
+
+    def library_sync_back_enabled(self, media_type: MediaType) -> bool:
+        """Return if Library sync back is enabled for given MediaType on this provider."""
+        conf_value = self.config.get_value(
+            CONF_ENTRY_LIBRARY_SYNC_BACK.key, CONF_ENTRY_LIBRARY_SYNC_BACK.default_value
+        )
+        return bool(conf_value)
+
+    def library_favorites_edit_supported(self, media_type: MediaType) -> bool:
+        """Return if favorites add/remove is supported for given MediaType on this provider."""
+        if media_type == MediaType.ARTIST:
+            return ProviderFeature.FAVORITE_ARTISTS_EDIT in self.supported_features
+        if media_type == MediaType.ALBUM:
+            return ProviderFeature.FAVORITE_ALBUMS_EDIT in self.supported_features
+        if media_type == MediaType.TRACK:
+            return ProviderFeature.FAVORITE_TRACKS_EDIT in self.supported_features
+        if media_type == MediaType.PLAYLIST:
+            return ProviderFeature.FAVORITE_PLAYLISTS_EDIT in self.supported_features
+        if media_type == MediaType.RADIO:
+            return ProviderFeature.FAVORITE_RADIOS_EDIT in self.supported_features
+        if media_type == MediaType.AUDIOBOOK:
+            return ProviderFeature.FAVORITE_AUDIOBOOKS_EDIT in self.supported_features
+        if media_type == MediaType.PODCAST:
+            return ProviderFeature.FAVORITE_PODCASTS_EDIT in self.supported_features
         return False
 
     async def iter_playlist_tracks(
