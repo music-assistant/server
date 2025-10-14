@@ -110,25 +110,18 @@ class DLNAServerProvider(PluginProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        # Stop SSDP server
-        if self._ssdp_server:
-            try:
-                await self._ssdp_server.stop()
-            except Exception as err:
-                self.logger.warning("Error stopping SSDP server: %s", err)
-
-        # Unregister HTTP routes
+        # Unregister HTTP routes first
         if self._routes_registered:
-            try:
-                self.mass.streams.unregister_dynamic_route("/dlna/description.xml")
-                self.mass.streams.unregister_dynamic_route("/dlna/ContentDirectory.xml")
-                self.mass.streams.unregister_dynamic_route("/dlna/ConnectionManager.xml")
-                self.mass.streams.unregister_dynamic_route("/dlna/control/ContentDirectory")
-                self.mass.streams.unregister_dynamic_route("/dlna/control/ConnectionManager")
-                self.mass.streams.unregister_dynamic_route("/dlna/track/*")
-                # self.mass.streams.unregister_dynamic_route("/dlna/event/ContentDirectory")
-            except Exception as err:
-                self.logger.warning("Error unregistering routes: %s", err)
+            self.mass.streams.unregister_dynamic_route("/dlna/description.xml")
+            self.mass.streams.unregister_dynamic_route("/dlna/ContentDirectory.xml")
+            self.mass.streams.unregister_dynamic_route("/dlna/ConnectionManager.xml")
+            self.mass.streams.unregister_dynamic_route("/dlna/control/ContentDirectory")
+            self.mass.streams.unregister_dynamic_route("/dlna/control/ConnectionManager")
+            self.mass.streams.unregister_dynamic_route("/dlna/track/*")
+
+        # Then stop SSDP server
+        if self._ssdp_server:
+            await self._ssdp_server.stop()
 
         self.logger.info("DLNA Server stopped")
 
