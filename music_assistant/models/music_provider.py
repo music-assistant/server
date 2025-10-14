@@ -816,7 +816,6 @@ class MusicProvider(Provider):
             try:
                 if not library_item:
                     # add item to the library
-
                     library_item = await self.mass.music.audiobooks.add_item_to_library(prov_item)
                 elif not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
