@@ -203,7 +203,7 @@ class SpotifyProvider(MusicProvider):
                 yield parse_playlist(item, self)
 
     @use_cache()
-    async def search(  # noqa: PLR0915
+    async def search(
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
