@@ -81,7 +81,9 @@ class SonosPlayerProvider(PlayerProvider):
             return
 
         try:
-            # Create SonosPlayer instance
+            # Ensure speaker info is available during setup
+            if not soco.speaker_info:
+                soco.get_speaker_info()
             sonos_player = SonosPlayer(self, soco)
             self.sonosplayers[player_id] = sonos_player
 
