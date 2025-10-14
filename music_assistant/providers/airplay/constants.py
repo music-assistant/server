@@ -20,6 +20,7 @@ CONF_PASSWORD: Final[str] = "password"
 CONF_READ_AHEAD_BUFFER: Final[str] = "read_ahead_buffer"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_CREDENTIALS: Final[str] = "credentials"
+CONF_AIRPLAY_VERSION: Final[str] = "airplay_version"
 
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
@@ -47,4 +48,10 @@ BROKEN_RAOP_MODELS = (
     ("Sonos", "Arc Ultra"),
     # Samsung has been repeatedly being reported as having issues with AirPlay 1/raop
     ("Samsung", "*"),
+)
+
+AIRPLAY2_MODELS = (
+    # Some devices only support AirPlay 2, so we can skip the RAOP discovery
+    # and directly use the AirPlay 2 implementation.
+    ("Ubiquiti Inc.", "UPL-AMP"),
 )

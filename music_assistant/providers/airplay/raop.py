@@ -23,6 +23,7 @@ from music_assistant.helpers.util import TaskManager, close_async_generator
 
 from .constants import (
     AIRPLAY_PCM_FORMAT,
+    CONF_AIRPLAY_VERSION,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
@@ -254,6 +255,10 @@ class RaopStream:
         read_ahead = await self.mass.config.get_player_config_value(
             player_id, CONF_READ_AHEAD_BUFFER
         )
+        conf_airplay_version = await self.mass.config.get_player_config_value(
+            player_id, CONF_AIRPLAY_VERSION
+        )
+        assert conf_airplay_version is not None
         # ffmpeg handles the player specific stream + filters and pipes
         # audio to the cliraop process
         self.start_ffmpeg_stream()
@@ -281,11 +286,18 @@ class RaopStream:
             self.prov.dacp_id,
             "-activeremote",
             self.active_remote_id,
+            "-version",
+            str(conf_airplay_version),
             "-udn",
             self.player.discovery_info.name,
             self.player.address,
             "-",
         ]
+        self.player.logger.debug(
+            "Starting cliraop process for player %s with args: %s",
+            self.player.player_id,
+            cliraop_args,
+        )
         self._cliraop_proc = AsyncProcess(cliraop_args, stdin=True, stderr=True, name="cliraop")
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"

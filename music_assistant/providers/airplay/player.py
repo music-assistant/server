@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -34,6 +34,7 @@ from .constants import (
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_PCM_FORMAT,
     CACHE_CATEGORY_PREV_VOLUME,
+    CONF_AIRPLAY_VERSION,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
@@ -170,6 +171,23 @@ class AirPlayPlayer(Player):
                     "Enable this option to ignore these reports."
                 ),
                 category="airplay",
+            ),
+            ConfigEntry(
+                key=CONF_AIRPLAY_VERSION,
+                type=ConfigEntryType.INTEGER,
+                default_value=None,
+                required=True,
+                label="AirPlay version to use for steaming",
+                description="AirPlay version 1 protocol uses RAOP.\n"
+                "AirPlay version 2 is an exenstion of RAOP.\n"
+                "Some newer devices do not fully support RAOP and "
+                "will only work with AirPlay version 2.",
+                category="airplay",
+                options=[
+                    ConfigValueOption("Undefined", None),
+                    ConfigValueOption("AirPlay 1 (RAOP)", 1),
+                    ConfigValueOption("AirPlay 2", 2),
+                ],
             ),
         ]
 

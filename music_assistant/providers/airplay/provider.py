@@ -15,12 +15,18 @@ from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import get_ip_pton, select_free_port
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CACHE_CATEGORY_PREV_VOLUME, CONF_IGNORE_VOLUME, FALLBACK_VOLUME
+from .constants import (
+    CACHE_CATEGORY_PREV_VOLUME,
+    CONF_AIRPLAY_VERSION,
+    CONF_IGNORE_VOLUME,
+    FALLBACK_VOLUME,
+)
 from .helpers import (
     convert_airplay_volume,
     get_cliraop_binary,
     get_model_info,
     get_primary_ip_address_from_zeroconf,
+    is_airplay2_model,
 )
 from .player import AirPlayPlayer
 
@@ -143,6 +149,23 @@ class AirPlayProvider(PlayerProvider):
         address = get_primary_ip_address_from_zeroconf(discovery_info)
         if not address:
             return  # should not happen, but guard just in case
+
+        disc_airplay_version = 2 if is_airplay2_model(manufacturer, model) else 1
+        self.logger.debug(
+            f"Discovered {display_name} has manufacturer {manufacturer}, model {model}"
+            f" and defaults to AirPlay version {disc_airplay_version}."
+        )
+        conf_airplay_version = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_AIRPLAY_VERSION, None
+        )
+        if conf_airplay_version is None:
+            # There is currently no configured AirPlay version, therefore we will
+            # save the discovered airplay version to the provider config.
+            # This is needed for the player to know which protocol to use.
+            self.logger.debug(f"Saving AirPlay version {disc_airplay_version} for {display_name}")
+            await self.mass.config.save_player_config(
+                player_id, {CONF_AIRPLAY_VERSION: disc_airplay_version}
+            )
 
         # if we reach this point, all preflights are ok and we can create the player
         self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
