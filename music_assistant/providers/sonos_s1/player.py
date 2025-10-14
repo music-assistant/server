@@ -39,7 +39,6 @@ from .helpers import soco_error
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
-    from soco.events_base import Event as SonosEvent
     from soco.events_base import SubscriptionBase
 
     from .provider import SonosPlayerProvider
@@ -98,6 +97,8 @@ class SonosPlayer(Player):
             manufacturer="Sonos",
             ip_address=soco.ip_address,
         )
+        self._attr_needs_poll = True
+        self._attr_poll_interval = 2
         self._attr_available = True
         self._attr_can_group_with = {provider.lookup_key}
 
@@ -296,9 +297,11 @@ class SonosPlayer(Player):
                     album=track_info.get("album"),
                     image_url=track_info.get("album_art"),
                 )
-                self.position = int(track_info.get("position", "0").split(":")[0]) * 60 + int(
-                    track_info.get("position", "0").split(":")[1]
-                )
+                # Parse position and duration using helper
+                position_secs = self._timespan_secs(track_info.get("position"))
+                duration_secs = self._timespan_secs(track_info.get("duration"))
+                # Update media position with drift detection
+                self._update_media_position(duration_secs, position_secs)
 
             # Update other attributes
             self._attr_name = self.soco.player_name
@@ -309,14 +312,59 @@ class SonosPlayer(Player):
         except Exception as err:
             self.logger.debug("Error updating speaker state: %s", err)
 
+    def _timespan_secs(self, timespan: str | None) -> int | None:
+        """Parse a time-span into number of seconds."""
+        if timespan in ("", "NOT_IMPLEMENTED", None):
+            return None
+        try:
+            assert timespan is not None
+            return int(
+                sum(60 ** x[0] * int(x[1]) for x in enumerate(reversed(timespan.split(":"))))
+            )
+        except (ValueError, AttributeError):
+            return None
+
+    def _update_media_position(
+        self, duration: int | None, current_position: int | None, force_update: bool = False
+    ) -> None:
+        """Update elapsed time when playing music tracks."""
+        if not (duration or current_position):
+            self._attr_elapsed_time = None
+            self._attr_elapsed_time_last_updated = None
+            return
+
+        should_update = force_update
+
+        # player started reporting position?
+        if current_position is not None and self._attr_elapsed_time is None:
+            should_update = True
+
+        # position jumped?
+        if current_position is not None and self._attr_elapsed_time is not None:
+            if self.playback_status == "PLAYING":
+                if self._attr_elapsed_time_last_updated is not None:
+                    time_diff = time.time() - self._attr_elapsed_time_last_updated
+                else:
+                    time_diff = 0
+            else:
+                time_diff = 0
+
+            calculated_position = self._attr_elapsed_time + time_diff
+
+            if abs(calculated_position - current_position) > 1.5:
+                should_update = True
+
+        if current_position is None:
+            self._attr_elapsed_time = None
+            self._attr_elapsed_time_last_updated = None
+        elif should_update:
+            self._attr_elapsed_time = float(current_position)
+            self._attr_elapsed_time_last_updated = time.time()
+
     @property
     def is_coordinator(self) -> bool:
         """Return True if this player is the group coordinator."""
         return self.sync_coordinator is None
-
-    def schedule_poll(self, interval: float = 2.0) -> None:
-        """Schedule a poll update."""
-        self.mass.call_later(interval, self.poll_speaker)
 
     @soco_error()
     def join(self, target_player: SonosPlayer) -> None:
@@ -327,8 +375,3 @@ class SonosPlayer(Player):
     def unjoin(self) -> None:
         """Remove this player from its group."""
         self.soco.unjoin()
-
-    def speaker_activity(self, event: SonosEvent) -> None:
-        """Handle speaker activity from Sonos events."""
-        self._last_activity = time.time()
-        self.schedule_poll()
