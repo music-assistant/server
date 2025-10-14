@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from xml.etree.ElementTree import Element
 
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-    from music_assistant_models.media_items import Album, Artist, MediaItemImage, Track
+    from music_assistant_models.media_items import Album, Artist, MediaItem, MediaItemImage, Track
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES: set[ProviderFeature] = (
     set()
 )  # we don't have any special supported features (yet)
+
+SUPPORTED_PROVIDER_DOMAINS = {"filesystem_local", "filesystem_smb"}
 
 # DLNA/UPnP constants
 DEVICE_TYPE = "urn:schemas-upnp-org:device:MediaServer:1"
@@ -662,7 +664,6 @@ class DLNAServerProvider(PluginProvider):
         offset = starting_index
 
         if parent_id == ROOT_ID:
-            # Root level: return Artists, Albums, and Tracks containers
             containers = [
                 self._create_artists_root_container(),
                 self._create_albums_root_container(),
@@ -672,47 +673,28 @@ class DLNAServerProvider(PluginProvider):
             return didl_xml, len(containers), len(containers)
 
         if parent_id == ARTISTS_CONTAINER_ID:
-            # Return all artists
-            artists = await self.mass.music.artists.library_items(
-                limit=limit, offset=offset, order_by="sort_name"
-            )
+            artists, total = await self._get_filesystem_artists(limit, offset)
             artist_items = [self._create_artist_container(artist) for artist in artists]
-            total = await self.mass.music.artists.library_count()
             didl_xml = self._wrap_didl_items(artist_items)
             return didl_xml, len(artist_items), total
 
         if parent_id == ALBUMS_CONTAINER_ID:
-            # Return all albums
-            albums = await self.mass.music.albums.library_items(
-                limit=limit, offset=offset, order_by="sort_name"
-            )
+            albums, total = await self._get_filesystem_albums(limit, offset)
             album_items = [
                 self._create_album_container(album, ALBUMS_CONTAINER_ID) for album in albums
             ]
-            total = await self.mass.music.albums.library_count()
             didl_xml = self._wrap_didl_items(album_items)
             return didl_xml, len(album_items), total
 
         if parent_id == TRACKS_CONTAINER_ID:
-            # Return all tracks
-            tracks = await self.mass.music.tracks.library_items(
-                limit=limit, offset=offset, order_by="sort_name"
-            )
-            track_items = []
-            for track in tracks:
-                item_xml = await self._create_track_item(track)
-                track_items.append(item_xml)
-            total = await self.mass.music.tracks.library_count()
+            tracks, total = await self._get_filesystem_tracks(limit, offset)
+            track_items = [await self._create_track_item(track) for track in tracks]
             didl_xml = self._wrap_didl_items(track_items)
             return didl_xml, len(track_items), total
 
         if parent_id.startswith("artist_"):
-            # Return albums for this artist
             artist_id = parent_id[7:]
-            albums = await self.mass.music.artists.albums(
-                artist_id, "library", in_library_only=True
-            )
-            # Apply pagination manually since albums() doesn't support it
+            albums = await self._get_filesystem_albums_for_artist(artist_id)
             paginated_albums = (
                 list(albums)[offset : offset + limit] if limit > 0 else list(albums)[offset:]
             )
@@ -721,21 +703,96 @@ class DLNAServerProvider(PluginProvider):
             return didl_xml, len(album_items), len(albums)
 
         if parent_id.startswith("album_"):
-            # Return tracks for this album
             album_id = parent_id[6:]
-            tracks = await self.mass.music.albums.tracks(album_id, "library", in_library_only=True)
-            # Apply pagination manually
+            tracks = await self._get_filesystem_tracks_for_album(album_id)
             paginated_tracks = (
                 list(tracks)[offset : offset + limit] if limit > 0 else list(tracks)[offset:]
             )
-            track_items = []
-            for track in paginated_tracks:
-                item_xml = await self._create_track_item(track)
-                track_items.append(item_xml)
+            track_items = [await self._create_track_item(track) for track in paginated_tracks]
             didl_xml = self._wrap_didl_items(track_items)
             return didl_xml, len(track_items), len(tracks)
 
         return self._create_empty_didl(), 0, 0
+
+    # Add this helper method to the class
+    def _is_supported_item(self, item: MediaItem) -> bool:
+        """Check if a media item is from a supported filesystem provider."""
+        # Check provider mappings that are already on the item
+        for provider_mapping in item.provider_mappings:
+            if provider_mapping.provider_domain in SUPPORTED_PROVIDER_DOMAINS:
+                return True
+        return False
+
+    async def _get_filesystem_artists(self, limit: int, offset: int) -> tuple[list[Artist], int]:
+        """Get artists that have filesystem tracks."""
+        artists = await self.mass.music.artists.library_items(
+            limit=limit, offset=offset, order_by="sort_name"
+        )
+
+        filtered_artists = []
+        for artist in artists:
+            albums = await self.mass.music.artists.albums(
+                artist.item_id, "library", in_library_only=True
+            )
+            # Check if any album has filesystem tracks
+            for album in albums:
+                tracks = await self.mass.music.albums.tracks(
+                    album.item_id, "library", in_library_only=True
+                )
+                if any(self._is_supported_item(track) for track in tracks):
+                    filtered_artists.append(artist)
+                    break
+
+        total = await self.mass.music.artists.library_count()
+        return filtered_artists, total
+
+    async def _get_filesystem_albums(
+        self, limit: int, offset: int, parent_container: str | None = None
+    ) -> tuple[list[Album], int]:
+        """Get albums that have filesystem tracks."""
+        albums_list = await self.mass.music.albums.library_items(
+            limit=limit, offset=offset, order_by="sort_name"
+        )
+
+        filtered_albums = []
+        for album in albums_list:
+            tracks = await self.mass.music.albums.tracks(
+                album.item_id, "library", in_library_only=True
+            )
+            if any(self._is_supported_item(track) for track in tracks):
+                filtered_albums.append(album)
+
+        total = await self.mass.music.albums.library_count()
+        return filtered_albums, total
+
+    async def _get_filesystem_albums_for_artist(self, artist_id: str) -> list[Album]:
+        """Get albums for an artist that have filesystem tracks."""
+        albums = await self.mass.music.artists.albums(artist_id, "library", in_library_only=True)
+
+        filtered_albums = []
+        for album in albums:
+            tracks = await self.mass.music.albums.tracks(
+                album.item_id, "library", in_library_only=True
+            )
+            if any(self._is_supported_item(track) for track in tracks):
+                filtered_albums.append(album)
+
+        return filtered_albums
+
+    async def _get_filesystem_tracks(self, limit: int, offset: int) -> tuple[list[Track], int]:
+        """Get filesystem tracks."""
+        tracks = await self.mass.music.tracks.library_items(
+            limit=limit, offset=offset, order_by="sort_name"
+        )
+
+        filtered_tracks = [track for track in tracks if self._is_supported_item(track)]
+        total = await self.mass.music.tracks.library_count()
+        return filtered_tracks, total
+
+    async def _get_filesystem_tracks_for_album(self, album_id: str) -> list[Track]:
+        """Get filesystem tracks for an album."""
+        tracks = await self.mass.music.albums.tracks(album_id, "library", in_library_only=True)
+        return [track for track in tracks if self._is_supported_item(track)]
 
     def _create_root_container(self) -> str:
         """Create DIDL-Lite XML for root container."""
