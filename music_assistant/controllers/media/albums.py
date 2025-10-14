@@ -104,7 +104,7 @@ class AlbumsController(MediaControllerBase[Album]):
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
         album_types: list[AlbumType] | None = None,
-    ) -> list[Artist]:
+    ) -> list[Album]:
         """Get in-database albums."""
         extra_query_params: dict[str, Any] = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
@@ -316,9 +316,7 @@ class AlbumsController(MediaControllerBase[Album]):
             extra_query_parts=[f"WHERE album_tracks.album_id = {item_id}"],
         )
 
-    async def add_item_mapping_as_album_to_library(
-        self, item: ItemMapping, import_as_favorite: bool = False
-    ) -> Album:
+    async def add_item_mapping_as_album_to_library(self, item: ItemMapping) -> Album:
         """
         Add an ItemMapping as an Album to the library.
 

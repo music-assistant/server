@@ -36,17 +36,16 @@ from music_assistant.constants import (
     CONF_DEPRECATED_EQ_BASS,
     CONF_DEPRECATED_EQ_MID,
     CONF_DEPRECATED_EQ_TREBLE,
-    CONF_ENTRY_LIBRARY_EXPORT_ADD,
-    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
-    CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS,
-    CONF_ENTRY_LIBRARY_IMPORT_ALBUMS,
-    CONF_ENTRY_LIBRARY_IMPORT_ARTISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
-    CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+    CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
+    CONF_ENTRY_LIBRARY_SYNC_ALBUMS,
+    CONF_ENTRY_LIBRARY_SYNC_ARTISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_BACK,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_RADIOS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ALBUMS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_AUDIOBOOKS,
@@ -283,23 +282,23 @@ class ConfigController:
         if manifest.type == ProviderType.MUSIC:
             # library sync settings
             if ProviderFeature.LIBRARY_ARTISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ARTISTS)
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ARTISTS)
             if ProviderFeature.LIBRARY_ALBUMS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUMS)
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUMS)
                 if provider and provider.is_streaming_provider:
-                    extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_ALBUM_TRACKS)
+                    extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS)
             if ProviderFeature.LIBRARY_TRACKS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_TRACKS)
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_TRACKS)
             if ProviderFeature.LIBRARY_PLAYLISTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS)
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS)
                 if provider and provider.is_streaming_provider:
-                    extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PLAYLIST_TRACKS)
+                    extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS)
             if ProviderFeature.LIBRARY_AUDIOBOOKS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS)
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS)
             if ProviderFeature.LIBRARY_PODCASTS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_PODCASTS)
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_PODCASTS)
             if ProviderFeature.LIBRARY_RADIOS in supported_features:
-                extra_entries.append(CONF_ENTRY_LIBRARY_IMPORT_RADIOS)
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_RADIOS)
             # sync interval settings
             if ProviderFeature.LIBRARY_ARTISTS in supported_features:
                 extra_entries.append(CONF_ENTRY_PROVIDER_SYNC_INTERVAL_ARTISTS)
@@ -327,8 +326,7 @@ class ConfigController:
                     ProviderFeature.LIBRARY_RADIOS_EDIT,
                 }
             ):
-                extra_entries.append(CONF_ENTRY_LIBRARY_EXPORT_ADD)
-                extra_entries.append(CONF_ENTRY_LIBRARY_EXPORT_REMOVE)
+                extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
 
         return [
             *DEFAULT_PROVIDER_CONFIG_ENTRIES,
