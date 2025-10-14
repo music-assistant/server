@@ -104,9 +104,6 @@ class DLNAServerProvider(PluginProvider):
         except OSError as err:  # Socket/network errors
             self.logger.exception("Failed to start DLNA server due to network error")
             raise SetupFailedError(f"Failed to start DLNA server: {err}") from err
-        except Exception as err:  # Unexpected errors
-            self.logger.exception("Failed to start DLNA server")
-            raise SetupFailedError("Failed to start DLNA server") from err
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
