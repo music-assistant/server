@@ -729,18 +729,13 @@ class SpotifyProvider(MusicProvider):
 
             current_seek_seconds = int(current_seek_ms // 1000)
 
-            # Try streaming with quick_fail for faster fallback detection
             first_chunk_received = False
             try:
                 for i in range(start_chapter, len(chapter_uris)):
                     chapter_uri = chapter_uris[i]
                     chapter_seek = current_seek_seconds if i == start_chapter else 0
 
-                    # Use quick_fail=True for first chapter to enable faster fallback
-                    use_quick_fail = i == start_chapter
-                    async for chunk in self.streamer.stream_spotify_uri(
-                        chapter_uri, chapter_seek, quick_fail=use_quick_fail
-                    ):
+                    async for chunk in self.streamer.stream_spotify_uri(chapter_uri, chapter_seek):
                         first_chunk_received = True
                         yield chunk
 
