@@ -41,7 +41,7 @@ class LibrespotStreamer:
             yield chunk
 
     async def stream_spotify_uri(
-        self, spotify_uri: str, seek_position: int = 0, quick_fail: bool = False
+        self, spotify_uri: str, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Stream a Spotify URI using librespot.
 
@@ -50,8 +50,6 @@ class LibrespotStreamer:
         Args:
             spotify_uri: The Spotify URI to stream
             seek_position: Position in seconds to start from
-            quick_fail: If True, use shorter timeout for faster failure
-                                 detection (useful for fallback scenarios)
         """
         # Validate that librespot binary is available
         if not self.provider._librespot_bin:
@@ -76,11 +74,10 @@ class LibrespotStreamer:
         if seek_position:
             args += ["--start-position", str(int(seek_position))]
 
-        # Use shorter timeout if quick_fail is enabled (for audiobook fallback scenarios)
-        base_timeout = 3 if quick_fail else 5
-        max_attempts = 1 if quick_fail else 2
+        base_timeout = 5
+        max_attempts = 2
 
-        # we retry twice in case librespot fails to start (or once if quick_fail)
+        # we retry twice in case librespot fails to start
         for attempt in range(1, max_attempts + 1):
             log_librespot = (
                 self.provider.logger.isEnabledFor(VERBOSE_LOG_LEVEL) or attempt == max_attempts
