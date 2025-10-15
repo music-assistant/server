@@ -44,6 +44,7 @@ from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
 from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_OUTPUT_CODEC
+from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
@@ -253,6 +254,16 @@ class ResonatePlayer(Player):
 
             # Convert string codec to AudioCodec enum
             audio_codec = AudioCodec(output_codec)
+
+            # Apply DSP and other audio filters
+            audio_source = get_ffmpeg_stream(
+                audio_input=audio_source,
+                input_format=pcm_format,
+                output_format=pcm_format,
+                filter_params=get_player_filter_params(
+                    self.mass, self.player_id, pcm_format, pcm_format
+                ),
+            )
 
             # Create MediaStream wrapping the audio source generator
             media_stream = MediaStream(
