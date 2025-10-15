@@ -253,7 +253,13 @@ class AlbumsController(MediaControllerBase[Album]):
                 # library_tracks. Ensure to update the disc/track number when interacting with
                 # album tracks
                 db_track = next(
-                    (x for x in db_items if x.sort_name == provider_track.sort_name), None
+                    (
+                        x
+                        for x in db_items
+                        if x.sort_name == provider_track.sort_name
+                        and x.version == provider_track.version
+                    ),
+                    None,
                 )
                 if (
                     db_track
