@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import (
+    get_mac_address,
     get_port_from_zeroconf,
     get_primary_ip_address_from_zeroconf,
 )
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.bluesound.const import MUSP_MDNS_TYPE
 
 from .player import BluesoundPlayer
 
@@ -46,17 +48,33 @@ class BluesoundPlayerProvider(PlayerProvider):
             return
         name = name.split(".", 1)[0]
         assert info is not None
-        player_id = info.decoded_properties["mac"]
-        assert player_id is not None
 
         ip_address = get_primary_ip_address_from_zeroconf(info)
         port = get_port_from_zeroconf(info)
 
-        assert ip_address is not None
-        assert port is not None
+        if not ip_address or not port:
+            self.logger.debug("Ignoring incomplete mdns discovery for Bluesound player: %s", name)
+            return
+
+        if info.type == MUSP_MDNS_TYPE:
+            # this is a multi-zone device, we need to fetch the mac address of the main device
+            mac_address = await get_mac_address(ip_address)
+            player_id = f"{mac_address}:{port}"
+        else:
+            mac_address = info.decoded_properties.get("mac")
+            player_id = mac_address
+
+        if not mac_address:
+            self.logger.debug(
+                "Ignoring mdns discovery for Bluesound player without MAC address: %s",
+                name,
+            )
+            return
 
         # Handle update of existing player
+        assert player_id is not None  # for type checker
         if bluos_player := self.mass.players.get(player_id):
+            bluos_player = cast("BluesoundPlayer", bluos_player)
             # Check if the IP address has changed
             if ip_address and ip_address != bluos_player.ip_address:
                 self.logger.debug(
@@ -76,7 +94,7 @@ class BluesoundPlayerProvider(PlayerProvider):
             _objectType=info.decoded_properties.get("_objectType", ""),
             ip_address=ip_address,
             port=str(port),
-            mac=info.decoded_properties["mac"],
+            mac=mac_address,
             model=info.decoded_properties.get("model", ""),
             zs=info.decoded_properties.get("zs", False),
         )
