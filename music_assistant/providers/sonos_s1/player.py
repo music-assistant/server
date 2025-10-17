@@ -169,7 +169,7 @@ class SonosPlayer(Player):
         # self.update_groups()
         # if not self.synced_to:
         #     self.poll_media()
-        await self.subscribe()
+        asyncio.run_coroutine_threadsafe(self.subscribe(), self.mass.loop)
         # await self.subscribe()
         await self.mass.players.register_or_update(self)
 
@@ -426,12 +426,17 @@ class SonosPlayer(Player):
             """Handle a failed subscription renewal callback."""
             self.mass.create_task(self._renew_failed(exception))
 
-        subscription = await asyncio.to_thread(
-            target.subscribe, auto_renew=True, requested_timeout=SUBSCRIPTION_TIMEOUT
-        )
-        subscription.callback = sub_callback
-        subscription.auto_renew_fail = on_renew_failed
-        self._subscriptions.append(subscription)
+        def create_subscription():                                  
+            subscription = target.subscribe(                         
+                auto_renew=True,                                        
+                requested_timeout=SUBSCRIPTION_TIMEOUT
+            )
+            subscription.callback = sub_callback                    
+            subscription.auto_renew_fail = on_renew_failed          
+            return subscription                                     
+                                                                    
+        subscription = await asyncio.to_thread(create_subscription) 
+        self._subscriptions.append(subscription) 
 
     def log_subscription_result(self, result: Any, event: str, level: int = logging.DEBUG) -> None:
         """Log a message if a subscription action (create/renew/stop) results in an exception."""
@@ -499,7 +504,7 @@ class SonosPlayer(Player):
         """Handle SonosEvent callback."""
         service_type: str = event.service.service_type
         self._speaker_activity(f"{service_type} subscription")
-
+        self.logger.debug("Event received for %s: %s", self.display_name, service_type)
         if service_type == "DeviceProperties":
             self.update_player()
             return

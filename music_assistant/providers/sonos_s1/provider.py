@@ -83,7 +83,7 @@ class SonosPlayerProvider(PlayerProvider):
         try:
             # Ensure speaker info is available during setup
             if not soco.speaker_info:
-                soco.get_speaker_info()
+                soco.get_speaker_info(True, timeout=7)
             sonos_player = SonosPlayer(self, soco)
             self.sonosplayers[player_id] = sonos_player
 
@@ -99,8 +99,3 @@ class SonosPlayerProvider(PlayerProvider):
 
         except Exception as err:
             self.logger.error("Error setting up Sonos player %s: %s", player_id, err)
-
-    async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates."""
-        if sonos_player := self.sonosplayers.get(player_id):
-            await sonos_player.poll()
