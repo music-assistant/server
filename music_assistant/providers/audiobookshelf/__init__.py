@@ -39,6 +39,7 @@ from aioaudiobookshelf.schema.shelf import (
 )
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
+from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -200,6 +201,8 @@ P = ParamSpec("P")
 class Audiobookshelf(MusicProvider):
     """Audiobookshelf MusicProvider."""
 
+    _on_unload_callbacks: list[Callable[[], None]]
+
     @staticmethod
     def handle_refresh_token(
         method: Callable[P, Coroutine[Any, Any, R]],
@@ -220,6 +223,7 @@ class Audiobookshelf(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
+        self._on_unload_callbacks: list[Callable[[], None]] = []
         base_url = str(self.config.get_value(CONF_URL))
         username = str(self.config.get_value(CONF_USERNAME))
         password = str(self.config.get_value(CONF_PASSWORD))
@@ -324,6 +328,12 @@ for more details.
         # safe guard reauthentication
         self.reauthenticate_lock = asyncio.Lock()
         self.reauthenticate_last = 0.0
+        # register dynamic stream route for audiobook chapters
+        self._on_unload_callbacks.append(
+            self.mass.streams.register_dynamic_route(
+                f"{self.instance_id}_chapter_stream", self._handle_audiobook_chapter_request
+            )
+        )
 
     @handle_refresh_token
     async def unload(self, is_removed: bool = False) -> None:
@@ -335,6 +345,8 @@ for more details.
         """
         await self._client.logout()
         await self._client_socket.logout()
+        for callback in self._on_unload_callbacks:
+            callback()
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -566,8 +578,19 @@ for more details.
 
         file_parts: list[MultiPartPath] = []
         base_url = str(self.config.get_value(CONF_URL))
-        for track in tracks:
-            stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
+        for idx, track in enumerate(tracks):
+            if idx == 0:
+                # first chapter we can use direct url as we have a fresh token
+                base_url = str(self.config.get_value(CONF_URL))
+                stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
+            else:
+                # to ensure token is always valid, we create a dynamic url
+                # this ensures that we always get a fresh token on each chapter
+                # without having to deal with a custom stream etc.
+                stream_url = (
+                    f"{self.mass.streams.base_url}/{self.instance_id}_chapter_stream?"
+                    f"audiobook_id={abs_audiobook.id_}&chapter_id={idx}"
+                )
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
         return StreamDetails(
@@ -615,6 +638,30 @@ for more details.
             allow_seek=True,
             path=stream_url,
         )
+
+    async def _handle_audiobook_chapter_request(self, request: web.Request) -> web.Response:
+        """
+        Handle dynamic audiobook chapter stream request.
+
+        We redirect to the actual stream url with token.
+        This is done because the token might expire, so we need to
+        generate a fresh url on each chapter.
+        """
+        if not (audiobook_id := request.query.get("audiobook_id")):
+            return web.Response(status=400, text="Missing audiobook_id")
+        if not (chapter_id := request.query.get("chapter_id")):
+            return web.Response(status=400, text="Missing chapter_id")
+        abs_audiobook = await self._get_abs_expanded_audiobook(prov_audiobook_id=audiobook_id)
+        chapter_id = int(chapter_id)  # type: ignore[assignment]
+        try:
+            chapter_track = abs_audiobook.media.tracks[chapter_id]
+        except IndexError:
+            return web.Response(status=404, text="Chapter not found")
+
+        base_url = str(self.config.get_value(CONF_URL))
+        stream_url = f"{base_url}{chapter_track.content_url}?token={self._client.token}"
+        # redirect to the actual stream url
+        raise web.HTTPFound(location=stream_url)
 
     @handle_refresh_token
     async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
