@@ -1956,7 +1956,7 @@ class PlayerController(CoreController):
         # wait for the player to stop playing
         if not announcement.duration:
             media_info = await async_parse_tags(
-                announcement.custom_data["url"], require_duration=True
+                announcement.custom_data["announcement_url"], require_duration=True
             )
             announcement.duration = media_info.duration
         await self.wait_for_state(

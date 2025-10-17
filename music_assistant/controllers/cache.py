@@ -19,7 +19,7 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, MASS_LOGGER_NAME
 from music_assistant.helpers.api import parse_value
 from music_assistant.helpers.database import DatabaseConnection
-from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.json import async_json_loads, json_dumps
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -123,7 +123,7 @@ class CacheController(CoreController):
             )
         ) and (not checksum or (db_row["checksum"] == checksum and db_row["expires"] >= cur_time)):
             try:
-                data = await asyncio.to_thread(json_loads, db_row["data"])
+                data = await async_json_loads(db_row["data"])
             except Exception as exc:
                 LOGGER.error(
                     "Error parsing cache data for %s: %s",

@@ -807,7 +807,7 @@ class PlayerQueuesController(CoreController):
         queue.current_index = index
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
-        queue.flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
+        prefer_flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
         queue.next_item_id_enqueued = None
         # always update session id when we start a new playback session
         queue.session_id = shortuuid.random(length=8)
@@ -851,9 +851,12 @@ class PlayerQueuesController(CoreController):
                 # all attempts to find a playable item failed
                 raise MediaNotFoundError("No playable item found to start playback")
 
-            flow_mode = queue.flow_mode
-            if queue_item.media_type in (MediaType.RADIO, MediaType.PLUGIN_SOURCE):
-                flow_mode = False
+            flow_mode = prefer_flow_mode and queue_item.media_type not in (
+                # don't use flow mode for duration-less streams
+                MediaType.RADIO,
+                MediaType.PLUGIN_SOURCE,
+            )
+            queue.flow_mode = flow_mode
             await self.mass.players.play_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(queue_item, flow_mode),

@@ -66,7 +66,7 @@ from music_assistant.constants import (
     ENCRYPT_SUFFIX,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
+from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
 from music_assistant.helpers.util import load_provider_module
 
 if TYPE_CHECKING:
@@ -915,7 +915,7 @@ class ConfigController:
         for filename in (self.filename, f"{self.filename}.backup"):
             try:
                 async with aiofiles.open(filename, encoding="utf-8") as _file:
-                    self._data = json_loads(await _file.read())
+                    self._data = await async_json_loads(await _file.read())
                     LOGGER.debug("Loaded persistent settings from %s", filename)
                     await self._migrate()
                     return
@@ -1043,7 +1043,7 @@ class ConfigController:
             await rename(self.filename, filename_backup)
 
         async with aiofiles.open(self.filename, "w", encoding="utf-8") as _file:
-            await _file.write(json_dumps(self._data, indent=True))
+            await _file.write(await async_json_dumps(self._data, indent=True))
         LOGGER.debug("Saved data to persistent storage")
 
     @api_command("config/providers/reload")

@@ -121,7 +121,7 @@ async def get_config_entries(
             label="Mount options",
             required=False,
             category="advanced",
-            default_value="noserverino,file_mode=0775,dir_mode=0775,uid=0,gid=0",
+            default_value="noserverino,file_mode=0775,dir_mode=0775,uid=0,gid=0,iocharset=utf8",
             description="[optional] Any additional mount options you "
             "want to pass to the mount command if needed for your particular setup.",
         ),

@@ -249,6 +249,28 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
             for provider_track in provider_tracks:
+                # In some cases (looking at you YTM) the disc/track number is not obtained from
+                # library_tracks. Ensure to update the disc/track number when interacting with
+                # album tracks
+                db_track = next(
+                    (
+                        x
+                        for x in db_items
+                        if x.sort_name == provider_track.sort_name
+                        and x.version == provider_track.version
+                    ),
+                    None,
+                )
+                if (
+                    db_track
+                    and db_track.track_number == 0
+                    and db_track.track_number != provider_track.track_number
+                ):
+                    await self._set_album_track(
+                        db_id=library_album.item_id,
+                        db_track_id=db_track.item_id,
+                        track=provider_track,
+                    )
                 if provider_track.item_id in unique_ids:
                     continue
                 unique_id = f"{provider_track.disc_number}.{provider_track.track_number}"
@@ -442,6 +464,19 @@ class AlbumsController(MediaControllerBase[Album]):
             },
         )
         return ItemMapping.from_item(db_artist)
+
+    async def _set_album_track(self, db_id: int, db_track_id: int, track: Track) -> None:
+        """Store Album Track info."""
+        # write (or update) record in album_tracks table
+        await self.mass.music.database.insert_or_replace(
+            DB_TABLE_ALBUM_TRACKS,
+            {
+                "album_id": db_id,
+                "track_id": db_track_id,
+                "track_number": track.track_number,
+                "disc_number": track.disc_number,
+            },
+        )
 
     async def match_providers(self, db_album: Album) -> None:
         """Try to find match on all (streaming) providers for the provided (database) album.
