@@ -363,7 +363,7 @@ class PlexProvider(MusicProvider):
                 # Add Music Assistant client identification headers
                 session.headers.update(
                     {
-                        "X-Plex-Client-Identifier": "music-assistant",
+                        "X-Plex-Client-Identifier": self.instance_id,
                         "X-Plex-Product": "Music Assistant",
                         "X-Plex-Platform": "Music Assistant",
                         "X-Plex-Version": self.mass.version,
