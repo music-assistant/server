@@ -1438,7 +1438,7 @@ class PlexProvider(MusicProvider):
                         "key": str(plex_track.ratingKey),
                         "identifier": "com.plexapp.plugins.library",
                     }
-                    self._plex_server.query("/:/scrobble", scrobble_params)
+                    self._plex_server.query("/:/scrobble", params=scrobble_params)
                     self.logger.info("Track %s marked as played in Plex (via event)", item_id)
 
             except Exception as err:
