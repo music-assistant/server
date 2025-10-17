@@ -1173,7 +1173,7 @@ class PlexProvider(MusicProvider):
                         "identifier": "com.plexapp.plugins.library",
                     }
                     self.logger.debug("Unscrobbling track in Plex: %s", unscrobble_params)
-                    self._plex_server.query("/:/unscrobble", unscrobble_params)
+                    self._plex_server.query("/:/unscrobble", params=unscrobble_params)
                     self.logger.info("Track %s marked as unplayed in Plex", prov_item_id)
 
             except Exception as err:
