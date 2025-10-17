@@ -336,10 +336,6 @@ class ConfigController:
             ),
         ]
 
-    async def get_provider_instance_count(self, provider_domain: str) -> int:
-        """Return the count of configured instances for a specific provider domain."""
-        return len(await self.get_provider_configs(provider_domain=provider_domain))
-
     @api_command("config/providers/save")
     async def save_provider_config(
         self,

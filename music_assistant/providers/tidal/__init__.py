@@ -1041,20 +1041,24 @@ class TidalProvider(MusicProvider):
         module_page_names: dict[str, str] = {}
 
         try:
-            # Get the number of configured tidal instances once for this operation
-            tidal_instance_count = await self.mass.config.get_provider_instance_count(self.domain)
+            # Get all Tidal provider instances - await the coroutine
+            all_tidal_configs = await self.mass.config.get_provider_configs(ProviderType.MUSIC)
+            # Filter to only Tidal configs
+            tidal_configs = [config for config in all_tidal_configs if config.domain == self.domain]
+            # Sort by instance_id to get a consistent "first" instance
+            sorted_instances = sorted(tidal_configs, key=lambda x: x.instance_id)
             # Process pages and collect modules
             await self._process_recommendation_pages(
                 pages,
                 combined_modules,
                 module_content_types,
                 module_page_names,
-                tidal_instance_count,
+                sorted_instances,
             )
 
             # Create recommendation folders from combined modules
             results = self._create_recommendation_folders(
-                combined_modules, module_content_types, module_page_names, tidal_instance_count
+                combined_modules, module_content_types, module_page_names, sorted_instances
             )
 
             self.logger.debug("Created %d recommendation folders from Tidal", len(results))
@@ -1091,11 +1095,11 @@ class TidalProvider(MusicProvider):
         combined_modules: dict[str, list[Playlist | Album | Track | Artist]],
         module_content_types: dict[str, MediaType],
         module_page_names: dict[str, str],
-        tidal_instance_count: int,
+        sorted_instances: list[ProviderConfig],
     ) -> None:
         """Process recommendation pages and collect modules."""
         # Check if there are multiple Tidal instances configured
-        show_user_identifier = tidal_instance_count > 1
+        show_user_identifier = len(sorted_instances) > 1
 
         for page_path in pages:
             # Get page content
@@ -1104,20 +1108,12 @@ class TidalProvider(MusicProvider):
 
             # For "Home" page with multiple instances, only process for the first instance
             # Check if we should skip this page for this instance
-            if page_path == "pages/home" and show_user_identifier:
-                # Get all Tidal provider instances - await the coroutine
-                all_tidal_configs = await self.mass.config.get_provider_configs(ProviderType.MUSIC)
-                # Filter to only Tidal configs
-                tidal_configs = [
-                    config for config in all_tidal_configs if config.domain == self.domain
-                ]
-                # Sort by instance_id to get a consistent "first" instance
-                sorted_instances = sorted(tidal_configs, key=lambda x: x.instance_id)
-
+            if page_path in ("pages/home", "pages/explore_top_music") and show_user_identifier:
                 # Only process home page for the first instance
                 if sorted_instances and self.instance_id != sorted_instances[0].instance_id:
                     self.logger.debug(
-                        "Skipping 'Home' page for instance %s (not first instance)",
+                        "Skipping '%s' page for instance %s (not first instance)",
+                        page_name,
                         self.instance_id,
                     )
                     continue
@@ -1182,12 +1178,12 @@ class TidalProvider(MusicProvider):
         combined_modules: dict[str, list[Playlist | Album | Track | Artist]],
         module_content_types: dict[str, MediaType],
         module_page_names: dict[str, str],
-        tidal_instance_count: int,
+        sorted_instances: list[ProviderConfig],
     ) -> list[RecommendationFolder]:
         """Create recommendation folders from combined modules."""
         results: list[RecommendationFolder] = []
         # Check if there are multiple Tidal instances configured
-        show_user_identifier = tidal_instance_count > 1
+        show_user_identifier = len(sorted_instances) > 1
 
         # Helper function to determine icon based on content type
         def get_icon_for_type(media_type: MediaType) -> str:
