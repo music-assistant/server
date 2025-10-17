@@ -20,8 +20,10 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    EventType,
     ImageType,
     MediaType,
+    PlaybackState,
     ProviderFeature,
     StreamType,
 )
@@ -38,6 +40,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItem,
     MediaItemImage,
+    MediaItemType,
     Playlist,
     ProviderMapping,
     SearchResults,
@@ -57,6 +60,7 @@ from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.plex.helpers import discover_local_servers, get_libraries
@@ -64,6 +68,8 @@ from music_assistant.providers.plex.helpers import discover_local_servers, get_l
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
 
+    from music_assistant_models.event import MassEvent
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
     from plexapi.library import MusicSection as PlexMusicSection
     from plexapi.media import AudioStream as PlexAudioStream
@@ -334,6 +340,11 @@ class PlexProvider(MusicProvider):
     _plex_library: PlexMusicSection = None
     _myplex_account: MyPlexAccount = None
     _baseurl: str
+    _unsubscribe_callbacks: list[Callable[[], None]]
+    _timeline_update_task: Task[None] | None = None
+    _last_reported_state: dict[
+        str, tuple[str, int, PlaybackState]
+    ]  # queue_id_itemid -> (track_id, position, state)
 
     async def handle_async_init(self) -> None:
         """Set up the music provider by connecting to the server."""
@@ -349,6 +360,15 @@ class PlexProvider(MusicProvider):
                     if self.config.get_value(CONF_LOCAL_SERVER_SSL)
                     else False
                 )
+                # Add Music Assistant client identification headers
+                session.headers.update(
+                    {
+                        "X-Plex-Client-Identifier": "music-assistant",
+                        "X-Plex-Product": "Music Assistant",
+                        "X-Plex-Platform": "Music Assistant",
+                        "X-Plex-Version": self.mass.version,
+                    }
+                )
                 local_server_protocol = (
                     "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
                 )
@@ -359,7 +379,7 @@ class PlexProvider(MusicProvider):
                 )
                 if token == AUTH_TOKEN_UNAUTH:
                     # Doing local connection, not via plex.tv.
-                    plex_server = PlexServer(plex_url)
+                    plex_server = PlexServer(plex_url, session=session)
                 else:
                     plex_server = PlexServer(
                         plex_url,
@@ -392,6 +412,38 @@ class PlexProvider(MusicProvider):
             )
         except requests.exceptions.ConnectionError as err:
             raise SetupFailedError from err
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+
+        # Initialize state tracking
+        self._last_reported_state = {}
+
+        # Subscribe to real-time playback events for instant Plex timeline updates
+        self._unsubscribe_callbacks = []
+        self._unsubscribe_callbacks.append(
+            self.mass.subscribe(self._on_media_item_played_event, EventType.MEDIA_ITEM_PLAYED)
+        )
+        self.logger.debug("Subscribed to MEDIA_ITEM_PLAYED events for real-time Plex updates")
+
+        # Start background task for 5-second timeline updates
+        self._timeline_update_task = self.mass.create_task(self._periodic_timeline_update())
+        self.logger.debug("Started periodic timeline update task (5s interval)")
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        # Cancel periodic timeline update task
+        if self._timeline_update_task and not self._timeline_update_task.done():
+            self._timeline_update_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._timeline_update_task
+
+        # Unsubscribe from events
+        if self._unsubscribe_callbacks:
+            for unsubscribe in self._unsubscribe_callbacks:
+                unsubscribe()
+        await super().unload(is_removed)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -979,14 +1031,424 @@ class PlexProvider(MusicProvider):
         """Handle callback when an item completed streaming."""
 
         def mark_played() -> None:
-            item = streamdetails.data
-            params = {
-                "key": str(item.ratingKey),
-                "identifier": "com.plexapp.plugins.library",
-            }
-            self._plex_server.query("/:/scrobble", params=params)
+            """Mark the item as played in Plex."""
+            try:
+                item = streamdetails.data
+                if not item:
+                    self.logger.warning("No Plex item data in streamdetails, cannot scrobble")
+                    return
+
+                if not hasattr(item, "ratingKey"):
+                    self.logger.warning(
+                        "Streamdetails data is not a Plex item (missing ratingKey), cannot scrobble"
+                    )
+                    return
+
+                params = {
+                    "key": str(item.ratingKey),
+                    "identifier": "com.plexapp.plugins.library",
+                }
+                self.logger.debug(
+                    "Scrobbling track %s (ratingKey: %s) to Plex",
+                    streamdetails.uri,
+                    item.ratingKey,
+                )
+                self._plex_server.query("/:/scrobble", params=params)
+                self.logger.info("Successfully scrobbled track %s to Plex", streamdetails.uri)
+            except Exception as err:
+                self.logger.exception(
+                    "Failed to scrobble track %s to Plex: %s",
+                    streamdetails.uri,
+                    err,
+                )
 
         await asyncio.to_thread(mark_played)
+
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """
+        Handle callback when a media item has been played.
+
+        This is called periodically (every 30s) during playback and when playback stops.
+        We use this to send timeline/progress updates to Plex.
+        """
+        if media_type != MediaType.TRACK:
+            # Only handle tracks for now
+            return
+
+        def update_timeline() -> None:
+            """Update Plex timeline with current playback progress."""
+            try:
+                self.logger.debug(
+                    "on_played: prov_item_id=%s, pos=%s, fully_played=%s, is_playing=%s",
+                    prov_item_id,
+                    position,
+                    fully_played,
+                    is_playing,
+                )
+
+                # Extract ratingKey from the key path (e.g., "/library/metadata/12345" -> "12345")
+                # The prov_item_id is the Plex key path, we need the ratingKey for API calls
+                try:
+                    rating_key = prov_item_id.split("/")[-1]
+                    self.logger.debug(
+                        "Extracted ratingKey %s from path %s", rating_key, prov_item_id
+                    )
+                except Exception as e:
+                    self.logger.error("Failed to extract ratingKey from %s: %s", prov_item_id, e)
+                    return
+
+                # Fetch the track directly from server using ratingKey to avoid ambiguity
+                # Using server.fetchItem() instead of library.fetchItem() is more reliable
+                plex_track = self._plex_server.fetchItem(int(rating_key))
+                if not plex_track:
+                    self.logger.warning("Cannot find Plex item with ratingKey %s", rating_key)
+                    return
+
+                self.logger.debug(
+                    "Found Plex item: '%s' by '%s' (type: %s, ratingKey: %s)",
+                    plex_track.title if hasattr(plex_track, "title") else "unknown",
+                    plex_track.grandparentTitle
+                    if hasattr(plex_track, "grandparentTitle")
+                    else "unknown",
+                    plex_track.type if hasattr(plex_track, "type") else "unknown",
+                    plex_track.ratingKey if hasattr(plex_track, "ratingKey") else "unknown",
+                )
+
+                # Verify this is actually a track, not a collection or other item
+                if not hasattr(plex_track, "type") or plex_track.type != "track":
+                    self.logger.warning(
+                        "Item %s is not a track (type: %s), cannot update timeline",
+                        rating_key,
+                        plex_track.type if hasattr(plex_track, "type") else "unknown",
+                    )
+                    return
+
+                # Convert position to milliseconds (Plex expects ms)
+                position_ms = position * 1000
+
+                # Determine playback state
+                if fully_played:
+                    state = "stopped"
+                elif is_playing:
+                    state = "playing"
+                else:
+                    state = "paused"
+
+                # Send timeline update to Plex with current state
+                # Client identification is set globally on the session headers
+                params = {
+                    "ratingKey": str(plex_track.ratingKey),
+                    "key": prov_item_id,
+                    "state": state,
+                    "time": str(position_ms),
+                    "duration": str(plex_track.duration)
+                    if hasattr(plex_track, "duration")
+                    else "0",
+                }
+                self.logger.debug("Sending Plex timeline update (state=%s): %s", state, params)
+                self._plex_server.query("/:/timeline", params=params)
+
+                # If fully played, also scrobble
+                if fully_played:
+                    scrobble_params = {
+                        "key": str(plex_track.ratingKey),
+                        "identifier": "com.plexapp.plugins.library",
+                    }
+                    self.logger.debug("Scrobbling track to Plex: %s", scrobble_params)
+                    self._plex_server.query("/:/scrobble", scrobble_params)
+                    self.logger.info("Track %s marked as played in Plex", prov_item_id)
+
+                # If position is 0 and not playing, mark as unplayed
+                if position == 0 and not is_playing and not fully_played:
+                    unscrobble_params = {
+                        "key": str(plex_track.ratingKey),
+                        "identifier": "com.plexapp.plugins.library",
+                    }
+                    self.logger.debug("Unscrobbling track in Plex: %s", unscrobble_params)
+                    self._plex_server.query("/:/unscrobble", unscrobble_params)
+                    self.logger.info("Track %s marked as unplayed in Plex", prov_item_id)
+
+            except Exception as err:
+                self.logger.exception(
+                    "Failed to update Plex timeline for track %s: %s",
+                    prov_item_id,
+                    err,
+                )
+
+        await asyncio.to_thread(update_timeline)
+
+    async def _periodic_timeline_update(self) -> None:  # noqa: PLR0915
+        """Periodically update Plex timeline every 5 seconds for active playback."""
+        while True:
+            try:
+                await asyncio.sleep(5)
+
+                # Track which state_keys are active in this iteration
+                active_state_keys = set()
+
+                # Check all player queues for active Plex playback
+                for queue in self.mass.player_queues:
+                    if not queue.active or not queue.current_item:
+                        continue
+
+                    # Only send updates for playing or paused states
+                    if queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                        continue
+
+                    current_item = queue.current_item
+                    if not current_item or not current_item.media_item:
+                        continue
+
+                    # Parse URI to check if it's a Plex track
+                    try:
+                        media_type, provider_instance_or_domain, item_id = await parse_uri(
+                            current_item.uri
+                        )
+                    except Exception as err:
+                        self.logger.debug("Failed to parse URI %s: %s", current_item.uri, err)
+                        continue
+
+                    if media_type != MediaType.TRACK:
+                        continue
+
+                    # Check if this is from this Plex instance
+                    is_plex_item = False
+                    plex_item_id = None
+
+                    if provider_instance_or_domain in (self.instance_id, self.domain):
+                        is_plex_item = True
+                        plex_item_id = item_id
+                    else:
+                        # Check if library item has Plex mapping
+                        try:
+                            library_item = await self.mass.music.get_library_item_by_prov_id(
+                                media_type, item_id, provider_instance_or_domain
+                            )
+                            if library_item:
+                                for mapping in library_item.provider_mappings:
+                                    if mapping.provider_instance == self.instance_id:
+                                        is_plex_item = True
+                                        plex_item_id = mapping.item_id
+                                        break
+                        except Exception as err:
+                            self.logger.debug("Failed to get library item: %s", err)
+
+                    if not is_plex_item or not plex_item_id:
+                        continue
+
+                    # Get current playback position
+                    elapsed_time = queue.elapsed_time
+                    if elapsed_time is None:
+                        continue  # type: ignore[unreachable]
+
+                    # Check if we need to send an update (avoid spam)
+                    state_key = f"{queue.queue_id}_{plex_item_id}"
+                    last_state = self._last_reported_state.get(state_key)
+                    current_position = int(elapsed_time)
+
+                    # Only send update if position changed by at least 1 second or state changed
+                    if last_state and last_state[0] == plex_item_id:
+                        position_changed = abs(last_state[1] - current_position) >= 1
+                        state_changed = last_state[2] != queue.state
+                        if not position_changed and not state_changed:
+                            continue
+
+                    # Send timeline update
+                    def send_position_update(
+                        item_id: str,
+                        elapsed: float,
+                        current_pos: int,
+                        key: str,
+                        playback_state: PlaybackState,
+                    ) -> None:
+                        try:
+                            rating_key = item_id.split("/")[-1]
+                            plex_track = self._plex_server.fetchItem(int(rating_key))
+
+                            if not plex_track or plex_track.type != "track":
+                                return
+
+                            position_ms = int(elapsed * 1000)
+                            # Map Music Assistant state to Plex state
+                            plex_state = (
+                                "playing" if playback_state == PlaybackState.PLAYING else "paused"
+                            )
+                            params = {
+                                "ratingKey": str(plex_track.ratingKey),
+                                "key": item_id,
+                                "state": plex_state,
+                                "time": str(position_ms),
+                                "duration": str(plex_track.duration)
+                                if hasattr(plex_track, "duration")
+                                else "0",
+                            }
+                            self._plex_server.query("/:/timeline", params=params)
+
+                            # Update last reported state
+                            self._last_reported_state[key] = (
+                                item_id,
+                                current_pos,
+                                playback_state,
+                            )
+
+                        except Exception as err:
+                            self.logger.debug("Failed to send periodic Plex update: %s", err)
+
+                    await asyncio.to_thread(
+                        send_position_update,
+                        plex_item_id,
+                        elapsed_time,
+                        current_position,
+                        state_key,
+                        queue.state,
+                    )
+                    # Mark this state_key as active
+                    active_state_keys.add(state_key)
+
+                # Send "stopped" updates for any previously active items that are no longer active
+                stopped_state_keys = set(self._last_reported_state.keys()) - active_state_keys
+                for stopped_key in stopped_state_keys:
+                    stopped_item_id, stopped_position, _ = self._last_reported_state[stopped_key]
+
+                    def send_stop_update(item_id: str, position: int) -> None:
+                        try:
+                            rating_key = item_id.split("/")[-1]
+                            plex_track = self._plex_server.fetchItem(int(rating_key))
+
+                            if not plex_track or plex_track.type != "track":
+                                return
+
+                            params = {
+                                "ratingKey": str(plex_track.ratingKey),
+                                "key": item_id,
+                                "state": "paused",
+                                "time": str(position * 1000),
+                                "duration": str(plex_track.duration)
+                                if hasattr(plex_track, "duration")
+                                else "0",
+                            }
+                            self._plex_server.query("/:/timeline", params=params)
+
+                        except Exception as err:
+                            self.logger.debug("Failed to send stop update: %s", err)
+
+                    await asyncio.to_thread(send_stop_update, stopped_item_id, stopped_position)
+                    # Remove from last reported state
+                    del self._last_reported_state[stopped_key]
+
+            except asyncio.CancelledError:
+                self.logger.debug("Periodic timeline update task cancelled")
+                raise
+            except Exception as err:
+                self.logger.exception("Error in periodic timeline update: %s", err)
+                await asyncio.sleep(5)
+
+    async def _on_media_item_played_event(self, event: MassEvent) -> None:
+        """Handle real-time MEDIA_ITEM_PLAYED events for instant Plex timeline updates."""
+        report: MediaItemPlaybackProgressReport = event.data
+
+        # Parse the URI to get media type and provider info
+        try:
+            media_type, provider_instance_or_domain, item_id = await parse_uri(report.uri)
+        except Exception as e:
+            self.logger.debug("Could not parse URI %s: %s", report.uri, e)
+            return
+
+        # Only handle tracks from this Plex instance
+        if media_type != MediaType.TRACK:
+            return
+
+        # Check if this is a Plex item from this provider instance
+        if provider_instance_or_domain not in (self.instance_id, self.domain):
+            # Might be a library item, check if it has a mapping to this provider
+            try:
+                library_item = await self.mass.music.get_library_item_by_prov_id(
+                    media_type, item_id, provider_instance_or_domain
+                )
+                if not library_item:
+                    return
+
+                # Find mapping for this Plex instance
+                plex_mapping = None
+                for mapping in library_item.provider_mappings:
+                    if mapping.provider_instance == self.instance_id:
+                        plex_mapping = mapping
+                        break
+
+                if not plex_mapping:
+                    return  # Not from this Plex instance
+
+                item_id = plex_mapping.item_id
+            except Exception:
+                return  # Not a library item or not accessible
+
+        # Now send real-time update to Plex
+        def send_realtime_update() -> None:
+            """Send instant timeline update to Plex."""
+            try:
+                # Extract ratingKey from the path
+                rating_key = item_id.split("/")[-1]
+
+                # Fetch the track
+                plex_track = self._plex_server.fetchItem(int(rating_key))
+                if not plex_track or not hasattr(plex_track, "type") or plex_track.type != "track":
+                    return
+
+                # Convert position to milliseconds
+                position_ms = int(report.position * 1000) if hasattr(report, "position") else 0
+
+                # Determine state from report
+                if report.is_playing:
+                    state = "playing"
+                elif hasattr(report, "paused") and report.paused:
+                    state = "paused"
+                else:
+                    state = "stopped"
+
+                # Send timeline update
+                params = {
+                    "ratingKey": str(plex_track.ratingKey),
+                    "key": item_id,
+                    "state": state,
+                    "time": str(position_ms),
+                    "duration": str(plex_track.duration)
+                    if hasattr(plex_track, "duration")
+                    else "0",
+                }
+                self.logger.debug(
+                    "Real-time Plex timeline update: %s '%s' at %ss (state=%s)",
+                    plex_track.title,
+                    report.uri,
+                    report.position if hasattr(report, "position") else 0,
+                    state,
+                )
+                self._plex_server.query("/:/timeline", params=params)
+
+                # If fully played, also scrobble
+                if report.fully_played:
+                    scrobble_params = {
+                        "key": str(plex_track.ratingKey),
+                        "identifier": "com.plexapp.plugins.library",
+                    }
+                    self._plex_server.query("/:/scrobble", scrobble_params)
+                    self.logger.info("Track %s marked as played in Plex (via event)", item_id)
+
+            except Exception as err:
+                self.logger.debug(
+                    "Failed to send real-time Plex update for %s: %s",
+                    report.uri,
+                    err,
+                )
+
+        await asyncio.to_thread(send_realtime_update)
 
     async def get_myplex_account_and_refresh_token(self, auth_token: str) -> MyPlexAccount:
         """Get a MyPlexAccount object and refresh the token if needed."""
