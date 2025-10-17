@@ -97,22 +97,8 @@ class SonosPlayerProvider(PlayerProvider):
             # Register with Music Assistant
             await sonos_player.setup()
 
-            # Set up event subscriptions
-            await self._setup_subscriptions(sonos_player)
-
         except Exception as err:
             self.logger.error("Error setting up Sonos player %s: %s", player_id, err)
-
-    async def _setup_subscriptions(self, sonos_player: SonosPlayer) -> None:
-        """Set up event subscriptions for a Sonos player."""
-        try:
-            # Set up event subscriptions
-            # This would involve subscribing to SoCo events for state changes
-            pass
-        except Exception as err:
-            self.logger.debug(
-                "Error setting up subscriptions for %s: %s", sonos_player.player_id, err
-            )
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
