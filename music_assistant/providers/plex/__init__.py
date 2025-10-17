@@ -1357,7 +1357,7 @@ class PlexProvider(MusicProvider):
 
         # Parse the URI to get media type and provider info
         try:
-            media_type, provider_instance_or_domain, item_id = await parse_uri(report.uri)
+            media_type, provider_instance_or_domain, item_id = parse_uri(report.uri)
         except Exception as e:
             self.logger.debug("Could not parse URI %s: %s", report.uri, e)
             return
