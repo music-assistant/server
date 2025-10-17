@@ -1209,7 +1209,7 @@ class PlexProvider(MusicProvider):
 
                     # Parse URI to check if it's a Plex track
                     try:
-                        media_type, provider_instance_or_domain, item_id = await parse_uri(
+                        media_type, provider_instance_or_domain, item_id = parse_uri(
                             current_item.uri
                         )
                     except Exception as err:
