@@ -328,10 +328,11 @@ for more details.
         # safe guard reauthentication
         self.reauthenticate_lock = asyncio.Lock()
         self.reauthenticate_last = 0.0
-        # register dynamic stream route for audiobook chapters
+
+        # register dynamic stream route for audiobook parts
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
-                f"/{self.instance_id}_chapter_stream", self._handle_audiobook_chapter_request
+                f"/{self.instance_id}_part_stream", self._handle_audiobook_part_request
             )
         )
 
@@ -585,11 +586,11 @@ for more details.
                 stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
             else:
                 # to ensure token is always valid, we create a dynamic url
-                # this ensures that we always get a fresh token on each chapter
+                # this ensures that we always get a fresh token on each part
                 # without having to deal with a custom stream etc.
                 stream_url = (
-                    f"{self.mass.streams.base_url}/{self.instance_id}_chapter_stream?"
-                    f"audiobook_id={abs_audiobook.id_}&chapter_id={idx}"
+                    f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
+                    f"audiobook_id={abs_audiobook.id_}&part_id={idx}"
                 )
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
@@ -639,27 +640,27 @@ for more details.
             path=stream_url,
         )
 
-    async def _handle_audiobook_chapter_request(self, request: web.Request) -> web.Response:
+    async def _handle_audiobook_part_request(self, request: web.Request) -> web.Response:
         """
-        Handle dynamic audiobook chapter stream request.
+        Handle dynamic audiobook part stream request.
 
         We redirect to the actual stream url with token.
         This is done because the token might expire, so we need to
-        generate a fresh url on each chapter.
+        generate a fresh url on each part.
         """
         if not (audiobook_id := request.query.get("audiobook_id")):
             return web.Response(status=400, text="Missing audiobook_id")
-        if not (chapter_id := request.query.get("chapter_id")):
-            return web.Response(status=400, text="Missing chapter_id")
+        if not (part_id := request.query.get("part_id")):
+            return web.Response(status=400, text="Missing part_id")
         abs_audiobook = await self._get_abs_expanded_audiobook(prov_audiobook_id=audiobook_id)
-        chapter_id = int(chapter_id)  # type: ignore[assignment]
+        part_id = int(part_id)  # type: ignore[assignment]
         try:
-            chapter_track = abs_audiobook.media.tracks[chapter_id]
+            part_track = abs_audiobook.media.tracks[part_id]
         except IndexError:
-            return web.Response(status=404, text="Chapter not found")
+            return web.Response(status=404, text="Part not found")
 
         base_url = str(self.config.get_value(CONF_URL))
-        stream_url = f"{base_url}{chapter_track.content_url}?token={self._client.token}"
+        stream_url = f"{base_url}{part_track.content_url}?token={self._client.token}"
         # redirect to the actual stream url
         raise web.HTTPFound(location=stream_url)
 
