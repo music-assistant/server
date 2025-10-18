@@ -5,7 +5,7 @@
   "description": "Support for niconico video(nicovideo) in Music Assistant",
   "codeowners": ["@Shi-553"],
   "requirements": [
-    "niconico.py @ git+https://github.com/Shi-553/niconico.py@711729dbcece9e600c3e017f95d84ba809c4dc0b"
+    "niconico.py @ git+https://github.com/Shi-553/niconico.py@b2d781de11df4bf42d0d42037ac7f5abb6822fda"
   ],
   "multi_instance": true
 }

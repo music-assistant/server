@@ -37,7 +37,7 @@ mashumaro==3.16
 music-assistant-frontend==2.16.5
 music-assistant-models==1.1.61
 mutagen==1.47.0
-niconico.py @ git+https://github.com/Shi-553/niconico.py@711729dbcece9e600c3e017f95d84ba809c4dc0b
+niconico.py @ git+https://github.com/Shi-553/niconico.py@b2d781de11df4bf42d0d42037ac7f5abb6822fda
 numpy==2.2.6
 orjson==3.11.3
 pillow==11.3.0

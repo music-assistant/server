@@ -61,7 +61,7 @@ test = [
   "syrupy==5.0.0",
   "tomli==2.2.1",
   "ruff==0.13.2",
-  "niconico.py @ git+https://github.com/Shi-553/niconico.py@711729dbcece9e600c3e017f95d84ba809c4dc0b",
+  "niconico.py @ git+https://github.com/Shi-553/niconico.py@b2d781de11df4bf42d0d42037ac7f5abb6822fda",
 ]
 
 [project.scripts]
