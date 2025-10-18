@@ -61,7 +61,6 @@ from .constants import (
     BROWSE_URL,
     CACHE_CATEGORY_ISRC_MAP,
     CACHE_CATEGORY_RECOMMENDATIONS,
-    CACHE_KEY_RECOMMENDATIONS_ALL,
     CONF_ACTION_CLEAR_AUTH,
     CONF_ACTION_COMPLETE_PKCE_LOGIN,
     CONF_ACTION_START_PKCE_LOGIN,
@@ -1011,19 +1010,9 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
 
+    @use_cache(expiration=3600, category=1)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's recommendations organized into folders."""
-        # Check cache first
-        cached_recommendations: list[RecommendationFolder] = await self.mass.cache.get(
-            CACHE_KEY_RECOMMENDATIONS_ALL,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_RECOMMENDATIONS,
-        )
-
-        if cached_recommendations:
-            self.logger.debug("Returning cached recommendations (TTL: 1 hour)")
-            return cached_recommendations
-
         results: list[RecommendationFolder] = []
 
         # Pages to fetch
@@ -1062,15 +1051,6 @@ class TidalProvider(MusicProvider):
             )
 
             self.logger.debug("Created %d recommendation folders from Tidal", len(results))
-
-            # Cache the results for 1 hour (3600 seconds)
-            await self.mass.cache.set(
-                key=CACHE_KEY_RECOMMENDATIONS_ALL,
-                data=results,
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_RECOMMENDATIONS,
-                expiration=3600,
-            )
 
         except (ClientError, ResourceTemporarilyUnavailable) as err:
             # Network-related errors
