@@ -331,7 +331,7 @@ for more details.
         # register dynamic stream route for audiobook chapters
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
-                f"{self.instance_id}_chapter_stream", self._handle_audiobook_chapter_request
+                f"/{self.instance_id}_chapter_stream", self._handle_audiobook_chapter_request
             )
         )
 
