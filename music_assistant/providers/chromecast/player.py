@@ -44,6 +44,8 @@ if TYPE_CHECKING:
 class ChromecastPlayer(Player):
     """Chromecast Player."""
 
+    active_cast_group: str | None = None
+
     def __init__(
         self,
         provider: ChromecastProvider,
@@ -165,6 +167,10 @@ class ChromecastPlayer(Player):
         # send queue info to the CC
         media_controller = self.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
+        if media.media_type in (MediaType.RADIO, MediaType.FLOW_STREAM):
+            # in flow/radio mode we want to update the metadata more frequently
+            # so we can show the current track info
+            self._attr_poll_interval = 2
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next item on the player."""
@@ -227,17 +233,17 @@ class ChromecastPlayer(Player):
         self.status_listener = None
 
     async def update_flow_metadata(self) -> None:
-        """Update the metadata of a cast player running the flow stream."""
+        """Update the metadata of a cast player running the flow (or radio) stream."""
         if not self.powered:
             self._attr_poll_interval = 300
             return
         if not self.cc.media_controller.status.player_is_playing:
             return
-        if self.active_group:
+        if self.active_cast_group:
             return
-        if self.state != PlaybackState.PLAYING:
+        if self.playback_state != PlaybackState.PLAYING:
             return
-        if self.extra_attributes[ATTR_ANNOUNCEMENT_IN_PROGRESS]:
+        if self.extra_attributes.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
             return
         if not (queue := self.mass.player_queues.get_active_queue(self.player_id)):
             return
@@ -245,38 +251,35 @@ class ChromecastPlayer(Player):
             return
         if not (queue.flow_mode or current_item.media_type == MediaType.RADIO):
             return
-        self._attr_poll_interval = 10
+        self._attr_poll_interval = 2
         media_controller = self.cc.media_controller
         # update metadata of current item chromecast
-        if (
-            media_controller.status.media_custom_data.get("queue_item_id")
-            != current_item.queue_item_id
-        ):
-            image_url = (
+        image_url = ""
+        if (streamdetails := current_item.streamdetails) and streamdetails.stream_metadata:
+            album = current_item.media_item.name if current_item.media_item else ""
+            artist = streamdetails.stream_metadata.artist or ""
+            title = streamdetails.stream_metadata.title or ""
+            if streamdetails.stream_metadata.album:
+                album = streamdetails.stream_metadata.album
+            if streamdetails.stream_metadata.image_url:
+                image_url = streamdetails.stream_metadata.image_url
+        elif media_item := current_item.media_item:
+            album = _album.name if (_album := getattr(media_item, "album", None)) else ""
+            artist = getattr(media_item, "artist_str", "")
+            title = media_item.name
+        else:
+            album = ""
+            artist = ""
+            title = current_item.name
+        flow_meta_checksum = f"{current_item.queue_item_id}-{album}-{artist}-{title}-{image_url}"
+        if self.flow_meta_checksum != flow_meta_checksum:
+            # only update if something changed
+            self.flow_meta_checksum = flow_meta_checksum
+            image_url = image_url or (
                 self.mass.metadata.get_image_url(current_item.image, size=512)
                 if current_item.image
                 else MASS_LOGO_ONLINE
             )
-            if (streamdetails := current_item.streamdetails) and streamdetails.stream_title:
-                assert current_item.media_item is not None  # for type checking
-                album = current_item.media_item.name
-                if " - " in streamdetails.stream_title:
-                    artist, title = streamdetails.stream_title.split(" - ", 1)
-                else:
-                    artist = ""
-                    title = streamdetails.stream_title
-            elif media_item := current_item.media_item:
-                album = _album.name if (_album := getattr(media_item, "album", None)) else ""
-                artist = getattr(media_item, "artist_str", "")
-                title = media_item.name
-            else:
-                album = ""
-                artist = ""
-                title = current_item.name
-            flow_meta_checksum = title + image_url
-            if self.flow_meta_checksum == flow_meta_checksum:
-                return
-            self.flow_meta_checksum = flow_meta_checksum
             queuedata = {
                 "type": "PLAY",
                 "mediaSessionId": media_controller.status.media_session_id,
@@ -310,7 +313,6 @@ class ChromecastPlayer(Player):
                             "customData": {
                                 "uri": cmd_next_url,
                                 "queue_item_id": cmd_next_url,
-                                "deviceName": "Music Assistant",
                             },
                             "contentType": "audio/flac",
                             "streamType": STREAM_TYPE_LIVE,
@@ -337,7 +339,7 @@ class ChromecastPlayer(Player):
             return  # already active
 
         def launched_callback(success: bool, response: dict[str, Any] | None) -> None:  # noqa: ARG001
-            self.mass.loop.call_soon(event.set)
+            self.mass.loop.call_soon_threadsafe(event.set)
 
         def launch() -> None:
             # Quit the previous app before starting splash screen or media player
@@ -405,8 +407,8 @@ class ChromecastPlayer(Player):
         )
         # handle player playing from a group
         group_player: ChromecastPlayer | None = None
-        if self.active_group is not None:
-            if not (group_player := self.mass.players.get(self.active_group)):
+        if self.active_cast_group is not None:
+            if not (group_player := self.mass.players.get(self.active_cast_group)):
                 return
             if not isinstance(group_player, ChromecastPlayer):
                 return
@@ -531,7 +533,6 @@ class ChromecastPlayer(Player):
             "customData": {
                 "uri": media.uri,
                 "queue_item_id": media.uri,
-                "deviceName": "Music Assistant",
             },
             "contentType": "audio/flac",
             "streamType": stream_type,

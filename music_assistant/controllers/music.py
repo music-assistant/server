@@ -43,8 +43,6 @@ from music_assistant_models.provider import SyncTask
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_EXPORT_ADD,
-    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -210,14 +208,13 @@ class MusicController(CoreController):
                 if not provider.library_supported(media_type):
                     continue
                 # handle mediatype specific sync config
-                conf_key = f"library_import_{media_type}s"
+                conf_key = f"library_sync_{media_type}s"
                 sync_conf = await self.mass.config.get_provider_config_value(
                     provider.instance_id, conf_key
                 )
-                if sync_conf == "no_import":
+                if not sync_conf:
                     continue
-                import_as_favorite = sync_conf == "import_as_favorite"
-                self._start_provider_sync(provider, media_type, import_as_favorite)
+                self._start_provider_sync(provider, media_type)
 
     @api_command("music/synctasks")
     def get_running_sync_tasks(self) -> list[SyncTask]:
@@ -620,18 +617,21 @@ class MusicController(CoreController):
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if not provider.library_edit_supported(item.media_type):
                 continue
-            if prov_mapping.in_library:
+            if not provider.library_sync_back_enabled(full_item.media_type):
                 continue
-            conf_export_library = provider.config.get_value(
-                CONF_ENTRY_LIBRARY_EXPORT_ADD.key, CONF_ENTRY_LIBRARY_EXPORT_ADD.default_value
-            )
-            if conf_export_library != "export_favorite":
+            if not prov_mapping.in_library:
+                # add to provider library first
+                prov_item = deepcopy(full_item)
+                prov_item.provider = prov_mapping.provider_instance
+                prov_item.item_id = prov_mapping.item_id
+                await provider.library_add(prov_item)
+                provider_mappings_updated = True
+                prov_mapping.in_library = True
+            # set favorite at provider
+            if not provider.library_favorites_edit_supported(full_item.media_type):
                 continue
-            prov_item = deepcopy(full_item)
-            prov_item.provider = prov_mapping.provider_instance
-            prov_item.item_id = prov_mapping.item_id
-            self.mass.create_task(provider.library_add(prov_item))
-            provider_mappings_updated = True
+            await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
+
         if provider_mappings_updated:
             await ctrl.set_provider_mappings(full_item.item_id, full_item.provider_mappings)
 
@@ -654,14 +654,11 @@ class MusicController(CoreController):
             if not prov_mapping.in_library:
                 continue
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(full_item.media_type):
+            if not provider.library_favorites_edit_supported(full_item.media_type):
                 continue
-            conf_export_library = provider.config.get_value(
-                CONF_ENTRY_LIBRARY_EXPORT_REMOVE.key, CONF_ENTRY_LIBRARY_EXPORT_REMOVE.default_value
-            )
-            if conf_export_library != "export_favorite":
+            if not provider.library_sync_back_enabled(full_item.media_type):
                 continue
-            self.mass.create_task(provider.library_remove(prov_mapping.item_id, media_type))
+            self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
             prov_mapping.in_library = False
             provider_mappings_updated = True
         if provider_mappings_updated:
@@ -685,11 +682,9 @@ class MusicController(CoreController):
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if not provider.library_edit_supported(full_item.media_type):
                 continue
-            conf_export_library = provider.config.get_value(
-                CONF_ENTRY_LIBRARY_EXPORT_REMOVE.key, CONF_ENTRY_LIBRARY_EXPORT_REMOVE.default_value
-            )
-            if conf_export_library != "export_library":
+            if not provider.library_sync_back_enabled(full_item.media_type):
                 continue
+            prov_mapping.in_library = False
             self.mass.create_task(provider.library_remove(prov_mapping.item_id, media_type))
         # remove from library
         await ctrl.remove_item_from_library(library_item_id, recursive)
@@ -713,10 +708,7 @@ class MusicController(CoreController):
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if not provider.library_edit_supported(full_item.media_type):
                 continue
-            conf_export_library = provider.config.get_value(
-                CONF_ENTRY_LIBRARY_EXPORT_ADD.key, CONF_ENTRY_LIBRARY_EXPORT_ADD.default_value
-            )
-            if conf_export_library != "export_library":
+            if not provider.library_sync_back_enabled(full_item.media_type):
                 continue
             prov_item = deepcopy(full_item) if full_item.provider == "library" else full_item
             prov_item.provider = prov_mapping.provider_instance
@@ -1408,9 +1400,7 @@ class MusicController(CoreController):
             )
             return []
 
-    def _start_provider_sync(
-        self, provider: MusicProvider, media_type: MediaType, import_as_favorite: bool
-    ) -> None:
+    def _start_provider_sync(self, provider: MusicProvider, media_type: MediaType) -> None:
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
         for sync_task in self.in_progress_syncs:
@@ -1430,7 +1420,7 @@ class MusicController(CoreController):
             # Wrap the provider sync into a lock to prevent
             # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
-                await provider.sync_library(media_type, import_as_favorite)
+                await provider.sync_library(media_type)
 
         # we keep track of running sync tasks
         task = self.mass.create_task(run_sync())
@@ -1523,9 +1513,9 @@ class MusicController(CoreController):
         # cancel any existing timers
         self.mass.cancel_timer(job_key)
         # handle mediatype specific sync config
-        conf_key = f"library_import_{media_type}s"
+        conf_key = f"library_sync_{media_type}s"
         sync_conf = await self.mass.config.get_provider_config_value(provider.instance_id, conf_key)
-        if sync_conf == "no_import":
+        if not sync_conf:
             return
         conf_key = f"provider_sync_interval_{media_type.value}s"
         sync_interval = cast(
@@ -1536,7 +1526,6 @@ class MusicController(CoreController):
             # sync disabled for this media type
             return
         sync_interval = sync_interval * 60  # config interval is in minutes - convert to seconds
-        import_as_favorite = sync_conf == "import_as_favorite"
 
         if is_initial:
             # schedule the first sync run
@@ -1554,7 +1543,6 @@ class MusicController(CoreController):
             self._start_provider_sync,
             provider,
             media_type,
-            import_as_favorite,
             task_id=job_key,
         )
 
