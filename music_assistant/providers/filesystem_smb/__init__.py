@@ -18,10 +18,10 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_CONTENT_TYPE,
     CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
 )
 
@@ -121,16 +121,16 @@ async def get_config_entries(
             label="Mount options",
             required=False,
             category="advanced",
-            default_value="noserverino,file_mode=0775,dir_mode=0775,uid=0,gid=0",
+            default_value="noserverino,file_mode=0775,dir_mode=0775,uid=0,gid=0,iocharset=utf8",
             description="[optional] Any additional mount options you "
             "want to pass to the mount command if needed for your particular setup.",
         ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
         CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
-        CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_IMPORT_PODCASTS,
-        CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS,
+        CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+        CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+        CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+        CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     )
 
     if instance_id is None or values is None:

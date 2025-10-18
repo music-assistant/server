@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "jellyfin",
-  "stage": "stable",
+  "stage": "unmaintained",
   "name": "Jellyfin Media Server Library",
   "description": "Stream music from your self-hosted Jellyfin server.",
   "codeowners": ["@lokiberra", "@Jc2k"],

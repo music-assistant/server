@@ -670,6 +670,13 @@ def validate_announcement_chime_url(url: str) -> bool:
         return False
 
 
+async def get_mac_address(ip_address: str) -> str | None:
+    """Get MAC address for given IP address."""
+    from getmac import get_mac_address  # noqa: PLC0415
+
+    return await asyncio.to_thread(get_mac_address, ip=ip_address)
+
+
 class TaskManager:
     """
     Helper class to run many tasks at once.

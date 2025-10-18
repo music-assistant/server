@@ -25,6 +25,7 @@ cryptography==46.0.2
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 duration-parser==1.0.1
+get-mac==0.9.2
 gql[all]==4.0.0
 hass-client==1.2.0
 ibroadcastaio==0.4.0
@@ -34,8 +35,8 @@ librosa==0.11.0
 llvmlite==0.44.0
 lyricsgenius==3.7.2
 mashumaro==3.16
-music-assistant-frontend==2.16.5
-music-assistant-models==1.1.61
+music-assistant-frontend==2.16.6
+music-assistant-models==1.1.62
 mutagen==1.47.0
 numpy==2.2.6
 orjson==3.11.3

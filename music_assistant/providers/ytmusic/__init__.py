@@ -337,9 +337,9 @@ class YoutubeMusicProvider(MusicProvider):
         if not album_obj.get("tracks"):
             return []
         tracks = []
-        for track_obj in album_obj["tracks"]:
+        for track_number, track_obj in enumerate(album_obj["tracks"], 1):
             try:
-                track = self._parse_track(track_obj=track_obj)
+                track = self._parse_track(track_obj=track_obj, track_number=track_number)
             except InvalidDataError:
                 continue
             tracks.append(track)
@@ -752,9 +752,10 @@ class YoutubeMusicProvider(MusicProvider):
                     item_id=str(album_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{YTM_DOMAIN}/playlist?list={album_id}",
+                    url=f"{YTM_DOMAIN}/playlist?list={album_obj.get('audioPlaylistId')}",
                 )
             },
+            favorite=album_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
         )
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
@@ -816,6 +817,7 @@ class YoutubeMusicProvider(MusicProvider):
                     url=f"{YTM_DOMAIN}/channel/{artist_id}",
                 )
             },
+            favorite=artist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
         )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
@@ -846,6 +848,7 @@ class YoutubeMusicProvider(MusicProvider):
                 )
             },
             is_editable=is_editable,
+            favorite=playlist_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
         )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
@@ -863,7 +866,7 @@ class YoutubeMusicProvider(MusicProvider):
             playlist.owner = self.name
         return playlist
 
-    def _parse_track(self, track_obj: dict) -> Track:
+    def _parse_track(self, track_obj: dict, track_number: int = 0) -> Track:
         """Parse a YT Track response to a Track model object."""
         if not track_obj.get("videoId"):
             msg = "Track is missing videoId"
@@ -885,8 +888,12 @@ class YoutubeMusicProvider(MusicProvider):
                     ),
                 )
             },
-            disc_number=0,  # not supported on YTM?
-            track_number=track_obj.get("trackNumber", 0),
+            favorite=track_obj.get("likeStatus", "INDIFFERENT") == "LIKE",
+            # Disc info is not available in YTM
+            disc_number=0,
+            # Track number is "sometimes" available in the track object, otherwise approach
+            # by counting album tracks when fetching full album details
+            track_number=track_obj.get("trackNumber") or track_number or 0,
         )
 
         if track_obj.get("artists"):
