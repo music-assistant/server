@@ -578,20 +578,15 @@ for more details.
             content_type = ContentType.try_parse(abs_audiobook.media.tracks[0].metadata.ext)
 
         file_parts: list[MultiPartPath] = []
-        base_url = str(self.config.get_value(CONF_URL))
         for idx, track in enumerate(tracks):
-            if idx == 0:
-                # first chapter we can use direct url as we have a fresh token
-                base_url = str(self.config.get_value(CONF_URL))
-                stream_url = f"{base_url}{track.content_url}?token={self._client.token}"
-            else:
-                # to ensure token is always valid, we create a dynamic url
-                # this ensures that we always get a fresh token on each part
-                # without having to deal with a custom stream etc.
-                stream_url = (
-                    f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
-                    f"audiobook_id={abs_audiobook.id_}&part_id={idx}"
-                )
+            # to ensure token is always valid, we create a dynamic url
+            # this ensures that we always get a fresh token on each part
+            # without having to deal with a custom stream etc.
+            # we also use this for the first part, otherwise we can't seek
+            stream_url = (
+                f"{self.mass.streams.base_url}/{self.instance_id}_part_stream?"
+                f"audiobook_id={abs_audiobook.id_}&part_id={idx}"
+            )
             file_parts.append(MultiPartPath(path=stream_url, duration=track.duration))
 
         return StreamDetails(
