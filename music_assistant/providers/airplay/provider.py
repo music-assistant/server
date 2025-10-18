@@ -23,7 +23,7 @@ from .constants import (
 )
 from .helpers import (
     convert_airplay_volume,
-    get_cliraop_binary,
+    get_cli_binary,
     get_model_info,
     get_primary_ip_address_from_zeroconf,
     is_airplay2_model,
@@ -42,14 +42,12 @@ from .player import AirPlayPlayer
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
-    cliraop_bin: str | None
+    cli_bin: str | None
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # we locate the cliraop binary here, so we can fail early if it is not available
-        self.cliraop_bin: str | None = await get_cliraop_binary()
         # register DACP zeroconf service
         dacp_port = await select_free_port(39831, 49831)
         self.dacp_id = dacp_id = f"{randrange(2**64):X}"
@@ -151,10 +149,6 @@ class AirPlayProvider(PlayerProvider):
             return  # should not happen, but guard just in case
 
         disc_airplay_version = 2 if is_airplay2_model(manufacturer, model) else 1
-        self.logger.debug(
-            f"Discovered {display_name} has manufacturer {manufacturer}, model {model}"
-            f" and defaults to AirPlay version {disc_airplay_version}."
-        )
         conf_airplay_version = self.mass.config.get_raw_player_config_value(
             player_id, CONF_AIRPLAY_VERSION, None
         )
@@ -166,6 +160,24 @@ class AirPlayProvider(PlayerProvider):
             await self.mass.config.save_player_config(
                 player_id, {CONF_AIRPLAY_VERSION: disc_airplay_version}
             )
+            conf_airplay_version = disc_airplay_version
+        self.logger.debug(
+            f"Discovered {display_name} has manufacturer {manufacturer}, model {model}."
+            f"Defaults to AirPlay version {disc_airplay_version} and is "
+            f"configured to use AirPlay version {conf_airplay_version}."
+        )
+
+        # locate the cli binary
+        assert conf_airplay_version in (1, 2)  # type guard
+        ap_version: int = 1 if conf_airplay_version == 1 else 2
+        assert isinstance(ap_version, int)  # type guard
+        self.cli_bin: str | None = await get_cli_binary(ap_version)
+        if not self.cli_bin:
+            self.logger.warning(
+                "Cannot setup AirPlay player %s, required cliraop/ap2 binary not found.",
+                display_name,
+            )
+            return
 
         # if we reach this point, all preflights are ok and we can create the player
         self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
@@ -231,7 +243,7 @@ class AirPlayProvider(PlayerProvider):
                 (
                     x
                     for x in self.get_players()
-                    if x.raop_stream and x.raop_stream.active_remote_id == active_remote
+                    if x.stream and x.stream.active_remote_id == active_remote
                 ),
                 None,
             )
@@ -292,8 +304,8 @@ class AirPlayProvider(PlayerProvider):
                 # we've sent or the device requesting a new volume itself.
                 # In case of a small rounding difference, we ignore this,
                 # to prevent an endless pingpong of volume changes
-                raop_volume = float(path.split("dmcp.device-volume=", 1)[-1])
-                volume = convert_airplay_volume(raop_volume)
+                airplay_volume = float(path.split("dmcp.device-volume=", 1)[-1])
+                volume = convert_airplay_volume(airplay_volume)
                 player.update_volume_from_device(volume)
             elif "dmcp.volume=" in path:
                 # volume change request from device (e.g. volume buttons)
@@ -301,13 +313,13 @@ class AirPlayProvider(PlayerProvider):
                 player.update_volume_from_device(volume)
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
-                if raop_stream := player.raop_stream:
-                    raop_stream.prevent_playback = True
-                    self.mass.create_task(player.raop_stream.session.remove_client(player))
+                if stream := player.stream:
+                    stream.prevent_playback = True
+                    self.mass.create_task(player.stream.session.remove_client(player))
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
-                if raop_stream := player.raop_stream:
-                    raop_stream.prevent_playback = False
+                if stream := player.stream:
+                    stream.prevent_playback = False
 
             # send response
             date_str = utc().strftime("%a, %-d %b %Y %H:%M:%S")

@@ -30,6 +30,7 @@ from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
+from .airplay2 import AirPlay2StreamSession
 from .constants import (
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_PCM_FORMAT,
@@ -50,6 +51,7 @@ if TYPE_CHECKING:
 
     from music_assistant.providers.universal_group import UniversalGroupPlayer
 
+    from .airplay2 import AirPlay2Stream
     from .provider import AirPlayProvider
     from .raop import RaopStream
 
@@ -82,7 +84,7 @@ class AirPlayPlayer(Player):
         super().__init__(provider, player_id)
         self.discovery_info = discovery_info
         self.address = address
-        self.raop_stream: RaopStream | None = None
+        self.stream: RaopStream | AirPlay2Stream | None = None
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
 
@@ -198,9 +200,9 @@ class AirPlayPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to player."""
-        if self.raop_stream and self.raop_stream.session:
+        if self.stream and self.stream.session:
             # forward stop to the entire stream session
-            await self.raop_stream.session.stop()
+            await self.stream.session.stop()
         self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
@@ -208,8 +210,8 @@ class AirPlayPlayer(Player):
     async def play(self) -> None:
         """Send PLAY (unpause) command to player."""
         async with self._lock:
-            if self.raop_stream and self.raop_stream.running:
-                await self.raop_stream.send_cli_command("ACTION=PLAY")
+            if self.stream and self.stream.running:
+                await self.stream.send_cli_command("ACTION=PLAY")
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
@@ -220,9 +222,9 @@ class AirPlayPlayer(Player):
             return
 
         async with self._lock:
-            if not self.raop_stream or not self.raop_stream.running:
+            if not self.stream or not self.stream.running:
                 return
-            await self.raop_stream.send_cli_command("ACTION=PAUSE")
+            await self.stream.send_cli_command("ACTION=PAUSE")
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -289,25 +291,33 @@ class AirPlayPlayer(Player):
             )
 
         # if an existing stream session is running, we could replace it with the new stream
-        if self.raop_stream and self.raop_stream.running:
+        if self.stream and self.stream.running:
             # check if we need to replace the stream
-            if self.raop_stream.prevent_playback:
+            if self.stream.prevent_playback:
                 # player is in prevent playback mode, we need to stop the stream
                 await self.stop()
             else:
-                await self.raop_stream.session.replace_stream(audio_source)
+                await self.stream.session.replace_stream(audio_source)
                 return
 
-        # setup RaopStreamSession for player (and its sync childs if any)
+        # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
-        raop_stream_session = RaopStreamSession(provider, sync_clients, input_format, audio_source)
-        await raop_stream_session.start()
+        if self.mass.config.get_raw_player_config_value(self.player_id, CONF_AIRPLAY_VERSION) == 2:
+            ap2_stream_session = AirPlay2StreamSession(
+                provider, sync_clients, input_format, audio_source
+            )
+            await ap2_stream_session.start()
+        else:
+            raop_stream_session = RaopStreamSession(
+                provider, sync_clients, input_format, audio_source
+            )
+            await raop_stream_session.start()
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        if self.raop_stream and self.raop_stream.running:
-            await self.raop_stream.send_cli_command(f"VOLUME={volume_level}\n")
+        if self.stream and self.stream.running:
+            await self.stream.send_cli_command(f"VOLUME={volume_level}\n")
         self._attr_volume_level = volume_level
         self.update_state()
         # store last state in cache
@@ -331,22 +341,22 @@ class AirPlayPlayer(Player):
             # nothing to do
             return
 
-        raop_session = self.raop_stream.session if self.raop_stream else None
+        stream_session = self.stream.session if self.stream else None
         # handle removals first
         if player_ids_to_remove:
             if self.player_id in player_ids_to_remove:
                 # dissolve the entire sync group
-                if self.raop_stream and self.raop_stream.running:
+                if self.stream and self.stream.running:
                     # stop the stream session if it is running
-                    await self.raop_stream.session.stop()
+                    await self.stream.session.stop()
                 self._attr_group_members = []
                 self.update_state()
                 return
 
             for child_player in self._get_sync_clients():
                 if child_player.player_id in player_ids_to_remove:
-                    if raop_session:
-                        await raop_session.remove_client(child_player)
+                    if stream_session:
+                        await stream_session.remove_client(child_player)
                     self._attr_group_members.remove(child_player.player_id)
 
         # handle additions
@@ -368,16 +378,16 @@ class AirPlayPlayer(Player):
                 "AirPlayPlayer | None", self.mass.players.get(player_id)
             ):
                 if (
-                    child_player_to_add.raop_stream
-                    and child_player_to_add.raop_stream.running
-                    and child_player_to_add.raop_stream.session != raop_session
+                    child_player_to_add.stream
+                    and child_player_to_add.stream.running
+                    and child_player_to_add.stream.session != stream_session
                 ):
-                    await child_player_to_add.raop_stream.session.remove_client(child_player_to_add)
+                    await child_player_to_add.stream.session.remove_client(child_player_to_add)
 
-            # add new child to the existing raop session (if any)
+            # add new child to the existing stream (RAOP or AirPlay2) session (if any)
             self._attr_group_members.append(player_id)
-            if raop_session:
-                await raop_session.add_client(child_player_to_add)
+            if stream_session:
+                await stream_session.add_client(child_player_to_add)
 
         # always update the state after modifying group members
         self.update_state()
@@ -412,10 +422,10 @@ class AirPlayPlayer(Player):
             self._attr_device_info.ip_address = new_address
         self.update_state()
 
-    def set_state_from_raop(
+    def set_state_from_stream(
         self, state: PlaybackState | None = None, elapsed_time: float | None = None
     ) -> None:
-        """Set the playback state from RAOP."""
+        """Set the playback state from stream (RAOP or AirPlay2)."""
         if state is not None:
             self._attr_playback_state = state
         if elapsed_time is not None:
@@ -426,11 +436,11 @@ class AirPlayPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
-        if self.raop_stream:
+        if self.stream:
             # stop the stream session if it is running
-            if self.raop_stream.running:
-                self.mass.create_task(self.raop_stream.session.stop())
-            self.raop_stream = None
+            if self.stream.running:
+                self.mass.create_task(self.stream.session.stop())
+            self.stream = None
 
     def _get_sync_clients(self) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""

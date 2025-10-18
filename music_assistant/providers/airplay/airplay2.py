@@ -1,4 +1,4 @@
-"""Logic for RAOP (AirPlay 1) audio streaming to AirPlay devices."""
+"""Logic for AirPlay 2 audio streaming to AirPlay devices."""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
+from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.audio import get_chunksize, get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.process import AsyncProcess, check_output
@@ -23,11 +24,6 @@ from music_assistant.helpers.util import TaskManager, close_async_generator
 
 from .constants import (
     AIRPLAY_PCM_FORMAT,
-    CONF_AIRPLAY_VERSION,
-    CONF_ALAC_ENCODE,
-    CONF_ENCRYPTION,
-    CONF_PASSWORD,
-    CONF_READ_AHEAD_BUFFER,
 )
 
 if TYPE_CHECKING:
@@ -38,8 +34,8 @@ if TYPE_CHECKING:
     from .provider import AirPlayProvider
 
 
-class RaopStreamSession:
-    """Object that holds the details of a (RAOP) stream session to one or more players."""
+class AirPlay2StreamSession:
+    """Object that holds the details of an AirPlay2 stream session to one or more players."""
 
     def __init__(
         self,
@@ -48,7 +44,7 @@ class RaopStreamSession:
         input_format: AudioFormat,
         audio_source: AsyncGenerator[bytes, None],
     ) -> None:
-        """Initialize RaopStreamSession."""
+        """Initialize AirPlay2StreamSession."""
         assert sync_clients
         self.prov = airplay_provider
         self.mass = airplay_provider.mass
@@ -59,26 +55,32 @@ class RaopStreamSession:
         self._lock = asyncio.Lock()
 
     async def start(self) -> None:
-        """Initialize RaopStreamSession."""
-        # initialize raop stream for all players
+        """Initialize AirPlay2StreamSession."""
+        # initialize airplay stream for all players
 
-        # get current ntp and start RaopStream per player
+        # get current ntp and start AirPlay2Stream per player
         assert self.prov.cli_bin
-        _, stdout = await check_output(self.prov.cli_bin, "-ntp")
+        args = [
+            self.prov.cli_bin,
+            "--config",
+            os.path.join(os.path.dirname(__file__), "bin", "cliap2.conf"),
+            "--ntp",
+        ]
+        _, stdout = await check_output(*args)
         start_ntp = int(stdout.strip())
         wait_start = 1750 + (250 * len(self.sync_clients))
 
-        async def _start_client(raop_player: AirPlayPlayer) -> None:
+        async def _start_client(airplay2_player: AirPlayPlayer) -> None:
             # stop existing stream if running
-            if raop_player.stream and raop_player.stream.running:
-                await raop_player.stream.stop()
+            if airplay2_player.stream and airplay2_player.stream.running:
+                await airplay2_player.stream.stop()
 
-            raop_player.stream = RaopStream(self, raop_player)
-            await raop_player.stream.start(start_ntp, wait_start)
+            airplay2_player.stream = AirPlay2Stream(self, airplay2_player)
+            await airplay2_player.stream.start(start_ntp, wait_start)
 
         async with TaskManager(self.mass) as tm:
-            for _raop_player in self.sync_clients:
-                tm.create_task(_start_client(_raop_player))
+            for _airplay2_player in self.sync_clients:
+                tm.create_task(_start_client(_airplay2_player))
         self._audio_source_task = asyncio.create_task(self._audio_streamer())
 
     async def stop(self) -> None:
@@ -183,22 +185,22 @@ class RaopStreamSession:
                 await close_async_generator(self._audio_source)
 
 
-class RaopStream:
+class AirPlay2Stream:
     """
-    RAOP (AirPlay 1) Audio Streamer.
+    AirPlay 2 Audio Streamer.
 
     Python is not suitable for realtime audio streaming so we do the actual streaming
-    of (RAOP) audio using a small executable written in C based on libraop to do
+    of audio using a small executable written in C based on owntones to do
     the actual timestamped playback, which reads pcm audio from stdin
     and we can send some interactive commands using a named pipe.
     """
 
     def __init__(
         self,
-        session: RaopStreamSession,
+        session: AirPlay2StreamSession,
         player: AirPlayPlayer,
     ) -> None:
-        """Initialize RaopStream."""
+        """Initialize AirPlay2Stream."""
         self.session = session
         self.prov = session.prov
         self.mass = session.prov.mass
@@ -209,7 +211,7 @@ class RaopStream:
         self.active_remote_id: str = str(randint(1000, 8000))
         self.prevent_playback: bool = False
         self._stderr_reader_task: asyncio.Task[None] | None = None
-        self._cliraop_proc: AsyncProcess | None = None
+        self._cli_proc: AsyncProcess | None = None
         self._ffmpeg_proc: AsyncProcess | None = None
         self._ffmpeg_reader_task: asyncio.Task[None] | None = None
         self._started = asyncio.Event()
@@ -223,86 +225,83 @@ class RaopStream:
         return (
             not self._stopped
             and self._started.is_set()
-            and self._cliraop_proc is not None
-            and not self._cliraop_proc.closed
+            and self._cli_proc is not None
+            and not self._cli_proc.closed
         )
 
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
-        """Initialize CLIRaop process for a player."""
+        """Initialize CLI process for a player."""
         assert self.prov.cli_bin
-        extra_args: list[str] = []
-        player_id = self.player.player_id
-        extra_args += ["-if", self.mass.streams.bind_ip]
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENCRYPTION, False):
-            extra_args += ["-encrypt"]
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):
-            extra_args += ["-alac"]
-        for prop in ("et", "md", "am", "pk", "pw"):
-            if prop_value := self.player.discovery_info.decoded_properties.get(prop):
-                extra_args += [f"-{prop}", prop_value]
-        sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
-        assert isinstance(sync_adjust, int)
-        if device_password := self.mass.config.get_raw_player_config_value(
-            player_id, CONF_PASSWORD, None
-        ):
-            extra_args += ["-password", str(device_password)]
-        if self.prov.logger.isEnabledFor(logging.DEBUG):
-            extra_args += ["-debug", "5"]
-        elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            extra_args += ["-debug", "10"]
-        read_ahead = await self.mass.config.get_player_config_value(
-            player_id, CONF_READ_AHEAD_BUFFER
+
+        airplay_info = AsyncServiceInfo(
+            "_airplay._tcp.local.",
+            self.player.discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
         )
-        conf_airplay_version = await self.mass.config.get_player_config_value(
-            player_id, CONF_AIRPLAY_VERSION
+        if not await airplay_info.async_request(self.mass.aiozc.zeroconf, 3000):
+            self.player.logger.error(
+                "Could not retrieve AirPlay mdns info for player %s", self.player.display_name
+            )
+            return
+
+        self.player.logger.debug(
+            "AirPlay mdns properties for player %s: %s",
+            self.player.display_name,
+            airplay_info.properties,
         )
-        assert conf_airplay_version is not None
+
         # ffmpeg handles the player specific stream + filters and pipes
-        # audio to the cliraop process
+        # audio to the cliap2 process
         self.start_ffmpeg_stream()
 
-        # cliraop is the binary that handles the actual raop streaming to the player
-        # this is a slightly modified version of philippe44's libraop
-        # https://github.com/music-assistant/libraop
-        # we use this intermediate binary to do the actual streaming because attempts to do
-        # so using pure python (e.g. pyatv) were not successful due to the realtime nature
-        # TODO: Either enhance libraop with airplay 2 support or find a better alternative
-        cliraop_args = [
+        # cliap2 is the binary that handles the actual streaming to the player
+        # this binary leverages from the AirPlay2 support in owntones
+        # https://github.com/music-assistant/cliairplay
+        self.player.logger.debug(
+            f"name: {self.player.display_name}, "
+            f"hostname: {self.player.discovery_info.server}, "
+            f"port: {self.player.discovery_info.port}"
+        )
+        cli_args: list[str] = [
             self.prov.cli_bin,
-            "-ntpstart",
-            str(start_ntp),
-            "-port",
+            "--config",
+            os.path.join(os.path.dirname(__file__), "bin", "cliap2.conf"),
+            "--name",
+            self.player.display_name,
+            "--type",
+            "_airplay._tcp",
+            "--domain",
+            "local",
+            "--hostname",
+            str(self.player.discovery_info.server),
+            "--family",
+            "2",
+            "--port",
             str(self.player.discovery_info.port),
-            "-wait",
-            str(wait_start - sync_adjust),
-            "-latency",
-            str(read_ahead),
-            "-volume",
-            str(self.player.volume_level),
-            *extra_args,
-            "-dacp",
-            self.prov.dacp_id,
-            "-activeremote",
-            self.active_remote_id,
-            "-version",
-            str(conf_airplay_version),
-            "-udn",
-            self.player.discovery_info.name,
-            self.player.address,
-            "-",
+            # TODO - implement the below arguments
+            # "--ntpstart",
+            # str(start_ntp),
+            # "--port",
+            # str(self.player.discovery_info.port),
+            # "--wait",
+            # str(wait_start - sync_adjust),
+            # "--latency",
+            # str(read_ahead),
+            # "--volume",
+            # str(self.player.volume_level),
+            # *extra_args,
         ]
         self.player.logger.debug(
-            "Starting cliraop process for player %s with args: %s",
+            "Starting cliap2 process for player %s with args: %s",
             self.player.player_id,
-            cliraop_args,
+            cli_args,
         )
-        self._cliraop_proc = AsyncProcess(cliraop_args, stdin=True, stderr=True, name="cliraop")
+        self._cli_proc = AsyncProcess(cli_args, stdin=True, stderr=False, name="cliap2")
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
-        await self._cliraop_proc.start()
+        await self._cli_proc.start()
         # read up to first 500 lines of stderr to get the initial status
         for _ in range(500):
-            line = (await self._cliraop_proc.read_stderr()).decode("utf-8", errors="ignore")
+            line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
             self.player.logger.debug(line)
             if "connected to " in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
@@ -316,7 +315,7 @@ class RaopStream:
         # to ignore it the first time
         # https://github.com/music-assistant/support/issues/3330
         await self.send_cli_command(f"VOLUME={self.player.volume_level}\n")
-        # start reading the stderr of the cliraop process from another task
+        # start reading the stderr of the cliap2 process from another task
         self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
 
     async def stop(self) -> None:
@@ -327,8 +326,8 @@ class RaopStream:
             self._stderr_reader_task.cancel()
         if self._ffmpeg_reader_task and not self._ffmpeg_reader_task.done():
             self._ffmpeg_reader_task.cancel()
-        if self._cliraop_proc and not self._cliraop_proc.closed:
-            await self._cliraop_proc.close(True)
+        if self._cli_proc and not self._cli_proc.closed:
+            await self._cli_proc.close(True)
         if self._ffmpeg_proc and not self._ffmpeg_proc.closed:
             await self._ffmpeg_proc.close(True)
         self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
@@ -350,8 +349,8 @@ class RaopStream:
         await self._ffmpeg_proc.write_eof()
 
     async def send_cli_command(self, command: str) -> None:
-        """Send an interactive command to the running CLIRaop binary."""
-        if self._stopped or not self._cliraop_proc or self._cliraop_proc.closed:
+        """Send an interactive command to the running CLIap2 binary."""
+        if self._stopped or not self._cli_proc or self._cli_proc.closed:
             return
         await self._started.wait()
 
@@ -362,13 +361,13 @@ class RaopStream:
             with suppress(BrokenPipeError), open(named_pipe, "w") as f:
                 f.write(command)
 
-        named_pipe = f"/tmp/raop-{self.active_remote_id}"  # noqa: S108
+        named_pipe = f"/tmp/ap2-{self.active_remote_id}"  # noqa: S108
         self.player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
         self.player.last_command_sent = time.time()
         await asyncio.to_thread(send_data)
 
     def start_ffmpeg_stream(self) -> None:
-        """Start (or replace) the player-specific ffmpeg stream to feed cliraop."""
+        """Start (or replace) the player-specific ffmpeg stream to feed cliap2."""
         # cancel existing ffmpeg reader task
         if self._ffmpeg_reader_task and not self._ffmpeg_reader_task.done():
             self._ffmpeg_reader_task.cancel()
@@ -378,7 +377,7 @@ class RaopStream:
         self._ffmpeg_reader_task = self.mass.create_task(self._ffmpeg_reader())
 
     async def _ffmpeg_reader(self) -> None:
-        """Read audio from the audio source and pipe it to the CLIRaop process."""
+        """Read audio from the audio source and pipe it to the CLIap2 process."""
         self._ffmpeg_proc = FFMpeg(
             audio_input="-",
             input_format=self.session.input_format,
@@ -393,14 +392,14 @@ class RaopStream:
         self._stream_bytes_sent = 0
         await self._ffmpeg_proc.start()
         chunksize = get_chunksize(AIRPLAY_PCM_FORMAT)
-        # wait for cliraop to be ready
+        # wait for cliap2 to be ready
         await asyncio.wait_for(self._started.wait(), 20)
         async for chunk in self._ffmpeg_proc.iter_chunked(chunksize):
             if self._stopped:
                 break
-            if not self._cliraop_proc or self._cliraop_proc.closed:
+            if not self._cli_proc or self._cli_proc.closed:
                 break
-            await self._cliraop_proc.write(chunk)
+            await self._cli_proc.write(chunk)
             self._stream_bytes_sent += len(chunk)
             self._total_bytes_sent += len(chunk)
             del chunk
@@ -410,20 +409,20 @@ class RaopStream:
                 elapsed_time=self._stream_bytes_sent / chunksize,
             )
         # if we reach this point, the process exited, most likely because the stream ended
-        if self._cliraop_proc and not self._cliraop_proc.closed:
-            await self._cliraop_proc.write_eof()
+        if self._cli_proc and not self._cli_proc.closed:
+            await self._cli_proc.write_eof()
 
     async def _stderr_reader(self) -> None:
-        """Monitor stderr for the running CLIRaop process."""
+        """Monitor stderr for the running CLIap2 process."""
         player = self.player
         queue = self.mass.players.get_active_queue(player)
         logger = player.logger
         lost_packets = 0
         prev_metadata_checksum: str = ""
         prev_progress_report: float = 0
-        if not self._cliraop_proc:
+        if not self._cli_proc:
             return
-        async for line in self._cliraop_proc.iter_stderr():
+        async for line in self._cli_proc.iter_stderr():
             if "elapsed milliseconds:" in line:
                 # this is received more or less every second while playing
                 # millis = int(line.split("elapsed milliseconds: ")[1])

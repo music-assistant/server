@@ -51,7 +51,7 @@ BROKEN_RAOP_MODELS = (
 )
 
 AIRPLAY2_MODELS = (
-    # Some devices only support AirPlay 2, so we can skip the RAOP discovery
-    # and directly use the AirPlay 2 implementation.
+    # Some devices only support AirPlay 2, so we can directly use the AirPlay 2
+    # implementation.
     ("Ubiquiti Inc.", "UPL-AMP"),
 )
