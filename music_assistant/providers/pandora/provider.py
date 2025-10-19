@@ -368,7 +368,7 @@ class PandoraProvider(MusicProvider):
                 track_num,
                 err,
             )
-            return web.Response(status=500, text=f"Stream error: {err}")
+            return web.Response(status=500, text="Stream error occurred")
 
     async def search(
         self,
