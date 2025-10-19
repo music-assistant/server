@@ -249,7 +249,6 @@ class PandoraProvider(MusicProvider):
             MultiPartPath(
                 path=f"{self.mass.streams.base_url}/{self.instance_id}_stream?"
                 f"station_id={item_id}&track_num={i}",
-                duration=180,  # Placeholder duration
             )
             for i in range(1000)
         ]
