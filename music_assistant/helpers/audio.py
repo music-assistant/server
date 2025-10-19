@@ -375,13 +375,11 @@ async def get_stream_details(
             raise MediaNotFoundError(msg)
 
         # work out how to handle radio stream
-        # Only resolve if path is a string (traditional radio URL)
-        # so skip resolution for multi-file radio streams (list of URLs)
         if (
             streamdetails.stream_type in (StreamType.ICY, StreamType.HLS, StreamType.HTTP)
             and streamdetails.media_type == MediaType.RADIO
-            and isinstance(streamdetails.path, str)
         ):
+            assert isinstance(streamdetails.path, str)  # for type checking
             resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
             streamdetails.path = resolved_url
             streamdetails.stream_type = stream_type
