@@ -935,7 +935,9 @@ class Player(ABC):
         if self.active_source and (
             source := self.mass.players.get_plugin_source(self.active_source)
         ):
-            return source.metadata
+            # Return a copy to ensure metadata prev_state vs new _state comparisons in
+            # update_state are detected after plugin updates its metadata
+            return deepcopy(source.metadata)
 
         return self._current_media
 
