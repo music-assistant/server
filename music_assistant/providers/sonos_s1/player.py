@@ -34,7 +34,6 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
-from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -82,7 +81,6 @@ SUBSCRIPTION_SERVICES = {
 }
 DURATION_SECONDS = "duration_in_s"
 POSITION_SECONDS = "position_in_s"
-SUBSCRIPTION_TIMEOUT = 1200
 SOURCE_AIRPLAY = "AirPlay"
 SOURCE_LINEIN = "Line-in"
 SOURCE_SPOTIFY_CONNECT = "Spotify Connect"
@@ -94,7 +92,7 @@ SOURCE_MAPPING = {
     MUSIC_SRC_SPOTIFY_CONNECT: SOURCE_SPOTIFY_CONNECT,
 }
 LINEIN_SOURCES = (MUSIC_SRC_TV, MUSIC_SRC_LINE_IN)
-
+SUBSCRIPTION_TIMEOUT = 1200
 
 class SonosSubscriptionsFailed(PlayerCommandFailed):
     """Subscription creation failed."""
@@ -169,8 +167,7 @@ class SonosPlayer(Player):
         # self.update_groups()
         # if not self.synced_to:
         #     self.poll_media()
-        asyncio.run_coroutine_threadsafe(self.subscribe(), self.mass.loop)
-        # await self.subscribe()
+        await self.subscribe()
         await self.mass.players.register_or_update(self)
 
     async def offline(self) -> None:
@@ -343,43 +340,6 @@ class SonosPlayer(Player):
         self._set_basic_track_info(update_position=update_position)
         self.update_player()
 
-    def _update_media_position(
-        self, duration: int | None, current_position: int | None, force_update: bool = False
-    ) -> None:
-        """Update elapsed time when playing music tracks."""
-        if not (duration or current_position):
-            self._attr_elapsed_time = None
-            self._attr_elapsed_time_last_updated = None
-            return
-
-        should_update = force_update
-
-        # player started reporting position?
-        if current_position is not None and self._attr_elapsed_time is None:
-            should_update = True
-
-        # position jumped?
-        if current_position is not None and self._attr_elapsed_time is not None:
-            if self._attr_playback_state == PlaybackState.PLAYING:
-                if self._attr_elapsed_time_last_updated is not None:
-                    time_diff = time.time() - self._attr_elapsed_time_last_updated
-                else:
-                    time_diff = 0
-            else:
-                time_diff = 0
-
-            calculated_position = self._attr_elapsed_time + time_diff
-
-            if abs(calculated_position - current_position) > 1.5:
-                should_update = True
-
-        if current_position is None:
-            self._attr_elapsed_time = None
-            self._attr_elapsed_time_last_updated = None
-        elif should_update:
-            self._attr_elapsed_time = float(current_position)
-            self._attr_elapsed_time_last_updated = time.time()
-
     @property
     def is_coordinator(self) -> bool:
         """Return True if this player is the group coordinator."""
@@ -413,9 +373,7 @@ class SonosPlayer(Player):
             # send update to the player manager right away only if we are triggered from an event
             # when we're just updating from a manual poll, the player manager
             # will detect changes to the player object itself
-            self.logger.debug("Scheduling update_state via call_soon_threadsafe")
             self.mass.loop.call_soon_threadsafe(self.update_state)
-            self.logger.debug("Scheduled successfully")
 
     async def _subscribe_target(
         self, target: SubscriptionBase, sub_callback: Callable[[SonosEvent], None]
@@ -426,17 +384,13 @@ class SonosPlayer(Player):
             """Handle a failed subscription renewal callback."""
             self.mass.create_task(self._renew_failed(exception))
 
-        def create_subscription():                                  
-            subscription = target.subscribe(                         
-                auto_renew=True,                                        
-                requested_timeout=SUBSCRIPTION_TIMEOUT
-            )
-            subscription.callback = sub_callback                    
-            subscription.auto_renew_fail = on_renew_failed          
-            return subscription                                     
-                                                                    
-        subscription = await asyncio.to_thread(create_subscription) 
-        self._subscriptions.append(subscription) 
+        # Use events_asyncio which makes subscribe() async-awaitable
+        subscription = await target.subscribe(
+            auto_renew=True, requested_timeout=SUBSCRIPTION_TIMEOUT
+        )
+        subscription.callback = sub_callback
+        subscription.auto_renew_fail = on_renew_failed
+        self._subscriptions.append(subscription)
 
     def log_subscription_result(self, result: Any, event: str, level: int = logging.DEBUG) -> None:
         """Log a message if a subscription action (create/renew/stop) results in an exception."""
@@ -504,7 +458,6 @@ class SonosPlayer(Player):
         """Handle SonosEvent callback."""
         service_type: str = event.service.service_type
         self._speaker_activity(f"{service_type} subscription")
-        self.logger.debug("Event received for %s: %s", self.display_name, service_type)
         if service_type == "DeviceProperties":
             self.update_player()
             return
@@ -717,8 +670,7 @@ class SonosPlayer(Player):
         if current_position is not None and self._attr_elapsed_time is not None:
             if self._attr_playback_state == PlaybackState.PLAYING:
                 assert self._attr_elapsed_time_last_updated is not None
-                time_delta = utc() - self._attr_elapsed_time_last_updated
-                time_diff = time_delta.total_seconds()
+                time_diff = time.time() - self._attr_elapsed_time_last_updated
             else:
                 time_diff = 0
 
@@ -732,7 +684,7 @@ class SonosPlayer(Player):
             self._attr_elapsed_time_last_updated = None
         elif should_update:
             self._attr_elapsed_time = current_position
-            self._attr_elapsed_time_last_updated = utc()
+            self._attr_elapsed_time_last_updated = time.time()
 
     def _speaker_activity(self, source: str) -> None:
         """Track the last activity on this speaker, set availability and resubscribe."""

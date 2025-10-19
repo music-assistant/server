@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from soco import SoCo
+from soco import SoCo, events_asyncio, zonegroupstate
 from soco import config as soco_config
 from soco.discovery import discover, scan_network
 
@@ -17,6 +16,7 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .player import SonosPlayer
 
+SUBSCRIPTION_TIMEOUT = 1200
 
 @dataclass
 class DiscoveredPlayer:
@@ -37,6 +37,10 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # Configure SoCo to use async event system
+        soco_config.EVENTS_MODULE = events_asyncio
+        zonegroupstate.EVENT_CACHE_TIMEOUT = SUBSCRIPTION_TIMEOUT
+
         # Set up SoCo logging
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("soco").setLevel(logging.DEBUG)
@@ -53,10 +57,11 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle unload/close of the provider."""
         # Clean up subscriptions and connections
         for sonos_player in self.sonosplayers.values():
-            if hasattr(sonos_player, "subscriptions"):
-                for subscription in sonos_player.subscriptions:
-                    with suppress(Exception):
-                        subscription.unsubscribe()
+            await sonos_player.offline()
+
+        # Stop the async event listener
+        if events_asyncio.event_listener:
+            await events_asyncio.event_listener.async_stop()
 
     async def discover_players(self) -> None:
         """Discover Sonos players on the network."""
