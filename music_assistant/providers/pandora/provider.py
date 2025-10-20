@@ -252,7 +252,12 @@ class PandoraProvider(MusicProvider):
             )
             for i in range(1000)
         ]
-
+        # Is this what is envisaged to pass the static variables?
+        #    MultiPartPath(
+        #        path=f"{self.mass.streams.base_url}/{self.instance_id}_stream?"
+        #        f"station_id={item_id}&track_num={i}&queue_id={queue_id}"
+        #        f"&queue_item_id={queue_item_id}",
+        #    )
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -320,6 +325,9 @@ class PandoraProvider(MusicProvider):
         except ValueError:
             return web.Response(status=400, text="Invalid track_num")
 
+        queue_id = request.query.get("queue_id")
+        queue_item_id = request.query.get("queue_item_id")
+
         # Calculate which fragment and which track within that fragment
         fragment_idx = track_num // TRACKS_PER_FRAGMENT
         track_idx = track_num % TRACKS_PER_FRAGMENT
@@ -352,6 +360,20 @@ class PandoraProvider(MusicProvider):
                 self.logger.error("No audio URL in track data")
                 return web.Response(status=404, text="No audio URL available")
 
+            # Update metadata if we have queue context
+            if queue_id and queue_item_id:
+                queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
+                if queue_item and queue_item.streamdetails:
+                    queue_item.streamdetails.stream_metadata = StreamMetadata(
+                        title=track.get("songTitle", "Unknown Song"),
+                        artist=track.get("artistName", "Unknown Artist"),
+                    )
+                    self.logger.debug(
+                        "Updated stream metadata: %s - %s",
+                        track.get("artistName", "Unknown"),
+                        track.get("songTitle", "Unknown"),
+                    )
+
             self.logger.debug(
                 "Redirecting to audio URL for track %d (%s - %s)",
                 track_num,
@@ -368,7 +390,7 @@ class PandoraProvider(MusicProvider):
                 track_num,
                 err,
             )
-            return web.Response(status=500, text="Stream error occurred")
+            return web.Response(status=500, text="A stream error occurred")
 
     async def search(
         self,
