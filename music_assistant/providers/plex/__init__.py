@@ -336,10 +336,6 @@ class PlexProvider(MusicProvider):
     _plex_library: PlexMusicSection = None
     _myplex_account: MyPlexAccount = None
     _baseurl: str
-    _timeline_update_task: Task[None] | None = None
-    _last_reported_state: dict[
-        str, tuple[str, int, PlaybackState]
-    ]  # queue_id_itemid -> (track_id, position, state)
 
     async def handle_async_init(self) -> None:
         """Set up the music provider by connecting to the server."""
