@@ -2062,6 +2062,7 @@ class PlayerController(CoreController):
                 uri=stream_url,
                 media_type=MediaType.PLUGIN_SOURCE,
                 title=plugin_source.name,
+                source_id=plugin_source.id,
                 custom_data={
                     "provider": plugin_prov.instance_id,
                     "source_id": plugin_source.id,
