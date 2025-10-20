@@ -1122,7 +1122,7 @@ class PlexProvider(MusicProvider):
                         "identifier": "com.plexapp.plugins.library",
                     }
                     self.logger.debug("Scrobbling track to Plex: %s", scrobble_params)
-                    self._plex_server.query("/:/scrobble", scrobble_params)
+                    self._plex_server.query("/:/scrobble", params=scrobble_params)
                     self.logger.info("Track %s marked as played in Plex", prov_item_id)
 
                 # If position is 0 and not playing, mark as unplayed
