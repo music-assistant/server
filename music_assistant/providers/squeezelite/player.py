@@ -216,6 +216,11 @@ class SqueezelitePlayer(Player):
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
 
+        if media.source_id and self.mass.players.get_plugin_source(media.source_id):
+            self._attr_active_source = media.source_id
+        else:
+            self._attr_active_source = self.player_id
+
         if not self.group_members:
             # Simple, single-player playback
             await self._handle_play_url_for_slimplayer(
@@ -382,7 +387,6 @@ class SqueezelitePlayer(Player):
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level
         self._attr_volume_muted = self.client.muted
-        self._attr_active_source = self.player_id
         self._attr_device_info = DeviceInfo(
             model=self.client.device_model,
             ip_address=self.client.device_address,
