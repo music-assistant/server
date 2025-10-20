@@ -22,7 +22,6 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
     MediaType,
-    PlaybackState,
     ProviderFeature,
     StreamType,
 )
