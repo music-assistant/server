@@ -23,12 +23,12 @@ from music_assistant.helpers.util import TaskManager, close_async_generator
 
 from .constants import (
     AIRPLAY_PCM_FORMAT,
-    CONF_AIRPLAY_VERSION,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_READ_AHEAD_BUFFER,
 )
+from .helpers import get_cli_binary
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -63,8 +63,10 @@ class RaopStreamSession:
         # initialize raop stream for all players
 
         # get current ntp and start RaopStream per player
-        assert self.prov.cli_bin
-        _, stdout = await check_output(self.prov.cli_bin, "-ntp")
+        cli_bin = await get_cli_binary(1)
+        self.prov.logger.debug("Using RAOP CLI binary %s", cli_bin)
+        _, stdout = await check_output(cli_bin, "-ntp")
+        self.prov.logger.debug(f"Output from ntp check: {stdout.decode().strip()}")
         start_ntp = int(stdout.strip())
         wait_start = 1750 + (250 * len(self.sync_clients))
 
@@ -229,7 +231,6 @@ class RaopStream:
 
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
         """Initialize CLIRaop process for a player."""
-        assert self.prov.cli_bin
         extra_args: list[str] = []
         player_id = self.player.player_id
         extra_args += ["-if", self.mass.streams.bind_ip]
@@ -253,10 +254,6 @@ class RaopStream:
         read_ahead = await self.mass.config.get_player_config_value(
             player_id, CONF_READ_AHEAD_BUFFER
         )
-        conf_airplay_version = await self.mass.config.get_player_config_value(
-            player_id, CONF_AIRPLAY_VERSION
-        )
-        assert conf_airplay_version is not None
         # ffmpeg handles the player specific stream + filters and pipes
         # audio to the cliraop process
         self.start_ffmpeg_stream()
@@ -268,7 +265,7 @@ class RaopStream:
         # so using pure python (e.g. pyatv) were not successful due to the realtime nature
         # TODO: Either enhance libraop with airplay 2 support or find a better alternative
         cliraop_args = [
-            self.prov.cli_bin,
+            str(self.player.cli_bin),
             "-ntpstart",
             str(start_ntp),
             "-port",
@@ -284,8 +281,6 @@ class RaopStream:
             self.prov.dacp_id,
             "-activeremote",
             self.active_remote_id,
-            "-version",
-            str(conf_airplay_version),
             "-udn",
             self.player.discovery_info.name,
             self.player.address,

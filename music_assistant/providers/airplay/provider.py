@@ -17,7 +17,6 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     CACHE_CATEGORY_PREV_VOLUME,
-    CONF_AIRPLAY_VERSION,
     CONF_IGNORE_VOLUME,
     FALLBACK_VOLUME,
 )
@@ -26,7 +25,6 @@ from .helpers import (
     get_cli_binary,
     get_model_info,
     get_primary_ip_address_from_zeroconf,
-    is_airplay2_model,
 )
 from .player import AirPlayPlayer
 
@@ -42,7 +40,6 @@ from .player import AirPlayPlayer
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
-    cli_bin: str | None
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
 
@@ -117,19 +114,54 @@ class AirPlayProvider(PlayerProvider):
         if self._dacp_info:
             await self.mass.aiozc.async_unregister_service(self._dacp_info)
 
-    async def _setup_player(
-        self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
-    ) -> None:
-        """Handle setup of a new player that is discovered using mdns."""
+    async def _setup_discovery(
+        self, display_name: str, discovery_info: AsyncServiceInfo
+    ) -> AsyncServiceInfo | None:
+        """Handle setup of the mdns discovery info to use."""
+        try:
+            await get_cli_binary(1)
+        except RuntimeError as msg:
+            self.logger.error(f"{display_name}:{msg}")
+            self.logger.error(
+                f"{display_name}:RAOP binary not available, cannot setup AirPlay player"
+            )
+            return None
         # prefer airplay mdns info as it has more details
-        # fallback to raop info if airplay info is not available
+        # fallback to raop if airplay info is not available
         airplay_info = AsyncServiceInfo(
             "_airplay._tcp.local.", discovery_info.name.split("@")[-1].replace("_raop", "_airplay")
         )
         if await airplay_info.async_request(self.mass.aiozc.zeroconf, 3000):
-            manufacturer, model = get_model_info(airplay_info)
+            try:
+                if await get_cli_binary(2):
+                    # we have the airplay2 binary available, so we can use airplay2
+                    return airplay_info
+            except RuntimeError as msg:
+                self.logger.info(f"{display_name}:{msg}")
+                # stick with raop as we don't have airplay2 binary installed
+                self.logger.info(
+                    f"{display_name}:AirPlay2 binary not available, falling back to RAOP."
+                )
+                return discovery_info
         else:
-            manufacturer, model = get_model_info(discovery_info)
+            # This will happen when the device does not support AirPlay 2
+            self.logger.info(
+                f"Failed to obtain AirPlay mdns info for player "
+                f"{discovery_info.name.split('@')[-1].replace('_raop', '_airplay')}, "
+                f"falling back to RAOP info."
+            )
+            return discovery_info
+        return None  # should not happen
+
+    async def _setup_player(
+        self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
+    ) -> None:
+        """Handle setup of a new player that is discovered using mdns."""
+        player_discovery_info = await self._setup_discovery(display_name, discovery_info)
+        if player_discovery_info is None:
+            return
+        manufacturer, model = get_model_info(player_discovery_info)
+        address = get_primary_ip_address_from_zeroconf(player_discovery_info)
 
         if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
@@ -144,40 +176,10 @@ class AirPlayProvider(PlayerProvider):
             )
             return
 
-        address = get_primary_ip_address_from_zeroconf(discovery_info)
         if not address:
             return  # should not happen, but guard just in case
-
-        disc_airplay_version = 2 if is_airplay2_model(manufacturer, model) else 1
-        conf_airplay_version = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_AIRPLAY_VERSION, None
-        )
-        if conf_airplay_version is None:
-            # There is currently no configured AirPlay version, therefore we will
-            # save the discovered airplay version to the provider config.
-            # This is needed for the player to know which protocol to use.
-            self.logger.debug(f"Saving AirPlay version {disc_airplay_version} for {display_name}")
-            await self.mass.config.save_player_config(
-                player_id, {CONF_AIRPLAY_VERSION: disc_airplay_version}
-            )
-            conf_airplay_version = disc_airplay_version
-        self.logger.debug(
-            f"Discovered {display_name} has manufacturer {manufacturer}, model {model}."
-            f"Defaults to AirPlay version {disc_airplay_version} and is "
-            f"configured to use AirPlay version {conf_airplay_version}."
-        )
-
-        # locate the cli binary
-        assert conf_airplay_version in (1, 2)  # type guard
-        ap_version: int = 1 if conf_airplay_version == 1 else 2
-        assert isinstance(ap_version, int)  # type guard
-        self.cli_bin: str | None = await get_cli_binary(ap_version)
-        if not self.cli_bin:
-            self.logger.warning(
-                "Cannot setup AirPlay player %s, required cliraop/ap2 binary not found.",
-                display_name,
-            )
-            return
+        if not player_discovery_info:
+            return  # should not happen, but guard just in case
 
         # if we reach this point, all preflights are ok and we can create the player
         self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
@@ -198,7 +200,7 @@ class AirPlayProvider(PlayerProvider):
         player = AirPlayPlayer(
             provider=self,
             player_id=player_id,
-            discovery_info=discovery_info,
+            discovery_info=player_discovery_info,
             address=address,
             display_name=display_name,
             manufacturer=manufacturer,

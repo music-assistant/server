@@ -16,7 +16,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.audio import get_chunksize, get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.process import AsyncProcess, check_output
@@ -24,7 +24,9 @@ from music_assistant.helpers.util import TaskManager, close_async_generator
 
 from .constants import (
     AIRPLAY_PCM_FORMAT,
+    CONF_READ_AHEAD_BUFFER,
 )
+from .helpers import get_cli_binary
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -59,14 +61,10 @@ class AirPlay2StreamSession:
         # initialize airplay stream for all players
 
         # get current ntp and start AirPlay2Stream per player
-        assert self.prov.cli_bin
-        args = [
-            self.prov.cli_bin,
-            "--config",
-            os.path.join(os.path.dirname(__file__), "bin", "cliap2.conf"),
-            "--ntp",
-        ]
-        _, stdout = await check_output(*args)
+        cli_bin = await get_cli_binary(2)
+        self.prov.logger.debug("Using AirPlay2 CLI binary %s", cli_bin)
+        _, stdout = await check_output(cli_bin, "--ntp")
+        self.prov.logger.debug(f"Output from ntp check: {stdout.decode().strip()}")
         start_ntp = int(stdout.strip())
         wait_start = 1750 + (250 * len(self.sync_clients))
 
@@ -231,23 +229,29 @@ class AirPlay2Stream:
 
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
         """Initialize CLI process for a player."""
-        assert self.prov.cli_bin
+        player_id = self.player.player_id
+        sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
+        assert isinstance(sync_adjust, int)
+        read_ahead = await self.mass.config.get_player_config_value(
+            player_id, CONF_READ_AHEAD_BUFFER
+        )
 
+        # Player discovery info should already be airplay info, so no need to re-resolve
         airplay_info = AsyncServiceInfo(
             "_airplay._tcp.local.",
             self.player.discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
         )
         if not await airplay_info.async_request(self.mass.aiozc.zeroconf, 3000):
             self.player.logger.error(
-                "Could not retrieve AirPlay mdns info for player %s", self.player.display_name
+                "Could not retrieve AirPlay mdns info for player %s, name %s",
+                self.player.display_name,
+                self.player.discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
             )
             return
 
-        self.player.logger.debug(
-            "AirPlay mdns properties for player %s: %s",
-            self.player.display_name,
-            airplay_info.properties,
-        )
+        txt_kv: str = ""
+        for key, value in airplay_info.decoded_properties.items():
+            txt_kv += f'"{key}={value}" '
 
         # ffmpeg handles the player specific stream + filters and pipes
         # audio to the cliap2 process
@@ -256,46 +260,35 @@ class AirPlay2Stream:
         # cliap2 is the binary that handles the actual streaming to the player
         # this binary leverages from the AirPlay2 support in owntones
         # https://github.com/music-assistant/cliairplay
-        self.player.logger.debug(
-            f"name: {self.player.display_name}, "
-            f"hostname: {self.player.discovery_info.server}, "
-            f"port: {self.player.discovery_info.port}"
-        )
-        cli_args: list[str] = [
-            self.prov.cli_bin,
+        cli_args = [
+            str(self.player.cli_bin),
             "--config",
             os.path.join(os.path.dirname(__file__), "bin", "cliap2.conf"),
             "--name",
             self.player.display_name,
-            "--type",
-            "_airplay._tcp",
-            "--domain",
-            "local",
             "--hostname",
-            str(self.player.discovery_info.server),
-            "--family",
-            "2",
+            str(airplay_info.server),
+            "--address",
+            str(self.player.address),
             "--port",
-            str(self.player.discovery_info.port),
-            # TODO - implement the below arguments
-            # "--ntpstart",
-            # str(start_ntp),
-            # "--port",
-            # str(self.player.discovery_info.port),
-            # "--wait",
-            # str(wait_start - sync_adjust),
-            # "--latency",
-            # str(read_ahead),
-            # "--volume",
-            # str(self.player.volume_level),
-            # *extra_args,
+            str(airplay_info.port),
+            "--txt",
+            txt_kv,
+            "--ntpstart",
+            str(start_ntp),
+            "--wait",
+            str(wait_start - sync_adjust),
+            "--latency",
+            str(read_ahead),
+            "--volume",
+            str(self.player.volume_level),
         ]
         self.player.logger.debug(
             "Starting cliap2 process for player %s with args: %s",
-            self.player.player_id,
+            player_id,
             cli_args,
         )
-        self._cli_proc = AsyncProcess(cli_args, stdin=True, stderr=False, name="cliap2")
+        self._cli_proc = AsyncProcess(cli_args, stdin=True, stderr=True, name="cliap2")
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
         await self._cli_proc.start()

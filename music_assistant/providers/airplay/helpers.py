@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from zeroconf import IPVersion
 
 from music_assistant.helpers.process import check_output
-from music_assistant.providers.airplay.constants import AIRPLAY2_MODELS, BROKEN_RAOP_MODELS
+from music_assistant.providers.airplay.constants import BROKEN_RAOP_MODELS
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -91,14 +91,9 @@ def is_broken_raop_model(manufacturer: str, model: str) -> bool:
     return False
 
 
-def is_airplay2_model(manufacturer: str, model: str) -> bool:
-    """Check if a model should default to AirPlay 2 support."""
-    # Find a more generic method for determining AirPlay 2 support.
-    # Perhaps from _airplay._tcp srcvers property or _raop._tcp vs property.
-    for airplay2_manufacturer, airplay2_model in AIRPLAY2_MODELS:
-        if airplay2_manufacturer in (manufacturer, "*") and airplay2_model in (model, "*"):
-            return True
-    return False
+def is_airplay2_device(discovery_info: AsyncServiceInfo) -> bool:
+    """Check if the player is AirPlay2 or RAOP."""
+    return discovery_info.decoded_properties.get("deviceid") is not None
 
 
 async def get_cli_binary(version: int) -> str:

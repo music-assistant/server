@@ -16,6 +16,7 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 from music_assistant_models.media_items import AudioFormat
+from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_ENTRY_DEPRECATED_EQ_BASS,
@@ -43,12 +44,15 @@ from .constants import (
     CONF_READ_AHEAD_BUFFER,
     FALLBACK_VOLUME,
 )
-from .helpers import get_primary_ip_address_from_zeroconf, is_broken_raop_model
+from .helpers import (
+    get_cli_binary,
+    get_primary_ip_address_from_zeroconf,
+    is_airplay2_device,
+    is_broken_raop_model,
+)
 from .raop import RaopStreamSession
 
 if TYPE_CHECKING:
-    from zeroconf.asyncio import AsyncServiceInfo
-
     from music_assistant.providers.universal_group import UniversalGroupPlayer
 
     from .airplay2 import AirPlay2Stream
@@ -87,6 +91,7 @@ class AirPlayPlayer(Player):
         self.stream: RaopStream | AirPlay2Stream | None = None
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
+        self.cli_bin: str | None = None
 
         # Set (static) player attributes
         self._attr_type = PlayerType.PLAYER
@@ -106,6 +111,12 @@ class AirPlayPlayer(Player):
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_enabled_by_default = not is_broken_raop_model(manufacturer, model)
+        # How do we ensure consistency between configured airplay version and
+        # the mdns discovery info??
+        if is_airplay2_device(self.discovery_info):
+            self._airplay_version = 2
+        else:
+            self._airplay_version = 1
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -177,16 +188,15 @@ class AirPlayPlayer(Player):
             ConfigEntry(
                 key=CONF_AIRPLAY_VERSION,
                 type=ConfigEntryType.INTEGER,
-                default_value=None,
+                default_value=1,
                 required=True,
-                label="AirPlay version to use for steaming",
+                label="AirPlay version to use for streaming",
                 description="AirPlay version 1 protocol uses RAOP.\n"
                 "AirPlay version 2 is an exenstion of RAOP.\n"
                 "Some newer devices do not fully support RAOP and "
                 "will only work with AirPlay version 2.",
                 category="airplay",
                 options=[
-                    ConfigValueOption("Undefined", None),
                     ConfigValueOption("AirPlay 1 (RAOP)", 1),
                     ConfigValueOption("AirPlay 2", 2),
                 ],
@@ -226,11 +236,64 @@ class AirPlayPlayer(Player):
                 return
             await self.stream.send_cli_command("ACTION=PAUSE")
 
+    async def ap_version_consistency(self) -> None:
+        """Ensure consistency between configured airplay version and mdns discovery info."""
+        # Configured version takes precedence
+        configured_version: int = await self.mass.config.get_player_config_value(
+            self.player_id, CONF_AIRPLAY_VERSION
+        )  # type: ignore[assignment]
+        if configured_version != self._airplay_version:
+            self.logger.info(
+                f"{self.name}:configured AirPlay version ({configured_version}) does not match "
+                f"detected device AirPlay version ({self._airplay_version}). "
+                f"Updating to {configured_version}."
+            )
+            # update to the configured version and refresh discovery info
+            info: AsyncServiceInfo | None = None
+            if configured_version == 1:
+                type_ = "_raop._tcp.local."
+                # RAOP discovery name is in format X@Y._raop._tcp.local.
+                # where X is the capitalized deviceid with colons stripped
+                # and Y is the device name
+                deviceid = str(self.discovery_info.decoded_properties.get("deviceid"))
+                name = (
+                    deviceid.upper().replace(":", "")
+                    + "@"
+                    + self.discovery_info.name.replace("_airplay", "_raop")
+                )
+            elif configured_version == 2:
+                # AirPlay discovery name is in format Y._airplay._tcp.local.
+                type_ = "_airplay._tcp.local."
+                name = self.discovery_info.name.split("@")[-1].replace("_raop", "_airplay")
+            else:  # guard against invalid configured version
+                self.logger.warning(
+                    f"{self.name}:unsupported AirPlay version configured: {configured_version}"
+                )
+                return
+            info = AsyncServiceInfo(type_, name)
+            if await info.async_request(self.mass.aiozc.zeroconf, 3000):
+                self.set_discovery_info(info, str(self.name))
+                self._airplay_version = configured_version
+            else:
+                # This will happen when the device does not support the configured version
+                # in which case, we just stick with the discovered version
+                # Should we force an update of the config entry to match the discovered version??
+                self.logger.error(
+                    f"{self.name}:failed to refresh discovery info for AirPlay version "
+                    f"{configured_version}. "
+                    f"Continuing with previously detected version {self._airplay_version}."
+                )
+
+        # ensure the cli binary is aligned with the airplay version
+        self.cli_bin = await get_cli_binary(self._airplay_version)
+
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         if self.synced_to:
             # this should not happen, but guard anyways
             raise RuntimeError("Player is synced")
+
+        await self.ap_version_consistency()
 
         # set the active source for the player to the media queue
         # this accounts for syncgroups and linked players (e.g. sonos)
@@ -303,13 +366,13 @@ class AirPlayPlayer(Player):
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
-        if self.mass.config.get_raw_player_config_value(self.player_id, CONF_AIRPLAY_VERSION) == 2:
-            ap2_stream_session = AirPlay2StreamSession(
+        if self._airplay_version == 2:
+            ap2_stream_session: AirPlay2StreamSession = AirPlay2StreamSession(
                 provider, sync_clients, input_format, audio_source
             )
             await ap2_stream_session.start()
         else:
-            raop_stream_session = RaopStreamSession(
+            raop_stream_session: RaopStreamSession = RaopStreamSession(
                 provider, sync_clients, input_format, audio_source
             )
             await raop_stream_session.start()
