@@ -404,23 +404,6 @@ class PlexProvider(MusicProvider):
         except requests.exceptions.ConnectionError as err:
             raise SetupFailedError from err
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await super().loaded_in_mass()
-
-        # Initialize state tracking
-        self._last_reported_state = {}
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
-        # Cancel periodic timeline update task
-        if self._timeline_update_task and not self._timeline_update_task.done():
-            self._timeline_update_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._timeline_update_task
-
-        await super().unload(is_removed)
-
     @property
     def is_streaming_provider(self) -> bool:
         """
