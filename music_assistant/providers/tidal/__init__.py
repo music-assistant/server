@@ -1010,7 +1010,7 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
 
-    @use_cache(expiration=3600, category=1)
+    @use_cache(expiration=3600, category=CACHE_CATEGORY_RECOMMENDATIONS)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's recommendations organized into folders."""
         results: list[RecommendationFolder] = []

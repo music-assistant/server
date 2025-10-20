@@ -42,4 +42,3 @@ DEFAULT_LIMIT: Final[int] = 50
 CACHE_CATEGORY_DEFAULT: Final[int] = 0
 CACHE_CATEGORY_RECOMMENDATIONS: Final[int] = 1
 CACHE_CATEGORY_ISRC_MAP: Final[int] = 2
-CACHE_KEY_RECOMMENDATIONS_ALL: Final[str] = "all_recommendations"
