@@ -12,11 +12,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 
-from .provider import SonosPlayerProvider
+from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN, SUPPORTED_FEATURES
+from .provider import SonosPlayerProvider, discover_household_ids
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -25,11 +26,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-SUPPORTED_FEATURES = {
-    ProviderFeature.SYNC_PLAYERS,
-}
-CONF_NETWORK_SCAN = "network_scan"
-CONF_HOUSEHOLD_ID = "household_id"
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -39,7 +35,7 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
+    mass: MusicAssistant,
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001

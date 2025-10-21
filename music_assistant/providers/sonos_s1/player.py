@@ -9,24 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import datetime
 import logging
 import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerState, PlayerType
+from music_assistant_models.enums import PlaybackState, PlayerState, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
 from soco.core import (
-    MUSIC_SRC_AIRPLAY,
-    MUSIC_SRC_LINE_IN,
     MUSIC_SRC_RADIO,
-    MUSIC_SRC_SPOTIFY_CONNECT,
-    MUSIC_SRC_TV,
     SoCo,
 )
-from soco.data_structures import DidlAudioBroadcast, DidlPlaylistContainer
+from soco.data_structures import DidlAudioBroadcast
 
 from music_assistant.constants import (
     CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
@@ -38,6 +33,18 @@ from music_assistant.constants import (
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
+from .constants import (
+    DURATION_SECONDS,
+    LINEIN_SOURCES,
+    NEVER_TIME,
+    PLAYER_FEATURES,
+    POSITION_SECONDS,
+    RESUB_COOLDOWN_SECONDS,
+    SONOS_STATE_TRANSITIONING,
+    SOURCE_MAPPING,
+    SUBSCRIPTION_SERVICES,
+    SUBSCRIPTION_TIMEOUT,
+)
 from .helpers import SonosUpdateError, soco_error
 
 if TYPE_CHECKING:
@@ -50,53 +57,6 @@ if TYPE_CHECKING:
 CALLBACK_TYPE = Callable[[], None]
 LOGGER = logging.getLogger(__name__)
 
-PLAYER_FEATURES = (
-    PlayerFeature.SET_MEMBERS,
-    PlayerFeature.VOLUME_MUTE,
-    PlayerFeature.VOLUME_SET,
-    PlayerFeature.ENQUEUE,
-    PlayerFeature.GAPLESS_PLAYBACK,
-    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
-)
-
-SOURCES_MAP = {
-    MUSIC_SRC_LINE_IN: "Line-in",
-    MUSIC_SRC_TV: "TV",
-    MUSIC_SRC_RADIO: "Radio",
-    MUSIC_SRC_SPOTIFY_CONNECT: "Spotify",
-    MUSIC_SRC_AIRPLAY: "AirPlay",
-}
-
-PLAYBACK_STATE_MAP = {
-    "PLAYING": PlaybackState.PLAYING,
-    "PAUSED_PLAYBACK": PlaybackState.PAUSED,
-    "STOPPED": PlaybackState.IDLE,
-    "TRANSITIONING": PlaybackState.PLAYING,
-}
-SONOS_STATE_PLAYING = "PLAYING"
-SONOS_STATE_TRANSITIONING = "TRANSITIONING"
-NEVER_TIME = 0
-RESUB_COOLDOWN_SECONDS = 10.0
-SUBSCRIPTION_SERVICES = {
-    "avTransport",
-    "deviceProperties",
-    "renderingControl",
-    "zoneGroupTopology",
-}
-DURATION_SECONDS = "duration_in_s"
-POSITION_SECONDS = "position_in_s"
-SOURCE_AIRPLAY = "AirPlay"
-SOURCE_LINEIN = "Line-in"
-SOURCE_SPOTIFY_CONNECT = "Spotify Connect"
-SOURCE_TV = "TV"
-SOURCE_MAPPING = {
-    MUSIC_SRC_AIRPLAY: SOURCE_AIRPLAY,
-    MUSIC_SRC_TV: SOURCE_TV,
-    MUSIC_SRC_LINE_IN: SOURCE_LINEIN,
-    MUSIC_SRC_SPOTIFY_CONNECT: SOURCE_SPOTIFY_CONNECT,
-}
-LINEIN_SOURCES = (MUSIC_SRC_TV, MUSIC_SRC_LINE_IN)
-SUBSCRIPTION_TIMEOUT = 1200
 
 class SonosSubscriptionsFailed(PlayerCommandFailed):
     """Subscription creation failed."""
@@ -140,11 +100,6 @@ class SonosPlayer(Player):
         self.source_name: str | None = None
         self.title: str | None = None
         self.uri: str | None = None
-        # self.position: int | None = None
-        # self.position_updated_at: datetime.datetime | None = None
-        # self.loudness: bool = False
-        # self.bass: int = 0
-        # self.treble: int = 0
 
         # Subscriptions and events
         self._subscriptions: list[SubscriptionBase] = []
@@ -183,7 +138,6 @@ class SonosPlayer(Player):
             self._resub_cooldown_expires_at = time.monotonic() + RESUB_COOLDOWN_SECONDS
             self.logger.debug("Starting resubscription cooldown for %s", self.display_name)
 
-        self.available = False
         self._attr_available = False
         self._share_link_plugin = None
 
@@ -275,7 +229,6 @@ class SonosPlayer(Player):
         didl_metadata = create_didl_metadata(media)
         await asyncio.to_thread(self.soco.play_uri, media.uri, meta=didl_metadata)
         self.mass.call_later(2, self.poll)
-        # self._attr_poll_interval = 5
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
@@ -321,7 +274,7 @@ class SonosPlayer(Player):
             return
         player_ids_to_add = player_ids_to_add or []
         player_ids_to_remove = player_ids_to_remove or []
-        
+
         if player_ids_to_remove:
             for player_id in player_ids_to_remove:
                 if player_to_remove := cast("SonosPlayer", self.mass.players.get(player_id)):
@@ -358,15 +311,9 @@ class SonosPlayer(Player):
         new_status = _convert_state(new_status)
         update_position = new_status != self._attr_playback_state
         self._attr_playback_state = new_status
-        # self.play_mode = self.soco.play_mode
         self._set_basic_track_info(update_position=update_position)
         self.update_player()
 
-    # @property
-    # def is_coordinator(self) -> bool:
-    #     """Return True if this player is the group coordinator."""
-    #     return self.sync_coordinator is None
-    
     def update_ip(self, ip_address: str) -> None:
         """Handle updated IP of a Sonos player (NOT async friendly)."""
         if self._attr_available:
@@ -379,7 +326,7 @@ class SonosPlayer(Player):
         except SonosUpdateError:
             return
         self.soco.ip_address = ip_address
-        self.setup()
+        asyncio.run_coroutine_threadsafe(self.setup(), self.mass.loop)
         self._attr_device_info = DeviceInfo(
             model=self._attr_device_info.model,
             manufacturer=self._attr_device_info.manufacturer,
@@ -428,6 +375,17 @@ class SonosPlayer(Player):
         subscription.callback = sub_callback
         subscription.auto_renew_fail = on_renew_failed
         self._subscriptions.append(subscription)
+
+    async def _renew_failed(self, exception: Exception) -> None:
+        """Mark the speaker as offline after a subscription renewal failure.
+
+        This is to reset the state to allow a future clean subscription attempt.
+        """
+        if not self._attr_available:
+            return
+
+        self.log_subscription_result(exception, "Subscription renewal", logging.WARNING)
+        await self.offline()
 
     def log_subscription_result(self, result: Any, event: str, level: int = logging.DEBUG) -> None:
         """Log a message if a subscription action (create/renew/stop) results in an exception."""
@@ -516,27 +474,6 @@ class SonosPlayer(Player):
         # new coordinator will use its media. The regrouping process will
         # be completed during the next ZoneGroupState update.
 
-        # Coordinator is set dynamically via Player._attr_synced_to??
-        # av_transport_uri = event.variables.get("av_transport_uri", "")
-        # current_track_uri = event.variables.get("current_track_uri", "")
-        # if av_transport_uri == current_track_uri and av_transport_uri.startswith("x-rincon:"):
-        #     new_coordinator_uid = av_transport_uri.split(":")[-1]
-        #     if new_coordinator_speaker := self.sonos_prov.sonosplayers.get(new_coordinator_uid):
-        #         self.logger.log(
-        #             5,
-        #             "Media update coordinator (%s) received for %s",
-        #             new_coordinator_speaker.zone_name,
-        #             self.zone_name,
-        #         )
-        #         self.sync_coordinator = new_coordinator_speaker
-        #     else:
-        #         self.logger.debug(
-        #             "Media update coordinator (%s) for %s not yet available",
-        #             new_coordinator_uid,
-        #             self.zone_name,
-        #         )
-        #     return
-
         if crossfade := event.variables.get("current_crossfade_mode"):
             self.crossfade = bool(int(crossfade))
 
@@ -559,18 +496,18 @@ class SonosPlayer(Player):
         audio_source = self.soco.music_source_from_uri(track_uri)
 
         self._set_basic_track_info(update_position=state_changed)
-
-        if (ct_md := evars["current_track_meta_data"]) and not self.image_url:
+        ct_md = evars["current_track_meta_data"]
+        if ct_md and not self.image_url:
             if album_art_uri := getattr(ct_md, "album_art_uri", None):
                 # TODO: handle library mess here
                 self.image_url = album_art_uri
 
         et_uri_md = evars["enqueued_transport_uri_meta_data"]
-        if isinstance(et_uri_md, DidlPlaylistContainer):
-            self.playlist_name = et_uri_md.title
+        # if isinstance(et_uri_md, DidlPlaylistContainer):
+        #     self.playlist_name = et_uri_md.title
 
-        if queue_size := evars.get("number_of_tracks", 0):
-            self.queue_size = int(queue_size)
+        # if queue_size := evars.get("number_of_tracks", 0):
+        #     self.queue_size = int(queue_size)
 
         if audio_source == MUSIC_SRC_RADIO:
             if et_uri_md:
@@ -581,7 +518,7 @@ class SonosPlayer(Player):
                 radio_show = ct_md.radio_show.split(",")[0]
                 channel = " • ".join(filter(None, [self.channel, radio_show]))
 
-            if isinstance(et_uri_md, DidlAudioBroadcast):
+            if isinstance(et_uri_md, DidlAudioBroadcast) and self._attr_current_media:
                 self._attr_current_media.title = self._attr_current_media.title or channel
 
         self.update_player()
@@ -640,12 +577,6 @@ class SonosPlayer(Player):
             image_url=track_info.get("album_art"),
         )
         self._attr_current_media = current_media
-
-        # TODO: What to do here?
-        # playlist_position = int(track_info.get("playlist_position", -1))
-        # if playlist_position > 0:
-        #     self.queue_position = playlist_position
-
         self._update_media_position(track_info, force_update=update_position)
 
     def _update_media_position(
@@ -661,8 +592,8 @@ class SonosPlayer(Player):
             return
 
         should_update = force_update
-        # TODO: self._attr_current_media.duration ??
-        self.duration = duration
+        if self._attr_current_media:
+            self._attr_current_media.duration = duration
 
         # player started reporting position?
         if current_position is not None and self._attr_elapsed_time is None:
@@ -800,6 +731,7 @@ class SonosPlayer(Player):
                     return False
 
             return True
+
         _provider = cast("SonosPlayerProvider", self._provider)
         try:
             async with asyncio.timeout(5):
@@ -807,9 +739,11 @@ class SonosPlayer(Player):
                     await _provider.topology_condition.wait()
         except TimeoutError:
             self.logger.warning("Timeout waiting for target groups %s", groups)
-    
-        any_speaker = next(self.mass.players.all(provider_filter=_provider.lookup_key))
-        any_speaker.soco.zone_group_state.clear_cache()
+
+        if players := self.mass.players.all(provider_filter=_provider.lookup_key):
+            any_speaker = cast("SonosPlayer", players[0])
+            any_speaker.soco.zone_group_state.clear_cache()
+
 
 def _convert_state(sonos_state: str | None) -> PlayerState:
     """Convert Sonos state to PlayerState."""

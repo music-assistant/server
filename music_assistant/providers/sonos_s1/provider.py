@@ -4,29 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from typing import Any, cast
 
-from music_assistant.providers.sonos_s1 import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN
 from music_assistant_models.enums import PlayerFeature
+from requests.exceptions import RequestException
 from soco import SoCo, events_asyncio, zonegroupstate
 from soco import config as soco_config
 from soco.discovery import discover, scan_network
-from requests.exceptions import RequestException
+
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 
+from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN, SUBSCRIPTION_TIMEOUT
 from .player import SonosPlayer
-
-SUBSCRIPTION_TIMEOUT = 1200
-
-# @dataclass
-# class DiscoveredPlayer:
-#     """Discovered Sonos player info."""
-
-#     soco: SoCo
-#     sonos_player: SonosPlayer | None = None
 
 
 class SonosPlayerProvider(PlayerProvider):
@@ -38,8 +29,6 @@ class SonosPlayerProvider(PlayerProvider):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
         super().__init__(*args, **kwargs)
-        # self.sonosplayers: dict[str, SonosPlayer] = {}
-        # self._discovered_players: dict[str, DiscoveredPlayer] = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -88,7 +77,7 @@ class SonosPlayerProvider(PlayerProvider):
         for ip_address in manual_ip_config:
             try:
                 player = SoCo(ip_address)
-                self._add_player(player)
+                await self._setup_player(player)
             except RequestException as err:
                 # player is offline
                 self.logger.debug("Failed to add SonosPlayer %s: %s", player, err)
@@ -104,7 +93,7 @@ class SonosPlayerProvider(PlayerProvider):
         if not (household_id := self.config.get_value(CONF_HOUSEHOLD_ID)):
             household_id = "Sonos"
 
-        def do_discover() -> None:
+        async def do_discover() -> None:
             """Run discovery and add players in executor thread."""
             self._discovery_running = True
             try:
@@ -119,7 +108,7 @@ class SonosPlayerProvider(PlayerProvider):
                 # process new players
                 for soco in discovered_devices:
                     try:
-                        self._setup_player(soco)
+                        await self._setup_player(soco)
                     except RequestException as err:
                         # player is offline
                         self.logger.debug("Failed to add SonosPlayer %s: %s", soco, err)
@@ -133,7 +122,7 @@ class SonosPlayerProvider(PlayerProvider):
             finally:
                 self._discovery_running = False
 
-        await asyncio.to_thread(do_discover)
+        await do_discover()
 
         def reschedule() -> None:
             self._discovery_reschedule_timer = None
@@ -146,9 +135,9 @@ class SonosPlayerProvider(PlayerProvider):
         """Set up a discovered Sonos player."""
         player_id = soco.uid
 
-        if existing := self.mass.players.get(player_id=player_id):
+        if existing := cast("SonosPlayer", self.mass.players.get(player_id=player_id)):
             if existing.soco.ip_address != soco.ip_address:
-                existing.update_ip(soco.ip_address)                
+                existing.update_ip(soco.ip_address)
             return
         if not soco.is_visible:
             return
@@ -162,24 +151,17 @@ class SonosPlayerProvider(PlayerProvider):
                 soco.get_speaker_info(True, timeout=7)
             sonos_player = SonosPlayer(self, soco)
             if not soco.fixed_volume:
-                sonos_player.supported_features = {
-                    *sonos_player.supported_features,
+                sonos_player._attr_supported_features = {
+                    *sonos_player._attr_supported_features,
                     PlayerFeature.VOLUME_SET,
                 }
-            # self.sonosplayers[player_id] = sonos_player
-
-            # Create discovery info
-            # discovered_player = DiscoveredPlayer(
-            #     soco=soco,
-            #     sonos_player=sonos_player,
-            # )
-            # self._discovered_players[player_id] = discovered_player
 
             # Register with Music Assistant
             await sonos_player.setup()
 
         except Exception as err:
             self.logger.error("Error setting up Sonos player %s: %s", player_id, err)
+
 
 async def discover_household_ids(mass: MusicAssistant, prefer_s1: bool = True) -> list[str]:
     """Discover the HouseHold ID of S1 speaker(s) the network."""
