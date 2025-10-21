@@ -192,7 +192,7 @@ class AirPlayPlayer(Player):
                 required=True,
                 label="AirPlay version to use for streaming",
                 description="AirPlay version 1 protocol uses RAOP.\n"
-                "AirPlay version 2 is an exenstion of RAOP.\n"
+                "AirPlay version 2 is an extention of RAOP.\n"
                 "Some newer devices do not fully support RAOP and "
                 "will only work with AirPlay version 2.",
                 category="airplay",
