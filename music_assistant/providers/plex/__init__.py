@@ -98,6 +98,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
+    ProviderFeature.SIMILAR_TRACKS,
 }
 
 
@@ -923,6 +925,50 @@ class PlexProvider(MusicProvider):
                 for album_obj in plex_albums:
                     albums.append(await self._parse_album(album_obj))
                 return albums
+        return []
+
+    @use_cache(3600 * 3)  # Cache for 3 hours
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """Get top tracks for the given artist using Plex artist radio/station."""
+        if prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
+            return []
+
+        try:
+            plex_artist = await self._get_data(prov_artist_id, PlexArtist)
+            # Get the artist radio station which contains top/popular tracks
+            if station := await self._run_async(plex_artist.station):
+                # Get tracks from the station
+                station_tracks = await self._run_async(station.items)
+                tracks = []
+                for plex_track in station_tracks[:25]:  # Limit to 25 top tracks
+                    if track := await self._parse_track(plex_track):
+                        tracks.append(track)
+                self.logger.debug(
+                    "Retrieved %d top tracks for artist %s", len(tracks), prov_artist_id
+                )
+                return tracks
+            self.logger.warning("No station available for artist %s", prov_artist_id)
+        except Exception as err:
+            self.logger.warning("Error getting top tracks for artist %s: %s", prov_artist_id, err)
+        return []
+
+    @use_cache(3600 * 3)  # Cache for 3 hours
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Get similar tracks using Plex's sonicallySimilar feature."""
+        try:
+            plex_track = await self._get_data(prov_track_id, PlexTrack)
+            # Get sonically similar tracks
+            similar_tracks = await self._run_async(plex_track.sonicallySimilar, limit=limit)
+            tracks = []
+            for similar_track in similar_tracks:
+                if track := await self._parse_track(similar_track):
+                    tracks.append(track)
+            self.logger.debug(
+                "Retrieved %d similar tracks for track %s", len(tracks), prov_track_id
+            )
+            return tracks
+        except Exception as err:
+            self.logger.warning("Error getting similar tracks for %s: %s", prov_track_id, err)
         return []
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
