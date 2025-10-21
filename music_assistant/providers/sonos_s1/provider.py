@@ -32,14 +32,15 @@ class SonosPlayerProvider(PlayerProvider):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
         super().__init__(*args, **kwargs)
-        self.sonosplayers: dict[str, SonosPlayer] = {}
-        self._discovered_players: dict[str, DiscoveredPlayer] = {}
+        # self.sonosplayers: dict[str, SonosPlayer] = {}
+        # self._discovered_players: dict[str, DiscoveredPlayer] = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # Configure SoCo to use async event system
         soco_config.EVENTS_MODULE = events_asyncio
         zonegroupstate.EVENT_CACHE_TIMEOUT = SUBSCRIPTION_TIMEOUT
+        self.topology_condition = asyncio.Condition()
 
         # Set up SoCo logging
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):

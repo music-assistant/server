@@ -8,11 +8,12 @@ integration for Sonos.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime
 import logging
 import time
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerState, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
@@ -53,6 +54,7 @@ PLAYER_FEATURES = (
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,
+    PlayerFeature.ENQUEUE,
 )
 
 SOURCES_MAP = {
@@ -164,9 +166,9 @@ class SonosPlayer(Player):
             self.crossfade = self.soco.cross_fade
         self._attr_volume_level = self.soco.volume
         self._attr_volume_muted = self.soco.mute
-        # self.update_groups()
-        # if not self.synced_to:
-        #     self.poll_media()
+        self.update_groups()
+        if not self.synced_to:
+            self.poll_media()
         await self.subscribe()
         await self.mass.players.register_or_update(self)
 
@@ -260,13 +262,13 @@ class SonosPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
-        # if self.sync_coordinator:
-        #     # this should be already handled by the player manager, but just in case...
-        #     msg = (
-        #         f"Player {self.display_name} can not "
-        #         "accept play_media command, it is synced to another player."
-        #     )
-        #     raise PlayerCommandFailed(msg)
+        if self.synced_to:
+            # this should be already handled by the player manager, but just in case...
+            msg = (
+                f"Player {self.display_name} can not "
+                "accept play_media command, it is synced to another player."
+            )
+            raise PlayerCommandFailed(msg)
 
         didl_metadata = create_didl_metadata(media)
         await asyncio.to_thread(self.soco.play_uri, media.uri, meta=didl_metadata)
@@ -275,7 +277,7 @@ class SonosPlayer(Player):
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
-        if self.sync_coordinator:
+        if self.synced_to:
             # this should be already handled by the player manager, but just in case...
             msg = (
                 f"Player {self.display_name} can not "
@@ -303,21 +305,39 @@ class SonosPlayer(Player):
         await asyncio.to_thread(add_to_queue)
         self.mass.call_later(2, self.poll)
 
+    @soco_error()
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
-        # TODO: Implement Sonos S1 grouping logic
-        # This would involve calling SoCo grouping methods
+        if self.synced_to:
+            # this should not happen, but guard anyways
+            raise RuntimeError("Player is synced, cannot set members")
+        if not player_ids_to_add and not player_ids_to_remove:
+            return
+        player_ids_to_add = player_ids_to_add or []
+        player_ids_to_remove = player_ids_to_remove or []
+        
+        if player_ids_to_remove:
+            for player_id in player_ids_to_remove:
+                if player_to_remove := cast("SonosPlayer", self.mass.players.get(player_id)):
+                    await asyncio.to_thread(player_to_remove.soco.unjoin)
+                    self.mass.call_later(2, self.poll)
+
+        if player_ids_to_add:
+            for player_id in player_ids_to_add:
+                if player_to_add := cast("SonosPlayer", self.mass.players.get(player_id)):
+                    await asyncio.to_thread(player_to_add.soco.join, self.soco)
+                    self.mass.call_later(2, self.poll)
 
     async def poll(self) -> None:
         """Poll player for state updates."""
 
         def _poll() -> None:
             """Poll the speaker for updates (NOT async friendly)."""
-            # self.update_groups()
+            self.update_groups()
             self.poll_media()
             self._attr_volume_level = self.soco.volume
             self._attr_volume_muted = self.soco.mute
@@ -344,16 +364,6 @@ class SonosPlayer(Player):
     def is_coordinator(self) -> bool:
         """Return True if this player is the group coordinator."""
         return self.sync_coordinator is None
-
-    @soco_error()
-    def join(self, target_player: SonosPlayer) -> None:
-        """Join this player to another player's group."""
-        self.soco.join(target_player.soco)
-
-    @soco_error()
-    def unjoin(self) -> None:
-        """Remove this player from its group."""
-        self.soco.unjoin()
 
     @soco_error()
     def _poll_track_info(self) -> dict[str, Any]:
@@ -566,7 +576,7 @@ class SonosPlayer(Player):
         """Handle callback for topology change event."""
         if "zone_player_uui_ds_in_group" not in event.variables:
             return
-        # asyncio.run_coroutine_threadsafe(self.create_update_groups_coro(event), self.mass.loop)
+        asyncio.run_coroutine_threadsafe(self.create_update_groups_coro(event), self.mass.loop)
 
     def _update_attributes(self) -> None:
         """Update attributes of the MA Player from SoCo state."""
@@ -706,6 +716,108 @@ class SonosPlayer(Player):
             self.update_player()
             self.mass.loop.call_soon_threadsafe(self.mass.create_task, self.subscribe())
 
+    def update_groups(self) -> None:
+        """Update group topology when polling."""
+        asyncio.run_coroutine_threadsafe(self.create_update_groups_coro(), self.mass.loop)
+
+    def create_update_groups_coro(
+        self, event: SonosEvent | None = None
+    ) -> Coroutine[Any, Any, None]:
+        """Handle callback for topology change event."""
+
+        def _get_soco_group() -> list[str]:
+            """Ask SoCo cache for existing topology."""
+            coordinator_uid = self.soco.uid
+            joined_uids = []
+            with contextlib.suppress(OSError, SoCoException):
+                if self.soco.group and self.soco.group.coordinator:
+                    coordinator_uid = self.soco.group.coordinator.uid
+                    joined_uids = [
+                        p.uid
+                        for p in self.soco.group.members
+                        if p.uid != coordinator_uid and p.is_visible
+                    ]
+
+            return [coordinator_uid, *joined_uids]
+
+        async def _extract_group(event: SonosEvent | None) -> list[str]:
+            """Extract group layout from a topology event."""
+            group = event and event.zone_player_uui_ds_in_group
+            if group:
+                assert isinstance(group, str)
+                return group.split(",")
+            return await asyncio.to_thread(_get_soco_group)
+
+        def _regroup(group: list[str]) -> None:
+            """Rebuild internal group layout (async safe)."""
+            if group == [self.soco.uid] and not self._attr_group_members:
+                # Skip updating existing single speakers in polling mode
+                return
+
+            group_members_ids = []
+
+            for uid in group:
+                speaker = self.mass.players.get(uid)
+                if speaker:
+                    group_members_ids.append(uid)
+                else:
+                    self.logger.debug(
+                        "%s group member unavailable (%s), will try again",
+                        self.display_name,
+                        uid,
+                    )
+                    return
+
+            if self._attr_group_members == group_members_ids:
+                # Useful in polling mode for speakers with stereo pairs or surrounds
+                # as those "invisible" speakers will bypass the single speaker check
+                return
+
+            self._attr_group_members = group_members_ids
+            self.mass.loop.call_soon_threadsafe(self.update_state)
+
+            self.logger.debug("Regrouped %s: %s", self.display_name, self._attr_group_members)
+            self.update_player()
+
+        async def _handle_group_event(event: SonosEvent | None) -> None:
+            """Get async lock and handle event."""
+            _provider = cast("SonosPlayerProvider", self._provider)
+            async with _provider.topology_condition:
+                group = await _extract_group(event)
+                if self.soco.uid == group[0]:
+                    _regroup(group)
+                    _provider.topology_condition.notify_all()
+
+        return _handle_group_event(event)
+
+    async def wait_for_groups(self, groups: list[list[SonosPlayer]]) -> None:
+        """Wait until all groups are present, or timeout."""
+
+        def _test_groups(groups: list[list[SonosPlayer]]) -> bool:
+            """Return whether all groups exist now."""
+            for group in groups:
+                coordinator = group[0]
+
+                # Test that coordinator is coordinating
+                current_group = coordinator.group_members
+                if coordinator != current_group[0]:
+                    return False
+
+                # Test that joined members match
+                if set(group[1:]) != set(current_group[1:]):
+                    return False
+
+            return True
+        _provider = cast("SonosPlayerProvider", self._provider)
+        try:
+            async with asyncio.timeout(5):
+                while not _test_groups(groups):
+                    await _provider.topology_condition.wait()
+        except TimeoutError:
+            self.logger.warning("Timeout waiting for target groups %s", groups)
+    
+        any_speaker = next(self.mass.players.all(provider_filter=_provider.lookup_key))
+        any_speaker.soco.zone_group_state.clear_cache()
 
 def _convert_state(sonos_state: str | None) -> PlayerState:
     """Convert Sonos state to PlayerState."""
