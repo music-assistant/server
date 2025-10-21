@@ -58,7 +58,18 @@ def json_dumps(data: Any, indent: bool = False) -> str:
     ).decode("utf-8")
 
 
+async def async_json_dumps(data: Any, indent: bool = False) -> str:
+    """Dump json string async."""
+    return await asyncio.to_thread(json_dumps, data, indent)
+
+
 json_loads = orjson.loads
+
+
+async def async_json_loads(data: str) -> Any:
+    """Load json string async."""
+    return await asyncio.to_thread(json_loads, data)
+
 
 TargetT = TypeVar("TargetT", bound=DataClassORJSONMixin)
 

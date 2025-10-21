@@ -9,11 +9,10 @@ from music_assistant_models.enums import ConfigEntryType, ImageType
 from music_assistant_models.media_items import MediaItemImage
 
 from music_assistant.constants import (
-    CONF_ENTRY_LIBRARY_EXPORT_ADD,
-    CONF_ENTRY_LIBRARY_EXPORT_REMOVE,
-    CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS,
-    CONF_ENTRY_LIBRARY_IMPORT_RADIOS,
-    CONF_ENTRY_LIBRARY_IMPORT_TRACKS,
+    CONF_ENTRY_LIBRARY_SYNC_BACK,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_RADIOS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS,
     CONF_ENTRY_PROVIDER_SYNC_INTERVAL_TRACKS,
@@ -74,32 +73,32 @@ DEFAULT_FANART = MediaItemImage(
     remotely_accessible=False,
 )
 
-CONF_ENTRY_LIBRARY_IMPORT_TRACKS_HIDDEN = ConfigEntry.from_dict(
+CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN = ConfigEntry.from_dict(
     {
-        **CONF_ENTRY_LIBRARY_IMPORT_TRACKS.to_dict(),
+        **CONF_ENTRY_LIBRARY_SYNC_TRACKS.to_dict(),
         "hidden": True,
-        "default_value": "import_only",
+        "default_value": True,
     }
 )
-CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS_HIDDEN = ConfigEntry.from_dict(
+CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN = ConfigEntry.from_dict(
     {
-        **CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS.to_dict(),
+        **CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS.to_dict(),
         "hidden": True,
-        "default_value": "import_only",
+        "default_value": True,
     }
 )
-CONF_ENTRY_LIBRARY_IMPORT_TRACKS_HIDDEN = ConfigEntry.from_dict(
+CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN = ConfigEntry.from_dict(
     {
-        **CONF_ENTRY_LIBRARY_IMPORT_TRACKS.to_dict(),
+        **CONF_ENTRY_LIBRARY_SYNC_TRACKS.to_dict(),
         "hidden": True,
-        "default_value": "import_only",
+        "default_value": True,
     }
 )
-CONF_ENTRY_LIBRARY_IMPORT_RADIOS_HIDDEN = ConfigEntry.from_dict(
+CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN = ConfigEntry.from_dict(
     {
-        **CONF_ENTRY_LIBRARY_IMPORT_RADIOS.to_dict(),
+        **CONF_ENTRY_LIBRARY_SYNC_RADIOS.to_dict(),
         "hidden": True,
-        "default_value": "import_only",
+        "default_value": True,
     }
 )
 CONF_ENTRY_PROVIDER_SYNC_INTERVAL_PLAYLISTS_MOD = ConfigEntry.from_dict(
@@ -126,17 +125,10 @@ CONF_ENTRY_PROVIDER_SYNC_INTERVAL_RADIOS_HIDDEN = ConfigEntry.from_dict(
         "default_value": 180,
     }
 )
-CONF_ENTRY_LIBRARY_EXPORT_ADD_HIDDEN = ConfigEntry.from_dict(
+CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN = ConfigEntry.from_dict(
     {
-        **CONF_ENTRY_LIBRARY_EXPORT_ADD.to_dict(),
+        **CONF_ENTRY_LIBRARY_SYNC_BACK.to_dict(),
         "hidden": True,
-        "default_value": "export_library",
-    }
-)
-CONF_ENTRY_LIBRARY_EXPORT_REMOVE_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_LIBRARY_EXPORT_REMOVE.to_dict(),
-        "hidden": True,
-        "default_value": "export_library",
+        "default_value": True,
     }
 )

@@ -529,8 +529,6 @@ class AppleMusicProvider(MusicProvider):
             path=stream_url,
             can_seek=True,
             allow_seek=True,
-            # enforce caching because the apple streams are mp4 files with moov atom at the end
-            enable_cache=True,
         )
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:

@@ -64,6 +64,7 @@ from music_assistant.constants import (
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
+    SYNCGROUP_PREFIX,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.tags import async_parse_tags
@@ -901,7 +902,9 @@ class PlayerController(CoreController):
                     pre_announce_url=pre_announce_url,
                 )
                 announcement = PlayerMedia(
-                    uri=self.mass.streams.get_announcement_url(player_id, url, announce_data),
+                    uri=self.mass.streams.get_announcement_url(
+                        player_id, announce_data=announce_data
+                    ),
                     media_type=MediaType.ANNOUNCEMENT,
                     title="Announcement",
                     custom_data=announce_data,
@@ -1420,8 +1423,12 @@ class PlayerController(CoreController):
             # we simply permanently delete the player config since it is not registered
             self.delete_player_config(player_id)
             return
+        if player.type == PlayerType.GROUP and player_id.startswith(SYNCGROUP_PREFIX):
+            await self._sync_groups.remove_group_player(player_id)
+            return
         if player.type == PlayerType.GROUP:
             # Handle group player removal
+            player.provider.check_feature(ProviderFeature.REMOVE_GROUP_PLAYER)
             await player.provider.remove_group_player(player_id)
             return
         player.provider.check_feature(ProviderFeature.REMOVE_PLAYER)
@@ -1495,8 +1502,8 @@ class PlayerController(CoreController):
             prev_group_members = changed_values[ATTR_GROUP_MEMBERS][0] or []
             new_group_members = changed_values[ATTR_GROUP_MEMBERS][1] or []
             removed_members = set(prev_group_members) - set(new_group_members)
-            for player_id in removed_members:
-                if removed_player := self.get(player_id):
+            for _removed_player_id in removed_members:
+                if removed_player := self.get(_removed_player_id):
                     removed_player.update_state()
 
         became_inactive = False
@@ -1949,7 +1956,7 @@ class PlayerController(CoreController):
         # wait for the player to stop playing
         if not announcement.duration:
             media_info = await async_parse_tags(
-                announcement.custom_data["url"], require_duration=True
+                announcement.custom_data["announcement_url"], require_duration=True
             )
             announcement.duration = media_info.duration
         await self.wait_for_state(

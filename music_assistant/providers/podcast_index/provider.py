@@ -331,7 +331,7 @@ class PodcastIndexProvider(MusicProvider):
             raise MediaNotFoundError("Stream details only available for episodes")
 
         try:
-            podcast_id, episode_id = item_id.split("|", 1)
+            _, episode_id = item_id.split("|", 1)
 
             # Use direct episode lookup for efficiency
             response = await self._api_request("episodes/byid", params={"id": episode_id})

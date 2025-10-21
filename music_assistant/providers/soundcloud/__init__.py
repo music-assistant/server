@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -185,7 +185,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
             try:
                 playlist = await self._get_playlist_object(
-                    playlist_id=raw_playlist["id"],
+                    prov_playlist_id=raw_playlist["id"],
                 )
 
                 yield await self._parse_playlist(playlist)
@@ -301,10 +301,12 @@ class SoundcloudMusicProvider(MusicProvider):
         """Get playlist object from Soundcloud API based on playlist ID type."""
         if prov_playlist_id.startswith("soundcloud:system-playlists"):
             # Handle system playlists
-            return await self._soundcloud.get_system_playlist_details(prov_playlist_id)
+            result = await self._soundcloud.get_system_playlist_details(prov_playlist_id)
+            return cast("dict[str, Any]", result)
         else:
             # Handle regular playlists
-            return await self._soundcloud.get_playlist_details(prov_playlist_id)
+            result = await self._soundcloud.get_playlist_details(prov_playlist_id)
+            return cast("dict[str, Any]", result)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
