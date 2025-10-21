@@ -28,7 +28,8 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES = {
     ProviderFeature.SYNC_PLAYERS,
 }
-
+CONF_NETWORK_SCAN = "network_scan"
+CONF_HOUSEHOLD_ID = "household_id"
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -50,14 +51,25 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+    household_ids = await discover_household_ids(mass)
     return (
         CONF_ENTRY_MANUAL_DISCOVERY_IPS,
         ConfigEntry(
-            key="discovery_timeout",
-            type=ConfigEntryType.INTEGER,
-            label="Discovery timeout (seconds)",
-            description="Timeout for discovering Sonos players on the network",
-            default_value=30,
-            range=(10, 120),
+            key=CONF_NETWORK_SCAN,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable network scan for discovery",
+            default_value=False,
+            description="Enable network scan for discovery of players. \n"
+            "Can be used if (some of) your players are not automatically discovered.\n"
+            "Should normally not be needed",
+        ),
+        ConfigEntry(
+            key=CONF_HOUSEHOLD_ID,
+            type=ConfigEntryType.STRING,
+            label="Household ID",
+            default_value=household_ids[0] if household_ids else None,
+            description="Household ID for the Sonos (S1) system. Will be auto detected if empty.",
+            category="advanced",
+            required=False,
         ),
     )

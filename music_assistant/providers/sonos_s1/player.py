@@ -362,10 +362,35 @@ class SonosPlayer(Player):
         self._set_basic_track_info(update_position=update_position)
         self.update_player()
 
-    @property
-    def is_coordinator(self) -> bool:
-        """Return True if this player is the group coordinator."""
-        return self.sync_coordinator is None
+    # @property
+    # def is_coordinator(self) -> bool:
+    #     """Return True if this player is the group coordinator."""
+    #     return self.sync_coordinator is None
+    
+    def update_ip(self, ip_address: str) -> None:
+        """Handle updated IP of a Sonos player (NOT async friendly)."""
+        if self._attr_available:
+            return
+        self.logger.debug(
+            "Player IP-address changed from %s to %s", self.soco.ip_address, ip_address
+        )
+        try:
+            self.ping()
+        except SonosUpdateError:
+            return
+        self.soco.ip_address = ip_address
+        self.setup()
+        self._attr_device_info = DeviceInfo(
+            model=self._attr_device_info.model,
+            manufacturer=self._attr_device_info.manufacturer,
+            ip_address=ip_address,
+        )
+        self.update_player()
+
+    @soco_error()
+    def ping(self) -> None:
+        """Test device availability. Failure will raise SonosUpdateError."""
+        self.soco.renderingControl.GetVolume([("InstanceID", 0), ("Channel", "Master")], timeout=1)
 
     @soco_error()
     def _poll_track_info(self) -> dict[str, Any]:
