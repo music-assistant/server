@@ -793,8 +793,8 @@ class PlayerController(CoreController):
                 player._attr_volume_muted = False
                 prev_volume = player.extra_data.get(ATTR_PREVIOUS_VOLUME, 1)
                 player.extra_data[ATTR_FAKE_MUTE] = False
-                await self.cmd_volume_set(player_id, prev_volume)
                 player.update_state()
+                await self.cmd_volume_set(player_id, prev_volume)
         else:
             # handle external player control
             player_control = self._controls.get(player.mute_control)
