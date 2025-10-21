@@ -1,0 +1,24 @@
+## What’s Changed
+
+- #1185 - Lokalise translations update (@[github-actions[bot]](https://github.com/apps/github-actions))
+
+## 🚀 Features
+
+- #1174 - Add the provider type on items on search (@stvncode)
+
+## ⬆️ Dependencies
+
+<details>
+<summary>10 changes</summary>
+
+- #1179 - Chore(deps): Bump vuetify from 3.10.4 to 3.10.5 (@[dependabot[bot]](https://github.com/apps/dependabot))
+- #1178 - Chore(deps-dev): Bump vite from 7.1.9 to 7.1.10 (@[dependabot[bot]](https://github.com/apps/dependabot))
+- #1177 - Chore(deps): Bump marked from 16.3.0 to 16.4.1 (@[dependabot[bot]](https://github.com/apps/dependabot))
+- #1176 - Chore(deps): Bump actions/setup-node from 5 to 6 (@[dependabot[bot]](https://github.com/apps/dependabot))
+- #1175 - Chore(deps): Bump softprops/action-gh-release from 2.3.4 to 2.4.1 (@[dependabot[bot]](https://github.com/apps/dependabot))
+- #1180 - Chore(deps): Bump vue-router from 4.5.1 to 4.6.3 (@[dependabot[bot]](https://github.com/apps/dependabot))
+- #1181 - Chore(deps-dev): Bump vite-plugin-pwa from 1.0.3 to 1.1.0 (@[dependabot[bot]](https://github.com/apps/dependabot))
+- #1182 - Chore(deps-dev): Bump vue-tsc from 3.1.0 to 3.1.1 (@[dependabot[bot]](https://github.com/apps/dependabot))
+- #1183 - Chore(deps-dev): Bump jsdom from 27.0.0 to 27.0.1 (@[dependabot[bot]](https://github.com/apps/dependabot))
+- #1184 - Chore(deps-dev): Bump @types/node from 24.6.2 to 24.8.1 (@[dependabot[bot]](https://github.com/apps/dependabot))
+</details>
