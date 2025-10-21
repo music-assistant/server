@@ -382,7 +382,6 @@ class SqueezelitePlayer(Player):
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level
         self._attr_volume_muted = self.client.muted
-        self._attr_active_source = self.player_id
         self._attr_device_info = DeviceInfo(
             model=self.client.device_model,
             ip_address=self.client.device_address,
