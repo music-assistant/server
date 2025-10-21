@@ -814,7 +814,6 @@ class Player(ABC):
         return None
 
     @property
-    @final
     def active_source(self) -> str | None:
         """
         Return the FINAL active source of the player.
@@ -828,6 +827,12 @@ class Player(ABC):
                 return parent_player.active_source
         # in case player's source is None, return the player_id (to indicate MA is active source)
         return self._active_source or self.player_id
+
+    @active_source.setter
+    @final
+    def active_source(self, source: str) -> None:
+        """Set the active source of the player."""
+        self._attr_active_source = source
 
     @cached_property
     @final
