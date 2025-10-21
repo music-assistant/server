@@ -2,6 +2,15 @@ change-template: '- $TITLE (by @$AUTHOR in #$NUMBER)'
 prerelease: true
 prerelease-identifier: 'b'
 include-pre-releases: true
+
+# Exclude bots from contributors list
+exclude-contributors:
+  - dependabot
+  - dependabot[bot]
+  - github-actions
+  - github-actions[bot]
+  - music-assistant-machine
+
 categories:
 
   - title: "⚠ Breaking Changes"
@@ -12,7 +21,7 @@ categories:
     labels:
       - 'new-provider'
 
-  - title: "🚀 Features"
+  - title: "🚀 Features and enhancements"
     labels:
       - 'feature'
       - 'enhancement'

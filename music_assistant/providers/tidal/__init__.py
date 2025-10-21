@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     ImageType,
     MediaType,
     ProviderFeature,
+    ProviderType,
     StreamType,
 )
 from music_assistant_models.errors import (
@@ -60,7 +61,6 @@ from .constants import (
     BROWSE_URL,
     CACHE_CATEGORY_ISRC_MAP,
     CACHE_CATEGORY_RECOMMENDATIONS,
-    CACHE_KEY_RECOMMENDATIONS_ALL,
     CONF_ACTION_CLEAR_AUTH,
     CONF_ACTION_COMPLETE_PKCE_LOGIN,
     CONF_ACTION_START_PKCE_LOGIN,
@@ -1010,23 +1010,19 @@ class TidalProvider(MusicProvider):
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
 
+    @use_cache(expiration=3600, category=CACHE_CATEGORY_RECOMMENDATIONS)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's recommendations organized into folders."""
-        # Check cache first
-        cached_recommendations: list[RecommendationFolder] = await self.mass.cache.get(
-            CACHE_KEY_RECOMMENDATIONS_ALL,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_RECOMMENDATIONS,
-        )
-
-        if cached_recommendations:
-            self.logger.debug("Returning cached recommendations (TTL: 1 hour)")
-            return cached_recommendations
-
         results: list[RecommendationFolder] = []
 
         # Pages to fetch
-        pages = ["pages/home", "pages/for_you"]
+        pages = [
+            "pages/home",
+            "pages/for_you",
+            "pages/hi_res",
+            "pages/explore_new_music",
+            "pages/explore_top_music",
+        ]
 
         # Dictionary to track items by module title to combine duplicates
         combined_modules: dict[str, list[Playlist | Album | Track | Artist]] = {}
@@ -1034,26 +1030,27 @@ class TidalProvider(MusicProvider):
         module_page_names: dict[str, str] = {}
 
         try:
+            # Get all Tidal provider instances - await the coroutine
+            all_tidal_configs = await self.mass.config.get_provider_configs(ProviderType.MUSIC)
+            # Filter to only Tidal configs
+            tidal_configs = [config for config in all_tidal_configs if config.domain == self.domain]
+            # Sort by instance_id to get a consistent "first" instance
+            sorted_instances = sorted(tidal_configs, key=lambda x: x.instance_id)
             # Process pages and collect modules
             await self._process_recommendation_pages(
-                pages, combined_modules, module_content_types, module_page_names
+                pages,
+                combined_modules,
+                module_content_types,
+                module_page_names,
+                sorted_instances,
             )
 
             # Create recommendation folders from combined modules
             results = self._create_recommendation_folders(
-                combined_modules, module_content_types, module_page_names
+                combined_modules, module_content_types, module_page_names, sorted_instances
             )
 
             self.logger.debug("Created %d recommendation folders from Tidal", len(results))
-
-            # Cache the results for 1 hour (3600 seconds)
-            await self.mass.cache.set(
-                key=CACHE_KEY_RECOMMENDATIONS_ALL,
-                data=results,
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_RECOMMENDATIONS,
-                expiration=3600,
-            )
 
         except (ClientError, ResourceTemporarilyUnavailable) as err:
             # Network-related errors
@@ -1078,12 +1075,28 @@ class TidalProvider(MusicProvider):
         combined_modules: dict[str, list[Playlist | Album | Track | Artist]],
         module_content_types: dict[str, MediaType],
         module_page_names: dict[str, str],
+        sorted_instances: list[ProviderConfig],
     ) -> None:
         """Process recommendation pages and collect modules."""
+        # Check if there are multiple Tidal instances configured
+        show_user_identifier = len(sorted_instances) > 1
+
         for page_path in pages:
             # Get page content
             page_parser = await self.get_page_content(page_path)
             page_name = page_path.split("/")[-1].replace("_", " ").title()
+
+            # For "Home" page with multiple instances, only process for the first instance
+            # Check if we should skip this page for this instance
+            if page_path in ("pages/home", "pages/explore_top_music") and show_user_identifier:
+                # Only process home page for the first instance
+                if sorted_instances and self.instance_id != sorted_instances[0].instance_id:
+                    self.logger.debug(
+                        "Skipping '%s' page for instance %s (not first instance)",
+                        page_name,
+                        self.instance_id,
+                    )
+                    continue
 
             # Process all modules in a single pass
             await self._process_page_modules(
@@ -1103,8 +1116,8 @@ class TidalProvider(MusicProvider):
             try:
                 module_title = module_info.get("title", "Unknown")
 
-                # Skip modules without proper titles
-                if not module_title or module_title == "Unknown":
+                # Skip modules without proper titles or with "Videos" in the title
+                if not module_title or module_title == "Unknown" or "Videos" in module_title:
                     continue
 
                 # Get module items
@@ -1114,20 +1127,23 @@ class TidalProvider(MusicProvider):
                 if not module_items:
                     continue
 
-                # For all modules, collect items based on title
-                if module_title not in combined_modules:
-                    combined_modules[module_title] = []
-                    module_content_types[module_title] = content_type
-                    module_page_names[module_title] = page_name
+                # Create a user-specific key to prevent mixing content between users
+                user_specific_key = f"{self.auth.user_id}_{module_title}"
+
+                # For all modules, collect items based on user-specific title
+                if user_specific_key not in combined_modules:
+                    combined_modules[user_specific_key] = []
+                    module_content_types[user_specific_key] = content_type
+                    module_page_names[user_specific_key] = page_name
                 else:
                     # If we already have this module title, update the content type
                     # if this module has more items than we already collected
-                    current_items_count = len(combined_modules[module_title])
+                    current_items_count = len(combined_modules[user_specific_key])
                     if len(module_items) > current_items_count:
-                        module_content_types[module_title] = content_type
+                        module_content_types[user_specific_key] = content_type
 
                 # Add items to the combined collection
-                combined_modules[module_title].extend(module_items)
+                combined_modules[user_specific_key].extend(module_items)
 
             except (KeyError, ValueError, TypeError, AttributeError) as err:
                 self.logger.warning(
@@ -1142,9 +1158,12 @@ class TidalProvider(MusicProvider):
         combined_modules: dict[str, list[Playlist | Album | Track | Artist]],
         module_content_types: dict[str, MediaType],
         module_page_names: dict[str, str],
+        sorted_instances: list[ProviderConfig],
     ) -> list[RecommendationFolder]:
         """Create recommendation folders from combined modules."""
         results: list[RecommendationFolder] = []
+        # Check if there are multiple Tidal instances configured
+        show_user_identifier = len(sorted_instances) > 1
 
         # Helper function to determine icon based on content type
         def get_icon_for_type(media_type: MediaType) -> str:
@@ -1158,25 +1177,52 @@ class TidalProvider(MusicProvider):
                 return "mdi-account-music"
             return "mdi-motion-play"  # Default for mixed content
 
-        for module_title, items in combined_modules.items():
+        for user_specific_key, items in combined_modules.items():
+            # Extract the original module title by removing user_id prefix
+            # Format is "userid_module_title", so we remove the user_id and the underscore
+            user_id_prefix = f"{self.auth.user_id}_"
+            if user_specific_key.startswith(user_id_prefix):
+                module_title = user_specific_key[len(user_id_prefix) :]
+            else:
+                # Fallback if format is unexpected
+                module_title = user_specific_key
+
             # Use unique items list to prevent duplicates
             unique_items = UniqueList(items)
 
-            # Create a sanitized unique ID
+            # Create a sanitized unique ID using the user-specific key
             item_id = "".join(
                 c
-                for c in module_title.lower().replace(" ", "_").replace("-", "_")
+                for c in user_specific_key.lower().replace(" ", "_").replace("-", "_")
                 if c.isalnum() or c == "_"
             )
 
             # Get content type and page source
-            content_type = module_content_types.get(module_title, MediaType.PLAYLIST)
-            page_name = module_page_names.get(module_title, "Tidal")
+            content_type = module_content_types.get(user_specific_key, MediaType.PLAYLIST)
+            page_name = module_page_names.get(user_specific_key, "Tidal")
+
+            # Create folder name - only add user identifier if:
+            # 1. Multiple instances exist
+            # 2. AND it's not from the "Home" page (which is shared)
+            if show_user_identifier and page_name not in ("Home", "Explore Top Music"):
+                # Get a user-friendly identifier for the folder name
+                # Use the account owner name if available, otherwise user_id
+                user_identifier = None
+                if self.auth.user and self.auth.user.profile_name:
+                    user_identifier = self.auth.user.profile_name
+                elif self.auth.user and self.auth.user.user_name:
+                    user_identifier = self.auth.user.user_name
+                else:
+                    user_identifier = str(self.auth.user_id)
+
+                folder_name = f"{module_title} ({user_identifier})"
+            else:
+                folder_name = module_title
 
             # Create folder with combined items
             folder = RecommendationFolder(
                 item_id=item_id,
-                name=module_title,
+                name=folder_name,  # Display the title with user identifier
                 provider=self.lookup_key,
                 items=UniqueList[MediaItemType | ItemMapping | BrowseFolder](unique_items),
                 subtitle=f"From {page_name} • {len(unique_items)} items",
