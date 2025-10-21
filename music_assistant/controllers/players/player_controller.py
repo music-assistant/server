@@ -2019,6 +2019,9 @@ class PlayerController(CoreController):
                 # to ensure the queue has accurate details
                 player_playing = player.playback_state == PlaybackState.PLAYING
                 if player_playing:
+                    if player.active_source and self.get_plugin_source(player.active_source):
+                        self.trigger_player_update(player.player_id)
+                        continue
                     self.mass.loop.call_soon(
                         self.mass.player_queues.on_player_update,
                         player,
