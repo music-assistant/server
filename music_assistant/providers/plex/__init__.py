@@ -6,7 +6,6 @@ import asyncio
 import logging
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
-from contextlib import suppress
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
@@ -89,6 +88,9 @@ CONF_LOCAL_SERVER_SSL = "local_server_ssl"
 CONF_LOCAL_SERVER_VERIFY_CERT = "local_server_verify_cert"
 CONF_IMPORT_COLLECTIONS = "import_collections"
 CONF_COLLECTION_PREFIX = "collection_prefix"
+CONF_PLEX_LIKE_RATING = "plex_like_rating"
+CONF_PLEX_FAVORITE_THRESHOLD = "plex_favorite_threshold"
+CONF_PLEX_UNLIKE_RATING = "plex_unlike_rating"
 
 FAKE_ARTIST_PREFIX = "_fake://"
 
@@ -99,6 +101,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
+    ProviderFeature.FAVORITE_ALBUMS_EDIT,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
@@ -343,6 +347,44 @@ async def get_config_entries(  # noqa: PLR0915
             default_value="Collection: ",
             depends_on=CONF_IMPORT_COLLECTIONS,
             category="advanced",
+        )
+    )
+
+    # rating/favorite sync configuration
+    entries.append(
+        ConfigEntry(
+            key=CONF_PLEX_LIKE_RATING,
+            type=ConfigEntryType.FLOAT,
+            label="Plex rating when liking in Music Assistant",
+            description="When you like a track or album in Music Assistant, "
+            "set this rating value in Plex (0.0 = unrated, 10.0 = 5 stars).",
+            default_value=10.0,
+            range=(0, 10),
+            category="sync_options",
+        )
+    )
+    entries.append(
+        ConfigEntry(
+            key=CONF_PLEX_FAVORITE_THRESHOLD,
+            type=ConfigEntryType.FLOAT,
+            label="Minimum Plex rating to import as favorite",
+            description="Tracks and albums with a Plex rating at or above this threshold "
+            "will be imported as favorites in Music Assistant (0.0 = unrated, 10.0 = 5 stars).",
+            default_value=10.0,
+            range=(0, 10),
+            category="sync_options",
+        )
+    )
+    entries.append(
+        ConfigEntry(
+            key=CONF_PLEX_UNLIKE_RATING,
+            type=ConfigEntryType.FLOAT,
+            label="Plex rating when unliking in Music Assistant",
+            description="When you unlike a track or album in Music Assistant, "
+            "set this rating value in Plex (0.0 = unrated/clear rating, 10.0 = 5 stars).",
+            default_value=0.0,
+            range=(0, 10),
+            category="sync_options",
         )
     )
 
@@ -604,12 +646,11 @@ class PlexProvider(MusicProvider):
                 )
             },
         )
-        # Only add 5-star rated albums to Favorites. rating will be 10.0 for those.
-        # TODO: Let user set threshold?
-        with suppress(KeyError):
-            # suppress KeyError (as it doesn't exist for items without rating),
-            # allow sync to continue
-            album.favorite = plex_album._data.attrib["userRating"] == "10.0"
+        # Check if album rating meets the configured threshold for favorites
+        favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
+        # Try to get the user rating - Plex stores ratings as 0.0-10.0
+        if hasattr(plex_album, "userRating") and plex_album.userRating is not None:
+            album.favorite = float(plex_album.userRating) >= favorite_threshold
 
         if plex_album.year:
             album.year = plex_album.year
@@ -764,12 +805,11 @@ class PlexProvider(MusicProvider):
             disc_number=plex_track.parentIndex or 0,
             track_number=plex_track.trackNumber or 0,
         )
-        # Only add 5-star rated tracks to Favorites. userRating will be 10.0 for those.
-        # TODO: Let user set threshold?
-        with suppress(KeyError):
-            # suppress KeyError (as it doesn't exist for items without rating),
-            # allow sync to continue
-            track.favorite = plex_track._data.attrib["userRating"] == "10.0"
+        # Check if track rating meets the configured threshold for favorites
+        favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
+        # Try to get the user rating - Plex stores ratings as 0.0-10.0
+        if hasattr(plex_track, "userRating") and plex_track.userRating is not None:
+            track.favorite = float(plex_track.userRating) >= favorite_threshold
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
             # The artist of the track if different from the album's artist.
@@ -1306,3 +1346,31 @@ class PlexProvider(MusicProvider):
             return self._myplex_account
 
         return await asyncio.to_thread(_refresh_plex_token)
+
+    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
+        """Set favorite status by setting rating in Plex."""
+        if favorite:
+            # Set like rating
+            rating = cast("float", self.config.get_value(CONF_PLEX_LIKE_RATING))
+        else:
+            # Set unlike rating
+            rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
+
+        if media_type == MediaType.TRACK:
+            plex_track = await self._get_data(prov_item_id, PlexTrack)
+            await self._run_async(plex_track.rate, rating)
+            self.logger.debug(
+                "Set Plex rating to %s for track with ID %s (ratingKey: %s)",
+                rating,
+                prov_item_id,
+                plex_track.ratingKey,
+            )
+        elif media_type == MediaType.ALBUM:
+            plex_album = await self._get_data(prov_item_id, PlexAlbum)
+            await self._run_async(plex_album.rate, rating)
+            self.logger.debug(
+                "Set Plex rating to %s for album with ID %s (ratingKey: %s)",
+                rating,
+                prov_item_id,
+                plex_album.ratingKey,
+            )
