@@ -10,10 +10,9 @@ from music_assistant_models.enums import PlayerFeature
 from requests.exceptions import RequestException
 from soco import SoCo, events_asyncio, zonegroupstate
 from soco import config as soco_config
-from soco.discovery import discover, scan_network
+from soco.discovery import discover
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
-from music_assistant.mass import MusicAssistant
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN, SUBSCRIPTION_TIMEOUT
@@ -161,32 +160,3 @@ class SonosPlayerProvider(PlayerProvider):
 
         except Exception as err:
             self.logger.error("Error setting up Sonos player %s: %s", player_id, err)
-
-
-async def discover_household_ids(mass: MusicAssistant, prefer_s1: bool = True) -> list[str]:
-    """Discover the HouseHold ID of S1 speaker(s) the network."""
-    if cache := await mass.cache.get("sonos_household_ids"):
-        return cast("list[str]", cache)
-    household_ids: list[str] = []
-
-    def get_all_sonos_ips() -> set[SoCo]:
-        """Run full network discovery and return IP's of all devices found on the network."""
-        discovered_zones: set[SoCo] | None
-        if discovered_zones := scan_network(multi_household=True):
-            return {zone.ip_address for zone in discovered_zones}
-        return set()
-
-    all_sonos_ips = await asyncio.to_thread(get_all_sonos_ips)
-    for ip_address in all_sonos_ips:
-        async with mass.http_session.get(f"http://{ip_address}:1400/status/zp") as resp:
-            if resp.status == 200:
-                data = await resp.text()
-                if prefer_s1 and "<SWGen>2</SWGen>" in data:
-                    continue
-                if "HouseholdControlID" in data:
-                    household_id = data.split("<HouseholdControlID>")[1].split(
-                        "</HouseholdControlID>"
-                    )[0]
-                    household_ids.append(household_id)
-    await mass.cache.set("sonos_household_ids", household_ids, 3600)
-    return household_ids
