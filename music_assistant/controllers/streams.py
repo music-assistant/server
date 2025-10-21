@@ -1009,7 +1009,7 @@ class StreamsController(CoreController):
             if plugin_source.stream_type == StreamType.CUSTOM
             else plugin_source.path
         )
-        player.state.active_source = plugin_source_id
+        player.active_source = plugin_source_id
         plugin_source.in_use_by = player_id
         try:
             async for chunk in get_ffmpeg_stream(
@@ -1026,7 +1026,7 @@ class StreamsController(CoreController):
                 "Finished streaming PluginSource %s to %s", plugin_source_id, player_id
             )
             await asyncio.sleep(0.5)
-            player.state.active_source = player.player_id
+            player.active_source = player.player_id
             plugin_source.in_use_by = None
 
     async def get_queue_item_stream(
