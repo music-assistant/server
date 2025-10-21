@@ -832,8 +832,8 @@ class PlexProvider(MusicProvider):
                 await self._run_async(
                     self._plex_library.searchTracks,
                     title=None,
-                    limit=page_size,
-                    offset=offset,
+                    container_size=page_size,
+                    container_start=offset,
                 ),
             )
             if not batch:
