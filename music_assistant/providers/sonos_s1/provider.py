@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from soco import SoCo, events_asyncio, zonegroupstate
 from soco import config as soco_config
@@ -57,7 +57,8 @@ class SonosPlayerProvider(PlayerProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
         # Clean up subscriptions and connections
-        for sonos_player in self.sonosplayers.values():
+        for sonos_player in self.mass.players.all(provider_filter=self.lookup_key):
+            sonos_player = cast("SonosPlayer", sonos_player)
             await sonos_player.offline()
 
         # Stop the async event listener
@@ -83,7 +84,7 @@ class SonosPlayerProvider(PlayerProvider):
         """Set up a discovered Sonos player."""
         player_id = soco.uid
 
-        if player_id in self.sonosplayers:
+        if self.mass.players.get(player_id=player_id):
             return
 
         try:
@@ -91,14 +92,14 @@ class SonosPlayerProvider(PlayerProvider):
             if not soco.speaker_info:
                 soco.get_speaker_info(True, timeout=7)
             sonos_player = SonosPlayer(self, soco)
-            self.sonosplayers[player_id] = sonos_player
+            # self.sonosplayers[player_id] = sonos_player
 
             # Create discovery info
-            discovered_player = DiscoveredPlayer(
-                soco=soco,
-                sonos_player=sonos_player,
-            )
-            self._discovered_players[player_id] = discovered_player
+            # discovered_player = DiscoveredPlayer(
+            #     soco=soco,
+            #     sonos_player=sonos_player,
+            # )
+            # self._discovered_players[player_id] = discovered_player
 
             # Register with Music Assistant
             await sonos_player.setup()

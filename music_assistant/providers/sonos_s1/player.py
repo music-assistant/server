@@ -55,6 +55,8 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,
     PlayerFeature.ENQUEUE,
+    PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
 )
 
 SOURCES_MAP = {
@@ -138,11 +140,11 @@ class SonosPlayer(Player):
         self.source_name: str | None = None
         self.title: str | None = None
         self.uri: str | None = None
-        self.position: int | None = None
-        self.position_updated_at: datetime.datetime | None = None
-        self.loudness: bool = False
-        self.bass: int = 0
-        self.treble: int = 0
+        # self.position: int | None = None
+        # self.position_updated_at: datetime.datetime | None = None
+        # self.loudness: bool = False
+        # self.bass: int = 0
+        # self.treble: int = 0
 
         # Subscriptions and events
         self._subscriptions: list[SubscriptionBase] = []
@@ -585,43 +587,8 @@ class SonosPlayer(Player):
             self._attr_group_members.clear()
             return
 
-        # transport info (playback state)
-        # self.mass_player.state = _convert_state(self.playback_status)
-
-        # media info (track info)
-        # self.mass_player.current_item_id = self.uri  # type: ignore[assignment]
-        # if self.uri and self.mass.streams.base_url in self.uri and self.player_id in self.uri:
-        #     self.mass_player.active_source = self.player_id
-        # else:
-        #     self.mass_player.active_source = self.source_name
-        # if self.position is not None and self.position_updated_at is not None:
-        #     self.mass_player.elapsed_time = self.position
-        #     self.mass_player.elapsed_time_last_updated = self.position_updated_at.timestamp()
-
-        # zone topology (syncing/grouping) details
-        # if self.sync_coordinator:
-        #     # player is synced to another player
-        #     self.mass_player.synced_to = self.sync_coordinator.player_id
-        #     self.mass_player.group_childs.clear()
-        #     self.mass_player.active_source = self.sync_coordinator.mass_player.active_source
-        # elif len(self.group_members_ids) > 1:
-        #     # this player is the sync leader in a group
-        #     self.mass_player.synced_to = None
-        #     self.mass_player.group_childs.extend(self.group_members_ids)
-        # else:
-        #     # standalone player, not synced
-        #     self.mass_player.synced_to = None
-        #     self.mass_player.group_childs.clear()
-
     def _set_basic_track_info(self, update_position: bool = False) -> None:
         """Query the speaker to update media metadata and position info."""
-        self.channel = None
-        self.duration = None
-        self.image_url = None
-        self.source_name = None
-        self.title = None
-        self.uri = None
-
         try:
             track_info = self._poll_track_info()
         except SonosUpdateError as err:
