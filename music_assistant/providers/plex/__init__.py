@@ -326,7 +326,7 @@ async def get_config_entries(  # noqa: PLR0915
             key=CONF_IMPORT_COLLECTIONS,
             type=ConfigEntryType.BOOLEAN,
             label="Import Collections",
-            description="Import track collections as playlists",
+            description="Import collections (tracks, albums, or artists) as playlists",
             default_value=False,
             category="advanced",
         )
