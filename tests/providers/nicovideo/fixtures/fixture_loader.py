@@ -39,7 +39,7 @@ class FixtureLoader:
             pytest.fail(f"Failed to validate fixture {relative_path}: {e}")
 
     def _get_fixture_type_from_path(self, relative_path: pathlib.Path) -> type[BaseModel] | None:
-        from tests.providers.nicovideo.generated.fixture_types import (  # noqa: PLC0415 - Because it does not exist before generation
+        from tests.providers.nicovideo.fixture_data.fixture_type_mappings import (  # noqa: PLC0415 - Because it does not exist before generation
             FIXTURE_TYPE_MAPPINGS,
         )
 

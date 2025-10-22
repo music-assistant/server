@@ -19,7 +19,7 @@ from niconico.objects.user import NicoUser, UserMylistItem, UserSeriesItem
 from niconico.objects.video import Mylist
 from niconico.objects.video.watch import WatchData
 
-from music_assistant.providers.nicovideo.converters.stream import StreamConversionData
+from .shared_types import StreamFixtureData
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -43,5 +43,5 @@ FIXTURE_TYPE_MAPPINGS: dict[str, type[BaseModel]] = {
     "search/series_search.json": ListSearchData,
     "history/user_history.json": HistoryData,
     "history/user_likes.json": LikeHistoryData,
-    "stream/stream_data.json": StreamConversionData,
+    "stream/stream_data.json": StreamFixtureData,
 }

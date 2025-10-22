@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from music_assistant.providers.nicovideo.converters.stream import (
     StreamConversionData,
 )
+from tests.providers.nicovideo.fixture_data.shared_types import StreamFixtureData
 
 if TYPE_CHECKING:
     from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
@@ -156,6 +157,18 @@ API_RESPONSE_CONVERTER_MAPPINGS = (
     APIResponseConverterMapping(
         source_type=StreamConversionData,
         convert_func=lambda data, cm: cm.stream.convert_from_conversion_data(data),
+    ),
+    APIResponseConverterMapping(
+        source_type=StreamFixtureData,
+        convert_func=lambda data, cm: cm.stream.convert_from_conversion_data(
+            StreamConversionData(
+                watch_data=data.watch_data,
+                selected_audio=data.selected_audio,
+                hls_url="https://example.com/stub.m3u8",
+                domand_bid="stub_bid",
+                hls_playlist_text="#EXTM3U\n#EXT-X-VERSION:3\n",
+            )
+        ),
     ),
 )
 

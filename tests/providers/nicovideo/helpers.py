@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING, TypeVar
 from unittest.mock import Mock
 
-from pydantic import BaseModel
-
 from music_assistant.providers.nicovideo.converters.manager import NicovideoConverterManager
-from tests.providers.nicovideo.types import FixtureAPIResult, JsonContainer, JsonDict, JsonList
+from tests.providers.nicovideo.types import JsonDict
 
 if TYPE_CHECKING:
     from mashumaro import DataClassDictMixin
@@ -73,18 +70,3 @@ def to_dict_for_snapshot(media_item: DataClassDictMixin) -> JsonDict:
     else:
         # This should not happen given the input, but satisfies mypy
         return item_dict
-
-
-def to_dict_for_fixture[T: BaseModel](response: FixtureAPIResult[T]) -> JsonContainer:
-    """Convert response to JSON serializable format."""
-    # Check for Pydantic models first
-    if isinstance(response, BaseModel):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            return response.model_dump(by_alias=True)
-    data: JsonList = []
-    for item in response:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            data.append(item.model_dump(by_alias=True))
-    return data
