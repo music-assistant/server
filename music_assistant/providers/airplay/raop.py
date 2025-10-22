@@ -295,8 +295,8 @@ class RaopStream:
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
         await self._cliraop_proc.start()
-        # read up to first 500 lines of stderr to get the initial status
-        for _ in range(500):
+        # read up to first 50 lines of stderr to get the initial status
+        for _ in range(50):
             line = (await self._cliraop_proc.read_stderr()).decode("utf-8", errors="ignore")
             self.player.logger.debug(line)
             if "connected to " in line:

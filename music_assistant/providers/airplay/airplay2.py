@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
-from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.audio import get_chunksize, get_player_filter_params
@@ -189,8 +188,8 @@ class AirPlay2Stream:
 
     Python is not suitable for realtime audio streaming so we do the actual streaming
     of audio using a small executable written in C based on owntones to do
-    the actual timestamped playback, which reads pcm audio from stdin
-    and we can send some interactive commands using a named pipe.
+    the actual timestamped playback. It reads pcm audio from a named pipe
+    and we can send some interactive commands using another named pipe.
     """
 
     def __init__(
@@ -205,8 +204,14 @@ class AirPlay2Stream:
         self.player = player
 
         # always generate a new active remote id to prevent race conditions
-        # with the named pipe used to send audio
+        # with the named pipes used to send audio and metadata
+        # include player_id to reduce risk of duplicate simultaneous random
+        # numbers generated for two different players.
         self.active_remote_id: str = str(randint(1000, 8000))
+        self.metadata_named_pipe = (
+            f"/tmp/ap2-{self.player.player_id}-{self.active_remote_id}.metadata"  # noqa: S108
+        )
+        self.audio_named_pipe = f"/tmp/ap2-{self.player.player_id}-{self.active_remote_id}"  # noqa: S108
         self.prevent_playback: bool = False
         self._stderr_reader_task: asyncio.Task[None] | None = None
         self._cli_proc: AsyncProcess | None = None
@@ -227,8 +232,46 @@ class AirPlay2Stream:
             and not self._cli_proc.closed
         )
 
+    @property
+    def _cli_loglevel(self) -> int:
+        """Return a cliap2 aligned loglevel."""
+        match self.prov.logger.level:
+            case logging.CRITICAL:
+                return 0
+            case logging.ERROR:
+                return 1
+            case logging.WARNING:
+                return 2
+            case logging.INFO:
+                return 3
+            case logging.DEBUG:
+                return 4
+        if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            return 5
+        return 1  # guard: should never happen
+
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
         """Initialize CLI process for a player."""
+        # Setup named pipes
+        try:
+            os.mkfifo(self.audio_named_pipe)
+            self.player.logger.debug(f"{self.audio_named_pipe} created")
+        except FileExistsError:
+            self.player.logger.warning(f"Named pipe {self.audio_named_pipe} already exists.")
+        except Exception as e:
+            self.player.logger.error(
+                f"Error {e} attempting to create named pipe {self.audio_named_pipe}"
+            )
+        try:
+            os.mkfifo(self.metadata_named_pipe)
+            self.player.logger.debug(f"{self.metadata_named_pipe} created")
+        except FileExistsError:
+            self.player.logger.warning(f"Named pipe {self.metadata_named_pipe} already exists.")
+        except Exception as e:
+            self.player.logger.error(
+                f"Error {e} attempting to create named pipe {self.metadata_named_pipe}"
+            )
+
         player_id = self.player.player_id
         sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
@@ -236,21 +279,8 @@ class AirPlay2Stream:
             player_id, CONF_READ_AHEAD_BUFFER
         )
 
-        # Player discovery info should already be airplay info, so no need to re-resolve
-        airplay_info = AsyncServiceInfo(
-            "_airplay._tcp.local.",
-            self.player.discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
-        )
-        if not await airplay_info.async_request(self.mass.aiozc.zeroconf, 3000):
-            self.player.logger.error(
-                "Could not retrieve AirPlay mdns info for player %s, name %s",
-                self.player.display_name,
-                self.player.discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
-            )
-            return
-
         txt_kv: str = ""
-        for key, value in airplay_info.decoded_properties.items():
+        for key, value in self.player.discovery_info.decoded_properties.items():
             txt_kv += f'"{key}={value}" '
 
         # ffmpeg handles the player specific stream + filters and pipes
@@ -267,11 +297,11 @@ class AirPlay2Stream:
             "--name",
             self.player.display_name,
             "--hostname",
-            str(airplay_info.server),
+            str(self.player.discovery_info.server),
             "--address",
             str(self.player.address),
             "--port",
-            str(airplay_info.port),
+            str(self.player.discovery_info.port),
             "--txt",
             txt_kv,
             "--ntpstart",
@@ -282,6 +312,10 @@ class AirPlay2Stream:
             str(read_ahead),
             "--volume",
             str(self.player.volume_level),
+            "--loglevel",
+            str(self._cli_loglevel),
+            "--pipe",
+            self.audio_named_pipe,
         ]
         self.player.logger.debug(
             "Starting cliap2 process for player %s with args: %s",
@@ -292,14 +326,18 @@ class AirPlay2Stream:
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
         await self._cli_proc.start()
-        # read up to first 500 lines of stderr to get the initial status
-        for _ in range(500):
+        # read up to first num_lines lines of stderr to get the initial status
+        num_lines: int = 50
+        if self.prov.logger.level > logging.INFO:
+            num_lines *= 10
+        for _ in range(num_lines):
             line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
             self.player.logger.debug(line)
-            if "connected to " in line:
+            if "airplay: Adding AirPlay device " in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
                 self._started.set()
                 break
+            # TODO: @bradkeifer to confirm the error message upon connect failure
             if "Cannot connect to AirPlay device" in line:
                 if self._ffmpeg_reader_task:
                     self._ffmpeg_reader_task.cancel()
@@ -307,7 +345,7 @@ class AirPlay2Stream:
         # repeat sending the volume level to the player because some players seem
         # to ignore it the first time
         # https://github.com/music-assistant/support/issues/3330
-        await self.send_cli_command(f"VOLUME={self.player.volume_level}\n")
+        # await self.send_cli_command(f"VOLUME={self.player.volume_level}\n")
         # start reading the stderr of the cliap2 process from another task
         self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
 
@@ -323,6 +361,20 @@ class AirPlay2Stream:
             await self._cli_proc.close(True)
         if self._ffmpeg_proc and not self._ffmpeg_proc.closed:
             await self._ffmpeg_proc.close(True)
+        try:
+            os.remove(self.audio_named_pipe)
+            self.player.logger.debug(f"{self.audio_named_pipe} removed")
+        except Exception as e:
+            self.player.logger.error(
+                f"Error {e} attempting to remove named pipe {self.audio_named_pipe}"
+            )
+        try:
+            os.remove(self.metadata_named_pipe)
+            self.player.logger.debug(f"{self.metadata_named_pipe} removed")
+        except Exception as e:
+            self.player.logger.error(
+                f"Error {e} attempting to remove named pipe {self.metadata_named_pipe}"
+            )
         self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
     async def write_chunk(self, chunk: bytes) -> None:
@@ -351,10 +403,9 @@ class AirPlay2Stream:
             command += "\n"
 
         def send_data() -> None:
-            with suppress(BrokenPipeError), open(named_pipe, "w") as f:
+            with suppress(BrokenPipeError), open(self.metadata_named_pipe, "w") as f:
                 f.write(command)
 
-        named_pipe = f"/tmp/ap2-{self.active_remote_id}"  # noqa: S108
         self.player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
         self.player.last_command_sent = time.time()
         await asyncio.to_thread(send_data)
@@ -370,7 +421,7 @@ class AirPlay2Stream:
         self._ffmpeg_reader_task = self.mass.create_task(self._ffmpeg_reader())
 
     async def _ffmpeg_reader(self) -> None:
-        """Read audio from the audio source and pipe it to the CLIap2 process."""
+        """Read audio from the audio source and pipe it to the named pipe towards cliap2."""
         self._ffmpeg_proc = FFMpeg(
             audio_input="-",
             input_format=self.session.input_format,
@@ -387,12 +438,20 @@ class AirPlay2Stream:
         chunksize = get_chunksize(AIRPLAY_PCM_FORMAT)
         # wait for cliap2 to be ready
         await asyncio.wait_for(self._started.wait(), 20)
+        chunk: bytes = b"0"
         async for chunk in self._ffmpeg_proc.iter_chunked(chunksize):
+
+            def send_audio(audio_chunk: bytes) -> int:
+                with suppress(BrokenPipeError), open(self.audio_named_pipe, "wb") as f:
+                    return f.write(audio_chunk)
+                return 0
+
             if self._stopped:
                 break
             if not self._cli_proc or self._cli_proc.closed:
                 break
-            await self._cli_proc.write(chunk)
+            # cliap2 reads audio input from a named pipe
+            await asyncio.to_thread(send_audio, chunk)
             self._stream_bytes_sent += len(chunk)
             self._total_bytes_sent += len(chunk)
             del chunk
@@ -416,6 +475,7 @@ class AirPlay2Stream:
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
+            # TODO @bradkeifer make cliap2 work this way
             if "elapsed milliseconds:" in line:
                 # this is received more or less every second while playing
                 # millis = int(line.split("elapsed milliseconds: ")[1])
