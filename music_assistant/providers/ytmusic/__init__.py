@@ -117,7 +117,7 @@ YT_PERSONAL_PLAYLISTS = (
     "RDTMAK5uy_mZtXeU08kxXJOUhL0ETdAuZTh1z7aAFAo",  # Archive Mix
 )
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
-PACKAGES_TO_INSTALL = ("yt-dlp", "bgutil-ytdlp-pot-provider")
+PACKAGES_TO_INSTALL = ("yt-dlp[default]", "bgutil-ytdlp-pot-provider")
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
