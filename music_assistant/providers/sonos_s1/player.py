@@ -17,10 +17,7 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.enums import PlaybackState, PlayerState, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCoException
-from soco.core import (
-    MUSIC_SRC_RADIO,
-    SoCo,
-)
+from soco.core import MUSIC_SRC_RADIO, SoCo
 from soco.data_structures import DidlAudioBroadcast
 
 from music_assistant.constants import (
@@ -209,7 +206,17 @@ class SonosPlayer(Player):
             raise PlayerCommandFailed(msg)
 
         didl_metadata = create_didl_metadata(media)
-        await asyncio.to_thread(self.soco.play_uri, media.uri, meta=didl_metadata)
+
+        await asyncio.to_thread(self.soco.clear_queue)
+        await asyncio.to_thread(
+            self.soco.avTransport.SetAVTransportURI,
+            [
+                ("InstanceID", 0),
+                ("CurrentURI", media.uri),
+                ("CurrentURIMetaData", didl_metadata),
+            ],
+        )
+        await asyncio.to_thread(self.soco.play)
         self.mass.call_later(2, self.poll)
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
@@ -225,7 +232,13 @@ class SonosPlayer(Player):
         didl_metadata = create_didl_metadata(media)
 
         def add_to_queue() -> None:
-            self.soco.add_uri_to_queue(media.uri, didl_metadata)
+            self.soco.avTransport.SetNextAVTransportURI(
+                [
+                    ("InstanceID", 0),
+                    ("NextURI", media.uri),
+                    ("NextURIMetaData", didl_metadata),
+                ]
+            )
 
         await asyncio.to_thread(add_to_queue)
         self.mass.call_later(2, self.poll)
