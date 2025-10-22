@@ -231,6 +231,8 @@ class RaopStream:
 
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
         """Initialize CLIRaop process for a player."""
+        assert self.player.cli_bin
+        assert self.player.raop_discovery_info is not None
         extra_args: list[str] = []
         player_id = self.player.player_id
         extra_args += ["-if", self.mass.streams.bind_ip]
@@ -239,7 +241,7 @@ class RaopStream:
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):
             extra_args += ["-alac"]
         for prop in ("et", "md", "am", "pk", "pw"):
-            if prop_value := self.player.discovery_info.decoded_properties.get(prop):
+            if prop_value := self.player.raop_discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
         sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
@@ -263,13 +265,12 @@ class RaopStream:
         # https://github.com/music-assistant/libraop
         # we use this intermediate binary to do the actual streaming because attempts to do
         # so using pure python (e.g. pyatv) were not successful due to the realtime nature
-        # TODO: Either enhance libraop with airplay 2 support or find a better alternative
         cliraop_args = [
             str(self.player.cli_bin),
             "-ntpstart",
             str(start_ntp),
             "-port",
-            str(self.player.discovery_info.port),
+            str(self.player.raop_discovery_info.port),
             "-wait",
             str(wait_start - sync_adjust),
             "-latency",
@@ -282,7 +283,7 @@ class RaopStream:
             "-activeremote",
             self.active_remote_id,
             "-udn",
-            self.player.discovery_info.name,
+            self.player.raop_discovery_info.name,
             self.player.address,
             "-",
         ]

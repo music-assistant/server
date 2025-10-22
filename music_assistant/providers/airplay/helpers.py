@@ -91,11 +91,6 @@ def is_broken_raop_model(manufacturer: str, model: str) -> bool:
     return False
 
 
-def is_airplay2_device(discovery_info: AsyncServiceInfo) -> bool:
-    """Check if the player is AirPlay2 or RAOP."""
-    return discovery_info.decoded_properties.get("deviceid") is not None
-
-
 async def get_cli_binary(version: int) -> str:
     """Find the correct raop/airplay binary belonging to the platform."""
 

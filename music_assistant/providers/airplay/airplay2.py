@@ -252,6 +252,8 @@ class AirPlay2Stream:
 
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
         """Initialize CLI process for a player."""
+        assert self.player.cli_bin
+        assert self.player.airplay_discovery_info is not None
         # Setup named pipes
         try:
             os.mkfifo(self.audio_named_pipe)
@@ -280,7 +282,7 @@ class AirPlay2Stream:
         )
 
         txt_kv: str = ""
-        for key, value in self.player.discovery_info.decoded_properties.items():
+        for key, value in self.player.airplay_discovery_info.decoded_properties.items():
             txt_kv += f'"{key}={value}" '
 
         # ffmpeg handles the player specific stream + filters and pipes
@@ -297,11 +299,11 @@ class AirPlay2Stream:
             "--name",
             self.player.display_name,
             "--hostname",
-            str(self.player.discovery_info.server),
+            str(self.player.airplay_discovery_info.server),
             "--address",
             str(self.player.address),
             "--port",
-            str(self.player.discovery_info.port),
+            str(self.player.airplay_discovery_info.port),
             "--txt",
             txt_kv,
             "--ntpstart",

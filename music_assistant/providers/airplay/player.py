@@ -16,7 +16,6 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 from music_assistant_models.media_items import AudioFormat
-from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_ENTRY_DEPRECATED_EQ_BASS,
@@ -33,6 +32,7 @@ from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 from .airplay2 import AirPlay2StreamSession
 from .constants import (
+    AIRPLAY2_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_PCM_FORMAT,
     CACHE_CATEGORY_PREV_VOLUME,
@@ -43,16 +43,18 @@ from .constants import (
     CONF_PASSWORD,
     CONF_READ_AHEAD_BUFFER,
     FALLBACK_VOLUME,
+    RAOP_DISCOVERY_TYPE,
 )
 from .helpers import (
     get_cli_binary,
     get_primary_ip_address_from_zeroconf,
-    is_airplay2_device,
     is_broken_raop_model,
 )
 from .raop import RaopStreamSession
 
 if TYPE_CHECKING:
+    from zeroconf.asyncio import AsyncServiceInfo
+
     from music_assistant.providers.universal_group import UniversalGroupPlayer
 
     from .airplay2 import AirPlay2Stream
@@ -77,7 +79,8 @@ class AirPlayPlayer(Player):
         self,
         provider: AirPlayProvider,
         player_id: str,
-        discovery_info: AsyncServiceInfo,
+        raop_discovery_info: AsyncServiceInfo | None,
+        airplay_discovery_info: AsyncServiceInfo | None,
         address: str,
         display_name: str,
         manufacturer: str,
@@ -86,7 +89,8 @@ class AirPlayPlayer(Player):
     ) -> None:
         """Initialize AirPlayPlayer."""
         super().__init__(provider, player_id)
-        self.discovery_info = discovery_info
+        self.raop_discovery_info = raop_discovery_info
+        self.airplay_discovery_info = airplay_discovery_info
         self.address = address
         self.stream: RaopStream | AirPlay2Stream | None = None
         self.last_command_sent = 0.0
@@ -113,10 +117,10 @@ class AirPlayPlayer(Player):
         self._attr_enabled_by_default = not is_broken_raop_model(manufacturer, model)
         # How do we ensure consistency between configured airplay version and
         # the mdns discovery info??
-        if is_airplay2_device(self.discovery_info):
-            self._airplay_version = 2
-        else:
+        if self.airplay_discovery_info is None:
             self._airplay_version = 1
+        else:
+            self._airplay_version = 2
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -192,7 +196,7 @@ class AirPlayPlayer(Player):
                 required=True,
                 label="AirPlay version to use for streaming",
                 description="AirPlay version 1 protocol uses RAOP.\n"
-                "AirPlay version 2 is an extention of RAOP.\n"
+                "AirPlay version 2 is an extension of RAOP.\n"
                 "Some newer devices do not fully support RAOP and "
                 "will only work with AirPlay version 2.",
                 category="airplay",
@@ -237,8 +241,11 @@ class AirPlayPlayer(Player):
             await self.stream.send_cli_command("ACTION=PAUSE")
 
     async def ap_version_consistency(self) -> None:
-        """Ensure consistency between configured airplay version and mdns discovery info."""
-        # Configured version takes precedence
+        """
+        Ensure consistency between configured airplay version, mdns discovery info and cli binary.
+
+        Configured version takes precedence.
+        """
         configured_version: int = await self.mass.config.get_player_config_value(
             self.player_id, CONF_AIRPLAY_VERSION
         )  # type: ignore[assignment]
@@ -246,43 +253,28 @@ class AirPlayPlayer(Player):
             self.logger.info(
                 f"{self.name}:configured AirPlay version ({configured_version}) does not match "
                 f"detected device AirPlay version ({self._airplay_version}). "
-                f"Updating to {configured_version}."
+                f"Updating to {configured_version} if possible."
             )
-            # update to the configured version and refresh discovery info
-            info: AsyncServiceInfo | None = None
-            if configured_version == 1:
-                type_ = "_raop._tcp.local."
-                # RAOP discovery name is in format X@Y._raop._tcp.local.
-                # where X is the capitalized deviceid with colons stripped
-                # and Y is the device name
-                deviceid = str(self.discovery_info.decoded_properties.get("deviceid"))
-                name = (
-                    deviceid.upper().replace(":", "")
-                    + "@"
-                    + self.discovery_info.name.replace("_airplay", "_raop")
-                )
-            elif configured_version == 2:
-                # AirPlay discovery name is in format Y._airplay._tcp.local.
-                type_ = "_airplay._tcp.local."
-                name = self.discovery_info.name.split("@")[-1].replace("_raop", "_airplay")
+            if configured_version == 1 and self.raop_discovery_info:
+                self._airplay_version = 1
+            elif configured_version == 2 and self.airplay_discovery_info:
+                self._airplay_version = 2
             else:  # guard against invalid configured version
-                self.logger.warning(
-                    f"{self.name}:unsupported AirPlay version configured: {configured_version}"
-                )
-                return
-            info = AsyncServiceInfo(type_, name)
-            if await info.async_request(self.mass.aiozc.zeroconf, 3000):
-                self.set_discovery_info(info, str(self.name))
-                self._airplay_version = configured_version
-            else:
-                # This will happen when the device does not support the configured version
-                # in which case, we just stick with the discovered version
-                # Should we force an update of the config entry to match the discovered version??
                 self.logger.error(
-                    f"{self.name}:failed to refresh discovery info for AirPlay version "
-                    f"{configured_version}. "
-                    f"Continuing with previously detected version {self._airplay_version}."
+                    f"{self.name}:unsupported combination of AirPlay version and discovery info. "
+                    f"configured version:{configured_version}, "
+                    f"raop_discovery_info:{self.raop_discovery_info}, "
+                    f"airplay_discovery_info:{self.airplay_discovery_info}"
                 )
+                if self.raop_discovery_info:
+                    self._airplay_version = 1
+                elif self.airplay_discovery_info:
+                    self._airplay_version = 2
+                else:  # guard
+                    self.logger.critical(
+                        f"{self.name}. No discovery info to determine airplay version"
+                    )
+                    self.airplay_version = 1
 
         # ensure the cli binary is aligned with the airplay version
         self.cli_bin = await get_cli_binary(self._airplay_version)
@@ -475,7 +467,12 @@ class AirPlayPlayer(Player):
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
         """Set/update the discovery info for the player."""
         self._attr_name = display_name
-        self.discovery_info = discovery_info
+        if discovery_info.type == AIRPLAY2_DISCOVERY_TYPE:
+            self.airplay_discovery_info = discovery_info
+        elif discovery_info.type == RAOP_DISCOVERY_TYPE:
+            self.raop_discovery_info = discovery_info
+        else:  # guard
+            return
         cur_address = self.address
         new_address = get_primary_ip_address_from_zeroconf(discovery_info)
         assert new_address  # should always be set, but guard against None
