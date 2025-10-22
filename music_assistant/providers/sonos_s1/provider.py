@@ -92,7 +92,7 @@ class SonosPlayerProvider(PlayerProvider):
         if not (household_id := self.config.get_value(CONF_HOUSEHOLD_ID)):
             household_id = "Sonos"
 
-        async def do_discover() -> None:
+        def do_discover() -> None:
             """Run discovery and add players in executor thread."""
             self._discovery_running = True
             try:
@@ -107,7 +107,9 @@ class SonosPlayerProvider(PlayerProvider):
                 # process new players
                 for soco in discovered_devices:
                     try:
-                        await self._setup_player(soco)
+                        asyncio.run_coroutine_threadsafe(
+                            self._setup_player(soco), self.mass.loop
+                        ).result()
                     except RequestException as err:
                         # player is offline
                         self.logger.debug("Failed to add SonosPlayer %s: %s", soco, err)
@@ -121,7 +123,7 @@ class SonosPlayerProvider(PlayerProvider):
             finally:
                 self._discovery_running = False
 
-        await do_discover()
+        await asyncio.to_thread(do_discover)
 
         def reschedule() -> None:
             self._discovery_reschedule_timer = None
