@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from music_assistant_models.enums import PlaybackState, PlayerFeature, ProviderFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 from soco.core import (
     MUSIC_SRC_AIRPLAY,
     MUSIC_SRC_LINE_IN,
@@ -10,11 +10,6 @@ from soco.core import (
     MUSIC_SRC_SPOTIFY_CONNECT,
     MUSIC_SRC_TV,
 )
-
-# Provider Features
-SUPPORTED_FEATURES = {
-    ProviderFeature.SYNC_PLAYERS,
-}
 
 # Configuration Keys
 CONF_NETWORK_SCAN = "network_scan"

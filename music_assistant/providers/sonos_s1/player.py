@@ -90,26 +90,11 @@ class SonosPlayer(Player):
         self._attr_available = True
         self._attr_can_group_with = {provider.lookup_key}
 
-        # Cached attributes
-        self.crossfade: bool = False
-        self.play_mode: str | None = None
-        self.playback_status: str | None = None
-        self.channel: str | None = None
-        self.duration: float | None = None
-        self.image_url: str | None = None
-        self.source_name: str | None = None
-        self.title: str | None = None
-        self.uri: str | None = None
-
         # Subscriptions and events
         self._subscriptions: list[SubscriptionBase] = []
         self._subscription_lock: asyncio.Lock | None = None
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
-
-        # Grouping
-        self.sync_coordinator: SonosPlayer | None = None
-        # self.group_members: list[SonosPlayer] = [self]
 
     @property
     def missing_subscriptions(self) -> set[str]:
@@ -119,8 +104,6 @@ class SonosPlayer(Player):
 
     async def setup(self) -> None:
         """Set up the player."""
-        if self.soco.is_coordinator:
-            self.crossfade = self.soco.cross_fade
         self._attr_volume_level = self.soco.volume
         self._attr_volume_muted = self.soco.mute
         self.update_groups()
@@ -160,7 +143,7 @@ class SonosPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to the player."""
-        if self.sync_coordinator:
+        if self.synced_to:
             self.logger.debug(
                 "Ignore STOP command for %s: Player is synced to another player.",
                 self.player_id,
@@ -173,19 +156,18 @@ class SonosPlayer(Player):
 
     async def play(self) -> None:
         """Send PLAY command to the player."""
-        if self.sync_coordinator:
+        if self.synced_to:
             self.logger.debug(
                 "Ignore PLAY command for %s: Player is synced to another player.",
                 self.player_id,
             )
             return
         await asyncio.to_thread(self.soco.play)
-        # self._attr_poll_interval = 5
         self.mass.call_later(2, self.poll)
 
     async def pause(self) -> None:
         """Send PAUSE command to the player."""
-        if self.sync_coordinator:
+        if self.synced_to:
             self.logger.debug(
                 "Ignore PAUSE command for %s: Player is synced to another player.",
                 self.player_id,
@@ -242,18 +224,6 @@ class SonosPlayer(Player):
 
         didl_metadata = create_didl_metadata(media)
 
-        # Disable crossfade mode if needed
-        # crossfading is handled by our streams controller
-        if self.crossfade:
-
-            def set_crossfade() -> None:
-                try:
-                    self.soco.cross_fade = False
-                except SoCoException as err:
-                    self.logger.debug("Error setting crossfade: %s", err)
-
-            await asyncio.to_thread(set_crossfade)
-
         def add_to_queue() -> None:
             self.soco.add_uri_to_queue(media.uri, didl_metadata)
 
@@ -279,13 +249,13 @@ class SonosPlayer(Player):
             for player_id in player_ids_to_remove:
                 if player_to_remove := cast("SonosPlayer", self.mass.players.get(player_id)):
                     await asyncio.to_thread(player_to_remove.soco.unjoin)
-                    self.mass.call_later(2, self.poll)
+                    self.mass.call_later(2, player_to_remove.poll)
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
                 if player_to_add := cast("SonosPlayer", self.mass.players.get(player_id)):
                     await asyncio.to_thread(player_to_add.soco.join, self.soco)
-                    self.mass.call_later(2, self.poll)
+                    self.mass.call_later(2, player_to_add.poll)
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -474,9 +444,6 @@ class SonosPlayer(Player):
         # new coordinator will use its media. The regrouping process will
         # be completed during the next ZoneGroupState update.
 
-        if crossfade := event.variables.get("current_crossfade_mode"):
-            self.crossfade = bool(int(crossfade))
-
         # Missing transport_state indicates a transient error
         if (new_status := event.variables.get("transport_state")) is None:
             return
@@ -489,7 +456,6 @@ class SonosPlayer(Player):
         new_status = _convert_state(evars["transport_state"])
         state_changed = new_status != self._attr_playback_state
 
-        # self.play_mode = evars["current_play_mode"]
         self._attr_playback_state = new_status
 
         track_uri = evars["enqueued_transport_uri"] or evars["current_track_uri"]
@@ -497,18 +463,10 @@ class SonosPlayer(Player):
 
         self._set_basic_track_info(update_position=state_changed)
         ct_md = evars["current_track_meta_data"]
-        if ct_md and not self.image_url:
-            if album_art_uri := getattr(ct_md, "album_art_uri", None):
-                # TODO: handle library mess here
-                self.image_url = album_art_uri
 
         et_uri_md = evars["enqueued_transport_uri_meta_data"]
-        # if isinstance(et_uri_md, DidlPlaylistContainer):
-        #     self.playlist_name = et_uri_md.title
 
-        # if queue_size := evars.get("number_of_tracks", 0):
-        #     self.queue_size = int(queue_size)
-
+        channel = ""
         if audio_source == MUSIC_SRC_RADIO:
             if et_uri_md:
                 channel = et_uri_md.title
@@ -516,7 +474,7 @@ class SonosPlayer(Player):
             # Extra guards for S1 compatibility
             if ct_md and hasattr(ct_md, "radio_show") and ct_md.radio_show:
                 radio_show = ct_md.radio_show.split(",")[0]
-                channel = " • ".join(filter(None, [self.channel, radio_show]))
+                channel = " • ".join(filter(None, [channel, radio_show]))
 
             if isinstance(et_uri_md, DidlAudioBroadcast) and self._attr_current_media:
                 self._attr_current_media.title = self._attr_current_media.title or channel
@@ -561,13 +519,10 @@ class SonosPlayer(Player):
         uri = track_info["uri"]
 
         audio_source = self.soco.music_source_from_uri(uri)
-        if source := SOURCE_MAPPING.get(audio_source):
-            self.source_name = source
-            if audio_source in LINEIN_SOURCES:
-                self._attr_elapsed_time = None
-                self._attr_elapsed_time_last_updated = None
-                self.title = source
-                return
+        if SOURCE_MAPPING.get(audio_source) and audio_source in LINEIN_SOURCES:
+            self._attr_elapsed_time = None
+            self._attr_elapsed_time_last_updated = None
+            return
 
         current_media = PlayerMedia(
             uri=uri,

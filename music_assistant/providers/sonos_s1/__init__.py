@@ -13,12 +13,12 @@ import asyncio
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from soco.discovery import scan_network
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 
-from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN, SUPPORTED_FEATURES
+from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN
 from .provider import SonosPlayerProvider
 
 if TYPE_CHECKING:
@@ -28,6 +28,10 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
+SUPPORTED_FEATURES = {
+    ProviderFeature.SYNC_PLAYERS,
+}
 
 
 async def setup(
