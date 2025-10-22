@@ -412,47 +412,48 @@ class StreamsController(CoreController):
             )
             smart_fades_mode = SmartFadesMode.DISABLED
 
+        # work out pcm format based on output format
+        pcm_format = AudioFormat(
+            sample_rate=output_format.sample_rate,
+            # always use f32 internally for extra headroom for filters etc
+            content_type=ContentType.PCM_F32LE,
+            bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
+            channels=2,
+        )
         if smart_fades_mode != SmartFadesMode.DISABLED:
             # crossfade is enabled, use special crossfaded single item stream
             # where the crossfade of the next track is present in the stream of
             # a single track. This only works if the player supports gapless playback.
-            # work out pcm format based on output format
-            pcm_format = AudioFormat(
-                content_type=DEFAULT_PCM_FORMAT.content_type,
-                sample_rate=output_format.sample_rate,
-                # always use f32 internally for extra headroom for filters etc
-                bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
-                channels=2,
-            )
-            audio_input = get_ffmpeg_stream(
-                audio_input=self.get_queue_item_stream_with_smartfade(
-                    queue_item=queue_item,
-                    pcm_format=pcm_format,
-                    session_id=session_id,
-                    smart_fades_mode=smart_fades_mode,
-                    standard_crossfade_duration=standard_crossfade_duration,
-                ),
-                input_format=pcm_format,
-                output_format=output_format,
-                filter_params=get_player_filter_params(
-                    self.mass, queue_player.player_id, pcm_format, output_format
-                ),
+
+            audio_input = self.get_queue_item_stream_with_smartfade(
+                queue_item=queue_item,
+                pcm_format=pcm_format,
+                session_id=session_id,
+                smart_fades_mode=smart_fades_mode,
+                standard_crossfade_duration=standard_crossfade_duration,
             )
         else:
             # no crossfade, just a regular single item stream
-            # no need to convert to pcm first, request output format directly
             audio_input = self.get_queue_item_stream(
                 queue_item=queue_item,
-                output_format=output_format,
-                filter_params=get_player_filter_params(
-                    self.mass,
-                    queue_player.player_id,
-                    queue_item.streamdetails.audio_format,
-                    output_format,
-                ),
+                pcm_format=pcm_format,
             )
-
-        async for chunk in audio_input:
+        # stream the audio
+        # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
+        # the desired output format for the player including any player specific filter params
+        # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
+        async for chunk in get_ffmpeg_stream(
+            audio_input=audio_input,
+            input_format=pcm_format,
+            output_format=output_format,
+            filter_params=get_player_filter_params(
+                self.mass,
+                player_id=queue_player.player_id,
+                input_format=pcm_format,
+                output_format=output_format,
+            ),
+            chunk_size=get_chunksize(output_format),
+        ):
             try:
                 await resp.write(chunk)
             except (BrokenPipeError, ConnectionResetError, ConnectionError):
@@ -541,6 +542,9 @@ class StreamsController(CoreController):
             return resp
 
         # all checks passed, start streaming!
+        # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
+        # the desired output format for the player including any player specific filter params
+        # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
         self.logger.debug("Start serving Queue flow audio stream for %s", queue.display_name)
 
         async for chunk in get_ffmpeg_stream(
@@ -836,7 +840,7 @@ class StreamsController(CoreController):
             # handle incoming audio chunks
             async for chunk in self.get_queue_item_stream(
                 queue_track,
-                output_format=pcm_format,
+                pcm_format=pcm_format,
             ):
                 # buffer size needs to be big enough to include the crossfade part
                 req_buffer_size = (
@@ -1032,14 +1036,13 @@ class StreamsController(CoreController):
     async def get_queue_item_stream(
         self,
         queue_item: QueueItem,
-        output_format: AudioFormat,
-        filter_params: list[str] | None = None,
+        pcm_format: AudioFormat,
     ) -> AsyncGenerator[bytes, None]:
-        """Get the audio stream for a single queue item."""
+        """Get the (PCM) audio stream for a single queue item."""
         # collect all arguments for ffmpeg
         streamdetails = queue_item.streamdetails
         assert streamdetails
-        filter_params = filter_params or []
+        filter_params: list[str] = []
 
         # handle volume normalization
         gain_correct: float | None = None
@@ -1075,7 +1078,7 @@ class StreamsController(CoreController):
         async for chunk in get_media_stream(
             self.mass,
             streamdetails=streamdetails,
-            output_format=output_format,
+            pcm_format=pcm_format,
             filter_params=filter_params,
         ):
             if not first_chunk_received:
@@ -1279,6 +1282,9 @@ class StreamsController(CoreController):
             # no point in having a higher bit depth for lossy formats
             output_bit_depth = 16
             output_sample_rate = min(48000, output_sample_rate)
+        if content_type == ContentType.WAV and output_bit_depth > 16:
+            # WAV 24bit is not widely supported, fallback to 16bit
+            output_bit_depth = 16
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
         return AudioFormat(

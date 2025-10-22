@@ -424,10 +424,10 @@ async def get_stream_details(
 async def get_media_stream(
     mass: MusicAssistant,
     streamdetails: StreamDetails,
-    output_format: AudioFormat,
+    pcm_format: AudioFormat,
     filter_params: list[str] | None = None,
 ) -> AsyncGenerator[bytes, None]:
-    """Get audio stream for given media details."""
+    """Get audio stream for given media details as raw PCM."""
     logger = LOGGER.getChild("media_stream")
     logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
     extra_input_args = streamdetails.extra_input_args or []
@@ -487,7 +487,7 @@ async def get_media_stream(
     ffmpeg_proc = FFMpeg(
         audio_input=audio_source,
         input_format=streamdetails.audio_format,
-        output_format=output_format,
+        output_format=pcm_format,
         filter_params=filter_params,
         extra_input_args=extra_input_args,
         collect_log_history=True,
@@ -506,12 +506,12 @@ async def get_media_stream(
             streamdetails.uri,
             streamdetails.stream_type,
             streamdetails.volume_normalization_mode,
-            output_format.content_type.value,
+            pcm_format.content_type.value,
             ffmpeg_proc.proc.pid,
         )
         stream_start = mass.loop.time()
 
-        chunk_size = get_chunksize(output_format, 1)
+        chunk_size = get_chunksize(pcm_format, 1)
         async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
             if not first_chunk_received:
                 # At this point ffmpeg has started and should now know the codec used
@@ -547,17 +547,14 @@ async def get_media_stream(
     finally:
         # always ensure close is called which also handles all cleanup
         await ffmpeg_proc.close()
-        # try to determine how many seconds we've streamed
-        if output_format.content_type.is_pcm():
-            # for pcm output we can calculate this easily
-            seconds_streamed = bytes_sent / output_format.pcm_sample_size if bytes_sent else 0
-            streamdetails.seconds_streamed = seconds_streamed
-            # store accurate duration
-            if finished and not streamdetails.seek_position and seconds_streamed:
-                streamdetails.duration = int(seconds_streamed)
-        else:
-            # this is a less accurate estimate for compressed audio
-            seconds_streamed = bytes_sent / get_chunksize(output_format, 1)
+        # determine how many seconds we've streamed
+        # for pcm output we can calculate this easily
+        seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
+        streamdetails.seconds_streamed = seconds_streamed
+        # store accurate duration
+        if finished and not streamdetails.seek_position and seconds_streamed:
+            streamdetails.duration = int(seconds_streamed)
+
         logger.debug(
             "stream %s (with code %s) for %s - seconds streamed: %s",
             "cancelled" if cancelled else "finished" if finished else "aborted",
@@ -574,7 +571,7 @@ async def get_media_stream(
         ):
             # if dynamic volume normalization is enabled and the entire track is streamed
             # the loudnorm filter will output the measurement in the log,
-            # so we can use those directly instead of analyzing the audio
+            # so we can use that directly instead of analyzing the audio
             logger.log(VERBOSE_LOG_LEVEL, "Collecting loudness measurement...")
             if loudness_details := parse_loudnorm(" ".join(ffmpeg_proc.log_history)):
                 logger.debug(
@@ -1047,11 +1044,21 @@ async def get_preview_stream(
     if TYPE_CHECKING:  # avoid circular import
         assert isinstance(music_prov, MusicProvider)
     streamdetails = await music_prov.get_stream_details(item_id, media_type)
-    streamdetails.extra_input_args += ["-t", "30"]  # cut after 30 seconds
-    async for chunk in get_media_stream(
-        mass=mass,
-        streamdetails=streamdetails,
+    pcm_format = AudioFormat(
+        content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
+        sample_rate=streamdetails.audio_format.sample_rate,
+        bit_depth=streamdetails.audio_format.bit_depth,
+        channels=streamdetails.audio_format.channels,
+    )
+    async for chunk in get_ffmpeg_stream(
+        audio_input=get_media_stream(
+            mass=mass,
+            streamdetails=streamdetails,
+            pcm_format=pcm_format,
+        ),
+        input_format=pcm_format,
         output_format=AudioFormat(content_type=ContentType.AAC),
+        extra_input_args=["-t", "30"],  # cut after 30 seconds
     ):
         yield chunk
 
