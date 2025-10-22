@@ -22,6 +22,7 @@ from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.helpers.util import TaskManager, close_async_generator
 
 from .constants import (
+    AIRPLAY2_MIN_LOG_LEVEL,
     AIRPLAY_PCM_FORMAT,
     CONF_READ_AHEAD_BUFFER,
 )
@@ -234,21 +235,26 @@ class AirPlay2Stream:
 
     @property
     def _cli_loglevel(self) -> int:
-        """Return a cliap2 aligned loglevel."""
+        """
+        Return a cliap2 aligned loglevel.
+
+        Ensures that minimum level required for required cliap2 stderr output is respected.
+        """
+        mass_level: int = 0
         match self.prov.logger.level:
             case logging.CRITICAL:
-                return 0
+                mass_level = 0
             case logging.ERROR:
-                return 1
+                mass_level = 1
             case logging.WARNING:
-                return 2
+                mass_level = 2
             case logging.INFO:
-                return 3
+                mass_level = 3
             case logging.DEBUG:
-                return 4
+                mass_level = 4
         if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            return 5
-        return 1  # guard: should never happen
+            mass_level = 5
+        return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
 
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
         """Initialize CLI process for a player."""
@@ -335,19 +341,14 @@ class AirPlay2Stream:
         for _ in range(num_lines):
             line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
             self.player.logger.debug(line)
-            if "airplay: Adding AirPlay device " in line:
+            if f"airplay: Adding AirPlay device '{self.player.display_name}'" in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
                 self._started.set()
                 break
-            # TODO: @bradkeifer to confirm the error message upon connect failure
-            if "Cannot connect to AirPlay device" in line:
+            if f"The AirPlay 2 device '{self.player.display_name}' failed" in line:
                 if self._ffmpeg_reader_task:
                     self._ffmpeg_reader_task.cancel()
                 raise PlayerCommandFailed("Cannot connect to AirPlay device")
-        # repeat sending the volume level to the player because some players seem
-        # to ignore it the first time
-        # https://github.com/music-assistant/support/issues/3330
-        # await self.send_cli_command(f"VOLUME={self.player.volume_level}\n")
         # start reading the stderr of the cliap2 process from another task
         self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
 
