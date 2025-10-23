@@ -833,6 +833,7 @@ class StreamsController(CoreController):
             else "",
         )
         total_bytes_sent = 0.0
+        bytes_written = 0.0
 
         while True:
             # get (next) queue item to stream
@@ -988,6 +989,8 @@ class StreamsController(CoreController):
                     queue_track.streamdetails.duration = int(
                         queue_track.streamdetails.duration + last_part_seconds
                     )
+            last_fadeout_part = b""
+            total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
@@ -1274,7 +1277,7 @@ class StreamsController(CoreController):
                         session_id=session_id or "",
                     )
                     # clear vars and break out of loop
-                    del crossfade_data
+                    del crossfade_bytes
                     break
             except QueueEmpty:
                 # end of queue reached or crossfade failed - no crossfade possible
