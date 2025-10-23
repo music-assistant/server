@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
@@ -49,8 +49,9 @@ from music_assistant.constants import (
     INTERNAL_PCM_FORMAT,
 )
 from music_assistant.helpers.audio import get_player_filter_params
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import Player, PlayerMedia
+
+from .multi_client_stream import MultiClientStream
 
 if TYPE_CHECKING:
     from aioresonate.server.client import ResonateClient
@@ -67,6 +68,7 @@ class ResonatePlayer(Player):
     unsub_group_event_cb: Callable[[], None]
     last_sent_artwork_url: str | None = None
     _playback_task: asyncio.Task[None] | None = None
+    multi_client_stream: MultiClientStream | None = None
 
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -84,6 +86,7 @@ class ResonatePlayer(Player):
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
             PlayerFeature.SET_MEMBERS,
+            PlayerFeature.MULTI_DEVICE_DSP,
         }
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_power_control = PLAYER_CONTROL_NONE
@@ -224,19 +227,76 @@ class ResonatePlayer(Player):
             # Convert string codec to AudioCodec enum
             audio_codec = AudioCodec(output_codec)
 
-            # Apply DSP and other audio filters
-            audio_source = get_ffmpeg_stream(
-                audio_input=self.mass.streams.get_stream(media, flow_pcm_format),
-                input_format=flow_pcm_format,
-                output_format=pcm_format,
-                filter_params=get_player_filter_params(
-                    self.mass, self.player_id, flow_pcm_format, pcm_format
-                ),
+            # Get clean audio source without player-specific DSP
+            # Format conversion only - per-player DSP will be applied via player_stream
+            audio_source = self.mass.streams.get_stream(media, pcm_format)
+
+            # Create MultiClientStream to wrap the clean audio source
+            # This distributes the audio to multiple subscribers without DSP
+            self.multi_client_stream = MultiClientStream(
+                audio_source=audio_source,
+                audio_format=pcm_format,
             )
 
-            # Create MediaStream wrapping the audio source generator
-            media_stream = MediaStream(
-                main_stream_source=audio_source,
+            # Capture self and other variables for use in inner class
+            player_instance = self
+            mass = self.mass
+
+            # Create MediaStream wrapping the MultiClientStream
+            class MusicAssistantMediaStream(MediaStream):
+                def player_stream(
+                    self: MusicAssistantMediaStream,
+                    player_id: str,
+                    preferred_format: ResonateAudioFormat | None = None,
+                    position_us: int = 0,
+                ) -> tuple[AsyncGenerator[bytes, None], ResonateAudioFormat, int] | None:
+                    """
+                    Get a player-specific audio stream with per-player DSP.
+
+                    Args:
+                        player_id: Identifier for the player requesting the stream.
+                        preferred_format: The player's preferred native format for the stream.
+                            The implementation may return a different format; the library
+                            will handle any necessary conversion.
+                        position_us: Position in microseconds relative to the main_stream start.
+                            Used for late-joining players to sync with the main stream.
+
+                    Returns:
+                        A tuple of (audio generator, audio format, actual position in microseconds)
+                        or None if unavailable. If None, the main_stream is used as fallback.
+                    """
+                    if not player_instance.multi_client_stream:
+                        return None
+
+                    multi_client_stream = player_instance.multi_client_stream
+                    dsp = mass.config.get_player_dsp_config(player_id)
+                    if not dsp.enabled:
+                        # DSP is disabled for this player, use main_stream
+                        return None
+
+                    # Get per-player DSP filter parameters
+                    filter_params = get_player_filter_params(
+                        mass, player_id, pcm_format, pcm_format
+                    )
+
+                    # Return actual position in microseconds relative to main_stream start
+                    position_us = multi_client_stream.position_us
+                    return (
+                        multi_client_stream.get_stream(
+                            output_format=pcm_format,
+                            filter_params=filter_params,
+                        ),
+                        ResonateAudioFormat(
+                            sample_rate=pcm_format.sample_rate,
+                            bit_depth=pcm_format.bit_depth,
+                            channels=pcm_format.channels,
+                            codec=audio_codec,
+                        ),
+                        position_us,
+                    )
+
+            media_stream = MusicAssistantMediaStream(
+                main_stream_source=self.multi_client_stream.subscribe_raw(),
                 main_stream_format=ResonateAudioFormat(
                     sample_rate=pcm_format.sample_rate,
                     bit_depth=pcm_format.bit_depth,
