@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, override
+from typing import override
 
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import (  # noqa: TC002 - used in @use_cache
+    Album,
+    Artist,
+    Track,
+)
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
-
-if TYPE_CHECKING:
-    from music_assistant_models.media_items import Album, Artist, Track
 
 
 class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):

@@ -9,7 +9,10 @@ import shortuuid
 from aiohttp import web
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import AudioFormat, Track
+from music_assistant_models.media_items import (
+    AudioFormat,
+    Track,
+)
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
