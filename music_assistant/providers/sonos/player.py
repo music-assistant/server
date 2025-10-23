@@ -442,10 +442,10 @@ class SonosPlayer(Player):
             # use legacy playback for files with known duration
             await self._play_media_legacy(media)
             return
+
         # play duration-less (long running) radio streams
-        if not media.duration:
-            # enforce AAC here because Sonos really does not support FLAC streams without duration
-            media.uri = media.uri.replace(".flac", ".aac").replace(".wav", ".aac")
+        # enforce AAC here because Sonos really does not support FLAC streams without duration
+        media.uri = media.uri.replace(".flac", ".aac").replace(".wav", ".aac")
         if media.source_id and media.queue_item_id:
             object_id = f"mass:{media.source_id}:{media.queue_item_id}"
         else:
