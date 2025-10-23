@@ -133,13 +133,9 @@ RUN set -x \
 # Copy FFmpeg binaries and libraries from builder stage
 COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/
 COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/
-COPY --from=ffmpeg-builder /usr/local/lib/libavcodec.so* /usr/local/lib/
-COPY --from=ffmpeg-builder /usr/local/lib/libavdevice.so* /usr/local/lib/
-COPY --from=ffmpeg-builder /usr/local/lib/libavformat.so* /usr/local/lib/
-COPY --from=ffmpeg-builder /usr/local/lib/libavutil.so* /usr/local/lib/
-COPY --from=ffmpeg-builder /usr/local/lib/libswresample.so* /usr/local/lib/
-COPY --from=ffmpeg-builder /usr/local/lib/libavfilter.so* /usr/local/lib/
-COPY --from=ffmpeg-builder /usr/local/lib/libswscale.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libav*.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libsw*.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libpostproc.so* /usr/local/lib/
 
 # Update shared library cache and verify FFmpeg
 RUN ldconfig && ffmpeg -version && ffprobe -version
