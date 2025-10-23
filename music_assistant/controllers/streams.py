@@ -990,7 +990,7 @@ class StreamsController(CoreController):
                         queue_track.streamdetails.duration + last_part_seconds
                     )
             last_fadeout_part = b""
-            total_bytes_sent += bytes_written
+        total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
