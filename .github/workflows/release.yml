@@ -1,47 +1,110 @@
-name: Publish releases
+name: Create Release
 
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version number (e.g., 1.2.3, 1.2.3.b1, or 1.2.3.dev1)"
+        required: true
+        type: string
+      channel:
+        description: "Release channel"
+        required: true
+        type: choice
+        options:
+          - stable
+          - beta
+          - nightly
 
 env:
   PYTHON_VERSION: "3.12"
   BASE_IMAGE_VERSION_STABLE: "1.3.1"
   BASE_IMAGE_VERSION_BETA: "1.3.2"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.3.2"
 
 jobs:
-  build-artifact:
-    name: Builds python artifact uploads to Github Artifact store
+  validate-and-build:
+    name: Validate version and build Python artifact
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.vars.outputs.tag }}
+      version: ${{ inputs.version }}
+      is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
+      base_image_version: ${{ steps.validate.outputs.base_image_version }}
+      branch: ${{ steps.branch.outputs.branch }}
     steps:
-      - uses: actions/checkout@v5
-      - name: Get tag
-        id: vars
-        run: >-
-          echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
-      - name: Validate version number
-        run: >-
-          if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
-            if ! [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
-            echo "Pre-release: Tag is missing beta suffix (${{ steps.vars.outputs.tag }})"
-              exit 1
-            fi
+      - name: Determine branch to use
+        id: branch
+        run: |
+          CHANNEL="${{ inputs.channel }}"
+
+          if [ "$CHANNEL" = "stable" ]; then
+            echo "branch=stable" >> $GITHUB_OUTPUT
+            echo "Using stable branch for stable release"
           else
-            if [[ "${{ steps.vars.outputs.tag }}" =~ "b" || "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
-              echo "Release: Tag must not have a beta (or rc) suffix (${{ steps.vars.outputs.tag }})"
-              exit 1
-            fi
+            echo "branch=dev" >> $GITHUB_OUTPUT
+            echo "Using dev branch for $CHANNEL release"
           fi
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.branch.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Validate version number format
+        id: validate
+        run: |
+          VERSION="${{ inputs.version }}"
+          CHANNEL="${{ inputs.channel }}"
+
+          # Regex patterns for each channel
+          STABLE_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
+          BETA_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+\.b[0-9]+$'
+          NIGHTLY_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$'
+
+          # Validate version format matches channel
+          case "$CHANNEL" in
+            stable)
+              if ! [[ "$VERSION" =~ $STABLE_PATTERN ]]; then
+                echo "Error: Stable channel requires version format: X.Y.Z (e.g., 1.2.3)"
+                exit 1
+              fi
+              echo "is_prerelease=false" >> $GITHUB_OUTPUT
+              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_STABLE }}" >> $GITHUB_OUTPUT
+              ;;
+            beta)
+              if ! [[ "$VERSION" =~ $BETA_PATTERN ]]; then
+                echo "Error: Beta channel requires version format: X.Y.Z.bN (e.g., 1.2.3.b1)"
+                exit 1
+              fi
+              echo "is_prerelease=true" >> $GITHUB_OUTPUT
+              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_BETA }}" >> $GITHUB_OUTPUT
+              ;;
+            nightly)
+              if ! [[ "$VERSION" =~ $NIGHTLY_PATTERN ]]; then
+                echo "Error: Nightly channel requires version format: X.Y.Z.devN (e.g., 1.2.3.dev1)"
+                exit 1
+              fi
+              echo "is_prerelease=true" >> $GITHUB_OUTPUT
+              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_NIGHTLY }}" >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "Error: Invalid channel: $CHANNEL"
+              exit 1
+              ;;
+          esac
+
+          echo "✅ Version $VERSION is valid for $CHANNEL channel"
+
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v6.0.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install build
+
+      - name: Install build dependencies
         run: >-
           pip install build tomli tomli-w
-      - name: Set Python project version from tag
+
+      - name: Update version in pyproject.toml
         shell: python
         run: |-
           import tomli
@@ -50,124 +113,425 @@ jobs:
           with open("pyproject.toml", "rb") as f:
             pyproject = tomli.load(f)
 
-          pyproject["project"]["version"] = "${{ steps.vars.outputs.tag }}"
+          pyproject["project"]["version"] = "${{ inputs.version }}"
 
           with open("pyproject.toml", "wb") as f:
             tomli_w.dump(pyproject, f)
+
+          print(f"✅ Updated pyproject.toml version to ${{ inputs.version }}")
+
       - name: Build python package
         run: >-
           python3 -m build
+
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
           name: release-dists
           path: dist/
 
-  pypi-publish:
-    name: Publish release to PyPI (stable releases only)
+  create-release:
+    name: Create GitHub Release with Release Drafter
     runs-on: ubuntu-latest
-    needs: build-artifact
+    needs: validate-and-build
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
-      - name: Retrieve release distributions
-        if: ${{ github.event.release.prerelease == false }}
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.validate-and-build.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Download distributions
         uses: actions/download-artifact@v5
         with:
           name: release-dists
           path: dist/
+
+      - name: Determine previous version tag
+        id: prev_version
+        run: |
+          CHANNEL="${{ inputs.channel }}"
+
+          case "$CHANNEL" in
+            stable)
+              # For stable, find latest stable tag (no beta or dev suffix)
+              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+              ;;
+            beta)
+              # For beta, find latest beta tag
+              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.b[0-9]+$' | head -n 1)
+              ;;
+            nightly)
+              # For nightly, find latest nightly tag
+              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' | head -n 1)
+              ;;
+          esac
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous $CHANNEL release found, using all commits"
+            echo "prev_tag=" >> $GITHUB_OUTPUT
+          else
+            echo "Previous $CHANNEL release: $PREV_TAG"
+            echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Release with Release Drafter
+        id: create_release
+        uses: release-drafter/release-drafter@v6
+        with:
+          version: ${{ inputs.version }}
+          tag: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: ${{ needs.validate-and-build.outputs.is_prerelease }}
+          commitish: ${{ needs.validate-and-build.outputs.branch }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract and append frontend changes to release notes
+        id: update_notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "📦 Extracting frontend changes from PRs..."
+
+          # Get the current release body
+          RELEASE_BODY=$(gh release view "${{ inputs.version }}" --json body --jq .body)
+
+          # Find all frontend update PRs since the previous tag
+          PREV_TAG="${{ steps.prev_version.outputs.prev_tag }}"
+
+          # Create temp files
+          FRONTEND_FILE=$(mktemp)
+          CONTRIBUTORS_FILE=$(mktemp)
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found, searching recent merged PRs"
+            gh pr list --state merged --limit 100 --json number,title,body --jq '.[] | select(.title | test("^⬆️ Update music-assistant-frontend to [0-9]")) | {number: .number, title: .title, body: .body}' > /tmp/frontend_prs.json
+          else
+            # Get PR numbers from merge commits since previous tag
+            echo "Searching for frontend PRs between $PREV_TAG and HEAD"
+            git log $PREV_TAG..HEAD --oneline --merges | grep -oP '#\K[0-9]+' > /tmp/pr_numbers.txt || echo ""
+
+            # Fetch details for frontend update PRs
+            > /tmp/frontend_prs.json
+            while read -r PR_NUM; do
+              if [ -n "$PR_NUM" ]; then
+                PR_DATA=$(gh pr view $PR_NUM --json number,title,body 2>/dev/null || echo "")
+                if [ -n "$PR_DATA" ]; then
+                  if echo "$PR_DATA" | jq -e '.title | test("^⬆️ Update music-assistant-frontend to [0-9]")' > /dev/null 2>&1; then
+                    echo "$PR_DATA" >> /tmp/frontend_prs.json
+                  fi
+                fi
+              fi
+            done < /tmp/pr_numbers.txt
+          fi
+
+          # Extract contributors from server release notes (existing)
+          echo "$RELEASE_BODY" | grep -oP '@[a-zA-Z0-9_-]+' | sort -u > "$CONTRIBUTORS_FILE" || true
+
+          # Process each frontend PR and extract changes + contributors
+          if [ -s /tmp/frontend_prs.json ]; then
+            echo "## 🎨 Frontend Changes" > "$FRONTEND_FILE"
+            echo "" >> "$FRONTEND_FILE"
+
+            while IFS= read -r pr_json; do
+              if [ -n "$pr_json" ]; then
+                BODY=$(echo "$pr_json" | jq -r '.body')
+
+                # Extract bullet points from the body, excluding section headers and contributors
+                echo "$BODY" | grep -E '^[[:space:]]*[•-]' | grep -v '🙇' | head -20 >> "$FRONTEND_FILE" || true
+
+                # Extract contributors from frontend PR body
+                echo "$BODY" | grep -oP '@[a-zA-Z0-9_-]+' >> "$CONTRIBUTORS_FILE" || true
+              fi
+            done < /tmp/frontend_prs.json
+
+            # Check if we actually found any changes
+            if [ $(wc -l < "$FRONTEND_FILE") -gt 3 ]; then
+              echo "✅ Found frontend changes"
+
+              # Deduplicate and sort contributors
+              MERGED_CONTRIBUTORS=$(sort -u "$CONTRIBUTORS_FILE" | paste -sd ", " -)
+
+              # Split release body into parts (before and after contributors section)
+              echo "$RELEASE_BODY" > /tmp/original_notes.md
+
+              # Find where the contributors section starts
+              CONTRIB_LINE=$(grep -n "## :bow: Thanks to our contributors" /tmp/original_notes.md | head -1 | cut -d: -f1 || echo "")
+
+              if [ -n "$CONTRIB_LINE" ]; then
+                # Extract everything before contributors section
+                head -n $((CONTRIB_LINE - 1)) /tmp/original_notes.md > /tmp/notes_before_contrib.md
+
+                # Build new release notes with frontend changes and merged contributors
+                {
+                  cat /tmp/notes_before_contrib.md
+                  echo ""
+                  cat "$FRONTEND_FILE"
+                  echo ""
+                  echo "## :bow: Thanks to our contributors"
+                  echo ""
+                  echo "Special thanks to the following contributors who helped with this release:"
+                  echo ""
+                  echo "$MERGED_CONTRIBUTORS"
+                } > /tmp/updated_notes.md
+              else
+                # No contributors section found, just append frontend changes
+                {
+                  cat /tmp/original_notes.md
+                  echo ""
+                  cat "$FRONTEND_FILE"
+                } > /tmp/updated_notes.md
+              fi
+
+              # Update the release
+              gh release edit "${{ inputs.version }}" --notes-file /tmp/updated_notes.md
+
+              echo "✅ Release notes updated with frontend changes and merged contributors"
+            else
+              echo "ℹ️ No frontend bullet points found"
+            fi
+          else
+            echo "ℹ️ No frontend update PRs found in this release"
+          fi
+
+          # Cleanup
+          rm -f "$FRONTEND_FILE" "$CONTRIBUTORS_FILE" /tmp/frontend_prs.json /tmp/pr_numbers.txt /tmp/updated_notes.md /tmp/original_notes.md /tmp/notes_before_contrib.md
+
+      - name: Upload artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  pypi-publish:
+    name: Publish release to PyPI (stable releases only)
+    runs-on: ubuntu-latest
+    needs:
+      - validate-and-build
+      - create-release
+    if: ${{ inputs.channel == 'stable' }}
+    steps:
+      - name: Retrieve release distributions
+        uses: actions/download-artifact@v5
+        with:
+          name: release-dists
+          path: dist/
+
       - name: Publish release to PyPI
-        if: ${{ github.event.release.prerelease == false }}
         uses: pypa/gh-action-pypi-publish@v1.13.0
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
 
   build-and-push-container-image:
-    name: Builds and pushes the Music Assistant Server container to ghcr.io
+    name: Build and push Music Assistant Server container to ghcr.io
     runs-on: ubuntu-latest
     permissions:
       packages: write
     needs:
-      - build-artifact
-      - pypi-publish
+      - validate-and-build
+      - create-release
     steps:
       - uses: actions/checkout@v5
-      - name: Retrieve release distributions
+        with:
+          ref: ${{ needs.validate-and-build.outputs.branch }}
+
+      - name: Download distributions
         uses: actions/download-artifact@v5
         with:
           name: release-dists
           path: dist/
+
       - name: Log in to the GitHub container registry
         uses: docker/login-action@v3.6.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3.11.1
-      - name: Version number for tags
+
+      - name: Generate Docker tags
         id: tags
-        shell: bash
-        run: |-
-          patch=${GITHUB_REF#refs/*/}
-          echo "patch=${patch}" >> $GITHUB_OUTPUT
-          echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
-          echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
-      - name: Build and Push release
-        uses: docker/build-push-action@v6.18.0
-        if: ${{ github.event.release.prerelease == false }}
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          file: Dockerfile
-          tags: |-
-            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.patch }},
-            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.minor }},
-            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.major }},
-            ghcr.io/${{ github.repository_owner }}/server:stable,
-            ghcr.io/${{ github.repository_owner }}/server:latest
-          push: true
-          build-args: |
-            MASS_VERSION=${{ needs.build-artifact.outputs.version }}
-            BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_STABLE }}
-      - name: Build and Push pre-release
-        uses: docker/build-push-action@v6.18.0
-        if: ${{ github.event.release.prerelease == true }}
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          file: Dockerfile
-          tags: |-
-            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.patch }},
-            ghcr.io/${{ github.repository_owner }}/server:beta
-          push: true
-          build-args: |
-            MASS_VERSION=${{ needs.build-artifact.outputs.version }}
-            BASE_IMAGE_VERSION=${{ env.BASE_IMAGE_VERSION_BETA }}
+        run: |
+          VERSION="${{ inputs.version }}"
+          CHANNEL="${{ inputs.channel }}"
 
-  release-notes-update:
-    name: Updates the release notes and changelog
-    needs: [build-artifact, pypi-publish, build-and-push-container-image]
+          # Extract version components
+          if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+          fi
+
+          TAGS="ghcr.io/${{ github.repository_owner }}/server:$VERSION"
+
+          case "$CHANNEL" in
+            stable)
+              # For stable: add major, minor, major.minor, stable, and latest tags
+              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:$MAJOR.$MINOR.$PATCH"
+              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:$MAJOR.$MINOR"
+              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:$MAJOR"
+              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:stable"
+              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:latest"
+              ;;
+            beta)
+              # For beta: add beta tag
+              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:beta"
+              ;;
+            nightly)
+              # For nightly: add nightly tag
+              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:nightly"
+              ;;
+          esac
+
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "Docker tags: $TAGS"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6.18.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          file: Dockerfile
+          tags: ${{ steps.tags.outputs.tags }}
+          push: true
+          build-args: |
+            MASS_VERSION=${{ inputs.version }}
+            BASE_IMAGE_VERSION=${{ needs.validate-and-build.outputs.base_image_version }}
+
+  update-addon-repository:
+    name: Update Home Assistant Add-on Repository
     runs-on: ubuntu-latest
-    steps:
-      - name: Update changelog and release notes including frontend notes
-        uses: music-assistant/release-notes-merge-action@main
-        with:
-          github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
-          release_tag: ${{ needs.build-artifact.outputs.version }}
-          pre_release: ${{ github.event.release.prerelease }}
-
-  addon-version-update:
-    name: Updates the Addon repository with the new version
     needs:
-      - build-artifact
-      - pypi-publish
+      - validate-and-build
+      - create-release
       - build-and-push-container-image
-      - release-notes-update
-    runs-on: ubuntu-latest
     steps:
-      - name: Push new version number to addon config
-        uses: music-assistant/addon-update-action@main
+      - name: Determine addon folder
+        id: addon_folder
+        run: |
+          CHANNEL="${{ inputs.channel }}"
+
+          case "$CHANNEL" in
+            stable)
+              echo "folder=music_assistant" >> $GITHUB_OUTPUT
+              echo "Updating stable add-on"
+              ;;
+            beta)
+              echo "folder=music_assistant_beta" >> $GITHUB_OUTPUT
+              echo "Updating beta add-on"
+              ;;
+            nightly)
+              echo "folder=music_assistant_nightly" >> $GITHUB_OUTPUT
+              echo "Updating nightly add-on"
+              ;;
+          esac
+
+      - name: Checkout add-on repository
+        uses: actions/checkout@v5
         with:
-          github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
-          new_server_version: ${{ needs.build-artifact.outputs.version }}
-          pre_release: ${{ github.event.release.prerelease }}
+          repository: music-assistant/home-assistant-addon
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: addon-repo
+
+      - name: Get release notes
+        id: get_notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd addon-repo
+
+          # Get the release body from the server repository
+          RELEASE_NOTES=$(gh release view "${{ inputs.version }}" --repo music-assistant/server --json body --jq .body)
+
+          # Save to file for processing
+          echo "$RELEASE_NOTES" > /tmp/release_notes.md
+
+      - name: Update config.yaml version
+        run: |
+          ADDON_FOLDER="${{ steps.addon_folder.outputs.folder }}"
+          VERSION="${{ inputs.version }}"
+
+          cd addon-repo/$ADDON_FOLDER
+
+          # Update version in config.yaml using sed
+          sed -i "s/^version: .*/version: $VERSION/" config.yaml
+
+          echo "✅ Updated config.yaml to version $VERSION"
+
+      - name: Update CHANGELOG.md
+        run: |
+          ADDON_FOLDER="${{ steps.addon_folder.outputs.folder }}"
+          VERSION="${{ inputs.version }}"
+
+          cd addon-repo/$ADDON_FOLDER
+
+          # Get current date
+          RELEASE_DATE=$(date +"%d.%m.%Y")
+
+          # Read the new release notes
+          NEW_NOTES=$(cat /tmp/release_notes.md)
+
+          # Create new changelog entry
+          {
+            echo "# [$VERSION] - $RELEASE_DATE"
+            echo ""
+            echo "$NEW_NOTES"
+            echo ""
+            echo ""
+          } > /tmp/new_changelog.md
+
+          # If CHANGELOG.md exists, keep only the last 2 versions
+          if [ -f CHANGELOG.md ]; then
+            # Extract headers to count versions
+            VERSION_COUNT=$(grep -c "^# \[" CHANGELOG.md || echo "0")
+
+            if [ "$VERSION_COUNT" -ge 2 ]; then
+              # Keep only first 2 versions (extract everything before the 3rd version header)
+              awk '/^# \[/{i++}i==3{exit}1' CHANGELOG.md > /tmp/old_changelog.md
+
+              # Combine new entry with trimmed old changelog
+              cat /tmp/new_changelog.md /tmp/old_changelog.md > CHANGELOG.md
+            else
+              # Less than 2 versions, just prepend
+              cat /tmp/new_changelog.md CHANGELOG.md > /tmp/combined_changelog.md
+              mv /tmp/combined_changelog.md CHANGELOG.md
+            fi
+          else
+            # No existing changelog, create new
+            mv /tmp/new_changelog.md CHANGELOG.md
+          fi
+
+          echo "✅ Updated CHANGELOG.md with new release"
+
+      - name: Commit and push changes
+        run: |
+          ADDON_FOLDER="${{ steps.addon_folder.outputs.folder }}"
+          VERSION="${{ inputs.version }}"
+          CHANNEL="${{ inputs.channel }}"
+
+          cd addon-repo
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "$ADDON_FOLDER/config.yaml" "$ADDON_FOLDER/CHANGELOG.md"
+
+          git commit -m "🤖 Bump $CHANNEL add-on to version $VERSION" || {
+            echo "No changes to commit"
+            exit 0
+          }
+
+          git push
+
+          echo "✅ Successfully updated add-on repository"

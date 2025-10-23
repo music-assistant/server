@@ -1278,7 +1278,9 @@ class PlayerQueuesController(CoreController):
     ) -> PlayerMedia:
         """Parse PlayerMedia from QueueItem."""
         queue = self._queues[queue_item.queue_id]
-        if queue_item.streamdetails:
+        if flow_mode:
+            duration = None
+        elif queue_item.streamdetails:
             # prefer netto duration
             # when seeking, the player only receives the remaining duration
             duration = queue_item.streamdetails.duration or queue_item.duration

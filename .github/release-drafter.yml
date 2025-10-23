@@ -1,7 +1,7 @@
 change-template: '- $TITLE (by @$AUTHOR in #$NUMBER)'
-prerelease: true
-prerelease-identifier: 'b'
-include-pre-releases: true
+
+# Note: prerelease flag is set dynamically by the workflow based on channel
+# This config is used for all release channels (stable, beta, nightly)
 
 # Exclude bots from contributors list
 exclude-contributors:
