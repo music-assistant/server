@@ -173,7 +173,7 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_VOLUME_NORMALIZATION_RADIO,
                 type=ConfigEntryType.STRING,
-                default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
+                default_value=VolumeNormalizationMode.FALLBACK_FIXED_GAIN,
                 label="Volume normalization method for radio streams",
                 options=[
                     ConfigValueOption(x.value.replace("_", " ").title(), x.value)
