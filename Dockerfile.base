@@ -134,6 +134,7 @@ RUN set -x \
 COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/
 COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/
 COPY --from=ffmpeg-builder /usr/local/lib/libavcodec.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libavdevice.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libavformat.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libavutil.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libswresample.so* /usr/local/lib/
