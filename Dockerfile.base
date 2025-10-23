@@ -27,8 +27,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libvorbis-dev \
     libsoxr-dev \
     libspeex-dev \
-    libwavpack-dev \
-    libflac-dev \
     libtwolame-dev \
     libvo-amrwbenc-dev \
     libopencore-amrnb-dev \
@@ -56,9 +54,7 @@ RUN set -x \
         --enable-libmp3lame \
         --enable-libopus \
         --enable-libvorbis \
-        --enable-libsoxr \
         --enable-libspeex \
-        --enable-libwavpack \
         --enable-libtwolame \
         --enable-libshine \
         --enable-libopencore-amrnb \
@@ -66,11 +62,7 @@ RUN set -x \
         --enable-libvo-amrwbenc \
         # Audio filters and resampling
         --enable-libsamplerate \
-        # Basic video support (minimal)
-        --enable-decoder=h264 \
-        --enable-decoder=hevc \
-        --enable-decoder=vp8 \
-        --enable-decoder=vp9 \
+        --enable-libsoxr \
         # Protocols needed for streaming
         --enable-protocol=file \
         --enable-protocol=http \
@@ -125,8 +117,6 @@ RUN set -x \
         libvorbisenc2 \
         libsoxr0 \
         libspeex1 \
-        libwavpack1 \
-        libflac12 \
         libtwolame0 \
         libshine3 \
         libopencore-amrnb0 \
