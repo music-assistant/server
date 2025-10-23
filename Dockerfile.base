@@ -35,6 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Additional audio processing
     libbluray-dev \
     libxml2-dev \
+    # SSL/TLS support for HTTPS
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Build FFmpeg 7.1.2 from source with comprehensive audio codec support
@@ -61,6 +63,8 @@ RUN set -x \
         --enable-libvo-amrwbenc \
         # Audio filters and resampling
         --enable-libsoxr \
+        # SSL/TLS support for HTTPS
+        --enable-openssl \
         # Protocols needed for streaming
         --enable-protocol=file \
         --enable-protocol=http \
