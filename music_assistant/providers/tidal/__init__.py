@@ -240,8 +240,8 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_OOPS_URL,
                 type=ConfigEntryType.LABEL,
-                label="Copy the URL from the 'Page Not Found' page that you were previously redirected to"
-                " and paste it in the field below",
+                label="Copy the URL from the 'Page Not Found' page that you were previously"
+                " redirected to and paste it in the field below",
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
@@ -266,8 +266,8 @@ async def get_config_entries(
                 key=CONF_ACTION_COMPLETE_PKCE_LOGIN,
                 type=ConfigEntryType.ACTION,
                 label="Complete the auth process via PKCE on Tidal.com",
-                description="Click this after adding the 'Page Not Found' URL above, this will complete the"
-                " authentication process.",
+                description="Click this after adding the 'Page Not Found' URL above, this will"
+                " complete the authentication process.",
                 action=CONF_ACTION_COMPLETE_PKCE_LOGIN,
                 depends_on=CONF_OOPS_URL,
                 action_label="Complete the auth process via PKCE on Tidal.com",
