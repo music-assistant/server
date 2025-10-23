@@ -12,10 +12,6 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from music_assistant_models.enums import MediaType
-    from music_assistant_models.media_items import MediaItemType
-
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -41,13 +37,3 @@ class NicovideoMusicProviderMixinBase(MusicProvider):
 
     async def unload_for_mixin(self, is_removed: bool = False) -> None:
         """Handle unload/close for this mixin."""
-
-    async def library_add_for_mixin(self, item: MediaItemType) -> bool | None:
-        """Add item to library. Return True/False on success/failure, None if not handled."""
-        return None  # Default implementation: this mixin doesn't handle library add
-
-    async def library_remove_for_mixin(
-        self, prov_item_id: str, media_type: MediaType
-    ) -> bool | None:
-        """Remove item from library. Return True/False on success/failure, None if not handled."""
-        return None  # Default implementation: this mixin doesn't handle library remove

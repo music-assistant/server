@@ -6,7 +6,6 @@ In this section, we treat niconico's "series" as an album.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import override
 
 from music_assistant_models.errors import MediaNotFoundError
@@ -32,31 +31,6 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
             raise MediaNotFoundError(f"Album with id {prov_album_id} not found on nicovideo.")
 
         return album_with_tracks.album
-
-    @override
-    async def get_library_albums(
-        self,
-    ) -> AsyncGenerator[Album, None]:
-        """Retrieve library albums from the provider."""
-        # Default: do not include own series as albums
-        include_own_series_albums = False
-        if not include_own_series_albums:
-            return
-
-        page = 1
-        while True:
-            albums = await self.service_manager.series.get_own_series(page=page, page_size=100)
-            if not albums:
-                break
-
-            for album in albums:
-                yield album
-
-            # If we got fewer albums than page_size, we've reached the end
-            if len(albums) < 100:
-                break
-
-            page += 1
 
     @override
     @use_cache(3600 * 24 * 7)  # Cache for 7 days

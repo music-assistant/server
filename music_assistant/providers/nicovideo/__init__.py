@@ -21,16 +21,10 @@ if TYPE_CHECKING:
 
 # Supported features collected from all mixins
 SUPPORTED_FEATURES = {
-    # Track mixin
-    ProviderFeature.LIBRARY_TRACKS,
-    ProviderFeature.LIBRARY_TRACKS_EDIT,
     # Artist mixin
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.LIBRARY_ARTISTS,
-    ProviderFeature.LIBRARY_ARTISTS_EDIT,
-    # Album mixin
-    ProviderFeature.LIBRARY_ALBUMS,
     # Playlist mixin
     ProviderFeature.LIBRARY_PLAYLISTS,
     ProviderFeature.PLAYLIST_TRACKS_EDIT,

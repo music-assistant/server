@@ -17,11 +17,7 @@ Architecture Overview:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
-
-if TYPE_CHECKING:
-    from music_assistant_models.enums import MediaType
-    from music_assistant_models.media_items import MediaItemType
+from typing import override
 
 from music_assistant.providers.nicovideo.provider_mixins import (
     NicovideoMusicProviderAlbumMixin,
@@ -65,21 +61,3 @@ class NicovideoMusicProvider(
         """Handle unload/close of the provider."""
         for mixin_class in NICOVIDEO_MIXINS[::-1]:
             await mixin_class.unload_for_mixin(self, is_removed)
-
-    @override
-    async def library_add(self, item: MediaItemType) -> bool:
-        """Add item to provider's library. Return true on success."""
-        for mixin_class in NICOVIDEO_MIXINS:
-            result = await mixin_class.library_add_for_mixin(self, item)
-            if result is not None:
-                return result
-        return False
-
-    @override
-    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove item from provider's library. Return true on success."""
-        for mixin_class in NICOVIDEO_MIXINS:
-            result = await mixin_class.library_remove_for_mixin(self, prov_item_id, media_type)
-            if result is not None:
-                return result
-        return False

@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Album, Artist, Track
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import Album, Artist, Track
 
 
 class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
@@ -31,19 +33,6 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
         self,
     ) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from the provider."""
-        # Default: include artists from library tracks
-        include_library_track_artists = True
-        if include_library_track_artists:
-            async for track in self.mass.music.tracks.iter_library_items(
-                provider=self.instance_id,
-            ):
-                for artist in track.artists:
-                    if isinstance(artist, Artist):
-                        yield artist
-                    else:
-                        # Convert ItemMapping to Artist
-                        yield self.mass.music.artists.artist_from_item_mapping(artist)
-
         # Include followed artists if user is logged in
         following_artists = await self.service_manager.user.get_own_followings()
         for artist in following_artists:
