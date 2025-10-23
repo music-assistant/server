@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import platform
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -287,8 +285,6 @@ class RaopStream:
             "-",
         ]
         self._cliraop_proc = AsyncProcess(cliraop_args, stdin=True, stderr=True, name="cliraop")
-        if platform.system() == "Darwin":
-            os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
         await self._cliraop_proc.start()
         # read first 20 lines of stderr to get the initial status
         for _ in range(20):
