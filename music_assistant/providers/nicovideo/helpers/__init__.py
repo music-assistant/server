@@ -11,7 +11,6 @@ from music_assistant.providers.nicovideo.helpers.hls_seek_optimizer import (
 from music_assistant.providers.nicovideo.helpers.utils import (
     AlbumWithTracks,
     PlaylistWithTracks,
-    cache_track,
     create_audio_format,
     log_verbose,
 )
@@ -23,7 +22,6 @@ __all__ = [
     "ParsedHLSPlaylist",
     "PlaylistWithTracks",
     "SeekOptimizedStreamContext",
-    "cache_track",
     "create_audio_format",
     "log_verbose",
 ]

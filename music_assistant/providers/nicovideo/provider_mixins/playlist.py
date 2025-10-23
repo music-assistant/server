@@ -7,13 +7,12 @@ In this section, "Mylist" on niconico is treated as a playlist.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, override
+from typing import override
 
 from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.media_items import Playlist, Track  # noqa: TC002 - used in @use_cache
 
-if TYPE_CHECKING:
-    from music_assistant_models.media_items import Playlist, Track
-
+from music_assistant.controllers.cache import use_cache
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
@@ -23,6 +22,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     """Mixin class for handling playlist-related operations in NicovideoMusicProvider."""
 
     @override
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         playlist_with_tracks = await self.service_manager.mylist.get_mylist_or_own_mylist(
@@ -33,6 +33,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         return playlist_with_tracks.playlist
 
     @override
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(
         self,
         prov_playlist_id: str,

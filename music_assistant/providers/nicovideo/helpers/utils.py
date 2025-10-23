@@ -27,8 +27,6 @@ from music_assistant.providers.nicovideo.constants import (
 if TYPE_CHECKING:
     import logging
 
-    from music_assistant.models.music_provider import MusicProvider
-
 
 @dataclass
 class PlaylistWithTracks(DataClassDictMixin):
@@ -44,22 +42,6 @@ class AlbumWithTracks(DataClassDictMixin):
 
     album: Album
     tracks: list[Track]
-
-
-async def cache_track(provider: MusicProvider, track: Track) -> None:
-    """Cache single track with provider item cache.
-
-    Note: While MusicAssistant's get_provider_item automatically handles cache retrieval
-    and storage, this helper function is needed for explicit cache updates (e.g., when
-    adding album information to tracks) since MusicAssistant doesn't provide a dedicated
-    cache-only update function.
-    """
-    cache_key = f"track.{track.item_id}"
-    await provider.mass.cache.set(
-        cache_key,
-        track.to_dict(),
-        provider=provider.lookup_key,
-    )
 
 
 def log_verbose(logger: logging.Logger, message: str, *args: object) -> None:

@@ -3,23 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, override
+from typing import override
 
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Artist
+from music_assistant_models.media_items import Album, Artist, Track
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
-
-if TYPE_CHECKING:
-    from music_assistant_models.media_items import Album, Track
 
 
 class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
     """Artist-related methods for NicovideoMusicProvider."""
 
     @override
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         artist = await self.service_manager.user.get_user(prov_artist_id)
@@ -51,11 +50,13 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
             yield artist
 
     @override
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist (user's series)."""
         return await self.service_manager.series.get_user_series(prov_artist_id)
 
     @override
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get newest 50 tracks of an artist."""
         return await self.service_manager.video.get_user_videos(

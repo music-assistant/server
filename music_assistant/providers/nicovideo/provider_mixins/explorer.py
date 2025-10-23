@@ -8,6 +8,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import RecommendationFolder, SearchResults, Track
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
@@ -17,6 +18,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
     """Search and recommendations methods for NicovideoMusicProvider."""
 
     @override
+    @use_cache(3600 * 3)  # Cache for 3 hours
     async def search(
         self,
         search_query: str,
@@ -46,6 +48,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         return search_result
 
     @override
+    @use_cache(1800)  # Cache for 30 minutes
     async def recommendations(self) -> list[RecommendationFolder]:
         """
         Get this provider's recommendations.
@@ -114,6 +117,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         return recommendation_folders
 
     @override
+    @use_cache(3600 * 6)  # Cache for 6 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         return await self.service_manager.user.get_similar_tracks(prov_track_id, limit)

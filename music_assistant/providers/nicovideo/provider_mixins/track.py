@@ -9,8 +9,9 @@ import shortuuid
 from aiohttp import web
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.media_items import AudioFormat, Track
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.providers.nicovideo.converters.stream import NicovideoStreamData
 from music_assistant.providers.nicovideo.helpers.hls_seek_optimizer import (
@@ -21,7 +22,7 @@ from music_assistant.providers.nicovideo.provider_mixins.base import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import MediaItemType, Track
+    from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.streamdetails import StreamDetails
 
 
@@ -29,6 +30,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
     """Track-related methods for NicovideoMusicProvider."""
 
     @override
+    @use_cache(3600 * 24 * 14, 1)  # Cache for 14 days
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         track = await self.service_manager.video.get_video(prov_track_id)
