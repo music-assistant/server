@@ -28,7 +28,7 @@ from .player import SonosPlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import PlayerConfig
-    from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.player import PlayerMedia
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -152,10 +152,6 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
         sonos_player.device_info.ip_address = address
         await sonos_player.setup()
-        # # trigger update on all existing players to update the group status
-        # for _player in self.sonos_players.values():
-        #     if _player.player_id != player_id:
-        #         _player.on_player_event(None)
 
     async def _handle_sonos_queue_itemwindow(self, request: web.Request) -> web.Response:
         """
@@ -166,34 +162,24 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue ItemWindow request: %s", request.query)
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        queue_version = request.query.get("queueVersion")
-        context_version = request.query.get("contextVersion")
-        if not (mass_queue := self.mass.player_queues.get_active_queue(sonos_player_id)):
+        if not (sonos_player := self.mass.players.get(sonos_player_id)):
             return web.Response(status=501)
-        if item_id := request.query.get("itemId"):
-            cur_queue_index = self.mass.player_queues.index_by_id(mass_queue.queue_id, item_id)
-        else:
-            cur_queue_index = mass_queue.current_index
-        if cur_queue_index is None:
-            return web.Response(status=501)
+        if TYPE_CHECKING:
+            assert isinstance(sonos_player, SonosPlayer)
+
+        context_version = request.query.get("contextVersion", "1")
+        queue_version = request.query.get(
+            "queueVersion", str(int(sonos_player.sonos_queue.last_updated))
+        )
         # because Sonos does not show our queue in the app anyways,
-        # we just return the current and 2 next items in the queue
-        cur_queue_item = self.mass.player_queues.get_item(mass_queue.queue_id, cur_queue_index)
-        queue_items = [cur_queue_item]
-        if next_queue_item := self.mass.player_queues.get_next_item(
-            mass_queue.queue_id, cur_queue_index
-        ):
-            queue_items.append(next_queue_item)
-            if next_next_queue_item := self.mass.player_queues.get_next_item(
-                mass_queue.queue_id, next_queue_item.queue_item_id
-            ):
-                queue_items.append(next_next_queue_item)
+        # we just return the previous, current and next item in the queue
+        items = list(sonos_player.sonos_queue.items)
         result = {
             "includesBeginningOfQueue": False,
-            "includesEndOfQueue": True,
+            "includesEndOfQueue": False,
             "contextVersion": context_version,
             "queueVersion": queue_version,
-            "items": [await self._parse_sonos_queue_item(item) for item in queue_items],
+            "items": [self._parse_sonos_queue_item(x) for x in items],
         }
         return web.json_response(result)
 
@@ -206,12 +192,16 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue Version request: %s", request.query)
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (self.mass.players.get(sonos_player_id)):
+        if not (sonos_player := self.mass.players.get(sonos_player_id)):
             return web.Response(status=501)
-        mass_queue = self.mass.player_queues.get_active_queue(sonos_player_id)
+        if TYPE_CHECKING:
+            assert isinstance(sonos_player, SonosPlayer)
+
         context_version = request.query.get("contextVersion") or "1"
-        queue_version = str(int(mass_queue.items_last_updated)) if mass_queue else "0"
-        result = {"contextVersion": context_version, "queueVersion": queue_version}
+        result = {
+            "contextVersion": context_version,
+            "queueVersion": str(int(sonos_player.sonos_queue.last_updated)),
+        }
         return web.json_response(result)
 
     async def _handle_sonos_queue_context(self, request: web.Request) -> web.Response:
@@ -223,21 +213,24 @@ class SonosPlayerProvider(PlayerProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Cloud Queue Context request: %s", request.query)
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (mass_queue := self.mass.player_queues.get_active_queue(sonos_player_id)):
+        if not (sonos_player := self.mass.players.get(sonos_player_id)):
             return web.Response(status=501)
-        if not (self.mass.players.get(sonos_player_id)):
-            return web.Response(status=501)
+        if TYPE_CHECKING:
+            assert isinstance(sonos_player, SonosPlayer)
+
         result = {
             "contextVersion": "1",
-            "queueVersion": str(int(mass_queue.items_last_updated)),
+            "queueVersion": str(int(sonos_player.sonos_queue.last_updated)),
             "container": {
-                "type": "playlist",
+                "type": "trackList",
                 "name": "Music Assistant",
                 "imageUrl": MASS_LOGO_ONLINE,
                 "service": {"name": "Music Assistant", "id": "mass"},
                 "id": {
                     "serviceId": "mass",
-                    "objectId": f"mass:{mass_queue.queue_id}",
+                    "objectId": f"mass:{sonos_player.sonos_queue.items[-1].source_id}"
+                    if sonos_player.sonos_queue.items
+                    else "mass:unknown",
                     "accountId": "",
                 },
             },
@@ -248,13 +241,13 @@ class SonosPlayerProvider(PlayerProvider):
             },
             "playbackPolicies": {
                 "canSkip": True,
-                "limitedSkips": False,
-                "canSkipToItem": False,  # unsure
+                "limitedSkips": True,
+                "canSkipToItem": True,  # unsure
                 "canSkipBack": True,
                 # seek needs to be disabled because we dont properly support range requests
                 "canSeek": False,
                 "canRepeat": False,  # handled by MA queue controller
-                "canRepeatOne": True,  # synced from MA queue controller
+                "canRepeatOne": False,  # synced from MA queue controller
                 "canCrossfade": False,  # handled by MA queue controller
                 "canShuffle": False,  # handled by MA queue controller
             },
@@ -271,74 +264,44 @@ class SonosPlayerProvider(PlayerProvider):
         json_body = await request.json()
         sonos_playback_id = request.headers["X-Sonos-Playback-Id"]
         sonos_player_id = sonos_playback_id.split(":")[0]
-        if not (mass_player := self.mass.players.get(sonos_player_id)):
+        if not (sonos_player := self.mass.players.get(sonos_player_id)):
             return web.Response(status=501)
-        if not (self.mass.players.get(sonos_player_id)):
-            return web.Response(status=501)
+        if TYPE_CHECKING:
+            assert isinstance(sonos_player, SonosPlayer)
         for item in json_body["items"]:
             if item["type"] != "update":
                 continue
             if "positionMillis" not in item:
                 continue
-            if mass_player.current_media and mass_player.current_media.queue_item_id == item["id"]:
-                mass_player.update_elapsed_time(item["positionMillis"] / 1000)
+            if (
+                sonos_player.current_media
+                and sonos_player.current_media.queue_item_id == item["id"]
+            ):
+                sonos_player.update_elapsed_time(item["positionMillis"] / 1000)
             break
         return web.Response(status=204)
 
-    async def _parse_sonos_queue_item(self, queue_item: QueueItem) -> dict[str, Any]:
-        """Parse a MusicAssistant QueueItem to a Sonos Media (queue) object."""
-        queue = self.mass.player_queues.get(queue_item.queue_id)
-        assert queue  # for type checking
-        stream_url = await self.mass.streams.resolve_stream_url(queue.session_id, queue_item)
-        if streamdetails := queue_item.streamdetails:
-            duration = streamdetails.duration or queue_item.duration
-            if duration and streamdetails.seek_position:
-                duration -= streamdetails.seek_position
-        else:
-            duration = queue_item.duration
-
+    def _parse_sonos_queue_item(self, media: PlayerMedia) -> dict[str, Any]:
+        """Parse MusicAssistant PlayerMedia to a Sonos Media (queue) object."""
         return {
-            "id": queue_item.queue_item_id,
-            "deleted": not queue_item.available,
-            "policies": {
-                "canCrossfade": False,  # crossfading is handled by our streams controller
-                "canSkip": True,
-                "canSkipBack": True,
-                "canSkipToItem": True,
-                # seek needs to be disabled because we dont properly support range requests
-                "canSeek": False,
-                "canRepeat": True,
-                "canRepeatOne": True,
-                "canShuffle": True,
-            },
+            "id": media.queue_item_id or media.uri,
             "track": {
                 "type": "track",
-                "mediaUrl": stream_url,
-                "contentType": f"audio/{stream_url.split('.')[-1]}",
-                "service": {
-                    "name": "Music Assistant",
-                    "id": "8",
-                    "accountId": "",
-                    "objectId": queue_item.queue_item_id,
-                },
-                "name": queue_item.media_item.name if queue_item.media_item else queue_item.name,
-                "imageUrl": self.mass.metadata.get_image_url(
-                    queue_item.image, prefer_proxy=False, image_format="jpeg"
-                )
-                if queue_item.image
-                else None,
-                "durationMillis": duration * 1000 if duration else None,
+                "mediaUrl": media.uri,
+                "contentType": f"audio/{media.uri.split('.')[-1]}",
+                "service": {"name": "Music Assistant", "id": "mass"},
+                "name": media.title,
+                "imageUrl": media.image_url,
+                "durationMillis": media.duration * 1000 if media.duration else 0,
                 "artist": {
-                    "name": artist_str,
+                    "name": media.artist,
                 }
-                if queue_item.media_item
-                and (artist_str := getattr(queue_item.media_item, "artist_str", None))
+                if media.artist
                 else None,
                 "album": {
-                    "name": album.name,
+                    "name": media.album,
                 }
-                if queue_item.media_item
-                and (album := getattr(queue_item.media_item, "album", None))
+                if media.album
                 else None,
             },
         }

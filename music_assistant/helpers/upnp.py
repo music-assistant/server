@@ -22,9 +22,9 @@ def _get_soap_action(command: str) -> str:
     return f"urn:schemas-upnp-org:service:AVTransport:1#{command}"
 
 
-def _get_body(command: str, arguments: str = "") -> str:
+def _get_body(command: str, arguments: str = "", service: str = "AVTransport") -> str:
     return (
-        f'<u:{command} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+        f'<u:{command} xmlns:u="urn:schemas-upnp-org:service:{service}:1">'
         r"<InstanceID>0</InstanceID>"
         f"{arguments}"
         f"</u:{command}>"
@@ -98,6 +98,12 @@ def get_xml_soap_set_url(player_media: PlayerMedia) -> tuple[str, str]:
     return _get_xml(_get_body(command, arguments)), _get_soap_action(command)
 
 
+def get_xml_soap_remove_all_tracks() -> tuple[str, str]:
+    """Get UPnP xml and soap for RemoveAllTracksFromQueue."""
+    command = "RemoveAllTracksFromQueue"
+    return _get_xml(_get_body(command)), _get_soap_action(command)
+
+
 def get_xml_soap_set_next_url(player_media: PlayerMedia) -> tuple[str, str]:
     """Get UPnP xml and soap for SetNextAVTransportURI."""
     metadata = create_didl_metadata_str(player_media)
@@ -106,6 +112,53 @@ def get_xml_soap_set_next_url(player_media: PlayerMedia) -> tuple[str, str]:
         f"<NextURI>{player_media.uri}</NextURI><NextURIMetaData>{metadata}</NextURIMetaData>"
     )
     return _get_xml(_get_body(command, arguments)), _get_soap_action(command)
+
+
+# RemoveTrackFromQueue
+def get_xml_soap_remove_track(object_id: str) -> tuple[str, str]:
+    """Get UPnP xml and soap for RemoveTrackFromQueue."""
+    command = "RemoveTrackFromQueue"
+    arguments = f"<ObjectID>{object_id}</ObjectID>"
+    return _get_xml(_get_body(command, arguments)), _get_soap_action(command)
+
+
+# AddURIToQueue
+def get_xml_soap_add_uri_to_queue(player_media: PlayerMedia) -> tuple[str, str]:
+    """Get UPnP xml and soap for AddURIToQueue."""
+    metadata = create_didl_metadata_str(player_media)
+    command = "AddURIToQueue"
+    arguments = (
+        f"<EnqueuedURI>{player_media.uri}</EnqueuedURI>"
+        f"<EnqueuedURIMetaData>{metadata}</EnqueuedURIMetaData>"
+        "<DesiredFirstTrackNumberEnqueued>1</DesiredFirstTrackNumberEnqueued>"
+        "<EnqueueAsNext>0</EnqueueAsNext>"
+    )
+    return _get_xml(_get_body(command, arguments)), _get_soap_action(command)
+
+
+# CreateSavedQueue
+def get_xml_soap_create_saved_queue(queue_name: str, player_media: PlayerMedia) -> tuple[str, str]:
+    """Get UPnP xml and soap for CreateSavedQueue."""
+    command = "CreateSavedQueue"
+    metadata = create_didl_metadata_str(player_media)
+    arguments = (
+        f"<Title>{xmlescape(queue_name)}</Title>"
+        f"<EnqueuedURI>{player_media.uri}</EnqueuedURI>"
+        f"<EnqueuedURIMetaData>{metadata}</EnqueuedURIMetaData>"
+    )
+    return _get_xml(_get_body(command, arguments)), _get_soap_action(command)
+
+
+# CreateQueue
+def get_xml_soap_create_queue() -> tuple[str, str]:
+    """Get UPnP xml and soap for CreateQueue."""
+    command = "CreateQueue"
+    arguments = (
+        "<QueueOwnerID>mass</QueueOwnerID>"
+        "<QueueOwnerContext>mass</QueueOwnerContext>"
+        "<QueuePolicy>0</QueuePolicy>"
+    )
+    return _get_xml(_get_body(command, arguments, "Queue")), _get_soap_action(command)
 
 
 # DIDL-LITE
