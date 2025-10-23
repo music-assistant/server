@@ -22,14 +22,6 @@
       "args": ["tests"]
     },
     {
-      "name": "Music Assistant: Snapshot Update",
-      "type": "debugpy",
-      "request": "launch",
-      "module": "pytest",
-      "justMyCode": false,
-      "args": ["tests","--snapshot-update"]
-    },
-    {
       "name": "Python Debugger: Current File",
       "type": "debugpy",
       "request": "launch",
