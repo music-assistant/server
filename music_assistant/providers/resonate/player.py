@@ -244,7 +244,7 @@ class ResonatePlayer(Player):
 
             # Create MediaStream wrapping the MultiClientStream
             class MusicAssistantMediaStream(MediaStream):
-                def player_stream(
+                def player_channel(
                     self: MusicAssistantMediaStream,
                     player_id: str,
                     preferred_format: ResonateAudioFormat | None = None,
@@ -280,7 +280,7 @@ class ResonatePlayer(Player):
                     )
 
                     # Return actual position in microseconds relative to main_stream start
-                    position_us = multi_client_stream.position_us
+                    actual_position_us = multi_client_stream.position_us
                     return (
                         multi_client_stream.get_stream(
                             output_format=pcm_format,
@@ -292,12 +292,12 @@ class ResonatePlayer(Player):
                             channels=pcm_format.channels,
                             codec=audio_codec,
                         ),
-                        position_us,
+                        actual_position_us,
                     )
 
             media_stream = MusicAssistantMediaStream(
-                main_stream_source=self.multi_client_stream.subscribe_raw(),
-                main_stream_format=ResonateAudioFormat(
+                main_channel_source=self.multi_client_stream.subscribe_raw(),
+                main_channel_format=ResonateAudioFormat(
                     sample_rate=pcm_format.sample_rate,
                     bit_depth=pcm_format.bit_depth,
                     channels=pcm_format.channels,
