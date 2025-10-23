@@ -72,12 +72,12 @@ from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stre
 from music_assistant.helpers.smart_fades import (
     SMART_CROSSFADE_DURATION,
     SmartFadesMixer,
-    SmartFadesMode,
 )
 from music_assistant.helpers.util import get_ip_addresses, select_free_port
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
@@ -832,7 +832,7 @@ class StreamsController(CoreController):
             if smart_fades_mode == SmartFadesMode.STANDARD_CROSSFADE
             else "",
         )
-        total_bytes_sent = 0
+        total_bytes_sent = 0.0
 
         while True:
             # get (next) queue item to stream
@@ -958,12 +958,14 @@ class StreamsController(CoreController):
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping
             seconds_streamed = bytes_written / pcm_sample_size
-            queue_track.streamdetails.seconds_streamed = float(seconds_streamed)
-            queue_track.streamdetails.duration = float(
-                queue_track.streamdetails.seek_position + seconds_streamed
-            )
-            play_log_entry.seconds_streamed = float(seconds_streamed)
-            play_log_entry.duration = float(queue_track.streamdetails.duration)
+            queue_track.streamdetails.seconds_streamed = seconds_streamed
+            if queue_track.streamdetails.seek_position is not None:
+                queue_track.streamdetails.duration = int(
+                    queue_track.streamdetails.seek_position + seconds_streamed
+                )
+            play_log_entry.seconds_streamed = seconds_streamed
+            if queue_track.streamdetails.duration is not None:
+                play_log_entry.duration = queue_track.streamdetails.duration
             total_bytes_sent += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
@@ -979,11 +981,13 @@ class StreamsController(CoreController):
             last_part_seconds = len(last_fadeout_part) / pcm_sample_size
             if queue_track.streamdetails:
                 if queue_track.streamdetails.seconds_streamed is not None:
-                    queue_track.streamdetails.seconds_streamed += last_part_seconds
+                    queue_track.streamdetails.seconds_streamed = (
+                        queue_track.streamdetails.seconds_streamed + last_part_seconds
+                    )
                 if queue_track.streamdetails.duration is not None:
-                    queue_track.streamdetails.duration += last_part_seconds
-            last_fadeout_part = b""
-        total_bytes_sent += bytes_written
+                    queue_track.streamdetails.duration = int(
+                        queue_track.streamdetails.duration + last_part_seconds
+                    )
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
@@ -1104,7 +1108,7 @@ class StreamsController(CoreController):
                 if streamdetails.media_type == MediaType.TRACK
                 else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
             )
-            gain_value = float(gain_value_raw) if gain_value_raw is not None else 0.0
+            gain_value = float(gain_value_raw) if isinstance(gain_value_raw, (int, float)) else 0.0
             gain_correct = round(gain_value, 2)
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
@@ -1283,7 +1287,7 @@ class StreamsController(CoreController):
         # this also accounts for crossfade and silence stripping
         seconds_streamed = bytes_written / pcm_format.pcm_sample_size
         streamdetails.seconds_streamed = seconds_streamed
-        streamdetails.duration = streamdetails.seek_position + seconds_streamed
+        streamdetails.duration = int(streamdetails.seek_position + seconds_streamed)
         if queue_item.streamdetails:
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
