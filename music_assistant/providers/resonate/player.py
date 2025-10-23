@@ -236,8 +236,8 @@ class ResonatePlayer(Player):
 
             # Create MediaStream wrapping the audio source generator
             media_stream = MediaStream(
-                source=audio_source,
-                audio_format=ResonateAudioFormat(
+                main_stream_source=audio_source,
+                main_stream_format=ResonateAudioFormat(
                     sample_rate=pcm_format.sample_rate,
                     bit_depth=pcm_format.bit_depth,
                     channels=pcm_format.channels,
