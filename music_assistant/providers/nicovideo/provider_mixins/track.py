@@ -29,7 +29,7 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
     """Track-related methods for NicovideoMusicProvider."""
 
     @override
-    @use_cache(3600 * 24 * 14, 1)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         track = await self.service_manager.video.get_video(prov_track_id)
