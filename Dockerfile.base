@@ -6,6 +6,10 @@
 
 FROM python:3.13-slim-bookworm AS ffmpeg-builder
 
+# Enable non-free and contrib repositories for FDK-AAC and other codecs
+RUN sed -i 's/^deb \(.*\) bookworm main$/deb \1 bookworm main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
+
 # Install build dependencies for FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -36,7 +40,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Build FFmpeg 7.1.2 from source with comprehensive audio codec support
-# Using static linking for self-contained binaries
 ARG FFMPEG_VERSION=7.1.2
 RUN set -x \
     && wget -q "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" -O /tmp/ffmpeg.tar.xz \
@@ -47,9 +50,6 @@ RUN set -x \
         --enable-gpl \
         --enable-nonfree \
         --enable-version3 \
-        --pkg-config-flags="--static" \
-        --extra-ldflags="-static" \
-        --extra-libs="-lpthread -lm -lz" \
         # Audio codecs (comprehensive support)
         --enable-libfdk-aac \
         --enable-libmp3lame \
@@ -84,8 +84,6 @@ RUN set -x \
         --disable-podpages \
         --disable-txtpages \
         --disable-debug \
-        --disable-shared \
-        --enable-static \
     && make -j$(nproc) \
     && make install \
     && strip /usr/local/bin/ffmpeg /usr/local/bin/ffprobe \
@@ -94,6 +92,10 @@ RUN set -x \
 ##################################################################################################
 
 FROM python:3.13-slim-bookworm
+
+# Enable non-free and contrib repositories for codec libraries
+RUN sed -i 's/^deb \(.*\) bookworm main$/deb \1 bookworm main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/Components: main/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
 
 # Install runtime dependencies
 RUN set -x \
@@ -113,15 +115,39 @@ RUN set -x \
         # snapcast server and client for snapcast provider
         snapserver \
         snapclient \
+        # Audio codec runtime libraries (needed for FFmpeg)
+        libfdk-aac2 \
+        libmp3lame0 \
+        libopus0 \
+        libvorbis0a \
+        libvorbisenc2 \
+        libsoxr0 \
+        libspeex1 \
+        libwavpack1 \
+        libflac12 \
+        libtwolame0 \
+        libshine3 \
+        libopencore-amrnb0 \
+        libopencore-amrwb0 \
+        libvo-amrwbenc0 \
+        libsamplerate0 \
+        libbluray2 \
+        libxml2 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy statically-linked FFmpeg binaries from builder stage
+# Copy FFmpeg binaries and libraries from builder stage
 COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/
 COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/
+COPY --from=ffmpeg-builder /usr/local/lib/libavcodec.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libavformat.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libavutil.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libswresample.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libavfilter.so* /usr/local/lib/
+COPY --from=ffmpeg-builder /usr/local/lib/libswscale.so* /usr/local/lib/
 
-# Verify FFmpeg installation
-RUN ffmpeg -version && ffprobe -version
+# Update shared library cache and verify FFmpeg
+RUN ldconfig && ffmpeg -version && ffprobe -version
 
 # Copy widevine client files to container
 RUN mkdir -p /usr/local/bin/widevine_cdm
