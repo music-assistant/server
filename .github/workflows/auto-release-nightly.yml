@@ -1,0 +1,107 @@
+name: Auto Release
+
+# Automatically creates a nightly release every night at 02:00 UTC if there are 2+ commits since the last release
+# Calculates the next version number (patch increment) and triggers the publish release workflow
+
+on:
+  schedule:
+    # Run at 02:00 UTC every day
+    - cron: "0 2 * * *"
+  workflow_dispatch: # Allow manual trigger for testing
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-release:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.next_version.outputs.version }}
+      should_release: ${{ steps.check_commits.outputs.has_commits }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for proper comparison
+
+      - name: Check for new commits
+        id: check_commits
+        run: |
+          # Get the latest NIGHTLY/DEV release (exclude drafts, filter for .dev versions)
+          LATEST_RELEASE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains(".dev"))' 2>/dev/null | jq -s '.[0]' || echo "")
+
+          if [ -z "$LATEST_RELEASE" ] || [ "$LATEST_RELEASE" == "null" ]; then
+            echo "No previous nightly releases found"
+            echo "has_commits=true" >> $GITHUB_OUTPUT
+            echo "last_tag=" >> $GITHUB_OUTPUT
+          else
+            RELEASE_DATE=$(echo "$LATEST_RELEASE" | jq -r '.createdAt')
+            LAST_TAG=$(echo "$LATEST_RELEASE" | jq -r '.tagName')
+            echo "Latest nightly release: $LAST_TAG at $RELEASE_DATE"
+            echo "last_tag=$LAST_TAG" >> $GITHUB_OUTPUT
+
+            # Check if there are commits since the latest nightly release
+            COMMITS_SINCE=$(git log --since="$RELEASE_DATE" --oneline | wc -l)
+            echo "Commits since last nightly release: $COMMITS_SINCE"
+
+            # Require at least 2 commits for auto-release
+            if [ "$COMMITS_SINCE" -ge 2 ]; then
+              echo "has_commits=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_commits=false" >> $GITHUB_OUTPUT
+              echo "Only $COMMITS_SINCE commit(s) found. Need at least 2 commits for auto-release."
+            fi
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Calculate next version
+        id: next_version
+        if: steps.check_commits.outputs.has_commits == 'true'
+        run: |
+          LAST_TAG="${{ steps.check_commits.outputs.last_tag }}"
+
+          # Get today's date in YYYYMMDD format
+          TODAY=$(date -u +%Y%m%d)
+
+          if [ -z "$LAST_TAG" ]; then
+            # No previous nightly tag, start with 0.0.1.devYYYYMMDD
+            NEW_VERSION="0.0.1.dev${TODAY}"
+          else
+            # Extract version number (handles tags like "v1.2.3.dev20251023" or "1.2.3.dev20251023")
+            VERSION=$(echo "$LAST_TAG" | sed 's/^v//')
+
+            # Check if it's a .devYYYYMMDD version
+            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
+              BASE_VERSION="${BASH_REMATCH[1]}"
+
+              # Use today's date for the new dev version
+              NEW_VERSION="${BASE_VERSION}.dev${TODAY}"
+            else
+              # Fallback: treat as base version and add .devYYYYMMDD
+              NEW_VERSION="${VERSION}.dev${TODAY}"
+            fi
+          fi
+
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New nightly version: $NEW_VERSION"
+
+      - name: Log release decision
+        run: |
+          if [ "${{ steps.check_commits.outputs.has_commits }}" == "true" ]; then
+            echo "✅ Will create release ${{ steps.next_version.outputs.version }}"
+          else
+            echo "⏭️ Skipping release - not enough commits"
+          fi
+
+  trigger-release:
+    name: Trigger Release Workflow
+    needs: check-and-release
+    if: needs.check-and-release.outputs.should_release == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.check-and-release.outputs.version }}
+      channel: nightly
+    secrets:
+      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+      PRIVILEGED_GITHUB_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}

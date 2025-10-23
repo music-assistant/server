@@ -15,6 +15,21 @@ on:
           - stable
           - beta
           - nightly
+  workflow_call:
+    inputs:
+      version:
+        description: "Version number (e.g., 1.2.3, 1.2.3.b1, or 1.2.3.dev1)"
+        required: true
+        type: string
+      channel:
+        description: "Release channel"
+        required: true
+        type: string
+    secrets:
+      PYPI_TOKEN:
+        required: true
+      PRIVILEGED_GITHUB_TOKEN:
+        required: true
 
 env:
   PYTHON_VERSION: "3.12"
@@ -152,33 +167,73 @@ jobs:
           name: release-dists
           path: dist/
 
-      - name: Determine previous version tag
+      - name: Determine previous version tag and temporarily hide other channels
         id: prev_version
         run: |
           CHANNEL="${{ inputs.channel }}"
 
+          # Define patterns for each channel
           case "$CHANNEL" in
             stable)
-              # For stable, find latest stable tag (no beta or dev suffix)
+              KEEP_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
+              HIDE_PATTERN='\.(b|dev)[0-9]+'
+              ;;
+            beta)
+              KEEP_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+\.b[0-9]+$'
+              HIDE_PATTERN='(^[0-9]+\.[0-9]+\.[0-9]+$|\.dev[0-9]+$)'
+              ;;
+            nightly)
+              KEEP_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$'
+              HIDE_PATTERN='(^[0-9]+\.[0-9]+\.[0-9]+$|\.b[0-9]+$)'
+              ;;
+          esac
+
+          echo "📋 Hiding releases from other channels for Release Drafter..."
+
+          # Get all releases and temporarily convert other channels to draft
+          gh release list --limit 100 --json tagName,isDraft,isPrerelease | jq -c '.[]' | while read -r release; do
+            TAG=$(echo "$release" | jq -r '.tagName')
+            IS_DRAFT=$(echo "$release" | jq -r '.isDraft')
+
+            # Skip if already a draft
+            if [ "$IS_DRAFT" = "true" ]; then
+              continue
+            fi
+
+            # Check if this release should be hidden (not matching current channel pattern)
+            if echo "$TAG" | grep -vE "$KEEP_PATTERN" > /dev/null 2>&1; then
+              echo "  Temporarily hiding: $TAG"
+              # Store this tag so we can restore it later
+              echo "$TAG" >> /tmp/hidden_releases.txt
+              # Mark as draft (makes it invisible to Release Drafter)
+              gh release edit "$TAG" --draft=true
+            fi
+          done
+
+          # Now find the previous tag of this channel
+          case "$CHANNEL" in
+            stable)
               PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
               ;;
             beta)
-              # For beta, find latest beta tag
               PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.b[0-9]+$' | head -n 1)
               ;;
             nightly)
-              # For nightly, find latest nightly tag
               PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' | head -n 1)
               ;;
           esac
 
           if [ -z "$PREV_TAG" ]; then
-            echo "No previous $CHANNEL release found, using all commits"
+            echo "⚠️  No previous $CHANNEL release found"
             echo "prev_tag=" >> $GITHUB_OUTPUT
+            echo "has_prev_tag=false" >> $GITHUB_OUTPUT
           else
-            echo "Previous $CHANNEL release: $PREV_TAG"
+            echo "✅ Previous $CHANNEL release: $PREV_TAG"
             echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+            echo "has_prev_tag=true" >> $GITHUB_OUTPUT
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Release with Release Drafter
         id: create_release
@@ -191,6 +246,51 @@ jobs:
           commitish: ${{ needs.validate-and-build.outputs.branch }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore hidden releases
+        if: always()
+        run: |
+          if [ -f /tmp/hidden_releases.txt ]; then
+            echo "📋 Restoring hidden releases..."
+            while read -r TAG; do
+              if [ -n "$TAG" ]; then
+                echo "  Restoring: $TAG"
+                gh release edit "$TAG" --draft=false
+              fi
+            done < /tmp/hidden_releases.txt
+            echo "✅ All releases restored"
+          else
+            echo "No releases to restore"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add channel context to release notes
+        if: steps.prev_version.outputs.has_prev_tag == 'true'
+        run: |
+          PREV_TAG="${{ steps.prev_version.outputs.prev_tag }}"
+          CHANNEL="${{ inputs.channel }}"
+          VERSION="${{ inputs.version }}"
+          REPO="${{ github.repository }}"
+
+          # Get current release notes from Release Drafter
+          gh release view "$VERSION" --json body --jq .body > /tmp/current_notes.md
+
+          # Prepend channel context
+          echo "## 📦 ${CHANNEL^} Release" > /tmp/new_notes.md
+          echo "" >> /tmp/new_notes.md
+          echo "_Changes since [$PREV_TAG](https://github.com/$REPO/releases/tag/$PREV_TAG)_" >> /tmp/new_notes.md
+          echo "" >> /tmp/new_notes.md
+          echo "___" >> /tmp/new_notes.md
+          echo "" >> /tmp/new_notes.md
+          cat /tmp/current_notes.md >> /tmp/new_notes.md
+
+          # Update the release
+          gh release edit "$VERSION" --notes-file /tmp/new_notes.md
+
+          echo "✅ Added channel context to release notes"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract and append frontend changes to release notes
         id: update_notes
@@ -243,8 +343,13 @@ jobs:
               if [ -n "$pr_json" ]; then
                 BODY=$(echo "$pr_json" | jq -r '.body')
 
-                # Extract bullet points from the body, excluding section headers and contributors
-                echo "$BODY" | grep -E '^[[:space:]]*[•-]' | grep -v '🙇' | head -20 >> "$FRONTEND_FILE" || true
+                # Extract bullet points from the body, excluding:
+                # - Section headers (🙇)
+                # - Dependabot dependency lines (starting with "Chore(deps")
+                echo "$BODY" | grep -E '^[[:space:]]*[•-]' | \
+                  grep -v '🙇' | \
+                  grep -viE '^[[:space:]]*[•-][[:space:]]*Chore\(deps' | \
+                  head -20 >> "$FRONTEND_FILE" || true
 
                 # Extract contributors from frontend PR body
                 echo "$BODY" | grep -oP '@[a-zA-Z0-9_-]+' >> "$CONTRIBUTORS_FILE" || true
