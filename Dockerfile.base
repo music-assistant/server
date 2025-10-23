@@ -33,7 +33,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopencore-amrwb-dev \
     libshine-dev \
     # Additional audio processing
-    libsamplerate0-dev \
     libbluray-dev \
     libxml2-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -61,7 +60,6 @@ RUN set -x \
         --enable-libopencore-amrwb \
         --enable-libvo-amrwbenc \
         # Audio filters and resampling
-        --enable-libsamplerate \
         --enable-libsoxr \
         # Protocols needed for streaming
         --enable-protocol=file \
@@ -70,6 +68,9 @@ RUN set -x \
         --enable-protocol=tcp \
         --enable-protocol=udp \
         --enable-protocol=rtp \
+        # Optimizations
+        --enable-small \
+        --enable-runtime-cpudetect \
         # Disable unnecessary features for smaller build
         --disable-doc \
         --disable-htmlpages \
@@ -77,6 +78,8 @@ RUN set -x \
         --disable-podpages \
         --disable-txtpages \
         --disable-debug \
+        --disable-static \
+        --enable-shared \
     && make -j$(nproc) \
     && make install \
     && strip /usr/local/bin/ffmpeg /usr/local/bin/ffprobe \
@@ -122,7 +125,6 @@ RUN set -x \
         libopencore-amrnb0 \
         libopencore-amrwb0 \
         libvo-amrwbenc0 \
-        libsamplerate0 \
         libbluray2 \
         libxml2 \
     && apt-get clean \
