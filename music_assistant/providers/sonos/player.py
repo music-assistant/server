@@ -34,7 +34,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
@@ -235,8 +235,7 @@ class SonosPlayer(Player):
         base_entries = [
             *await super().get_config_entries(),
             CONF_ENTRY_OUTPUT_CODEC,
-            # CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
             create_sample_rates_config_entry(
                 # set safe max bit depth to 16 bits because the older Sonos players
                 # do not support 24 bit playback (e.g. Play:1)
