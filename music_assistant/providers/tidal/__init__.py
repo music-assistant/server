@@ -212,7 +212,7 @@ async def get_config_entries(
                 type=ConfigEntryType.LABEL,
                 label="The button below will redirect you to Tidal.com to authenticate.\n\n"
                 " After authenticating, you will be redirected to a page that prominently displays"
-                " 'Oops' at the top. That is normal, you need to copy that URL from the "
+                " 'Page Not Found' at the top. That is normal, you need to copy that URL from the "
                 "address bar and come back here",
                 hidden=action == CONF_ACTION_START_PKCE_LOGIN,
             ),
@@ -222,7 +222,7 @@ async def get_config_entries(
                 label="Starts the auth process via PKCE on Tidal.com",
                 description="This button will redirect you to Tidal.com to authenticate."
                 " After authenticating, you will be redirected to a page that prominently displays"
-                " 'Oops' at the top.",
+                " 'Page Not Found' at the top.",
                 action=CONF_ACTION_START_PKCE_LOGIN,
                 depends_on=CONF_QUALITY,
                 action_label="Starts the auth process via PKCE on Tidal.com",
@@ -240,8 +240,8 @@ async def get_config_entries(
             ConfigEntry(
                 key=LABEL_OOPS_URL,
                 type=ConfigEntryType.LABEL,
-                label="Copy the URL from the 'Oops' page that you were previously redirected to"
-                " and paste it in the field below",
+                label="Copy the URL from the 'Page Not Found' page that you were previously"
+                " redirected to and paste it in the field below",
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
             ),
             ConfigEntry(
@@ -250,7 +250,7 @@ async def get_config_entries(
                 label="Oops URL from Tidal redirect",
                 description="This field should be filled manually by you after authenticating on"
                 " Tidal.com and being redirected to a page that prominently displays"
-                " 'Oops' at the top.",
+                " 'Page Not Found' at the top.",
                 depends_on=CONF_ACTION_START_PKCE_LOGIN,
                 value=cast("str", values.get(CONF_OOPS_URL)) if values else None,
                 hidden=action != CONF_ACTION_START_PKCE_LOGIN,
@@ -266,8 +266,8 @@ async def get_config_entries(
                 key=CONF_ACTION_COMPLETE_PKCE_LOGIN,
                 type=ConfigEntryType.ACTION,
                 label="Complete the auth process via PKCE on Tidal.com",
-                description="Click this after adding the 'Oops' URL above, this will complete the"
-                " authentication process.",
+                description="Click this after adding the 'Page Not Found' URL above, this will"
+                " complete the authentication process.",
                 action=CONF_ACTION_COMPLETE_PKCE_LOGIN,
                 depends_on=CONF_OOPS_URL,
                 action_label="Complete the auth process via PKCE on Tidal.com",

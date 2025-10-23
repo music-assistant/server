@@ -1,7 +1,13 @@
-change-template: '- $TITLE (by @$AUTHOR in #$NUMBER)'
+# Release Notes Configuration
+#
+# This file configures the automatic release notes generation for all release channels
+# (stable, beta, and nightly). The custom release notes generator action reads this file
+# to determine how to categorize pull requests and format the release notes.
+#
+# Location: .github/actions/generate-release-notes/generate_notes.py
 
-# Note: prerelease flag is set dynamically by the workflow based on channel
-# This config is used for all release channels (stable, beta, nightly)
+# Template for individual PR entries in the release notes
+change-template: '- $TITLE (by @$AUTHOR in #$NUMBER)'
 
 # Exclude bots from contributors list
 exclude-contributors:
@@ -32,6 +38,7 @@ categories:
       - 'bugfix'
 
   - title: '🧰 Maintenance and dependency bumps'
+    after-other: true  # Show this section after "Other Changes"
     collapse-after: 3
     labels:
       - 'ci'

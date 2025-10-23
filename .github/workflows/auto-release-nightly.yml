@@ -20,7 +20,7 @@ jobs:
       should_release: ${{ steps.check_commits.outputs.has_commits }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0 # Fetch all history for proper comparison
 
@@ -98,6 +98,11 @@ jobs:
     name: Trigger Release Workflow
     needs: check-and-release
     if: needs.check-and-release.outputs.should_release == 'true'
+    permissions:
+      contents: write
+      pull-requests: read
+      packages: write
+      id-token: write # Required for PyPI publishing
     uses: ./.github/workflows/release.yml
     with:
       version: ${{ needs.check-and-release.outputs.version }}

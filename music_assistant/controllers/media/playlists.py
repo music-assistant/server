@@ -147,7 +147,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         # work out the track id's that need to be added
         # filter out duplicates and items that not exist on the provider.
-        ids_to_add: set[str] = set()
+        ids_to_add: list[str] = []
         for uri in unwrapped_uris:
             # skip if item already in the playlist
             if uri in cur_playlist_track_uris:
@@ -174,7 +174,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             if provider_instance_id_or_domain != "library" and playlist_prov.domain == "builtin":
                 # note: we try not to add library uri's to the builtin playlists
                 # so we can survive db rebuilds
-                ids_to_add.add(uri)
+                if uri not in ids_to_add:
+                    ids_to_add.append(uri)
                 self.logger.info(
                     "Adding %s to playlist %s",
                     uri,
@@ -193,7 +194,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     )
                     continue
                 if item_prov.lookup_key == playlist_prov.lookup_key:
-                    ids_to_add.add(item_id)
+                    if item_id not in ids_to_add:
+                        ids_to_add.append(item_id)
                     continue
 
             # ensure we have a full (library) track (including all provider mappings)
@@ -239,7 +241,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     break  # already existing in the playlist
                 if playlist_prov.domain == "builtin":
                     # the builtin provider can handle uri's from all providers (with uri as id)
-                    ids_to_add.add(track_version_uri)
+                    if track_version_uri not in ids_to_add:
+                        ids_to_add.append(track_version_uri)
                     self.logger.info(
                         "Adding %s to playlist %s",
                         full_track.name,
@@ -247,7 +250,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     )
                     break
                 if item_prov.lookup_key == playlist_prov.lookup_key:
-                    ids_to_add.add(track_version.item_id)
+                    if track_version.item_id not in ids_to_add:
+                        ids_to_add.append(track_version.item_id)
                     self.logger.info(
                         "Adding %s to playlist %s",
                         full_track.name,
@@ -266,7 +270,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return
 
         # actually add the tracks to the playlist on the provider
-        await playlist_prov.add_playlist_tracks(playlist_prov_map.item_id, list(ids_to_add))
+        await playlist_prov.add_playlist_tracks(playlist_prov_map.item_id, ids_to_add)
         # invalidate cache so tracks get refreshed
         self._refresh_playlist_tracks(playlist)
         await self.update_item_in_library(db_playlist_id, playlist)
@@ -395,7 +399,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     def _refresh_playlist_tracks(self, playlist: Playlist) -> None:
         """Refresh playlist tracks by forcing a cache refresh."""
 
-        async def _refresh(self, playlist: Playlist):
+        async def _refresh(playlist: Playlist):
             # simply iterate all tracks with force_refresh=True to refresh the cache
             async for _ in self.tracks(playlist.item_id, playlist.provider, force_refresh=True):
                 pass
