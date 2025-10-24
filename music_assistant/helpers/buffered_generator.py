@@ -29,8 +29,8 @@ async def buffered(
 
     Args:
         generator: The async generator to buffer
-        buffer_size: Maximum number of chunks to buffer (default: 60)
-        min_buffer_before_yield: Minimum chunks to buffer before starting to yield (default: 10)
+        buffer_size: Maximum number of chunks to buffer (default: 30)
+        min_buffer_before_yield: Minimum chunks to buffer before starting to yield (default: 5)
 
     Example:
         async for chunk in buffered(my_generator(), buffer_size=100):
