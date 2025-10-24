@@ -240,6 +240,7 @@ class AirPlay2Stream:
 
         Ensures that minimum level required for required cliap2 stderr output is respected.
         """
+        force_verbose: bool = False  # just for now
         mass_level: int = 0
         match self.prov.logger.level:
             case logging.CRITICAL:
@@ -254,6 +255,8 @@ class AirPlay2Stream:
                 mass_level = 4
         if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             mass_level = 5
+        if force_verbose:
+            mass_level = 5  # always use max log level for now to capture all stderr output
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
 
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
