@@ -106,7 +106,7 @@ def use_buffer(
     fills the buffer, while the consumer yields from the buffer.
 
     Args:
-        buffer_size: Maximum number of chunks to buffer (default: 63)
+        buffer_size: Maximum number of chunks to buffer (default: 30)
         min_buffer_before_yield: Minimum chunks to buffer before starting to yield (default: 5)
 
     Example:
