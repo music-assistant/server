@@ -374,6 +374,7 @@ class MusicAssistant:
         *args: Any,
         task_id: str | None = None,
         abort_existing: bool = False,
+        eager_start: bool = False,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
         """Create Task on (main) event loop from Coroutine(function).
@@ -390,14 +391,20 @@ class MusicAssistant:
 
         if asyncio.iscoroutinefunction(target):
             # coroutine function
-            task = self.loop.create_task(target(*args, **kwargs))
+            task = self.loop.create_task(target(*args, **kwargs), eager_start=eager_start)  # type: ignore[call-arg]
         elif asyncio.iscoroutine(target):
             # coroutine
-            task = self.loop.create_task(target)
+            task = self.loop.create_task(target, eager_start=eager_start)  # type: ignore[call-arg]
+
         elif callable(target):
             raise RuntimeError("Function is not a coroutine or coroutine function")
         else:
             raise RuntimeError("Target is missing")
+
+        if TYPE_CHECKING:
+            # the type hinter seems to get confused by the eager_start parameter
+            # which was added in python 3.12+
+            task = cast("asyncio.Task[_R]", task)
 
         if task_id is None:
             task_id = uuid4().hex

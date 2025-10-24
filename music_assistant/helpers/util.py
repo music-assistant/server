@@ -796,7 +796,12 @@ def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
             cache_key_parts.append(f"{key}{kwargs[key]}")
         task_id = ".".join(map(str, cache_key_parts))
         task: asyncio.Task[R] = mass.create_task(
-            func, self, *args, **kwargs, task_id=task_id, abort_existing=False
+            func,
+            self,
+            *args,
+            task_id=task_id,
+            abort_existing=False,
+            **kwargs,  # type: ignore[arg-type]
         )
         return await task
 
