@@ -453,7 +453,11 @@ class StreamsController(CoreController):
                 input_format=pcm_format,
                 output_format=output_format,
             ),
-            chunk_size=get_chunksize(output_format),
+            # we need to slowly feed the music to avoid the player stopping and later
+            # restarting (or completely failing) the audio stream by keeping the buffer short.
+            # this is reported to be an issue especially with Chromecast players.
+            # see for example: https://github.com/music-assistant/support/issues/3717
+            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "2"],
         ):
             try:
                 await resp.write(chunk)
@@ -559,6 +563,11 @@ class StreamsController(CoreController):
             filter_params=get_player_filter_params(
                 self.mass, queue_player.player_id, flow_pcm_format, output_format
             ),
+            # we need to slowly feed the music to avoid the player stopping and later
+            # restarting (or completely failing) the audio stream by keeping the buffer short.
+            # this is reported to be an issue especially with Chromecast players.
+            # see for example: https://github.com/music-assistant/support/issues/3717
+            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "5"],
             chunk_size=icy_meta_interval if enable_icy else get_chunksize(output_format),
         ):
             try:
@@ -719,7 +728,7 @@ class StreamsController(CoreController):
         )
         http_profile = str(http_profile_value) if http_profile_value is not None else "default"
         if http_profile == "forced_content_length":
-            # guess content length based on duration
+            # just set an insane high content length to make sure the player keeps playing
             resp.content_length = get_chunksize(output_format, 12 * 3600)
         elif http_profile == "chunked":
             resp.enable_chunked_encoding()
@@ -1093,6 +1102,7 @@ class StreamsController(CoreController):
             yield chunk
             del chunk
 
+    @use_buffer(30, 5)
     async def get_queue_item_stream_with_smartfade(
         self,
         queue_item: QueueItem,
