@@ -294,7 +294,7 @@ class BBCSoundsProvider(MusicProvider):
             raise MusicAssistantError(f"Incorrect track returned for {prov_track_id}")
         return track
 
-    async def _get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         # If we are requesting a previously-aired radio show, we lose access to the
         # schedule time. The best we can find out from the API is original release
         # date, so the stream title loses access to the air date
