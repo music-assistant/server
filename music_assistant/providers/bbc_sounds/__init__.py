@@ -445,12 +445,12 @@ class BBCSoundsProvider(MusicProvider):
                                 MediaItemImage(
                                     type=ImageType.THUMB,
                                     provider=self.domain,
-                                    path=station.image_url,
+                                    path=station.network.logo_url,
                                     remotely_accessible=True,
                                 ),
                             ]
                         )
-                        if station.image_url
+                        if station.network and station.network.logo_url
                         else None
                     ),
                 ),
