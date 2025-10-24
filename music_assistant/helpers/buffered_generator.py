@@ -38,6 +38,7 @@ async def buffered(
     """
     buffer: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=buffer_size)
     producer_error: Exception | None = None
+    threshold_reached = asyncio.Event()
 
     if buffer_size <= 1:
         # No buffering needed, yield directly
@@ -51,6 +52,8 @@ async def buffered(
         try:
             async for chunk in generator:
                 await buffer.put(chunk)
+                if not threshold_reached.is_set() and buffer.qsize() >= min_buffer_before_yield:
+                    threshold_reached.set()
         except Exception as err:
             producer_error = err
             # Consumer probably stopped consuming, close the original generator to prevent
@@ -58,6 +61,7 @@ async def buffered(
             with contextlib.suppress(RuntimeError, asyncio.CancelledError):
                 await generator.aclose()
         finally:
+            threshold_reached.set()
             # Signal end of stream by putting None
             await buffer.put(None)
 
@@ -67,17 +71,7 @@ async def buffered(
 
     try:
         # Wait for initial buffer to fill
-        chunks_buffered = 0
-        while chunks_buffered < min_buffer_before_yield:
-            data = await buffer.get()
-            if data is None:
-                # Stream ended before minimum buffer was reached
-                if producer_error:
-                    raise producer_error
-                return
-            chunks_buffered += 1
-            # Put it back for the consumer loop
-            await buffer.put(data)
+        await threshold_reached.wait()
 
         # Consume from buffer and yield
         while True:
