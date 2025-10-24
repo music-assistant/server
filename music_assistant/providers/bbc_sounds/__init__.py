@@ -20,12 +20,7 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
     ProviderConfig,
 )
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    ImageType,
-    MediaType,
-    ProviderFeature,
-)
+from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MusicAssistantError
 from music_assistant_models.media_items import (
     BrowseFolder,
@@ -611,7 +606,7 @@ class BBCSoundsProvider(MusicProvider):
                         item_list.append(new_item)
         return item_list
 
-    async def _get_station_menu(
+    async def _get_station_schedule_menu(
         self,
         show_local: bool,
         path_parts: list[str],
@@ -659,6 +654,7 @@ class BBCSoundsProvider(MusicProvider):
                     ),
                 ),
             ]
+            # Maximum is 30 days prior
             for diff in range(28):
                 this_date = dt.now() - timedelta(days=2 + diff)
                 date_string = this_date.strftime("%Y-%m-%d")
@@ -724,7 +720,7 @@ class BBCSoundsProvider(MusicProvider):
         elif sub_path != "stations":
             return await self._get_subpath_menu(sub_path)
         elif sub_path == "stations":
-            return await self._get_station_menu(
+            return await self._get_station_schedule_menu(
                 show_local, path_parts, sub_sub_path, sub_sub_sub_path
             )
         else:
@@ -807,18 +803,6 @@ class BBCSoundsProvider(MusicProvider):
                         )
                         if isinstance(folder, RecommendationFolder):
                             folders.append(folder)
-                        # for item in recommendation.sub_items
-                        # if recommendation.sub_items
-                        # )
-                        # return [
-                        #     RecommendationFolder(
-                        #         item_id=recommendation.id,
-                        #         provider=self.domain,
-                        #         name=recommendation.title,
-                        #         items=UniqueList(sub_items),
-                        #     )
-                        #     for item in re
-                        # ]
             return folders
         return []
 
