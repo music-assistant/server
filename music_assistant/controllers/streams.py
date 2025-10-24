@@ -252,13 +252,7 @@ class StreamsController(CoreController):
             self.publish_ip,
             self.publish_port,
         )
-        bind_port_value = self.publish_port
-        if isinstance(bind_port_value, int):
-            bind_port = bind_port_value
-        elif isinstance(bind_port_value, (float, str)):
-            bind_port = int(bind_port_value)
-        else:
-            bind_port = 8097
+        bind_port = int(cast("int", self.publish_port))
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=bind_port,
@@ -312,7 +306,7 @@ class StreamsController(CoreController):
             )
         except KeyError:
             conf_output_codec = "flac"
-        output_codec = ContentType.try_parse(str(conf_output_codec or "flac"))
+        output_codec = ContentType.try_parse(str(conf_output_codec))
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
@@ -326,10 +320,9 @@ class StreamsController(CoreController):
         player_id: str,
     ) -> str:
         """Get the url for the Plugin Source stream/proxy."""
-        output_codec_val = await self.mass.config.get_player_config_value(
-            player_id, CONF_OUTPUT_CODEC
+        output_codec = ContentType.try_parse(
+            str(await self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC))
         )
-        output_codec = ContentType.try_parse(str(output_codec_val) if output_codec_val else "flac")
 
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
@@ -362,7 +355,7 @@ class StreamsController(CoreController):
                     "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
                 )
                 queue_item.available = False
-                raise InvalidDataError(f"No streamdetails for Queue item: {queue_item_id}")
+                raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
 
         # pick output format based on the streamdetails and player capabilities
         if not queue_player:
@@ -416,16 +409,17 @@ class StreamsController(CoreController):
                     await self.mass.config.get_player_config_value(
                         queue.queue_id, CONF_SMART_FADES_MODE
                     )
-                    or SmartFadesMode.DISABLED
                 )
             )
-            standard_crossfade_duration_val = self.mass.config.get_raw_player_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION, 10
+            # Config has default value 10, so will always return int-compatible type
+            standard_crossfade_duration = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        queue.queue_id, CONF_CROSSFADE_DURATION, 10
+                    ),
+                )
             )
-            if isinstance(standard_crossfade_duration_val, (int, float)):
-                standard_crossfade_duration = int(standard_crossfade_duration_val)
-            else:
-                standard_crossfade_duration = 10
         if (
             smart_fades_mode != SmartFadesMode.DISABLED
             and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features
@@ -811,19 +805,21 @@ class StreamsController(CoreController):
             smart_fades_mode = SmartFadesMode.DISABLED
             standard_crossfade_duration = 0
         else:
-            smart_fades_mode_val = await self.mass.config.get_player_config_value(
-                queue.queue_id, CONF_SMART_FADES_MODE
-            )
             smart_fades_mode = SmartFadesMode(
-                str(smart_fades_mode_val) if smart_fades_mode_val else SmartFadesMode.DISABLED.value
+                str(
+                    await self.mass.config.get_player_config_value(
+                        queue.queue_id, CONF_SMART_FADES_MODE
+                    )
+                )
             )
-            standard_crossfade_duration_val = self.mass.config.get_raw_player_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION, 10
+            standard_crossfade_duration = int(
+                cast(
+                    "int",
+                    self.mass.config.get_raw_player_config_value(
+                        queue.queue_id, CONF_CROSSFADE_DURATION, 10
+                    ),
+                )
             )
-            if isinstance(standard_crossfade_duration_val, (int, float)):
-                standard_crossfade_duration = int(standard_crossfade_duration_val)
-            else:
-                standard_crossfade_duration = 10
         self.logger.info(
             "Start Queue Flow stream for Queue %s - crossfade: %s %s",
             queue.display_name,
@@ -1105,14 +1101,20 @@ class StreamsController(CoreController):
             filter_params.append(filter_rule)
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.FIXED_GAIN:
             # apply user defined fixed volume/gain correction
-            gain_value_raw = await self.mass.config.get_core_config_value(
-                self.domain,
-                CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS
-                if streamdetails.media_type == MediaType.TRACK
-                else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
+            gain_correct = round(
+                float(
+                    cast(
+                        "float",
+                        await self.mass.config.get_core_config_value(
+                            self.domain,
+                            CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS
+                            if streamdetails.media_type == MediaType.TRACK
+                            else CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
+                        ),
+                    )
+                ),
+                2,
             )
-            gain_value = float(gain_value_raw) if isinstance(gain_value_raw, (int, float)) else 0.0
-            gain_correct = round(gain_value, 2)
             filter_params.append(f"volume={gain_correct}dB")
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.MEASUREMENT_ONLY:
             # volume normalization with known loudness measurement
