@@ -41,7 +41,6 @@ from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from aiohttp.typedefs import Handler
     from music_assistant_models.config_entries import ConfigValueType, CoreConfig
     from music_assistant_models.event import MassEvent
 
@@ -130,7 +129,7 @@ class WebserverController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         # work out all routes
-        routes: list[tuple[str, str, Handler]] = []
+        routes: list[tuple[str, str, Any]] = []
         # frontend routes
         frontend_dir = locate_frontend()
         for filename in next(os.walk(frontend_dir))[2]:
@@ -174,12 +173,11 @@ class WebserverController(CoreController):
             ingress_tcp_site_params = None
         base_url = str(config.get_value(CONF_BASE_URL))
         port_value = config.get_value(CONF_BIND_PORT)
-        self.publish_port = (
-            int(port_value) if isinstance(port_value, (int, float, str)) else DEFAULT_SERVER_PORT
-        )
+        assert isinstance(port_value, int)
+        self.publish_port = port_value
         self.publish_ip = default_publish_ip
-        bind_ip_raw = config.get_value(CONF_BIND_IP)
-        bind_ip = str(bind_ip_raw) if bind_ip_raw is not None else None
+        bind_ip = config.get_value(CONF_BIND_IP)
+        assert isinstance(bind_ip, str)
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
         if not self.mass.config.onboard_done:
@@ -334,11 +332,11 @@ class WebsocketClientHandler:
         self._writer_task: asyncio.Task[None] | None = None
         self._logger = webserver.logger
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
-        self.client_base_url: str | None = None
+        self.base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
             ingress_path = request.headers.get("X-Ingress-Path", "")
             forward_proto = request.headers.get("X-Forwarded-Proto", request.protocol)
-            self.client_base_url = f"{forward_proto}://{forward_host}{ingress_path}"
+            self.base_url = f"{forward_proto}://{forward_host}{ingress_path}"
 
     async def disconnect(self) -> None:
         """Disconnect client."""
@@ -463,8 +461,10 @@ class WebsocketClientHandler:
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
+
             else:
                 self._logger.error("Error handling message: %s: %s", msg.command, str(err))
+
             err_msg = str(err) or err.__class__.__name__
             await self._send_message(
                 ErrorResultMessage(msg.message_id, getattr(err, "error_code", 999), err_msg)
