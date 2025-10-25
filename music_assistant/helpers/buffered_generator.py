@@ -60,14 +60,23 @@ async def buffered(
             # "Task was destroyed but it is pending!" warnings
             with contextlib.suppress(RuntimeError, asyncio.CancelledError):
                 await generator.aclose()
+        except asyncio.CancelledError:
+            # Task was cancelled, clean up the generator
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                await generator.aclose()
+            raise
         finally:
             threshold_reached.set()
             # Signal end of stream by putting None
-            await buffer.put(None)
+            with contextlib.suppress(asyncio.QueueFull):
+                await buffer.put(None)
 
     # Start the producer task
     loop = asyncio.get_running_loop()
     producer_task = loop.create_task(producer(), eager_start=True)  # type: ignore[call-arg]
+
+    # Store task reference to prevent garbage collection issues
+    _task_ref = producer_task
 
     try:
         # Wait for initial buffer to fill
@@ -85,10 +94,10 @@ async def buffered(
 
     finally:
         # Ensure the producer task is cleaned up
-        if not producer_task.done():
-            producer_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await producer_task
+        if not _task_ref.done():
+            _task_ref.cancel()
+        with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+            await _task_ref
 
 
 def use_buffer(
