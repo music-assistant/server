@@ -1,11 +1,7 @@
 """Smart Fades - Object-oriented implementation with intelligent fades and adaptive filtering."""
-
-# TODO: Figure out if we can achieve shared buffer with StreamController on full
-# current and next track for more EQ options.
-# TODO: Refactor the Analyzer into a metadata controller after we have split the controllers
-# TODO: Refactor the Mixer into a stream controller after we have split the controllers
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 import asyncio
 import logging
 import time
@@ -232,6 +228,42 @@ class SmartFadesAnalyzer:
             return None
 
 
+#############################
+# SMART FADES EQ LOGIC
+#############################
+
+class Filter(ABC):
+    """Abstract base class for audio filters."""
+
+    output_fadeout_label: str
+    output_fadein_label: str
+
+    @abstractmethod
+    def apply(self, input_fadein_label: str, input_fadeout_label, **kwargs) -> str:
+        """Apply the filter and return the FFmpeg filter string."""
+        pass
+
+class SmartFades:
+    """Smart fades class that implements a Smart Fade mode."""
+    name: str = "smart_fades"
+    filters: list[Filter]
+
+    def get_ffmpeg_filters(self, input_fadein_label: str = "[0]", input_fadeout_label: str = "[1]") -> list[str]:
+        """Get FFmpeg filters for smart fades."""
+        filters = []
+        _cur_fadein_label = input_fadein_label
+        _cur_fadeout_label = input_fadeout_label
+        for filter in self.filters:
+            filter_str = filter.apply(_cur_fadein_label, _cur_fadeout_label)
+            filters.append(filter_str)
+            _cur_fadein_label = filter.output_fadein_label
+            _cur_fadeout_label = filter.output_fadeout_label
+        return filters
+
+
+#############################
+# SMART FADES MIXER LOGIC
+#############################
 class SmartFadesMixer:
     """Smart fades mixer class that mixes tracks based on analysis data."""
 
