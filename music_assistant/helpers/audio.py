@@ -631,7 +631,7 @@ async def get_media_stream(
                 first_chunk_received = True
                 streamdetails.audio_format.codec_type = ffmpeg_proc.input_format.codec_type
                 logger.debug(
-                    "First chunk received after %s seconds (codec detected: %s)",
+                    "First chunk received after %.2f seconds (codec detected: %s)",
                     mass.loop.time() - stream_start,
                     ffmpeg_proc.input_format.codec_type,
                 )

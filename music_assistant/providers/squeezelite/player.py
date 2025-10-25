@@ -34,7 +34,7 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SYNC_ADJUST,
-    DEFAULT_PCM_FORMAT,
+    INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
@@ -229,9 +229,9 @@ class SqueezelitePlayer(Player):
 
         # this is a syncgroup, we need to handle this with a multi client stream
         master_audio_format = AudioFormat(
-            content_type=DEFAULT_PCM_FORMAT.content_type,
-            sample_rate=DEFAULT_PCM_FORMAT.sample_rate,
-            bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
+            content_type=INTERNAL_PCM_FORMAT.content_type,
+            sample_rate=INTERNAL_PCM_FORMAT.sample_rate,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
         )
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement

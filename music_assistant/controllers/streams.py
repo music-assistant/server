@@ -48,9 +48,9 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
-    DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
     ICY_HEADERS,
+    INTERNAL_PCM_FORMAT,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
 )
@@ -380,7 +380,7 @@ class StreamsController(CoreController):
             player=queue_player,
             content_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
             # always use f32 internally for extra headroom for filters etc
-            content_bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
+            content_bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
@@ -440,7 +440,7 @@ class StreamsController(CoreController):
             sample_rate=output_format.sample_rate,
             # always use f32 internally for extra headroom for filters etc
             content_type=ContentType.PCM_F32LE,
-            bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
             channels=2,
         )
         if smart_fades_mode != SmartFadesMode.DISABLED:
@@ -1191,7 +1191,7 @@ class StreamsController(CoreController):
             seconds_streamed = bytes_received / pcm_format.pcm_sample_size
             streamdetails.seconds_streamed = seconds_streamed
             self.logger.debug(
-                "stream %s for %s in %.2f seconds - seconds streamed: %s",
+                "stream %s for %s in %.2f seconds - seconds streamed: %.2f",
                 "aborted" if aborted else "finished",
                 streamdetails.uri,
                 asyncio.get_event_loop().time() - stream_started_at,
@@ -1217,7 +1217,7 @@ class StreamsController(CoreController):
         smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
         standard_crossfade_duration: int = 10,
     ) -> AsyncGenerator[bytes, None]:
-        """Get the audio stream for a single queue item with crossfade to the next item."""
+        """Get the audio stream for a single queue item with (smart) crossfade to the next item."""
         queue = self.mass.player_queues.get(queue_item.queue_id)
         if not queue:
             raise RuntimeError(f"Queue {queue_item.queue_id} not found")
@@ -1226,17 +1226,20 @@ class StreamsController(CoreController):
         assert streamdetails
         crossfade_data = self._crossfade_data.get(queue.queue_id)
 
+        if crossfade_data and crossfade_data.session_id != session_id:
+            # invalidate expired crossfade data
+            crossfade_data = None
+
         self.logger.debug(
-            "Start Streaming queue track: %s (%s) for queue %s - crossfade: %s",
+            "Start Streaming queue track: %s (%s) for queue %s "
+            "- crossfade mode: %s "
+            "- crossfading from previous track: %s",
             queue_item.streamdetails.uri if queue_item.streamdetails else "Unknown URI",
             queue_item.name,
             queue.display_name,
             smart_fades_mode,
+            "true" if crossfade_data else "false",
         )
-
-        if crossfade_data and crossfade_data.session_id != session_id:
-            # invalidate expired crossfade data
-            crossfade_data = None
 
         buffer = b""
         bytes_written = 0
@@ -1433,15 +1436,15 @@ class StreamsController(CoreController):
             player.player_id, CONF_SAMPLE_RATES, unpack_splitted_values=True
         )
         supported_sample_rates: tuple[int] = tuple(int(x[0]) for x in supported_rates_conf)
-        output_sample_rate = DEFAULT_PCM_FORMAT.sample_rate
+        output_sample_rate = INTERNAL_PCM_FORMAT.sample_rate
         for sample_rate in (192000, 96000, 48000, 44100):
             if sample_rate in supported_sample_rates:
                 output_sample_rate = sample_rate
                 break
         return AudioFormat(
-            content_type=DEFAULT_PCM_FORMAT.content_type,
+            content_type=INTERNAL_PCM_FORMAT.content_type,
             sample_rate=output_sample_rate,
-            bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
             channels=2,
         )
 

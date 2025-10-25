@@ -929,13 +929,13 @@ ICY_HEADERS = {
     "icy-logo": MASS_LOGO_ONLINE,
 }
 
-DEFAULT_PCM_FORMAT = AudioFormat(
+INTERNAL_PCM_FORMAT = AudioFormat(
     # always prefer float32 as internal pcm format to create headroom
     # for filters such as dsp and volume normalization
     content_type=ContentType.PCM_F32LE,
-    sample_rate=48000,
-    bit_depth=32,
-    channels=2,
+    bit_depth=32,  # related to float32
+    sample_rate=48000,  # static for flow stream, dynamic for anything else
+    channels=2,  # static for flow stream, dynamic for anything else
 )
 
 # extra data / extra attributes keys
