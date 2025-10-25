@@ -630,6 +630,18 @@ CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED = ConfigEntry.from_dict(
     }
 )
 
+CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES = ConfigEntry(
+    key="crossfade_different_sample_rates",
+    type=ConfigEntryType.BOOLEAN,
+    label="Allow crossfade between tracks with different sample rates",
+    description="Enable this option to allow crossfading between tracks that have different "
+    "sample rates (e.g. 44.1kHz to 48kHz). \n\n "
+    "Only enable this option if your player actually support this, otherwise you may "
+    "experience audio glitches during crossfades.",
+    default_value=False,
+    category="advanced",
+)
+
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
     key="preview_note",
     type=ConfigEntryType.ALERT,

@@ -33,6 +33,7 @@ from music_assistant.constants import (
     CONF_ENTRY_DEPRECATED_EQ_TREBLE,
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC,
+    CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_SYNC_ADJUST,
     INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
@@ -92,6 +93,7 @@ class SqueezelitePlayer(Player):
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
+            PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
         }
         self._attr_can_group_with = {provider.lookup_key}
         self.multi_client_stream: MultiClientStream | None = None
@@ -162,6 +164,7 @@ class SqueezelitePlayer(Player):
             create_sample_rates_config_entry(
                 max_sample_rate=max_sample_rate, max_bit_depth=24, safe_max_bit_depth=24
             ),
+            CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES,
         ]
 
     async def power(self, powered: bool) -> None:
