@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -26,6 +25,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
     RepeatMode,
@@ -406,7 +406,6 @@ class SonosPlayer(Player):
         :param media: Details of the item that needs to be played on the player.
         """
         self.sonos_queue.set_items([media])
-        self._attr_current_media = deepcopy(media)
 
         if self.client.player.is_passive:
             # this should be already handled by the player manager, but just in case...
@@ -423,7 +422,7 @@ class SonosPlayer(Player):
             await self._play_media_airplay(airplay_player, media)
             return
 
-        if media.source_id and media.queue_item_id and media.duration:
+        if (media.source_id and media.queue_item_id) or media.media_type == MediaType.PLUGIN_SOURCE:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
@@ -431,12 +430,6 @@ class SonosPlayer(Player):
                 cloud_queue_url,
                 item_id=media.queue_item_id,
             )
-            return
-
-        # All other playback types
-        if media.duration:
-            # use legacy playback for files with known duration
-            await self._play_media_legacy(media)
             return
 
         # play duration-less (long running) radio streams

@@ -6,8 +6,8 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 
 from mashumaro import field_options, pass_through
-from music_assistant_models.enums import StreamType
-from music_assistant_models.media_items.audio_format import AudioFormat  # noqa: TC002
+from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.player import PlayerMedia, PlayerSource
 
@@ -19,14 +19,21 @@ class PluginSource(PlayerSource):
     """
     Model for a PluginSource, which is a player (audio)source provided by a plugin.
 
+    A PluginSource is for example a live audio stream such as a aux/microphone input.
+
     This (intermediate)  model is not exposed on the api,
     but is used internally by the plugin provider.
     """
 
-    # The output format that is sent to the player
-    # (or to the library/application that is used to send audio to the player)
-    audio_format: AudioFormat | None = field(
-        default=None,
+    # The PCM audio format provided by this source
+    # for realtime audio, we recommend using PCM 16bit 44.1kHz stereo
+    audio_format: AudioFormat = field(
+        default=AudioFormat(
+            content_type=ContentType.PCM_S16LE,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
+        ),
         compare=False,
         metadata=field_options(serialize="omit", deserialize=pass_through),
         repr=False,
@@ -87,6 +94,8 @@ class PluginProvider(Provider):
         the ProviderFeature.AUDIO_SOURCE is declared AND if the streamtype is StreamType.CUSTOM.
 
         The player_id is the id of the player that is requesting the stream.
+
+        Must return audio data as bytes generator (in the format specified by the audio_format).
         """
         yield b""
         raise NotImplementedError

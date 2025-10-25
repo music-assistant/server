@@ -78,7 +78,7 @@ from music_assistant.helpers.util import get_ip_addresses, get_total_system_memo
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import PluginProvider, PluginSource
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
@@ -348,18 +348,15 @@ class StreamsController(CoreController):
 
     async def get_plugin_source_url(
         self,
-        plugin_source: str,
+        plugin_source: PluginSource,
         player_id: str,
     ) -> str:
         """Get the url for the Plugin Source stream/proxy."""
-        output_codec = ContentType.try_parse(
-            await self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
-        )
-        fmt = output_codec.value
-        # handle raw pcm without exact format specifiers
-        if output_codec.is_pcm() and ";" not in fmt:
-            fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
-        return f"{self._server.base_url}/pluginsource/{plugin_source}/{player_id}.{fmt}"
+        if plugin_source.audio_format.content_type.is_pcm():
+            fmt = ContentType.WAV.value
+        else:
+            fmt = plugin_source.audio_format.content_type.value
+        return f"{self._server.base_url}/pluginsource/{plugin_source.id}/{player_id}.{fmt}"
 
     async def serve_queue_item_stream(self, request: web.Request) -> web.Response:
         """Stream single queueitem audio to a player."""
@@ -739,12 +736,8 @@ class StreamsController(CoreController):
         output_format = await self.get_output_format(
             output_format_str=request.match_info["fmt"],
             player=player,
-            content_sample_rate=plugin_source.audio_format.sample_rate
-            if plugin_source.audio_format
-            else 44100,
-            content_bit_depth=plugin_source.audio_format.bit_depth
-            if plugin_source.audio_format
-            else 16,
+            content_sample_rate=plugin_source.audio_format.sample_rate,
+            content_bit_depth=plugin_source.audio_format.bit_depth,
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
@@ -1059,37 +1052,36 @@ class StreamsController(CoreController):
         player_filter_params: list[str] | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Get the special plugin source stream."""
-        player = self.mass.players.get(player_id)
         plugin_prov: PluginProvider = self.mass.get_provider(plugin_source_id)
         plugin_source = plugin_prov.get_source()
         if plugin_source.in_use_by and plugin_source.in_use_by != player_id:
             raise RuntimeError(
                 f"PluginSource plugin_source.name is already in use by {plugin_source.in_use_by}"
             )
-        self.logger.debug("Start streaming PluginSource %s to %s", plugin_source_id, player_id)
-        audio_input = (
-            plugin_prov.get_audio_stream(player_id)
-            if plugin_source.stream_type == StreamType.CUSTOM
-            else plugin_source.path
+        self.logger.debug(
+            "Start streaming PluginSource %s to %s using output format %s",
+            plugin_source_id,
+            player_id,
+            output_format,
         )
-        player.state.active_source = plugin_source_id
         plugin_source.in_use_by = player_id
         try:
             async for chunk in get_ffmpeg_stream(
-                audio_input=audio_input,
+                audio_input=(
+                    plugin_prov.get_audio_stream(player_id)
+                    if plugin_source.stream_type == StreamType.CUSTOM
+                    else plugin_source.path
+                ),
                 input_format=plugin_source.audio_format,
                 output_format=output_format,
                 filter_params=player_filter_params,
-                extra_input_args=["-re"],
-                chunk_size=int(get_chunksize(output_format) / 10),
+                extra_input_args=["-y", "-re"],
             ):
                 yield chunk
         finally:
             self.logger.debug(
                 "Finished streaming PluginSource %s to %s", plugin_source_id, player_id
             )
-            await asyncio.sleep(0.5)
-            player.state.active_source = player.player_id
             plugin_source.in_use_by = None
 
     async def get_queue_item_stream(

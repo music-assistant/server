@@ -82,7 +82,9 @@ async def get_config_entries(
             multi_value=False,
             options=[
                 ConfigValueOption(x.display_name, x.player_id)
-                for x in mass.players.all(False, False)
+                for x in sorted(
+                    mass.players.all(False, False), key=lambda p: p.display_name.lower()
+                )
             ],
             required=True,
         ),
