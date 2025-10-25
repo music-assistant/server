@@ -427,11 +427,9 @@ class SonosPlayer(Player):
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
-            track_data = self.provider._parse_sonos_queue_item(media)
             await self.client.player.group.play_cloud_queue(
                 cloud_queue_url,
                 item_id=media.queue_item_id,
-                track_metadata=track_data["track"],
             )
             return
 

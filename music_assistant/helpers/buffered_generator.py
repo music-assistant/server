@@ -54,17 +54,16 @@ async def buffered(
                 await buffer.put(chunk)
                 if not threshold_reached.is_set() and buffer.qsize() >= min_buffer_before_yield:
                     threshold_reached.set()
-        except Exception as err:
-            producer_error = err
-            # Consumer probably stopped consuming, close the original generator to prevent
-            # "Task was destroyed but it is pending!" warnings
-            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
-                await generator.aclose()
         except asyncio.CancelledError:
             # Task was cancelled, clean up the generator
             with contextlib.suppress(RuntimeError, asyncio.CancelledError):
                 await generator.aclose()
             raise
+        except Exception as err:
+            producer_error = err
+            # Consumer probably stopped consuming, close the original generator
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                await generator.aclose()
         finally:
             threshold_reached.set()
             # Signal end of stream by putting None
@@ -73,10 +72,18 @@ async def buffered(
 
     # Start the producer task
     loop = asyncio.get_running_loop()
-    producer_task = loop.create_task(producer(), eager_start=True)  # type: ignore[call-arg]
+    producer_task = loop.create_task(producer())
 
-    # Store task reference to prevent garbage collection issues
-    _task_ref = producer_task
+    # Keep a strong reference to prevent garbage collection issues
+    # The event loop only keeps weak references to tasks
+    _active_tasks = getattr(loop, "_buffered_generator_tasks", None)
+    if _active_tasks is None:
+        _active_tasks = set()
+        loop._buffered_generator_tasks = _active_tasks  # type: ignore[attr-defined]
+    _active_tasks.add(producer_task)
+
+    # Remove from set when done
+    producer_task.add_done_callback(_active_tasks.discard)
 
     try:
         # Wait for initial buffer to fill
@@ -94,10 +101,10 @@ async def buffered(
 
     finally:
         # Ensure the producer task is cleaned up
-        if not _task_ref.done():
-            _task_ref.cancel()
+        if not producer_task.done():
+            producer_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, RuntimeError):
-            await _task_ref
+            await producer_task
 
 
 def use_buffer(
