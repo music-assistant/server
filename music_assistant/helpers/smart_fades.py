@@ -1,10 +1,11 @@
 """Smart Fades - Object-oriented implementation with intelligent fades and adaptive filtering."""
+
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 import asyncio
 import logging
 import time
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -232,6 +233,7 @@ class SmartFadesAnalyzer:
 # SMART FADES EQ LOGIC
 #############################
 
+
 class Filter(ABC):
     """Abstract base class for audio filters."""
 
@@ -239,26 +241,801 @@ class Filter(ABC):
     output_fadein_label: str
 
     @abstractmethod
-    def apply(self, input_fadein_label: str, input_fadeout_label, **kwargs) -> str:
-        """Apply the filter and return the FFmpeg filter string."""
-        pass
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Apply the filter and return the FFmpeg filter strings."""
+
+
+class TimeStretchFilter(Filter):
+    """Filter that applies time stretching to match BPM using rubberband."""
+
+    output_fadeout_label: str = "fadeout_stretched"
+    output_fadein_label: str = "fadein_unchanged"
+
+    def __init__(
+        self,
+        fade_out_analysis: SmartFadesAnalysis,
+        fade_in_analysis: SmartFadesAnalysis,
+        crossfade_bars: int,
+        crossfade_duration: float,
+        logger: logging.Logger | None = None,
+    ):
+        """Initialize time stretch filter.
+
+        Args:
+            fade_out_analysis: Analysis data for the outgoing track
+            fade_in_analysis: Analysis data for the incoming track
+            crossfade_bars: Number of bars for the crossfade
+            crossfade_duration: Duration of the crossfade in seconds
+            logger: Optional logger for debug output
+        """
+        self.fade_out_analysis = fade_out_analysis
+        self.fade_in_analysis = fade_in_analysis
+        self.crossfade_bars = crossfade_bars
+        self.crossfade_duration = crossfade_duration
+        self.logger = logger
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Create FFmpeg filters to gradually adjust tempo from original BPM to target BPM."""
+        # Check if time stretching should be applied (BPM difference < threshold)
+        original_bpm = self.fade_out_analysis.bpm
+        target_bpm = self.fade_in_analysis.bpm
+        bpm_ratio = target_bpm / original_bpm
+        bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
+
+        # If no time stretching needed, return passthrough filter and no tempo change
+        if not (
+            0.1 < bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD
+            and self.crossfade_bars > 4
+        ):
+            return [
+                # codespell:ignore anull
+                f"{input_fadeout_label}anull[{self.output_fadeout_label}]",
+                # codespell:ignore anull
+                f"{input_fadein_label}anull[{self.output_fadein_label}]",
+            ]
+
+        # Log that we're applying time stretching
+        if self.logger:
+            self.logger.debug(
+                "Time stretch: %.1f%% BPM diff, adjusting %.1f -> %.1f BPM, "
+                "crossfade starts at %.1fs",
+                bpm_diff_percent,
+                original_bpm,
+                target_bpm,
+                SMART_CROSSFADE_DURATION - self.crossfade_duration,
+            )
+            self.logger.debug(
+                "Time stretch (rubberband uniform): %.1f BPM -> %.1f BPM (factor=%.4f)",
+                original_bpm,
+                target_bpm,
+                bpm_ratio,
+            )
+
+        # Use uniform rubberband time stretching for the entire buffer
+        return [
+            f"{input_fadeout_label}rubberband=tempo={bpm_ratio:.6f}:transients=mixed:detector=soft:pitchq=quality"
+            f"[{self.output_fadeout_label}]",
+            # codespell:ignore anull
+            f"{input_fadein_label}anull[{self.output_fadein_label}]",
+        ]
+
+
+class BeatAlignFilter(Filter):
+    """Filter that trims incoming track to align with downbeats."""
+
+    output_fadeout_label: str = "fadeout_beatalign"
+    output_fadein_label: str = "fadein_beatalign"
+
+    def __init__(self, fadein_start_pos: float | None):
+        """Initialize beat align filter.
+
+        Args:
+            fadein_start_pos: Position in seconds to trim the incoming track to,
+                or None to skip alignment
+        """
+        self.fadein_start_pos = fadein_start_pos
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Perform beat alignment preprocessing by trimming to downbeat position."""
+        # Just relabel in case we cannot perform beat alignment
+        if self.fadein_start_pos is None:
+            return [
+                # codespell:ignore anull
+                f"{input_fadeout_label}anull[{self.output_fadeout_label}]",
+                # codespell:ignore anull
+                f"{input_fadein_label}anull[{self.output_fadein_label}]",
+            ]
+
+        # Trim incoming track to start at first downbeat position
+        return [
+            # codespell:ignore anull
+            f"{input_fadeout_label}anull[{self.output_fadeout_label}]",
+            f"{input_fadein_label}atrim=start={self.fadein_start_pos},asetpts=PTS-STARTPTS[{self.output_fadein_label}]",
+        ]
+
+
+class FrequencySweepFilter(Filter):
+    """Filter that creates frequency sweep effects (lowpass/highpass transitions)."""
+
+    output_fadeout_label: str = "frequency_sweep"
+    output_fadein_label: str = "frequency_sweep"
+
+    def __init__(
+        self,
+        sweep_type: str,
+        target_freq: int,
+        duration: float,
+        start_time: float,
+        sweep_direction: str,
+        poles: int,
+        curve_type: str,
+    ):
+        """Initialize frequency sweep filter.
+
+        Args:
+            sweep_type: 'lowpass' or 'highpass'
+            target_freq: Target frequency for the filter
+            duration: Duration of the sweep in seconds
+            start_time: When to start the sweep
+            sweep_direction: 'fade_in' (unfiltered->filtered) or 'fade_out' (filtered->unfiltered)
+            poles: Number of poles for the filter
+            curve_type: 'linear', 'exponential', or 'logarithmic'
+        """
+        self.sweep_type = sweep_type
+        self.target_freq = target_freq
+        self.duration = duration
+        self.start_time = start_time
+        self.sweep_direction = sweep_direction
+        self.poles = poles
+        self.curve_type = curve_type
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Generate FFmpeg filters for frequency sweep effect."""
+        # Use fadeout label as the primary input for this filter
+        input_label = input_fadeout_label if input_fadeout_label else input_fadein_label
+        output_label = self.output_fadeout_label
+
+        orig_label = f"{output_label}_orig"
+        filter_label = f"{output_label}_to{self.sweep_type[:2]}"
+        filtered_label = f"{output_label}_filtered"
+        orig_faded_label = f"{output_label}_orig_faded"
+        filtered_faded_label = f"{output_label}_filtered_faded"
+
+        # Generate volume expression based on curve type
+        def generate_volume_expr(start: float, dur: float, direction: str, curve: str) -> str:
+            t_expr = f"t-{start}"  # Time relative to start
+            norm_t = f"min(max({t_expr},0),{dur})/{dur}"  # Normalized 0-1
+
+            if curve == "exponential":
+                # Exponential curve for smoother transitions
+                if direction == "up":
+                    return f"'pow({norm_t},2)':eval=frame"
+                else:
+                    return f"'1-pow({norm_t},2)':eval=frame"
+            elif curve == "logarithmic":
+                # Logarithmic curve for more aggressive initial change
+                if direction == "up":
+                    return f"'sqrt({norm_t})':eval=frame"
+                else:
+                    return f"'1-sqrt({norm_t})':eval=frame"
+            elif direction == "up":
+                return f"'{norm_t}':eval=frame"
+            else:
+                return f"'1-{norm_t}':eval=frame"
+
+        # Determine volume ramp directions based on sweep direction
+        if self.sweep_direction == "fade_in":
+            # Fade from dry to wet (unfiltered to filtered)
+            orig_direction = "down"
+            filter_direction = "up"
+        else:  # fade_out
+            # Fade from wet to dry (filtered to unfiltered)
+            orig_direction = "up"
+            filter_direction = "down"
+
+        # Build filter chain
+        orig_volume_expr = generate_volume_expr(
+            self.start_time, self.duration, orig_direction, self.curve_type
+        )
+        filtered_volume_expr = generate_volume_expr(
+            self.start_time, self.duration, filter_direction, self.curve_type
+        )
+
+        return [
+            # Split input into two paths
+            f"{input_label}asplit=2[{orig_label}][{filter_label}]",
+            # Apply frequency filter to one path
+            f"[{filter_label}]{self.sweep_type}=f={self.target_freq}:poles={self.poles}[{filtered_label}]",
+            # Apply time-varying volume to original path
+            f"[{orig_label}]volume={orig_volume_expr}[{orig_faded_label}]",
+            # Apply time-varying volume to filtered path
+            f"[{filtered_label}]volume={filtered_volume_expr}[{filtered_faded_label}]",
+            # Mix the two paths together
+            f"[{orig_faded_label}][{filtered_faded_label}]amix=inputs=2:duration=longest:normalize=0[{output_label}]",
+        ]
+
+
+class EQFilter(Filter):
+    """Filter that applies complementary EQ using frequency sweeps for smooth transitions."""
+
+    output_fadeout_label: str = "fadeout_eq"
+    output_fadein_label: str = "fadein_eq"
+
+    def __init__(
+        self,
+        fade_out_analysis: SmartFadesAnalysis,
+        fade_in_analysis: SmartFadesAnalysis,
+        crossfade_duration: float,
+        crossfade_bars: int,
+        logger: logging.Logger | None = None,
+    ):
+        """Initialize EQ filter.
+
+        Args:
+            fade_out_analysis: Analysis data for the outgoing track
+            fade_in_analysis: Analysis data for the incoming track
+            crossfade_duration: Duration of the crossfade in seconds
+            crossfade_bars: Number of bars for the crossfade
+            logger: Optional logger for debug output
+        """
+        self.fade_out_analysis = fade_out_analysis
+        self.fade_in_analysis = fade_in_analysis
+        self.crossfade_duration = crossfade_duration
+        self.crossfade_bars = crossfade_bars
+        self.logger = logger
+
+    @staticmethod
+    def _create_frequency_sweep(
+        input_label: str,
+        output_label: str,
+        sweep_type: str,
+        target_freq: int,
+        duration: float,
+        start_time: float,
+        sweep_direction: str,
+        poles: int,
+        curve_type: str,
+    ) -> list[str]:
+        """Generate FFmpeg filters for frequency sweep effect.
+
+        Args:
+            input_label: Input stream label
+            output_label: Output stream label
+            sweep_type: 'lowpass' or 'highpass'
+            target_freq: Target frequency for the filter
+            duration: Duration of the sweep in seconds
+            start_time: When to start the sweep
+            sweep_direction: 'fade_in' (unfiltered->filtered) or 'fade_out' (filtered->unfiltered)
+            poles: Number of poles for the filter
+            curve_type: 'linear', 'exponential', or 'logarithmic'
+
+        Returns:
+            List of FFmpeg filter strings
+        """
+        orig_label = f"{output_label}_orig"
+        filter_label = f"{output_label}_to{sweep_type[:2]}"
+        filtered_label = f"{output_label}_filtered"
+        orig_faded_label = f"{output_label}_orig_faded"
+        filtered_faded_label = f"{output_label}_filtered_faded"
+
+        # Generate volume expression based on curve type
+        def generate_volume_expr(start: float, dur: float, direction: str, curve: str) -> str:
+            t_expr = f"t-{start}"  # Time relative to start
+            norm_t = f"min(max({t_expr},0),{dur})/{dur}"  # Normalized 0-1
+
+            if curve == "exponential":
+                # Exponential curve for smoother transitions
+                if direction == "up":
+                    return f"'pow({norm_t},2)':eval=frame"
+                else:
+                    return f"'1-pow({norm_t},2)':eval=frame"
+            elif curve == "logarithmic":
+                # Logarithmic curve for more aggressive initial change
+                if direction == "up":
+                    return f"'sqrt({norm_t})':eval=frame"
+                else:
+                    return f"'1-sqrt({norm_t})':eval=frame"
+            elif direction == "up":
+                return f"'{norm_t}':eval=frame"
+            else:
+                return f"'1-{norm_t}':eval=frame"
+
+        # Determine volume ramp directions based on sweep direction
+        if sweep_direction == "fade_in":
+            # Fade from dry to wet (unfiltered to filtered)
+            orig_direction = "down"
+            filter_direction = "up"
+        else:  # fade_out
+            # Fade from wet to dry (filtered to unfiltered)
+            orig_direction = "up"
+            filter_direction = "down"
+
+        # Build filter chain
+        orig_volume_expr = generate_volume_expr(start_time, duration, orig_direction, curve_type)
+        filtered_volume_expr = generate_volume_expr(
+            start_time, duration, filter_direction, curve_type
+        )
+
+        return [
+            # Split input into two paths
+            f"{input_label}asplit=2[{orig_label}][{filter_label}]",
+            # Apply frequency filter to one path
+            f"[{filter_label}]{sweep_type}=f={target_freq}:poles={poles}[{filtered_label}]",
+            # Apply time-varying volume to original path
+            f"[{orig_label}]volume={orig_volume_expr}[{orig_faded_label}]",
+            # Apply time-varying volume to filtered path
+            f"[{filtered_label}]volume={filtered_volume_expr}[{filtered_faded_label}]",
+            # Mix the two paths together
+            f"[{orig_faded_label}][{filtered_faded_label}]amix=inputs=2:duration=longest:normalize=0[{output_label}]",
+        ]
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Create LP / HP complementary filters using frequency sweeps for smooth transitions."""
+        # Calculate target frequency based on average BPM
+        avg_bpm = (self.fade_out_analysis.bpm + self.fade_in_analysis.bpm) / 2
+        bpm_ratio = self.fade_in_analysis.bpm / self.fade_out_analysis.bpm
+
+        # 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
+        crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 2500))
+
+        # Adjust for BPM mismatch
+        if abs(bpm_ratio - 1.0) > 0.3:
+            crossover_freq = int(crossover_freq * 0.85)
+
+        # Extended lowpass effect to gradually remove bass frequencies
+        fadeout_eq_duration = min(max(self.crossfade_duration * 2.5, 8.0), SMART_CROSSFADE_DURATION)
+
+        # Quicker highpass removal to avoid lingering vocals after crossfade
+        fadein_eq_duration = self.crossfade_duration / 1.5
+
+        # Calculate when the EQ sweep should start
+        # The crossfade always happens at the END of the buffer, regardless of beat alignment
+        fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
+
+        # For shorter fades, use exp/exp curves to avoid abruptness
+        if self.crossfade_bars < 8:
+            fadeout_curve = "exponential"
+            fadein_curve = "exponential"
+        # For long fades, use log/linear curves
+        else:
+            # Use logarithmic curve to give the next track more space
+            fadeout_curve = "logarithmic"
+            # Use linear curve for transition, predictable and not too abrupt
+            fadein_curve = "linear"
+
+        if self.logger:
+            self.logger.debug(
+                "EQ: crossover=%dHz, EQ fadeout duration=%.1fs,"
+                " EQ fadein duration=%.1fs, BPM=%.1f, BPM ratio=%.2f,"
+                " EQ curves: %s/%s",
+                crossover_freq,
+                fadeout_eq_duration,
+                fadein_eq_duration,
+                avg_bpm,
+                bpm_ratio,
+                fadeout_curve,
+                fadein_curve,
+            )
+
+        # Create fadeout frequency sweep (unfiltered → low-pass)
+        fadeout_filters = self._create_frequency_sweep(
+            input_label=input_fadeout_label,
+            output_label=self.output_fadeout_label,
+            sweep_type="lowpass",
+            target_freq=crossover_freq,
+            duration=fadeout_eq_duration,
+            start_time=fadeout_eq_start,
+            sweep_direction="fade_in",
+            poles=1,
+            curve_type=fadeout_curve,
+        )
+
+        # Create fadein frequency sweep (high-pass → unfiltered)
+        fadein_filters = self._create_frequency_sweep(
+            input_label=input_fadein_label,
+            output_label=self.output_fadein_label,
+            sweep_type="highpass",
+            target_freq=crossover_freq,
+            duration=fadein_eq_duration,
+            start_time=0,
+            sweep_direction="fade_out",
+            poles=1,
+            curve_type=fadein_curve,
+        )
+
+        return fadeout_filters + fadein_filters
+
+
+class CrossfadeFilter(Filter):
+    """Filter that applies the final crossfade between fadeout and fadein streams."""
+
+    output_fadeout_label: str = "output"
+    output_fadein_label: str = "output"
+
+    def __init__(self, crossfade_duration: float):
+        """Initialize crossfade filter.
+
+        Args:
+            crossfade_duration: Duration of the crossfade in seconds
+        """
+        self.crossfade_duration = crossfade_duration
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Apply the final acrossfade filter."""
+        return [f"{input_fadeout_label}{input_fadein_label}acrossfade=d={self.crossfade_duration}"]
+
 
 class SmartFades:
     """Smart fades class that implements a Smart Fade mode."""
+
     name: str = "smart_fades"
     filters: list[Filter]
 
-    def get_ffmpeg_filters(self, input_fadein_label: str = "[0]", input_fadeout_label: str = "[1]") -> list[str]:
+    def __init__(
+        self,
+        fade_out_analysis: SmartFadesAnalysis,
+        fade_in_analysis: SmartFadesAnalysis,
+        logger: logging.Logger | None = None,
+    ):
+        """Initialize SmartFades with analysis data.
+
+        Args:
+            fade_out_analysis: Analysis data for the outgoing track
+            fade_in_analysis: Analysis data for the incoming track
+            logger: Optional logger for debug output
+        """
+        self.fade_out_analysis = fade_out_analysis
+        self.fade_in_analysis = fade_in_analysis
+        self.logger = logger or logging.getLogger(__name__)
+        self.filters = []
+
+    def build(self) -> None:
+        """Build the smart fades filter chain."""
+        # Calculate optimal crossfade bars that fit in available buffer
+        crossfade_bars = self._calculate_optimal_crossfade_bars()
+
+        # Calculate beat positions for the selected bar count
+        fadeout_start_pos, fadein_start_pos = self._calculate_optimal_fade_timing(crossfade_bars)
+
+        # Log the final selected timing
+        if fadeout_start_pos is not None and fadein_start_pos is not None:
+            self.logger.debug(
+                "Beat timing selected: fadeout=%.2fs, fadein=%.2fs (%d bars)",
+                fadeout_start_pos,
+                fadein_start_pos,
+                crossfade_bars,
+            )
+
+        # Calculate initial crossfade duration (may be adjusted later for downbeat alignment)
+        initial_crossfade_duration = self._calculate_crossfade_duration(
+            crossfade_bars=crossfade_bars
+        )
+
+        # Calculate tempo factor for time stretching
+        original_bpm = self.fade_out_analysis.bpm
+        target_bpm = self.fade_in_analysis.bpm
+        bpm_ratio = target_bpm / original_bpm
+        bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
+
+        # Determine if time stretching is needed
+        tempo_factor = 1.0
+        if 0.1 < bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD and crossfade_bars > 4:
+            tempo_factor = bpm_ratio
+
+        # Initialize filter list
+        self.filters = []
+
+        # Add time stretch filter
+        time_stretch_filter = TimeStretchFilter(
+            fade_out_analysis=self.fade_out_analysis,
+            fade_in_analysis=self.fade_in_analysis,
+            crossfade_bars=crossfade_bars,
+            crossfade_duration=initial_crossfade_duration,
+            logger=self.logger,
+        )
+        self.filters.append(time_stretch_filter)
+
+        crossfade_duration = initial_crossfade_duration
+
+        # Check if we would have enough audio after beat alignment for the crossfade
+        if (
+            fadein_start_pos is not None
+            and fadein_start_pos + crossfade_duration > SMART_CROSSFADE_DURATION
+        ):
+            self.logger.debug(
+                "Skipping beat alignment: not enough audio after trim (%.1fs + %.1fs > %.1fs)",
+                fadein_start_pos,
+                crossfade_duration,
+                SMART_CROSSFADE_DURATION,
+            )
+            # Skip beat alignment
+            fadein_start_pos = None
+
+        # Adjust crossfade duration to align with outgoing track's downbeats
+        crossfade_duration = self._adjust_crossfade_to_downbeats(
+            crossfade_duration=crossfade_duration,
+            fadein_start_pos=fadein_start_pos,
+            tempo_factor=tempo_factor,
+        )
+
+        # Add beat align filter
+        beat_align_filter = BeatAlignFilter(fadein_start_pos=fadein_start_pos)
+        self.filters.append(beat_align_filter)
+
+        # Log the final configuration
+        self.logger.debug(
+            "Smart fade: out_bpm=%.1f, in_bpm=%.1f, %d bars, crossfade: %.2fs%s",
+            self.fade_out_analysis.bpm,
+            self.fade_in_analysis.bpm,
+            crossfade_bars,
+            crossfade_duration,
+            ", beat-aligned" if fadein_start_pos else "",
+        )
+
+        # Add EQ filter
+        eq_filter = EQFilter(
+            fade_out_analysis=self.fade_out_analysis,
+            fade_in_analysis=self.fade_in_analysis,
+            crossfade_duration=crossfade_duration,
+            crossfade_bars=crossfade_bars,
+            logger=self.logger,
+        )
+        self.filters.append(eq_filter)
+
+        # Add final crossfade filter
+        crossfade_filter = CrossfadeFilter(crossfade_duration=crossfade_duration)
+        self.filters.append(crossfade_filter)
+
+    def get_ffmpeg_filters(
+        self,
+        input_fadein_label: str = "[1]",
+        input_fadeout_label: str = "[0]",
+    ) -> list[str]:
         """Get FFmpeg filters for smart fades."""
+        if not self.filters:
+            self.build()
         filters = []
         _cur_fadein_label = input_fadein_label
         _cur_fadeout_label = input_fadeout_label
-        for filter in self.filters:
-            filter_str = filter.apply(_cur_fadein_label, _cur_fadeout_label)
-            filters.append(filter_str)
-            _cur_fadein_label = filter.output_fadein_label
-            _cur_fadeout_label = filter.output_fadeout_label
+        for audio_filter in self.filters:
+            filter_strings = audio_filter.apply(_cur_fadein_label, _cur_fadeout_label)
+            filters.extend(filter_strings)
+            _cur_fadein_label = f"[{audio_filter.output_fadein_label}]"
+            _cur_fadeout_label = f"[{audio_filter.output_fadeout_label}]"
         return filters
+
+    def _calculate_crossfade_duration(self, crossfade_bars: int) -> float:
+        """Calculate final crossfade duration based on musical bars and BPM."""
+        # Calculate crossfade duration based on incoming track's BPM
+        beats_per_bar = 4
+        seconds_per_beat = 60.0 / self.fade_in_analysis.bpm
+        musical_duration = crossfade_bars * beats_per_bar * seconds_per_beat
+
+        # Apply buffer constraint
+        actual_duration = min(musical_duration, SMART_CROSSFADE_DURATION)
+
+        # Log if we had to constrain the duration
+        if musical_duration > SMART_CROSSFADE_DURATION:
+            self.logger.debug(
+                "Constraining crossfade duration from %.1fs to %.1fs (buffer limit)",
+                musical_duration,
+                actual_duration,
+            )
+
+        return actual_duration
+
+    def _calculate_optimal_crossfade_bars(self) -> int:
+        """Calculate optimal crossfade bars that fit in available buffer."""
+        bpm_in = self.fade_in_analysis.bpm
+        bpm_out = self.fade_out_analysis.bpm
+        bpm_diff_percent = abs(1.0 - bpm_in / bpm_out) * 100
+
+        # Calculate ideal bars based on BPM compatibility
+        ideal_bars = 10 if bpm_diff_percent <= TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD else 6
+
+        # Reduce bars until it fits in the fadein buffer
+        for bars in [ideal_bars, 8, 6, 4, 2, 1]:
+            if bars > ideal_bars:
+                continue
+
+            fadeout_start_pos, fadein_start_pos = self._calculate_optimal_fade_timing(bars)
+            if fadeout_start_pos is None or fadein_start_pos is None:
+                continue
+
+            # Calculate what the duration would be
+            test_duration = self._calculate_crossfade_duration(crossfade_bars=bars)
+
+            # Check if it fits in fadein buffer
+            fadein_buffer = SMART_CROSSFADE_DURATION - fadein_start_pos
+            if test_duration <= fadein_buffer:
+                if bars < ideal_bars:
+                    self.logger.debug(
+                        "Reduced crossfade from %d to %d bars (fadein buffer=%.1fs, needed=%.1fs)",
+                        ideal_bars,
+                        bars,
+                        fadein_buffer,
+                        test_duration,
+                    )
+                return bars
+
+        # Fall back to 1 bar if nothing else fits
+        return 1
+
+    def _calculate_optimal_fade_timing(
+        self, crossfade_bars: int
+    ) -> tuple[float | None, float | None]:
+        """Calculate beat positions for alignment."""
+        beats_per_bar = 4
+
+        def calculate_beat_positions(
+            fade_out_beats: npt.NDArray[np.float64],
+            fade_in_beats: npt.NDArray[np.float64],
+            num_beats: int,
+        ) -> tuple[float, float] | None:
+            """Calculate start positions from beat arrays."""
+            if len(fade_out_beats) < num_beats or len(fade_in_beats) < num_beats:
+                return None
+
+            fade_out_slice = fade_out_beats[-num_beats:]
+            fade_in_slice = fade_in_beats[:num_beats]
+            fadein_start_pos = fade_in_slice[0]
+            fadeout_start_pos = fade_out_slice[0]
+            return fadeout_start_pos, fadein_start_pos
+
+        # Try downbeats first for most musical timing
+        downbeat_positions = calculate_beat_positions(
+            self.fade_out_analysis.downbeats, self.fade_in_analysis.downbeats, crossfade_bars
+        )
+        if downbeat_positions:
+            return downbeat_positions
+
+        # Try regular beats if downbeats insufficient
+        required_beats = crossfade_bars * beats_per_bar
+        beat_positions = calculate_beat_positions(
+            self.fade_out_analysis.beats, self.fade_in_analysis.beats, required_beats
+        )
+        if beat_positions:
+            return beat_positions
+
+        # Fallback: No beat alignment possible
+        self.logger.debug("No beat alignment possible (insufficient beats)")
+        return None, None
+
+    def _extrapolate_downbeats(
+        self,
+        downbeats: npt.NDArray[np.float64],
+        tempo_factor: float,
+        buffer_size: float = SMART_CROSSFADE_DURATION,
+    ) -> npt.NDArray[np.float64]:
+        """Extrapolate downbeats based on actual intervals when detection is incomplete."""
+        if len(downbeats) < 3:
+            return downbeats / tempo_factor
+
+        # Adjust detected downbeats for time stretching first
+        adjusted_downbeats = downbeats / tempo_factor
+        last_downbeat = adjusted_downbeats[-1]
+
+        # If the last downbeat is close to the buffer end, no extrapolation needed
+        if last_downbeat >= buffer_size - 5:
+            return adjusted_downbeats
+
+        # Calculate intervals from ORIGINAL downbeats (before time stretching)
+        intervals = np.diff(downbeats)
+        median_interval = float(np.median(intervals))
+        std_interval = float(np.std(intervals))
+
+        # Only extrapolate if intervals are consistent
+        if std_interval > 0.2:
+            self.logger.debug(
+                "Downbeat intervals too inconsistent (std=%.3fs) for extrapolation",
+                std_interval,
+            )
+            return adjusted_downbeats
+
+        # Adjust the interval for time stretching
+        adjusted_interval = median_interval / tempo_factor
+
+        # Extrapolate forward from last adjusted downbeat
+        extrapolated = []
+        current_pos = last_downbeat + adjusted_interval
+        max_extrapolation_distance = 25.0
+
+        while (
+            current_pos < buffer_size
+            and (current_pos - last_downbeat) <= max_extrapolation_distance
+        ):
+            extrapolated.append(current_pos)
+            current_pos += adjusted_interval
+
+        if extrapolated:
+            self.logger.debug(
+                "Extrapolated %d downbeats (adjusted_interval=%.3fs, original=%.3fs) "
+                "from %.2fs to %.2fs",
+                len(extrapolated),
+                adjusted_interval,
+                median_interval,
+                last_downbeat,
+                extrapolated[-1],
+            )
+            return np.concatenate([adjusted_downbeats, np.array(extrapolated)])
+
+        return adjusted_downbeats
+
+    def _adjust_crossfade_to_downbeats(
+        self,
+        crossfade_duration: float,
+        fadein_start_pos: float | None,
+        tempo_factor: float,
+    ) -> float:
+        """Adjust crossfade duration to align with outgoing track's downbeats."""
+        # If we don't have downbeats or beat alignment is disabled, return original duration
+        if len(self.fade_out_analysis.downbeats) == 0 or fadein_start_pos is None:
+            return crossfade_duration
+
+        # Extrapolate downbeats if needed
+        adjusted_downbeats = self._extrapolate_downbeats(
+            self.fade_out_analysis.downbeats, tempo_factor=tempo_factor
+        )
+
+        # Calculate where the crossfade would start in the buffer
+        ideal_start_pos = SMART_CROSSFADE_DURATION - crossfade_duration
+
+        # Debug logging
+        self.logger.debug(
+            "Downbeat adjustment - ideal_start=%.2fs (buffer=%.1fs - crossfade=%.2fs), "
+            "fadein_start=%.2fs, tempo_factor=%.4f",
+            ideal_start_pos,
+            SMART_CROSSFADE_DURATION,
+            crossfade_duration,
+            fadein_start_pos,
+            tempo_factor,
+        )
+
+        # Find the closest downbeats (earlier and later)
+        earlier_downbeat = None
+        later_downbeat = None
+
+        for downbeat in adjusted_downbeats:
+            if downbeat <= ideal_start_pos:
+                earlier_downbeat = downbeat
+            elif downbeat > ideal_start_pos and later_downbeat is None:
+                later_downbeat = downbeat
+                break
+
+        # Try earlier downbeat first (longer crossfade)
+        if earlier_downbeat is not None:
+            adjusted_duration = float(SMART_CROSSFADE_DURATION - earlier_downbeat)
+            if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
+                if abs(adjusted_duration - crossfade_duration) > 0.1:
+                    self.logger.debug(
+                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
+                        "downbeat at %.2fs (earlier)",
+                        crossfade_duration,
+                        adjusted_duration,
+                        earlier_downbeat,
+                    )
+                return adjusted_duration
+
+        # Try later downbeat (shorter crossfade)
+        if later_downbeat is not None:
+            adjusted_duration = float(SMART_CROSSFADE_DURATION - later_downbeat)
+            if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
+                if abs(adjusted_duration - crossfade_duration) > 0.1:
+                    self.logger.debug(
+                        "Adjusted crossfade duration from %.2fs to %.2fs to align with "
+                        "downbeat at %.2fs (later)",
+                        crossfade_duration,
+                        adjusted_duration,
+                        later_downbeat,
+                    )
+                return adjusted_duration
+
+        # If no suitable downbeat found, return original duration
+        self.logger.debug(
+            "Could not adjust crossfade duration to downbeats, using original %.2fs",
+            crossfade_duration,
+        )
+        return crossfade_duration
 
 
 #############################
@@ -417,10 +1194,19 @@ class SmartFadesMixer:
             "-i",
             "-",
         ]
-
-        smart_fade_filters = self._create_enhanced_smart_fade_filters(
+        smart_fades = SmartFades(fade_out_analysis, fade_in_analysis, logger=self.logger)
+        smart_fade_filters = smart_fades.get_ffmpeg_filters()
+        smart_fade_filters_old = self._create_enhanced_smart_fade_filters(
             fade_out_analysis,
             fade_in_analysis,
+        )
+        self.logger.debug(
+            "Smart fade filters (new): %s",
+            " | ".join(smart_fade_filters),
+        )
+        self.logger.debug(
+            "Smart fade filters (old): %s",
+            " | ".join(smart_fade_filters_old),
         )
         args.extend(
             [
