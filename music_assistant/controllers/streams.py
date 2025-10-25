@@ -751,7 +751,7 @@ class StreamsController(CoreController):
         )
         http_profile = str(http_profile_value) if http_profile_value is not None else "default"
         if http_profile == "forced_content_length":
-            # just set an insane high content length to make sure the player keeps playing
+            # just set an insanely high content length to make sure the player keeps playing
             resp.content_length = get_chunksize(output_format, 12 * 3600)
         elif http_profile == "chunked":
             resp.enable_chunked_encoding()
