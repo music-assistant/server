@@ -1646,42 +1646,33 @@ class PlayerController(CoreController):
             return None
         volume_level = volume_override
         if volume_level is None and volume_strategy == "absolute":
-            volume_level = (
-                int(volume_strategy_volume)
-                if isinstance(volume_strategy_volume, (int, float))
-                else None
-            )
+            volume_level = int(cast("float", volume_strategy_volume))
         elif volume_level is None and volume_strategy == "relative":
-            if (
-                (player := self.get(player_id))
-                and player.volume_level is not None
-                and isinstance(volume_strategy_volume, (int, float))
-            ):
-                volume_level = int(player.volume_level + volume_strategy_volume)
+            if (player := self.get(player_id)) and player.volume_level is not None:
+                volume_level = int(player.volume_level + cast("float", volume_strategy_volume))
         elif volume_level is None and volume_strategy == "percentual":
-            if (
-                (player := self.get(player_id))
-                and player.volume_level is not None
-                and isinstance(volume_strategy_volume, (int, float))
-            ):
-                percentual = (player.volume_level / 100) * volume_strategy_volume
+            if (player := self.get(player_id)) and player.volume_level is not None:
+                percentual = (player.volume_level / 100) * cast("float", volume_strategy_volume)
                 volume_level = int(player.volume_level + percentual)
         if volume_level is not None:
-            announce_volume_min = self.mass.config.get_raw_player_config_value(
-                player_id,
-                CONF_ENTRY_ANNOUNCE_VOLUME_MIN.key,
-                CONF_ENTRY_ANNOUNCE_VOLUME_MIN.default_value,
+            announce_volume_min = cast(
+                "float",
+                self.mass.config.get_raw_player_config_value(
+                    player_id,
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MIN.key,
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MIN.default_value,
+                ),
             )
-            if isinstance(announce_volume_min, (int, float)):
-                volume_level = max(int(announce_volume_min), volume_level)
-            announce_volume_max = self.mass.config.get_raw_player_config_value(
-                player_id,
-                CONF_ENTRY_ANNOUNCE_VOLUME_MAX.key,
-                CONF_ENTRY_ANNOUNCE_VOLUME_MAX.default_value,
+            volume_level = max(int(announce_volume_min), volume_level)
+            announce_volume_max = cast(
+                "float",
+                self.mass.config.get_raw_player_config_value(
+                    player_id,
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MAX.key,
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MAX.default_value,
+                ),
             )
-            if isinstance(announce_volume_max, (int, float)):
-                volume_level = min(int(announce_volume_max), volume_level)
-        # ensure the result is an integer
+            volume_level = min(int(announce_volume_max), volume_level)
         return None if volume_level is None else int(volume_level)
 
     def iter_group_members(
