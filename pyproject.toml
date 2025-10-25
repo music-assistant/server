@@ -136,7 +136,6 @@ exclude = [
   '^music_assistant/controllers/metadata.py$',
   '^music_assistant/controllers/music.py$',
   '^music_assistant/controllers/player_queues.py$',
-  '^music_assistant/controllers/players/player_controller.py',
   '^music_assistant/controllers/streams.py$',
   '^music_assistant/controllers/webserver.py',
   '^music_assistant/helpers/app_vars.py',
