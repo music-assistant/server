@@ -900,7 +900,7 @@ class PlayerController(CoreController):
                 # we can send a regular play-media call downstream
                 announce_data = AnnounceData(
                     announcement_url=url,
-                    pre_announce=bool(pre_announce) if pre_announce else False,
+                    pre_announce=bool(pre_announce or False),
                     pre_announce_url=pre_announce_url,
                 )
                 announcement = PlayerMedia(
