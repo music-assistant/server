@@ -179,7 +179,7 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_ALLOW_BUFFER,
                 type=ConfigEntryType.BOOLEAN,
-                default_value=True,
+                default_value=False,
                 label="Allow (in-memory) buffering of (track) audio",
                 description="By default, Music Assistant tries to be as resource "
                 "efficient as possible when streaming audio, especially considering "
