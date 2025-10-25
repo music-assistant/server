@@ -801,7 +801,7 @@ def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
             *args,
             task_id=task_id,
             abort_existing=False,
-            **kwargs,  # type: ignore[arg-type]
+            **kwargs,
         )
         return await task
 
