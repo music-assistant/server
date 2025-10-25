@@ -630,6 +630,18 @@ CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED = ConfigEntry.from_dict(
     }
 )
 
+CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES = ConfigEntry(
+    key="crossfade_different_sample_rates",
+    type=ConfigEntryType.BOOLEAN,
+    label="Allow crossfade between tracks with different sample rates",
+    description="Enable this option to allow crossfading between tracks that have different "
+    "sample rates (e.g. 44.1kHz to 48kHz). \n\n "
+    "Only enable this option if your player actually support this, otherwise you may "
+    "experience audio glitches during crossfades.",
+    default_value=False,
+    category="advanced",
+)
+
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
     key="preview_note",
     type=ConfigEntryType.ALERT,
@@ -929,13 +941,13 @@ ICY_HEADERS = {
     "icy-logo": MASS_LOGO_ONLINE,
 }
 
-DEFAULT_PCM_FORMAT = AudioFormat(
+INTERNAL_PCM_FORMAT = AudioFormat(
     # always prefer float32 as internal pcm format to create headroom
     # for filters such as dsp and volume normalization
     content_type=ContentType.PCM_F32LE,
-    sample_rate=48000,
-    bit_depth=32,
-    channels=2,
+    bit_depth=32,  # related to float32
+    sample_rate=48000,  # static for flow stream, dynamic for anything else
+    channels=2,  # static for flow stream, dynamic for anything else
 )
 
 # extra data / extra attributes keys
