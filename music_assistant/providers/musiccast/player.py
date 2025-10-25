@@ -527,9 +527,18 @@ class MusicCastPlayer(Player):
     ) -> None:
         """Set multiple members.
 
-        If we are a server, this is called.
-        We can ignore removed devices, these are handled via ungroup individually.
+        This function is called on the server.
         """
+        # Removing players
+        if player_ids_to_remove:
+            for player_id in player_ids_to_remove:
+                if player := self.mass.players.get(player_id):
+                    assert isinstance(player, MusicCastPlayer)  # for type checking
+                    await player.ungroup()
+
+        # Adding players
+        if not player_ids_to_add:
+            return
         children: set[str] = set()  # set[ma_player_id]
         children_zones: list[str] = []  # list[ma_player_id]
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
