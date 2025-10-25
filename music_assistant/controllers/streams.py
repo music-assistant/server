@@ -1111,7 +1111,7 @@ class StreamsController(CoreController):
         streamdetails.volume_normalization_gain_correct = gain_correct
 
         allow_buffer = bool(
-            self.mass.config.get_raw_core_config_value(CONF_ALLOW_BUFFER, False)
+            self.mass.config.get_raw_core_config_value(self.domain, CONF_ALLOW_BUFFER, False)
             and streamdetails.duration
         )
 
