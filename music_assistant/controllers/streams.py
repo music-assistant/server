@@ -399,6 +399,7 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "icy-name": queue_item.name,
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01500000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
             "Content-Type": f"audio/{output_format.output_format_str}",
         }
@@ -487,11 +488,6 @@ class StreamsController(CoreController):
                 input_format=pcm_format,
                 output_format=output_format,
             ),
-            # we need to slowly feed the music to avoid the player stopping and later
-            # restarting (or completely failing) the audio stream by keeping the buffer short.
-            # this is reported to be an issue especially with Chromecast players.
-            # see for example: https://github.com/music-assistant/support/issues/3717
-            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "5"],
         ):
             try:
                 await resp.write(chunk)
@@ -553,6 +549,7 @@ class StreamsController(CoreController):
         headers = {
             **DEFAULT_STREAM_HEADERS,
             **ICY_HEADERS,
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
             "Accept-Ranges": "none",
             "Content-Type": f"audio/{output_format.output_format_str}",
         }
@@ -742,6 +739,7 @@ class StreamsController(CoreController):
         )
         headers = {
             **DEFAULT_STREAM_HEADERS,
+            "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",  # noqa: E501
             "icy-name": plugin_source.name,
             "Accept-Ranges": "none",
             "Content-Type": f"audio/{output_format.output_format_str}",
@@ -801,7 +799,7 @@ class StreamsController(CoreController):
         # like https hosts and it also offers the pre-announce 'bell'
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
-    @use_buffer(30, 5)
+    @use_buffer(30, 4)
     async def get_queue_flow_stream(
         self,
         queue: PlayerQueue,
@@ -1227,7 +1225,7 @@ class StreamsController(CoreController):
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, gc.collect)
 
-    @use_buffer(30, 5)
+    @use_buffer(30, 4)
     async def get_queue_item_stream_with_smartfade(
         self,
         queue_item: QueueItem,
