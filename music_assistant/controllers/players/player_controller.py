@@ -365,6 +365,13 @@ class PlayerController(CoreController):
                 "Ignore PLAY request to player %s: player is already playing", player.display_name
             )
             return
+
+        # Check if a plugin source is active with a play callback
+        if plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.can_play_pause and plugin_source.on_play:
+                await plugin_source.on_play()
+                return
+
         if player.playback_state == PlaybackState.PAUSED:
             # handle command on player directly
             async with self._player_throttlers[player.player_id]:
@@ -381,6 +388,13 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
+
+        # Check if a plugin source is active with a pause callback
+        if plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.can_play_pause and plugin_source.on_pause:
+                await plugin_source.on_pause()
+                return
+
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.pause(active_queue.queue_id)
@@ -456,6 +470,13 @@ class PlayerController(CoreController):
         - position: position in seconds to seek to in the current playing item.
         """
         player = self._get_player_with_redirect(player_id)
+
+        # Check if a plugin source is active with a seek callback
+        if plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.can_seek and plugin_source.on_seek:
+                await plugin_source.on_seek(position)
+                return
+
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.seek(active_queue.queue_id, position)
@@ -471,6 +492,12 @@ class PlayerController(CoreController):
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.active_source or player.player_id
+
+        # Check if a plugin source is active with a next callback
+        if plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.can_next_previous and plugin_source.on_next:
+                await plugin_source.on_next()
+                return
 
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
@@ -494,6 +521,13 @@ class PlayerController(CoreController):
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.active_source or player.player_id
+
+        # Check if a plugin source is active with a previous callback
+        if plugin_source := self._get_active_plugin_source(player):
+            if plugin_source.can_next_previous and plugin_source.on_previous:
+                await plugin_source.on_previous()
+                return
+
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.previous(active_queue.queue_id)
@@ -1825,6 +1859,14 @@ class PlayerController(CoreController):
             )
             return active_group
         return player
+
+    def _get_active_plugin_source(self, player: Player) -> PluginSource | None:
+        """Get the active PluginSource for a player if any."""
+        # Check if any plugin source is in use by this player
+        for plugin_source in self.get_plugin_sources():
+            if plugin_source.in_use_by == player.player_id:
+                return plugin_source
+        return None
 
     def _get_player_groups(
         self, player: Player, available_only: bool = True, powered_only: bool = False

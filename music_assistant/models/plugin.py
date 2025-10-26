@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 
 from mashumaro import field_options, pass_through
@@ -69,6 +69,61 @@ class PluginSource(PlayerSource):
         metadata=field_options(serialize="omit", deserialize=pass_through),
         repr=False,
     )
+
+    # Optional callbacks for playback control
+    # These callbacks will be called by the player controller when control commands are issued
+    # and the source reports the corresponding capability (can_play_pause, can_seek, etc.)
+
+    # Callback for play command: async def callback() -> None
+    on_play: Callable[[], Awaitable[None]] | None = field(
+        default=None,
+        compare=False,
+        metadata=field_options(serialize="omit", deserialize=pass_through),
+        repr=False,
+    )
+
+    # Callback for pause command: async def callback() -> None
+    on_pause: Callable[[], Awaitable[None]] | None = field(
+        default=None,
+        compare=False,
+        metadata=field_options(serialize="omit", deserialize=pass_through),
+        repr=False,
+    )
+
+    # Callback for next track command: async def callback() -> None
+    on_next: Callable[[], Awaitable[None]] | None = field(
+        default=None,
+        compare=False,
+        metadata=field_options(serialize="omit", deserialize=pass_through),
+        repr=False,
+    )
+
+    # Callback for previous track command: async def callback() -> None
+    on_previous: Callable[[], Awaitable[None]] | None = field(
+        default=None,
+        compare=False,
+        metadata=field_options(serialize="omit", deserialize=pass_through),
+        repr=False,
+    )
+
+    # Callback for seek command: async def callback(position: int) -> None
+    on_seek: Callable[[int], Awaitable[None]] | None = field(
+        default=None,
+        compare=False,
+        metadata=field_options(serialize="omit", deserialize=pass_through),
+        repr=False,
+    )
+
+    def as_player_source(self) -> PlayerSource:
+        """Return a basic PlayerSource representation without unpicklable callbacks."""
+        return PlayerSource(
+            id=self.id,
+            name=self.name,
+            passive=self.passive,
+            can_play_pause=self.can_play_pause,
+            can_seek=self.can_seek,
+            can_next_previous=self.can_next_previous,
+        )
 
 
 class PluginProvider(Provider):

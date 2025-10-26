@@ -826,6 +826,9 @@ class Player(ABC):
         if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
                 return parent_player.active_source
+        for plugin_source in self.mass.players.get_plugin_sources():
+            if plugin_source.in_use_by == self.player_id:
+                return plugin_source.id
         # in case player's source is None, return the player_id (to indicate MA is active source)
         return self._active_source or self.player_id
 
@@ -853,23 +856,12 @@ class Player(ABC):
                 can_next_previous=True,
             )
             sources.append(mass_source)
-        # if the player is grouped/synced, add the active source list of the group/parent player
-        if parent_player_id := (self.active_group or self.synced_to):
-            if parent_player := self.mass.players.get(parent_player_id):
-                for source in parent_player.source_list:
-                    if source.id == parent_player.active_source:
-                        sources.append(
-                            PlayerSource(
-                                id=source.id,
-                                name=f"{source.name} ({parent_player.display_name})",
-                                passive=source.passive,
-                                can_play_pause=source.can_play_pause,
-                                can_seek=source.can_seek,
-                                can_next_previous=source.can_next_previous,
-                            )
-                        )
-        # append all/any plugin sources
-        sources.extend(self.mass.players.get_plugin_sources())
+        # append all/any plugin sources (convert to PlayerSource to avoid deepcopy issues)
+        for plugin_source in self.mass.players.get_plugin_sources():
+            if hasattr(plugin_source, "as_player_source"):
+                sources.append(plugin_source.as_player_source())
+            else:
+                sources.append(plugin_source)
         return sources
 
     @cached_property
@@ -935,7 +927,7 @@ class Player(ABC):
         if self.active_source and (
             source := self.mass.players.get_plugin_source(self.active_source)
         ):
-            return source.metadata
+            return deepcopy(source.metadata)
 
         return self._current_media
 
