@@ -9,7 +9,6 @@ so multiple players can be linked to multiple Spotify Connect daemons.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import pathlib
 from collections.abc import Callable
@@ -196,29 +195,6 @@ class SpotifyConnectProvider(PluginProvider):
             )
         )
 
-        # Note: We don't check for Spotify provider match here because the Spotify music
-        # provider may not be initialized yet. The check will happen when playback starts.
-
-    async def _load_cached_username(self) -> str | None:
-        """Load cached username from librespot credentials.json if available."""
-        try:
-            credentials_file = os.path.join(self.cache_dir, "credentials.json")
-            if not os.path.exists(credentials_file):
-                return None
-
-            # Use async file operations to avoid blocking
-            def _read_credentials() -> str | None:
-                with open(credentials_file) as f:
-                    credentials = json.load(f)
-                    if username := credentials.get("username"):
-                        return str(username)
-                return None
-
-            return await self.mass.loop.run_in_executor(None, _read_credentials)
-        except Exception as err:
-            self.logger.debug("Failed to load cached username from credentials: %s", err)
-        return None
-
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self._stop_called = True
@@ -235,11 +211,7 @@ class SpotifyConnectProvider(PluginProvider):
 
     async def _check_spotify_provider_match(self) -> None:
         """Check if a Spotify music provider is available with matching username."""
-        # Load username from cached credentials if not already available
-        if not self._connected_spotify_username:
-            self._connected_spotify_username = await self._load_cached_username()
-
-        # Still no username available, cannot proceed
+        # Username must be available (set from librespot output)
         if not self._connected_spotify_username:
             return
 
@@ -310,7 +282,7 @@ class SpotifyConnectProvider(PluginProvider):
                 "Playback control requires a matching Spotify music provider"
             )
         try:
-            await self._spotify_provider._post_data("me/player/pause", want_result=False)
+            await self._spotify_provider._put_data("me/player/pause")
         except Exception as err:
             self.logger.warning("Failed to send pause command via Spotify Web API: %s", err)
             raise
@@ -415,6 +387,15 @@ class SpotifyConnectProvider(PluginProvider):
                     continue
                 if "couldn't parse packet from " in line:
                     continue
+                if "Authenticated as '" in line:
+                    # Extract username from librespot authentication message
+                    # Format: "Authenticated as 'username'"
+                    username = line.split("Authenticated as '")[1].split("'")[0]
+                    self._connected_spotify_username = username
+                    self.logger.debug("Authenticated to Spotify as: %s", username)
+                    # Check for provider match now that we have the username
+                    self.mass.create_task(self._check_spotify_provider_match())
+                    continue
                 self.logger.debug(line)
         finally:
             await librespot.close(True)
@@ -483,7 +464,7 @@ class SpotifyConnectProvider(PluginProvider):
         if event_name in ("sink", "playing") and (not self._source_details.in_use_by):
             # Check for matching Spotify provider now that playback is starting
             # This ensures the Spotify music provider has had time to initialize
-            if self._connected_spotify_username and not self._spotify_provider:
+            if not self._connected_spotify_username or not self._spotify_provider:
                 await self._check_spotify_provider_match()
 
             # initiate playback by selecting this source on the default player
