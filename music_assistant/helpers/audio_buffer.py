@@ -249,10 +249,18 @@ class AudioBuffer:
             self._buffer_fill_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._buffer_fill_task
+        # cancel the inactivity task
         if self._inactivity_task:
-            self._inactivity_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._inactivity_task
+            current_task = asyncio.current_task()
+            # Don't await inactivity task cancellation if we're being called from it
+            # to avoid deadlock/blocking
+            if current_task != self._inactivity_task:
+                self._inactivity_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._inactivity_task
+            else:
+                # Just cancel it without waiting since we're inside it
+                self._inactivity_task.cancel()
         async with self._lock:
             # Replace the deque instead of clearing it to avoid blocking
             # Clearing a large deque can take >100ms
