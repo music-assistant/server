@@ -390,11 +390,28 @@ class SpotifyConnectProvider(PluginProvider):
                 if "Authenticated as '" in line:
                     # Extract username from librespot authentication message
                     # Format: "Authenticated as 'username'"
-                    username = line.split("Authenticated as '")[1].split("'")[0]
-                    self._connected_spotify_username = username
-                    self.logger.debug("Authenticated to Spotify as: %s", username)
-                    # Check for provider match now that we have the username
-                    self.mass.create_task(self._check_spotify_provider_match())
+                    try:
+                        parts = line.split("Authenticated as '")
+                        if len(parts) > 1:
+                            username_part = parts[1].split("'")
+                            if len(username_part) > 0 and username_part[0]:
+                                username = username_part[0]
+                                self._connected_spotify_username = username
+                                self.logger.debug("Authenticated to Spotify as: %s", username)
+                                # Check for provider match now that we have the username
+                                self.mass.create_task(self._check_spotify_provider_match())
+                            else:
+                                self.logger.warning(
+                                    "Could not parse Spotify username from line: %s", line
+                                )
+                        else:
+                            self.logger.warning(
+                                "Could not parse Spotify username from line: %s", line
+                            )
+                    except Exception as err:
+                        self.logger.warning(
+                            "Error parsing Spotify username from line: %s - %s", line, err
+                        )
                     continue
                 self.logger.debug(line)
         finally:
