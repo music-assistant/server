@@ -478,6 +478,7 @@ class StreamsController(CoreController):
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
         # the desired output format for the player including any player specific filter params
         # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
+        first_chunk_received = False
         async for chunk in get_ffmpeg_stream(
             audio_input=audio_input,
             input_format=pcm_format,
@@ -491,6 +492,13 @@ class StreamsController(CoreController):
         ):
             try:
                 await resp.write(chunk)
+                if not first_chunk_received:
+                    first_chunk_received = True
+                    # inform the queue that the track is now loaded in the buffer
+                    # so for example the next track can be enqueued
+                    self.mass.player_queues.track_loaded_in_buffer(
+                        queue_item.queue_id, queue_item.queue_item_id
+                    )
             except (BrokenPipeError, ConnectionResetError, ConnectionError):
                 break
         if queue_item.streamdetails.stream_error:
@@ -799,7 +807,7 @@ class StreamsController(CoreController):
         # like https hosts and it also offers the pre-announce 'bell'
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
-    @use_buffer(30, 4)
+    @use_buffer(30, 1)
     async def get_queue_flow_stream(
         self,
         queue: PlayerQueue,
@@ -888,11 +896,19 @@ class StreamsController(CoreController):
             bytes_written = 0
             buffer = b""
             # handle incoming audio chunks
+            first_chunk_received = False
             async for chunk in self.get_queue_item_stream(
                 queue_track,
                 pcm_format=pcm_format,
                 seek_position=queue_track.streamdetails.seek_position,
             ):
+                if not first_chunk_received:
+                    first_chunk_received = True
+                    # inform the queue that the track is now loaded in the buffer
+                    # so the next track can be preloaded
+                    self.mass.player_queues.track_loaded_in_buffer(
+                        queue.queue_id, queue_track.queue_item_id
+                    )
                 # buffer size needs to be big enough to include the crossfade part
                 req_buffer_size = (
                     pcm_sample_size
@@ -1170,11 +1186,6 @@ class StreamsController(CoreController):
                 bytes_received += len(chunk)
                 if not first_chunk_received:
                     first_chunk_received = True
-                    # inform the queue that the track is now loaded in the buffer
-                    # so for example the next track can be enqueued
-                    self.mass.player_queues.track_loaded_in_buffer(
-                        queue_item.queue_id, queue_item.queue_item_id
-                    )
                     self.logger.debug(
                         "First audio chunk received for %s (%s) after %.2f seconds",
                         queue_item.name,
@@ -1225,7 +1236,7 @@ class StreamsController(CoreController):
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, gc.collect)
 
-    @use_buffer(30, 4)
+    @use_buffer(30, 1)
     async def get_queue_item_stream_with_smartfade(
         self,
         queue_item: QueueItem,
