@@ -218,7 +218,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         username = str(self.config.get_value(CONF_USERNAME) or "guest")
         password = self.config.get_value(CONF_PASSWORD)
         # Type narrowing: password can be str or None
-        password_str: str | None = str(password) if password else None
+        password_str: str | None = str(password) if password is not None else None
         share = str(self.config.get_value(CONF_SHARE))
 
         # handle optional subfolder
@@ -267,14 +267,14 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
         # Construct credentials in URL format
         # macOS mount_smbfs supports special characters in password when URL-encoded
-        password_str = f":{quote(str(password), safe='')}" if password else ""
+        encoded_password = f":{quote(str(password), safe='')}" if password else ""
 
         return [
             "mount",
             "-t",
             "smbfs",
             *mount_options,
-            f"//{username}{password_str}@{server}/{share}{subfolder}",
+            f"//{username}{encoded_password}@{server}/{share}{subfolder}",
             self.base_path,
         ]
 
