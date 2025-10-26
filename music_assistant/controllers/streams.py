@@ -1307,9 +1307,7 @@ class StreamsController(CoreController):
         """Get the audio stream for a single queue item with (smart) crossfade to the next item."""
         queue = self.mass.player_queues.get(queue_item.queue_id)
         if not queue:
-            raise InvalidDataError(
-                f"Queue {queue_item.queue_id} not found"
-            )  # FIX 1: InvalidDataError
+            raise InvalidDataError(f"Queue {queue_item.queue_id} not found")
 
         streamdetails = queue_item.streamdetails
         assert streamdetails
@@ -1458,7 +1456,7 @@ class StreamsController(CoreController):
                     fade_in_part=buffer,
                     fade_out_part=fade_out_data,
                     fade_in_streamdetails=next_queue_item.streamdetails,
-                    fade_out_streamdetails=streamdetails,  # FIX 4: Use local variable
+                    fade_out_streamdetails=streamdetails,
                     pcm_format=pcm_format,
                     standard_crossfade_duration=standard_crossfade_duration,
                     mode=smart_fades_mode,
@@ -1478,7 +1476,7 @@ class StreamsController(CoreController):
                     fade_in_size=len(buffer),
                     pcm_format=pcm_format,
                     queue_item_id=next_queue_item.queue_item_id,
-                    session_id=session_id or "",  # FIX 2: Handle None for dataclass
+                    session_id=session_id or "",
                 )
 
             except QueueEmpty:
@@ -1492,9 +1490,7 @@ class StreamsController(CoreController):
         # this also accounts for crossfade and silence stripping
         seconds_streamed = bytes_written / pcm_format.pcm_sample_size
         streamdetails.seconds_streamed = seconds_streamed
-        streamdetails.duration = int(
-            streamdetails.seek_position + seconds_streamed
-        )  # FIX 3: int() cast
+        streamdetails.duration = int(streamdetails.seek_position + seconds_streamed)
         self.logger.debug(
             "Finished Streaming queue track: %s (%s) on queue %s",
             streamdetails.uri,
