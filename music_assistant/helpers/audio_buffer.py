@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 
-DEFAULT_MAX_BUFFER_SIZE_SECONDS: int = 60 * 5  # 5 minutes
+DEFAULT_MAX_BUFFER_SIZE_SECONDS: int = 60 * 8  # 8 minutes
 
 
 class AudioBuffer:
@@ -67,6 +67,12 @@ class AudioBuffer:
             return True
         return self._buffer_fill_task is not None and self._buffer_fill_task.cancelled()
 
+    @staticmethod
+    def _cleanup_chunks(chunks: deque[bytes]) -> None:
+        """Clear chunks and run garbage collection (runs in executor)."""
+        chunks.clear()
+        gc.collect()
+
     @property
     def chunk_size_bytes(self) -> int:
         """Return the size in bytes of one second of PCM audio."""
@@ -105,6 +111,9 @@ class AudioBuffer:
         inactivity_timeout = 60 * 5  # 5 minutes
         if time_since_access > (inactivity_timeout - 30):
             # Buffer is close to being cleared, don't reuse it
+            return False
+
+        if seek_position > self._discarded_chunks + self.max_size_seconds:
             return False
 
         # Check if the seek position has already been discarded
@@ -245,7 +254,10 @@ class AudioBuffer:
             with suppress(asyncio.CancelledError):
                 await self._inactivity_task
         async with self._lock:
-            self._chunks.clear()
+            # Replace the deque instead of clearing it to avoid blocking
+            # Clearing a large deque can take >100ms
+            old_chunks = self._chunks
+            self._chunks = deque()
             self._discarded_chunks = 0
             self._eof_received = False
             self._cancelled = True  # Mark buffer as cancelled
@@ -253,9 +265,10 @@ class AudioBuffer:
             self._data_available.notify_all()
             self._space_available.notify_all()
 
-        # Run garbage collection in executor to reclaim memory from large buffers
+        # Clear the old deque and run garbage collection in background
+        # to avoid blocking the event loop
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, gc.collect)
+        loop.run_in_executor(None, self._cleanup_chunks, old_chunks)
 
     async def set_eof(self) -> None:
         """Signal that no more data will be added to the buffer."""

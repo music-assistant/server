@@ -57,21 +57,21 @@ jobs:
           # Define search patterns for each channel
           case "$CHANNEL" in
             nightly)
-              SEARCH_PATTERN=".dev"
+              SEARCH_PATTERN="dev"
               ;;
             beta)
-              SEARCH_PATTERN=".b"
+              SEARCH_PATTERN="b"
               ;;
             stable)
-              # For stable, we want versions that don't contain .dev or .b
+              # For stable, we want versions that don't contain dev or beta suffixes
               SEARCH_PATTERN="stable"
               ;;
           esac
 
           # Get the latest release for the channel
           if [ "$CHANNEL" = "stable" ]; then
-            # For stable, get releases that don't contain .dev or .b
-            LATEST_RELEASE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains(".dev") | not) | select(.tagName | contains(".b") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
+            # For stable, get releases that don't contain dev or beta suffixes
+            LATEST_RELEASE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains("dev") | not) | select(.tagName | test("b[0-9]") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
           else
             # For nightly and beta, filter by pattern
             LATEST_RELEASE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq ".[] | select(.tagName | contains(\"$SEARCH_PATTERN\"))" 2>/dev/null | jq -s '.[0]' || echo "")
@@ -108,12 +108,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Get last stable release (for beta versioning)
+      - name: Get last stable release (for beta and nightly versioning)
         id: last_stable
-        if: steps.set_channel.outputs.channel == 'beta' || steps.set_channel.outputs.channel == 'nightly'
+        if: ${{ steps.set_channel.outputs.channel == 'beta' || steps.set_channel.outputs.channel == 'nightly' }}
         run: |
-          # Get the latest stable release (no .dev or .b)
-          LATEST_STABLE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains(".dev") | not) | select(.tagName | contains(".b") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
+          # Get the latest stable release (no dev or beta suffixes)
+          LATEST_STABLE=$(gh release list --exclude-drafts --limit 100 --json createdAt,tagName,isPrerelease --jq '.[] | select(.tagName | contains("dev") | not) | select(.tagName | test("b[0-9]") | not)' 2>/dev/null | jq -s '.[0]' || echo "")
 
           if [ -z "$LATEST_STABLE" ] || [ "$LATEST_STABLE" == "null" ]; then
             echo "No previous stable releases found"

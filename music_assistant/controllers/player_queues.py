@@ -805,6 +805,11 @@ class PlayerQueuesController(CoreController):
         if isinstance(index, str):
             index = self.index_by_id(queue_id, index)
         queue.current_index = index
+        # update current item and elapsed time and signal update
+        # this way the UI knows immediately that a new item is loading
+        queue.current_item = self.get_item(queue_id, index)
+        queue.elapsed_time = seek_position
+        self.signal_update(queue_id)
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
         prefer_flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
@@ -823,7 +828,9 @@ class PlayerQueuesController(CoreController):
         # send play_media request to player
         # NOTE that we debounce this a bit to account for someone hitting the next button
         # like a madman. This will prevent the player from being overloaded with requests.
-        async def _play_index(index: int) -> None:
+        async def _play_index(index: int, debounce: bool) -> None:
+            if debounce:
+                await asyncio.sleep(0.25)
             for attempt in range(5):
                 try:
                     queue_item = self.get_item(queue_id, index)
@@ -856,6 +863,8 @@ class PlayerQueuesController(CoreController):
                 MediaType.RADIO,
                 MediaType.PLUGIN_SOURCE,
             )
+            if debounce:
+                await asyncio.sleep(0.25)
             queue.flow_mode = flow_mode
             await self.mass.players.play_media(
                 player_id=queue_id,
@@ -866,13 +875,15 @@ class PlayerQueuesController(CoreController):
 
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._transitioning_players.add(queue_id)
-        self.mass.call_later(
-            1 if debounce else 0,
+        task = self.mass.create_task(
             _play_index,
             index,
+            debounce,
             task_id=f"play_media_{queue_id}",
+            abort_existing=True,
         )
         self.signal_update(queue_id)
+        await task
 
     @api_command("player_queues/transfer")
     async def transfer_queue(

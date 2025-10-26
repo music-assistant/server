@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version number (e.g., 1.2.3, 1.2.3.b1, or 1.2.3.dev1)"
+        description: "Version number (e.g., 1.2.3, 1.2.3b1, or 1.2.3.dev1)"
         required: true
         type: string
       channel:
@@ -18,7 +18,7 @@ on:
   workflow_call:
     inputs:
       version:
-        description: "Version number (e.g., 1.2.3, 1.2.3.b1, or 1.2.3.dev1)"
+        description: "Version number (e.g., 1.2.3, 1.2.3b1, or 1.2.3.dev1)"
         required: true
         type: string
       channel:
@@ -73,7 +73,7 @@ jobs:
 
           # Regex patterns for each channel
           STABLE_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
-          BETA_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+\.b[0-9]+$'
+          BETA_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$'
           NIGHTLY_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$'
 
           # Validate version format matches channel
@@ -88,7 +88,7 @@ jobs:
               ;;
             beta)
               if ! [[ "$VERSION" =~ $BETA_PATTERN ]]; then
-                echo "Error: Beta channel requires version format: X.Y.Z.bN (e.g., 1.2.3.b1)"
+                echo "Error: Beta channel requires version format: X.Y.ZbN (e.g., 1.2.3b1)"
                 exit 1
               fi
               echo "is_prerelease=true" >> $GITHUB_OUTPUT
@@ -178,7 +178,7 @@ jobs:
               PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
               ;;
             beta)
-              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.b[0-9]+$' | head -n 1)
+              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1)
               ;;
             nightly)
               PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' | head -n 1)
@@ -221,8 +221,8 @@ jobs:
               TITLE="$VERSION Nightly"
             fi
           elif [[ "$CHANNEL" == "beta" ]]; then
-            # Extract base version and beta number from X.Y.Z.bN
-            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.b([0-9]+)$ ]]; then
+            # Extract base version and beta number from X.Y.ZbN
+            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
               BASE="${BASH_REMATCH[1]}"
               BETA_NUM="${BASH_REMATCH[2]}"
               TITLE="$BASE Beta $BETA_NUM"

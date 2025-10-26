@@ -8,6 +8,8 @@ from collections.abc import AsyncGenerator, Callable
 from functools import wraps
 from typing import Final, ParamSpec
 
+from music_assistant.helpers.util import empty_queue
+
 # Type variables for the buffered decorator
 _P = ParamSpec("_P")
 
@@ -39,6 +41,7 @@ async def buffered(
     buffer: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=buffer_size)
     producer_error: Exception | None = None
     threshold_reached = asyncio.Event()
+    cancelled = asyncio.Event()
 
     if buffer_size <= 1:
         # No buffering needed, yield directly
@@ -51,24 +54,22 @@ async def buffered(
         nonlocal producer_error
         try:
             async for chunk in generator:
+                if cancelled.is_set():
+                    # Consumer has stopped, exit cleanly
+                    break
                 await buffer.put(chunk)
                 if not threshold_reached.is_set() and buffer.qsize() >= min_buffer_before_yield:
                     threshold_reached.set()
-        except asyncio.CancelledError:
-            # Task was cancelled, clean up the generator
-            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
-                await generator.aclose()
-            raise
         except Exception as err:
             producer_error = err
-            # Consumer probably stopped consuming, close the original generator
-            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
-                await generator.aclose()
         finally:
             threshold_reached.set()
+            # Clean up the generator
+            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+                await generator.aclose()
             # Signal end of stream by putting None
             with contextlib.suppress(asyncio.QueueFull):
-                await buffer.put(None)
+                buffer.put_nowait(None)
 
     # Start the producer task
     loop = asyncio.get_running_loop()
@@ -100,9 +101,11 @@ async def buffered(
             yield data
 
     finally:
-        # Ensure the producer task is cleaned up
-        if not producer_task.done():
-            producer_task.cancel()
+        # Signal the producer to stop
+        cancelled.set()
+        # Drain the queue to unblock the producer if it's waiting on put()
+        empty_queue(buffer)
+        # Wait for the producer to finish cleanly
         with contextlib.suppress(asyncio.CancelledError, RuntimeError):
             await producer_task
 

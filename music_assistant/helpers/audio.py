@@ -52,7 +52,7 @@ from music_assistant.helpers.util import clean_stream_title, remove_file
 from .audio_buffer import AudioBuffer
 from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
-from .ffmpeg import FFMpeg, get_ffmpeg_stream
+from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, communicate
 from .util import detect_charset
@@ -421,7 +421,7 @@ async def get_stream_details(
     return streamdetails
 
 
-async def get_media_stream_with_buffer(
+async def get_buffered_media_stream(
     mass: MusicAssistant,
     streamdetails: StreamDetails,
     pcm_format: AudioFormat,
@@ -436,8 +436,8 @@ async def get_media_stream_with_buffer(
         seek_position,
     )
 
-    # checksum based on pcm_format and filter_params
-    checksum = f"{pcm_format}-{filter_params}"
+    # checksum based on filter_params
+    checksum = f"{filter_params}"
 
     async def fill_buffer_task() -> None:
         """Background task to fill the audio buffer."""
@@ -527,6 +527,25 @@ async def get_media_stream_with_buffer(
         streamdetails.buffer = audio_buffer
         task = mass.loop.create_task(fill_buffer_task())
         audio_buffer.attach_fill_task(task)
+
+    # special case: pcm format mismatch, resample on the fly
+    # this may happen in some special situations such as crossfading
+    # and its a bit of a waste to throw away the existing buffer
+    if audio_buffer.pcm_format != pcm_format:
+        LOGGER.info(
+            "buffered_media_stream: pcm format mismatch, resampling on the fly for %s - "
+            "buffer format: %s - requested format: %s",
+            streamdetails.uri,
+            audio_buffer.pcm_format,
+            pcm_format,
+        )
+        async for chunk in get_ffmpeg_stream(
+            audio_input=audio_buffer.iter(seek_position=seek_position),
+            input_format=audio_buffer.pcm_format,
+            output_format=pcm_format,
+        ):
+            yield chunk
+        return
 
     # yield data from the buffer
     chunk_count = 0
@@ -631,7 +650,7 @@ async def get_media_stream(
                 first_chunk_received = True
                 streamdetails.audio_format.codec_type = ffmpeg_proc.input_format.codec_type
                 logger.debug(
-                    "First chunk received after %s seconds (codec detected: %s)",
+                    "First chunk received after %.2f seconds (codec detected: %s)",
                     mass.loop.time() - stream_start,
                     ffmpeg_proc.input_format.codec_type,
                 )
@@ -1209,23 +1228,19 @@ async def get_silence(
 
 
 async def resample_pcm_audio(
-    input_audio: bytes | AsyncGenerator[bytes, None],
+    input_audio: bytes,
     input_format: AudioFormat,
     output_format: AudioFormat,
-) -> AsyncGenerator[bytes, None]:
+) -> bytes:
     """Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg."""
-    LOGGER.debug(f"Resampling audio from {input_format} to {output_format}")
-
-    async def _yielder() -> AsyncGenerator[bytes, None]:
-        yield input_audio  # type: ignore[misc]
-
-    async for chunk in get_ffmpeg_stream(
-        audio_input=_yielder() if isinstance(input_audio, bytes) else input_audio,
-        input_format=input_format,
-        output_format=output_format,
-        raise_ffmpeg_exception=True,
-    ):
-        yield chunk
+    if input_format == output_format:
+        return input_audio
+    LOGGER.log(VERBOSE_LOG_LEVEL, f"Resampling audio from {input_format} to {output_format}")
+    ffmpeg_args = get_ffmpeg_args(
+        input_format=input_format, output_format=output_format, filter_params=[]
+    )
+    _, stdout, _ = await communicate(ffmpeg_args, input_audio)
+    return stdout
 
 
 def get_chunksize(

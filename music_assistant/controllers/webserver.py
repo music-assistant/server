@@ -303,11 +303,11 @@ class WebsocketClientHandler:
         self._writer_task = self.mass.create_task(self._writer())
 
         # send server(version) info when client connects
-        self._send_message(self.mass.get_server_info())
+        await self._send_message(self.mass.get_server_info())
 
         # forward all events to clients
         def handle_event(event: MassEvent) -> None:
-            self._send_message(event)
+            self._send_message_sync(event)
 
         unsub_callback = self.mass.subscribe(handle_event)
 
@@ -331,7 +331,7 @@ class WebsocketClientHandler:
                     disconnect_warn = f"Received invalid JSON: {msg.data}"
                     break
 
-                self._handle_command(command_msg)
+                await self._handle_command(command_msg)
 
         except asyncio.CancelledError:
             self._logger.debug("Connection closed by client")
@@ -360,7 +360,7 @@ class WebsocketClientHandler:
 
         return wsock
 
-    def _handle_command(self, msg: CommandMessage) -> None:
+    async def _handle_command(self, msg: CommandMessage) -> None:
         """Handle an incoming command from the client."""
         self._logger.debug("Handling command %s", msg.command)
 
@@ -368,7 +368,7 @@ class WebsocketClientHandler:
         handler = self.mass.command_handlers.get(msg.command)
 
         if handler is None:
-            self._send_message(
+            await self._send_message(
                 ErrorResultMessage(
                     msg.message_id,
                     InvalidCommand.error_code,
@@ -392,20 +392,20 @@ class WebsocketClientHandler:
                 async for item in iterator:
                     result.append(item)
                     if len(result) >= 500:
-                        self._send_message(
+                        await self._send_message(
                             SuccessResultMessage(msg.message_id, result, partial=True)
                         )
                         result = []
             elif asyncio.iscoroutine(result):
                 result = await result
-            self._send_message(SuccessResultMessage(msg.message_id, result))
+            await self._send_message(SuccessResultMessage(msg.message_id, result))
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
             else:
                 self._logger.error("Error handling message: %s: %s", msg.command, str(err))
             err_msg = str(err) or err.__class__.__name__
-            self._send_message(
+            await self._send_message(
                 ErrorResultMessage(msg.message_id, getattr(err, "error_code", 999), err_msg)
             )
 
@@ -424,12 +424,29 @@ class WebsocketClientHandler:
                 self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", message)
                 await self.wsock.send_str(message)
 
-    def _send_message(self, message: MessageType) -> None:
-        """Send a message to the client.
+    async def _send_message(self, message: MessageType) -> None:
+        """Send a message to the client (for large response messages).
 
+        Runs JSON serialization in executor to avoid blocking for large messages.
         Closes connection if the client is not reading the messages.
 
         Async friendly.
+        """
+        # Run JSON serialization in executor to avoid blocking for large messages
+        loop = asyncio.get_running_loop()
+        _message = await loop.run_in_executor(None, message.to_json)
+
+        try:
+            self._to_write.put_nowait(_message)
+        except asyncio.QueueFull:
+            self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
+
+            self._cancel()
+
+    def _send_message_sync(self, message: MessageType) -> None:
+        """Send a message from a sync context (for small messages like events).
+
+        Serializes inline without executor overhead since events are typically small.
         """
         _message = message.to_json()
 

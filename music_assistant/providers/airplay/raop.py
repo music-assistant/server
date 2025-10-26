@@ -129,7 +129,7 @@ class RaopStreamSession:
         # cancel the current audio source task
         assert self._audio_source_task  # for type checker
         self._audio_source_task.cancel()
-        with suppress(asyncio.CancelledError):
+        with suppress(asyncio.CancelledError, RuntimeError):
             await self._audio_source_task
         # set new audio source and restart the stream
         self._audio_source = audio_source
