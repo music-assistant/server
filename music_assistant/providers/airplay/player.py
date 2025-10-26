@@ -387,7 +387,9 @@ class AirPlayPlayer(Player):
         self.discovery_info = discovery_info
         cur_address = self.address
         new_address = get_primary_ip_address_from_zeroconf(discovery_info)
-        assert new_address  # should always be set, but guard against None
+        if new_address is None:
+            # should always be set, but guard against None
+            return
         if cur_address != new_address:
             self.logger.debug("Address updated from %s to %s", cur_address, new_address)
             self.address = cur_address

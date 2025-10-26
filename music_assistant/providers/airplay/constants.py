@@ -7,7 +7,7 @@ from typing import Final
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import DEFAULT_PCM_FORMAT
+from music_assistant.constants import INTERNAL_PCM_FORMAT
 
 DOMAIN = "airplay"
 
@@ -27,9 +27,9 @@ BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 FALLBACK_VOLUME: Final[int] = 20
 
 AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
-    content_type=DEFAULT_PCM_FORMAT.content_type,
+    content_type=INTERNAL_PCM_FORMAT.content_type,
     sample_rate=44100,
-    bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
+    bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
 )
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16

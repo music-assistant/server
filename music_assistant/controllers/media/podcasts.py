@@ -154,7 +154,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 "metadata": serialize_to_json(item.metadata),
                 "external_ids": serialize_to_json(item.external_ids),
                 "publisher": item.publisher,
-                "total_episodes": item.total_episodes,
+                "total_episodes": item.total_episodes or 0,
                 "search_name": create_safe_string(item.name, True, True),
                 "search_sort_name": create_safe_string(item.sort_name, True, True),
             },
@@ -186,7 +186,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
                 "publisher": cur_item.publisher or update.publisher,
-                "total_episodes": cur_item.total_episodes or update.total_episodes,
+                "total_episodes": cur_item.total_episodes or update.total_episodes or 0,
                 "search_name": create_safe_string(name, True, True),
                 "search_sort_name": create_safe_string(sort_name, True, True),
             },

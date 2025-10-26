@@ -10,12 +10,11 @@ from music_assistant_models.errors import PlayerCommandFailed
 from soco import SoCo
 from soco.exceptions import SoCoException, SoCoUPnPException
 
+from .constants import UID_POSTFIX, UID_PREFIX
+
 if TYPE_CHECKING:
     from .player import SonosPlayer
 
-
-UID_PREFIX = "RINCON_"
-UID_POSTFIX = "01400"
 
 _LOGGER = logging.getLogger(__name__)
 

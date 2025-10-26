@@ -27,8 +27,8 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
-    DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
+    INTERNAL_PCM_FORMAT,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.audio import get_player_filter_params
@@ -274,9 +274,9 @@ class BuiltinPlayer(Player):
 
         pcm_format = AudioFormat(
             sample_rate=stream_format.sample_rate,
-            content_type=DEFAULT_PCM_FORMAT.content_type,
-            bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
-            channels=DEFAULT_PCM_FORMAT.channels,
+            content_type=INTERNAL_PCM_FORMAT.content_type,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+            channels=INTERNAL_PCM_FORMAT.channels,
         )
         async for chunk in get_ffmpeg_stream(
             audio_input=self.mass.streams.get_queue_flow_stream(

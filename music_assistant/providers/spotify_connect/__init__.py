@@ -23,6 +23,7 @@ from music_assistant_models.enums import (
     EventType,
     MediaType,
     ProviderFeature,
+    ProviderType,
     StreamType,
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
@@ -42,10 +43,12 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+    from music_assistant.providers.spotify.provider import SpotifyProvider
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_HANDOFF_MODE = "handoff_mode"
 CONNECT_ITEM_ID = "spotify_connect"
+CONF_PUBLISH_NAME = "publish_name"
 
 EVENTS_SCRIPT = pathlib.Path(__file__).parent.resolve().joinpath("events.py")
 
@@ -82,9 +85,18 @@ async def get_config_entries(
             multi_value=False,
             options=[
                 ConfigValueOption(x.display_name, x.player_id)
-                for x in mass.players.all(False, False)
+                for x in sorted(
+                    mass.players.all(False, False), key=lambda p: p.display_name.lower()
+                )
             ],
             required=True,
+        ),
+        ConfigEntry(
+            key=CONF_PUBLISH_NAME,
+            type=ConfigEntryType.STRING,
+            label="Name to display in the Spotify app",
+            description="How should this Spotify Connect device be named in the Spotify app?",
+            default_value="Music Assistant",
         ),
         # ConfigEntry(
         #     key=CONF_HANDOFF_MODE,
@@ -124,13 +136,14 @@ class SpotifyConnectProvider(PluginProvider):
         self._librespot_proc: AsyncProcess | None = None
         self._librespot_started = asyncio.Event()
         self.named_pipe = f"/tmp/{self.instance_id}"  # noqa: S108
+        connect_name = cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or self.name
         self._source_details = PluginSource(
             id=self.instance_id,
-            name=self.manifest.name,
+            name=self.name,
             # we set passive to true because we
             # dont allow this source to be selected directly
             passive=True,
-            # TODO: implement controlling spotify from MA itself
+            # Playback control capabilities will be enabled when Spotify Web API is available
             can_play_pause=False,
             can_seek=False,
             can_next_previous=False,
@@ -142,23 +155,16 @@ class SpotifyConnectProvider(PluginProvider):
                 channels=2,
             ),
             metadata=PlayerMedia(
-                "Spotify Connect",
+                f"Spotify Connect | {connect_name}",
             ),
             stream_type=StreamType.NAMED_PIPE,
             path=self.named_pipe,
         )
         self._audio_buffer: asyncio.Queue[bytes] = asyncio.Queue(10)
-        self._on_unload_callbacks: list[Callable[..., None]] = [
-            self.mass.subscribe(
-                self._on_mass_player_event,
-                (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED),
-                id_filter=self.mass_player_id,
-            ),
-            self.mass.streams.register_dynamic_route(
-                f"/{self.instance_id}",
-                self._handle_custom_webservice,
-            ),
-        ]
+        # Web API integration for playback control
+        self._connected_spotify_username: str | None = None
+        self._spotify_provider: SpotifyProvider | None = None
+        self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
 
     async def handle_async_init(self) -> None:
@@ -167,6 +173,27 @@ class SpotifyConnectProvider(PluginProvider):
         self.player = self.mass.players.get(self.mass_player_id)
         if self.player:
             self._setup_player_daemon()
+
+        # Subscribe to events
+        self._on_unload_callbacks.append(
+            self.mass.subscribe(
+                self._on_mass_player_event,
+                (EventType.PLAYER_ADDED, EventType.PLAYER_REMOVED),
+                id_filter=self.mass_player_id,
+            )
+        )
+        self._on_unload_callbacks.append(
+            self.mass.subscribe(
+                self._on_provider_event,
+                (EventType.PROVIDERS_UPDATED),
+            )
+        )
+        self._on_unload_callbacks.append(
+            self.mass.streams.register_dynamic_route(
+                f"/{self.instance_id}",
+                self._handle_custom_webservice,
+            )
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
@@ -182,6 +209,128 @@ class SpotifyConnectProvider(PluginProvider):
         """Get (audio)source details for this plugin."""
         return self._source_details
 
+    async def _check_spotify_provider_match(self) -> None:
+        """Check if a Spotify music provider is available with matching username."""
+        # Username must be available (set from librespot output)
+        if not self._connected_spotify_username:
+            return
+
+        # Look for a Spotify music provider with matching username
+        for provider in self.mass.get_providers():
+            if provider.domain == "spotify" and provider.type == ProviderType.MUSIC:
+                # Check if the username matches
+                if hasattr(provider, "_sp_user") and provider._sp_user:
+                    spotify_username = provider._sp_user.get("id")
+                    if spotify_username == self._connected_spotify_username:
+                        self.logger.debug(
+                            "Found matching Spotify music provider - "
+                            "enabling playback control via Web API"
+                        )
+                        self._spotify_provider = cast("SpotifyProvider", provider)
+                        self._update_source_capabilities()
+                        return
+
+        # No matching provider found
+        if self._spotify_provider is not None:
+            self.logger.debug(
+                "Spotify music provider no longer available - disabling playback control"
+            )
+            self._spotify_provider = None
+            self._update_source_capabilities()
+
+    def _update_source_capabilities(self) -> None:
+        """Update source capabilities based on Web API availability."""
+        has_web_api = self._spotify_provider is not None
+        self._source_details.can_play_pause = has_web_api
+        self._source_details.can_seek = has_web_api
+        self._source_details.can_next_previous = has_web_api
+
+        # Register or unregister callbacks based on availability
+        if has_web_api:
+            self._source_details.on_play = self._on_play
+            self._source_details.on_pause = self._on_pause
+            self._source_details.on_next = self._on_next
+            self._source_details.on_previous = self._on_previous
+            self._source_details.on_seek = self._on_seek
+        else:
+            self._source_details.on_play = None
+            self._source_details.on_pause = None
+            self._source_details.on_next = None
+            self._source_details.on_previous = None
+            self._source_details.on_seek = None
+
+        # Trigger player update to reflect capability changes
+        if self._source_details.in_use_by:
+            self.mass.players.trigger_player_update(self._source_details.in_use_by)
+
+    async def _on_play(self) -> None:
+        """Handle play command via Spotify Web API."""
+        if not self._spotify_provider:
+            raise UnsupportedFeaturedException(
+                "Playback control requires a matching Spotify music provider"
+            )
+        try:
+            await self._spotify_provider._put_data("me/player/play")
+        except Exception as err:
+            self.logger.warning("Failed to send play command via Spotify Web API: %s", err)
+            raise
+
+    async def _on_pause(self) -> None:
+        """Handle pause command via Spotify Web API."""
+        if not self._spotify_provider:
+            raise UnsupportedFeaturedException(
+                "Playback control requires a matching Spotify music provider"
+            )
+        try:
+            await self._spotify_provider._put_data("me/player/pause")
+        except Exception as err:
+            self.logger.warning("Failed to send pause command via Spotify Web API: %s", err)
+            raise
+
+    async def _on_next(self) -> None:
+        """Handle next track command via Spotify Web API."""
+        if not self._spotify_provider:
+            raise UnsupportedFeaturedException(
+                "Playback control requires a matching Spotify music provider"
+            )
+        try:
+            await self._spotify_provider._post_data("me/player/next", want_result=False)
+        except Exception as err:
+            self.logger.warning("Failed to send next track command via Spotify Web API: %s", err)
+            raise
+
+    async def _on_previous(self) -> None:
+        """Handle previous track command via Spotify Web API."""
+        if not self._spotify_provider:
+            raise UnsupportedFeaturedException(
+                "Playback control requires a matching Spotify music provider"
+            )
+        try:
+            await self._spotify_provider._post_data("me/player/previous")
+        except Exception as err:
+            self.logger.warning("Failed to send previous command via Spotify Web API: %s", err)
+            raise
+
+    async def _on_seek(self, position: int) -> None:
+        """Handle seek command via Spotify Web API."""
+        if not self._spotify_provider:
+            raise UnsupportedFeaturedException(
+                "Playback control requires a matching Spotify music provider"
+            )
+        try:
+            # Spotify Web API expects position in milliseconds
+            position_ms = position * 1000
+            await self._spotify_provider._put_data(f"me/player/seek?position_ms={position_ms}")
+        except Exception as err:
+            self.logger.warning("Failed to send seek command via Spotify Web API: %s", err)
+            raise
+
+    def _on_provider_event(self, event: MassEvent) -> None:
+        """Handle provider added/removed events to check for Spotify provider."""
+        # Re-check for matching Spotify provider when providers change
+        if self._connected_spotify_username:
+            self.mass.create_task(self._check_spotify_provider_match())
+
     async def _librespot_runner(self) -> None:
         """Run the spotify connect daemon in a background task."""
         assert self._librespot_bin
@@ -195,7 +344,7 @@ class SpotifyConnectProvider(PluginProvider):
             args: list[str] = [
                 self._librespot_bin,
                 "--name",
-                self.name,
+                cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or self.name,
                 "--cache",
                 self.cache_dir,
                 "--disable-audio-cache",
@@ -238,6 +387,32 @@ class SpotifyConnectProvider(PluginProvider):
                     continue
                 if "couldn't parse packet from " in line:
                     continue
+                if "Authenticated as '" in line:
+                    # Extract username from librespot authentication message
+                    # Format: "Authenticated as 'username'"
+                    try:
+                        parts = line.split("Authenticated as '")
+                        if len(parts) > 1:
+                            username_part = parts[1].split("'")
+                            if len(username_part) > 0 and username_part[0]:
+                                username = username_part[0]
+                                self._connected_spotify_username = username
+                                self.logger.debug("Authenticated to Spotify as: %s", username)
+                                # Check for provider match now that we have the username
+                                self.mass.create_task(self._check_spotify_provider_match())
+                            else:
+                                self.logger.warning(
+                                    "Could not parse Spotify username from line: %s", line
+                                )
+                        else:
+                            self.logger.warning(
+                                "Could not parse Spotify username from line: %s", line
+                            )
+                    except Exception as err:
+                        self.logger.warning(
+                            "Error parsing Spotify username from line: %s - %s", line, err
+                        )
+                    continue
                 self.logger.debug(line)
         finally:
             await librespot.close(True)
@@ -269,7 +444,7 @@ class SpotifyConnectProvider(PluginProvider):
             self._setup_player_daemon()
             return
 
-    async def _handle_custom_webservice(self, request: Request) -> Response:
+    async def _handle_custom_webservice(self, request: Request) -> Response:  # noqa: PLR0915
         """Handle incoming requests on the custom webservice."""
         json_data = await request.json()
         self.logger.debug("Received metadata on webservice: \n%s", json_data)
@@ -277,11 +452,39 @@ class SpotifyConnectProvider(PluginProvider):
         event_name = json_data.get("event")
 
         # handle session connected event
+        # extract the connected username and check for matching Spotify provider
+        if event_name == "session_connected":
+            username = json_data.get("user_name")
+            self.logger.debug(
+                "Session connected event - username from event: %s, current username: %s",
+                username,
+                self._connected_spotify_username,
+            )
+            if username and username != self._connected_spotify_username:
+                self.logger.info("Spotify Connect session connected for user: %s", username)
+                self._connected_spotify_username = username
+                await self._check_spotify_provider_match()
+            elif not username:
+                self.logger.warning("Session connected event received but no username in payload")
+
+        # handle session disconnected event
+        if event_name == "session_disconnected":
+            self.logger.info("Spotify Connect session disconnected")
+            self._connected_spotify_username = None
+            if self._spotify_provider is not None:
+                self._spotify_provider = None
+                self._update_source_capabilities()
+
+        # handle session connected event
         # this player has become the active spotify connect player
         # we need to start the playback
         if event_name in ("sink", "playing") and (not self._source_details.in_use_by):
+            # Check for matching Spotify provider now that playback is starting
+            # This ensures the Spotify music provider has had time to initialize
+            if not self._connected_spotify_username or not self._spotify_provider:
+                await self._check_spotify_provider_match()
+
             # initiate playback by selecting this source on the default player
-            self.logger.debug("Initiating playback on %s", self.mass_player_id)
             self.mass.create_task(
                 self.mass.players.select_source(self.mass_player_id, self.instance_id)
             )
@@ -307,6 +510,9 @@ class SpotifyConnectProvider(PluginProvider):
             self._source_details.metadata.artist = artist
             self._source_details.metadata.album = album
             self._source_details.metadata.image_url = image_url
+            if self._source_details.in_use_by:
+                # tell connected player to update metadata
+                self.mass.players.trigger_player_update(self._source_details.in_use_by)
 
         if event_name == "volume_changed" and (volume := json_data.get("volume")):
             # Spotify Connect volume is 0-65535
