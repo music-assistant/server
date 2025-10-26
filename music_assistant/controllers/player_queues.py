@@ -2002,14 +2002,11 @@ class PlayerQueuesController(CoreController):
             and new_state["state"] == PlaybackState.IDLE
         ):
             return
-        # check if no more items in the queue
+        # check if no more items in the queue (next_item should be None at end of queue)
         if queue.next_item is not None:
             return
-        # check if we had a previous item
+        # check if we had a previous item playing
         if prev_state["current_item_id"] is None:
-            return
-        # check that we have a current item
-        if queue.current_item is None:
             return
 
         async def _clear_queue_delayed():
@@ -2022,14 +2019,20 @@ class PlayerQueuesController(CoreController):
             self.logger.info("End of queue reached, clearing items")
             self.clear(queue.queue_id)
 
-        # all checks passed, we stopped playback at the last (or single) of the queue
-        # now determine if the item was fully played
-        if streamdetails := queue.current_item.streamdetails:
+        # all checks passed, we stopped playback at the last (or single) track of the queue
+        # now determine if the item was fully played before clearing
+        if queue.current_item and (streamdetails := queue.current_item.streamdetails):
             duration = streamdetails.duration or queue.current_item.duration or 24 * 3600
-        else:
+        elif queue.current_item:
             duration = queue.current_item.duration or 24 * 3600
+        else:
+            # No current item means player has already cleared it, safe to clear queue
+            self.mass.create_task(_clear_queue_delayed())
+            return
+
         seconds_played = int(queue.elapsed_time)
         # debounce this a bit to make sure we're not clearing the queue by accident
+        # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
             self.mass.create_task(_clear_queue_delayed())
 
