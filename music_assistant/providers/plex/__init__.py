@@ -397,8 +397,8 @@ async def get_config_entries(  # noqa: PLR0915
             key=CONF_HUB_ITEMS_LIMIT,
             type=ConfigEntryType.INTEGER,
             label="Items per hub",
-            description="Maximum number of items to load from each hub (default: 25)",
-            default_value=25,
+            description="Maximum number of items to load from each hub (default: 10)",
+            default_value=10,
             category="advanced",
             range=(1, 100),
         )
@@ -1141,19 +1141,19 @@ class PlexProvider(MusicProvider):
             self.logger.warning("Error getting similar tracks for %s: %s", prov_track_id, err)
         return []
 
-    @use_cache(3600)  # Cache for 1 hour
+    @use_cache(3600 * 3, cache_checksum="v2")  # Cache for 3 hours
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendations from Plex hubs."""
         try:
             # Get the configured limit for items per hub
             limit_value = self.config.get_value(CONF_HUB_ITEMS_LIMIT)
-            limit = int(limit_value) if isinstance(limit_value, (int, float, str)) else 25
+            limit = int(limit_value) if isinstance(limit_value, (int, float, str)) else 10
 
-            # Fetch all hubs from the library
-            library_id = str(self._plex_library.key)
-            hubs = await self._run_async(
-                self._plex_server.library.hubs, sectionID=library_id, count=limit
-            )
+            # Fetch hubs from the music library section with count parameter
+            # The section's hubs() method uses /hubs/sections/{key}?includeStations=1
+            # We need to add the count parameter manually to limit items per hub
+            key = f"/hubs/sections/{self._plex_library.key}?includeStations=1&count={limit}"
+            hubs = await self._run_async(self._plex_library.fetchItems, key)
 
             if not hubs:
                 self.logger.debug("No hubs available from Plex")
@@ -1176,13 +1176,27 @@ class PlexProvider(MusicProvider):
                 )
 
                 # Parse each item based on its type (limit to configured max)
-                hub_items = await self._run_async(hub.items)
-                for item in hub_items[:limit]:
+                # Use _partialItems to respect the count limit from the hubs() call
+                # rather than hub.items() which fetches ALL items if more is True
+                # _partialItems is a cached property that's already loaded, so no need for async
+                hub_items = hub._partialItems
+                self.logger.debug(
+                    "Processing hub '%s' (%s) with %d partial items",
+                    hub.title,
+                    hub.hubIdentifier,
+                    len(hub_items),
+                )
+                for item in hub_items:
                     try:
-                        # Skip unsupported types (e.g., stations)
+                        # Skip items without type attribute
                         if not hasattr(item, "type"):
+                            self.logger.debug(
+                                "Skipping item in hub '%s': no type attribute",
+                                hub.title,
+                            )
                             continue
 
+                        # Parse item based on its type
                         if item.type == "track":
                             folder.items.append(await self._parse_track(item))
                         elif item.type == "album":
@@ -1191,15 +1205,22 @@ class PlexProvider(MusicProvider):
                             folder.items.append(await self._parse_artist(item))
                         elif item.type == "playlist":
                             folder.items.append(await self._parse_playlist(item))
+                        # Try to parse other types generically
+                        elif parsed_item := await self._parse(item):
+                            folder.items.append(parsed_item)  # type: ignore[arg-type]
                         else:
-                            # Skip unknown types (stations, etc.)
                             self.logger.debug(
-                                "Skipping unsupported item type '%s' in hub %s",
+                                "Skipping unsupported item type '%s' in hub '%s'",
                                 item.type,
                                 hub.title,
                             )
                     except Exception as err:
-                        self.logger.debug("Failed to parse item in hub %s: %s", hub.title, str(err))
+                        self.logger.debug(
+                            "Failed to parse item (type: %s) in hub '%s': %s",
+                            getattr(item, "type", "unknown"),
+                            hub.title,
+                            str(err),
+                        )
                         continue
 
                 # Only add folder if it has items
@@ -1210,6 +1231,12 @@ class PlexProvider(MusicProvider):
                         hub.title,
                         hub.hubIdentifier,
                         len(folder.items),
+                    )
+                else:
+                    self.logger.debug(
+                        "Skipping hub '%s' (%s): no items after parsing",
+                        hub.title,
+                        hub.hubIdentifier,
                     )
 
             self.logger.debug("Retrieved %d recommendation folders from Plex", len(folders))
