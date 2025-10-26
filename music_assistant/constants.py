@@ -930,9 +930,10 @@ def create_sample_rates_config_entry(
 DEFAULT_STREAM_HEADERS = {
     "Server": APPLICATION_NAME,
     "transferMode.dlna.org": "Streaming",
-    "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
+    "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
+    "icy-name": APPLICATION_NAME,
 }
 ICY_HEADERS = {
     "icy-name": APPLICATION_NAME,
