@@ -636,8 +636,6 @@ class SonosPlayer(Player):
             and container.get("service", {}).get("id") == MusicService.MUSIC_ASSISTANT
         ):
             active_service = MusicService.MUSIC_ASSISTANT
-            if self._attr_playback_state == PlaybackState.PAUSED:
-                self._attr_playback_state = PlaybackState.IDLE
         if container_type == ContainerType.LINEIN:
             self._attr_active_source = SOURCE_LINE_IN
         elif container_type in (ContainerType.HOME_THEATER_HDMI, ContainerType.HOME_THEATER_SPDIF):
