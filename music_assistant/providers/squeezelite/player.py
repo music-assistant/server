@@ -15,11 +15,6 @@ from aioslimproto.models import Preset as SlimPreset
 from aioslimproto.models import SlimEvent
 from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.constants import (
-    PLAYER_CONTROL_FAKE,
-    PLAYER_CONTROL_NATIVE,
-    PLAYER_CONTROL_NONE,
-)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -39,7 +34,6 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SYNC_ADJUST,
-    CONF_MUTE_CONTROL,
     DEFAULT_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -95,7 +89,6 @@ class SqueezelitePlayer(Player):
             PlayerFeature.MULTI_DEVICE_DSP,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
-            PlayerFeature.VOLUME_MUTE,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
         }
@@ -154,28 +147,8 @@ class SqueezelitePlayer(Player):
             )
             for index in range(1, preset_count + 1)
         ]
-        # Override the mute control entry to default to fake control
-        # This works around a bug in Squeezelite where native unmute doesn't work
-        mute_control_entry = ConfigEntry(
-            key=CONF_MUTE_CONTROL,
-            type=ConfigEntryType.STRING,
-            label="Mute Control",
-            default_value=PLAYER_CONTROL_FAKE,  # Changed from PLAYER_CONTROL_NATIVE
-            required=True,
-            options=[
-                ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
-                ConfigValueOption(title="Fake mute control", value=PLAYER_CONTROL_FAKE),
-                ConfigValueOption(title="Native mute control", value=PLAYER_CONTROL_NATIVE),
-            ],
-            category="player_controls",
-        )
-
-        # Filter out the base mute control entry and add our custom one
-        filtered_entries = [e for e in base_entries if e.key != CONF_MUTE_CONTROL]
-
         return [
-            *filtered_entries,
-            mute_control_entry,
+            *base_entries,
             *preset_entries,
             CONF_ENTRY_DEPRECATED_EQ_BASS,
             CONF_ENTRY_DEPRECATED_EQ_MID,
