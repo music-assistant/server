@@ -40,6 +40,7 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     ProviderMapping,
+    RecommendationFolder,
     SearchResults,
     Track,
     UniqueList,
@@ -91,6 +92,7 @@ CONF_COLLECTION_PREFIX = "collection_prefix"
 CONF_PLEX_LIKE_RATING = "plex_like_rating"
 CONF_PLEX_FAVORITE_THRESHOLD = "plex_favorite_threshold"
 CONF_PLEX_UNLIKE_RATING = "plex_unlike_rating"
+CONF_HUB_ITEMS_LIMIT = "hub_items_limit"
 
 FAKE_ARTIST_PREFIX = "_fake://"
 
@@ -108,6 +110,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 
@@ -385,6 +388,19 @@ async def get_config_entries(  # noqa: PLR0915
             default_value=0.0,
             range=(0, 10),
             category="sync_options",
+        )
+    )
+
+    # Recommendation settings (advanced)
+    entries.append(
+        ConfigEntry(
+            key=CONF_HUB_ITEMS_LIMIT,
+            type=ConfigEntryType.INTEGER,
+            label="Items per hub",
+            description="Maximum number of items to load from each hub (default: 25)",
+            default_value=25,
+            category="advanced",
+            range=(1, 100),
         )
     )
 
@@ -1124,6 +1140,84 @@ class PlexProvider(MusicProvider):
         except Exception as err:
             self.logger.warning("Error getting similar tracks for %s: %s", prov_track_id, err)
         return []
+
+    @use_cache(3600)  # Cache for 1 hour
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Get recommendations from Plex hubs."""
+        try:
+            # Get the configured limit for items per hub
+            limit_value = self.config.get_value(CONF_HUB_ITEMS_LIMIT)
+            limit = int(limit_value) if isinstance(limit_value, (int, float, str)) else 25
+
+            # Fetch all hubs from the library
+            library_id = str(self._plex_library.key)
+            hubs = await self._run_async(
+                self._plex_server.library.hubs, sectionID=library_id, count=limit
+            )
+
+            if not hubs:
+                self.logger.debug("No hubs available from Plex")
+                return []
+
+            self.logger.debug(
+                "Fetching %d hubs (limit: %d items per hub)",
+                len(hubs),
+                limit,
+            )
+
+            folders = []
+            for hub in hubs:
+                # Create a recommendation folder for each hub
+                folder = RecommendationFolder(
+                    name=hub.title,
+                    item_id=f"{self.instance_id}_{hub.hubIdentifier}",
+                    provider=self.lookup_key,
+                    icon="mdi-music",
+                )
+
+                # Parse each item based on its type (limit to configured max)
+                hub_items = await self._run_async(hub.items)
+                for item in hub_items[:limit]:
+                    try:
+                        # Skip unsupported types (e.g., stations)
+                        if not hasattr(item, "type"):
+                            continue
+
+                        if item.type == "track":
+                            folder.items.append(await self._parse_track(item))
+                        elif item.type == "album":
+                            folder.items.append(await self._parse_album(item))
+                        elif item.type == "artist":
+                            folder.items.append(await self._parse_artist(item))
+                        elif item.type == "playlist":
+                            folder.items.append(await self._parse_playlist(item))
+                        else:
+                            # Skip unknown types (stations, etc.)
+                            self.logger.debug(
+                                "Skipping unsupported item type '%s' in hub %s",
+                                item.type,
+                                hub.title,
+                            )
+                    except Exception as err:
+                        self.logger.debug("Failed to parse item in hub %s: %s", hub.title, str(err))
+                        continue
+
+                # Only add folder if it has items
+                if folder.items:
+                    folders.append(folder)
+                    self.logger.debug(
+                        "Added hub '%s' (%s) with %d items",
+                        hub.title,
+                        hub.hubIdentifier,
+                        len(folder.items),
+                    )
+
+            self.logger.debug("Retrieved %d recommendation folders from Plex", len(folders))
+            return folders
+
+        except Exception as err:
+            self.logger.warning("Error getting recommendations from Plex: %s", err)
+            return []
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track."""
