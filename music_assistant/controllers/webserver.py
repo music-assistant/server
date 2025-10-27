@@ -8,6 +8,7 @@ this webserver allows for more fine grained configuration to better secure it.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import urllib.parse
@@ -274,14 +275,14 @@ class WebserverController(CoreController):
         )
         # Read the template
         async with aiofiles.open(intro_html_path) as f:
-            html = await f.read()
+            html_content = await f.read()
 
-        # Replace placeholders
-        html = html.replace("{VERSION}", self.mass.version)
-        html = html.replace("{BASE_URL}", self.base_url)
-        html = html.replace("{SERVER_HOST}", request.host)
+        # Replace placeholders (escape values to prevent XSS)
+        html_content = html_content.replace("{VERSION}", html.escape(self.mass.version))
+        html_content = html_content.replace("{BASE_URL}", html.escape(self.base_url))
+        html_content = html_content.replace("{SERVER_HOST}", html.escape(request.host))
 
-        return web.Response(text=html, content_type="text/html")
+        return web.Response(text=html_content, content_type="text/html")
 
     async def _handle_openapi_spec(self, request: web.Request) -> web.Response:
         """Handle request for OpenAPI specification (generated on-the-fly)."""
