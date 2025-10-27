@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Assistant API Documentation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.7;
+            color: #2c3e50;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 60px 40px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+        .header .logo {
+            width: 80px;
+            height: 80px;
+        }
+        .header h1 {
+            font-size: 3em;
+            margin: 0;
+            font-weight: 700;
+        }
+        .header .version {
+            font-size: 1.2em;
+            opacity: 0.9;
+            font-weight: 300;
+        }
+        .content {
+            padding: 50px 40px;
+        }
+        .section {
+            margin-bottom: 50px;
+        }
+        .section h2 {
+            color: #667eea;
+            font-size: 2em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+        }
+        .section h3 {
+            color: #764ba2;
+            font-size: 1.5em;
+            margin: 30px 0 15px 0;
+        }
+        .section p {
+            margin-bottom: 15px;
+            font-size: 1.05em;
+            line-height: 1.8;
+        }
+        .api-boxes {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 25px;
+            margin: 30px 0;
+        }
+        .api-box {
+            background: #f8f9fa;
+            padding: 30px;
+            border-radius: 12px;
+            border-left: 5px solid #667eea;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .api-box:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.2);
+        }
+        .api-box h4 {
+            color: #667eea;
+            font-size: 1.3em;
+            margin-bottom: 12px;
+        }
+        .api-box p {
+            color: #666;
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .api-box .btn {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: background 0.3s;
+        }
+        .api-box .btn:hover {
+            background: #764ba2;
+        }
+        .code-block {
+            background: #2d2d2d;
+            color: #f8f8f2;
+            padding: 25px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 20px 0;
+            font-family: 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+        .code-block .comment {
+            color: #75715e;
+        }
+        .code-block .string {
+            color: #e6db74;
+        }
+        .code-block .keyword {
+            color: #66d9ef;
+        }
+        .code-block .number {
+            color: #ae81ff;
+        }
+        .highlight {
+            background: #fff3cd;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 6px;
+        }
+        .info-box strong {
+            color: #2196F3;
+        }
+        .events-list {
+            background: #f8f9fa;
+            padding: 25px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .events-list h4 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.2em;
+        }
+        .events-list ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .events-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        .events-list li:last-child {
+            border-bottom: none;
+        }
+        .events-list code {
+            background: #667eea;
+            color: white;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-weight: 500;
+        }
+        .client-links {
+            display: flex;
+            gap: 15px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        .client-link {
+            background: #764ba2;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: background 0.3s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .client-link:hover {
+            background: #667eea;
+        }
+        .footer {
+            background: #f8f9fa;
+            padding: 30px 40px;
+            text-align: center;
+            color: #666;
+            border-top: 1px solid #e0e0e0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <svg class="logo" viewBox="0 0 240 240" fill="none">
+                <g clip-path="url(#clipPath19)" transform="translate(0,2)">
+                    <path d="m 109.394,4.3814 c 5.848,-5.84187 15.394,-5.84187 21.212,0 l 98.788,98.8876 c 5.848,5.842 10.606,17.374 10.606,25.638 v 90.11 l -0.005,0.356 c -0.206,8.086 -6.881,14.628 -14.995,14.628 H 15 C 6.75759,234.001 2.40473e-5,227.22 0,218.987 v -90.11 c 1.20331e-4,-8.264 4.78834,-19.796 10.6064,-25.638 z" fill="#f2f4f9"/>
+                    <path d="m 109.394,4.3814 c 5.848,-5.84187 15.394,-5.84187 21.212,0 l 98.788,98.8876 c 5.848,5.842 10.606,17.374 10.606,25.638 v 90.11 l -0.005,0.356 c -0.206,8.086 -6.881,14.628 -14.995,14.628 H 15 C 6.75759,234.001 2.40473e-5,227.22 0,218.987 v -90.11 c 1.20331e-4,-8.264 4.78834,-19.796 10.6064,-25.638 z M 36,120.001 c -4.4183,0 -8,3.581 -8,8 v 78 h 16 v -78 c 0,-4.419 -3.5817,-8 -8,-8 z m 32,0 c -4.4183,0 -8,3.581 -8,8 v 78 h 16 v -78 c 0,-4.419 -3.5817,-8 -8,-8 z m 32,0 c -4.4183,0 -8,3.581 -8,8 v 78 h 16 v -78 c 0,-4.419 -3.582,-8 -8,-8 z m 58.393,0.426 c -4.193,-1.395 -8.722,0.873 -10.118,5.065 l -26.796,80.509 h 16.863 l 25.114,-75.457 c 1.395,-4.192 -0.872,-8.721 -5.063,-10.117 z m 30.315,5.065 c -1.395,-4.192 -5.925,-6.46 -10.117,-5.065 -4.192,1.396 -6.46,5.925 -5.065,10.117 l 25.116,75.457 h 16.862 z" fill="#18bcf2"/>
+                </g>
+                <defs>
+                    <clipPath id="clipPath19" clipPathUnits="userSpaceOnUse">
+                        <rect width="239.88728" height="239.55457" x="0.14213564" y="0.010407645"/>
+                    </clipPath>
+                </defs>
+            </svg>
+            <h1>Music Assistant API</h1>
+            <div class="version">Version {VERSION}</div>
+        </div>
+
+        <div class="content">
+            <div class="section">
+                <h2>Welcome</h2>
+                <p>
+                    Music Assistant provides a powerful API to control your music library,
+                    manage players, and stream audio. Whether you're building a custom interface,
+                    integrating with home automation, or creating a music app, our API gives you
+                    complete control.
+                </p>
+                <p>
+                    This documentation will help you get started quickly with examples and best practices.
+                </p>
+            </div>
+
+            <div class="section">
+                <h2>API Explorers</h2>
+                <p>
+                    Interactive documentation where you can test all API endpoints directly in your browser:
+                </p>
+                <div class="api-boxes">
+                    <div class="api-box">
+                        <h4>📘 Swagger UI</h4>
+                        <p>Test endpoints interactively, see request/response examples, and try out the API</p>
+                        <a href="{BASE_URL}/api-docs/swagger" class="btn">Open Swagger UI</a>
+                    </div>
+                    <div class="api-box">
+                        <h4>📗 ReDoc</h4>
+                        <p>Beautiful, detailed documentation with a clean three-panel layout</p>
+                        <a href="{BASE_URL}/api-docs/redoc" class="btn">Open ReDoc</a>
+                    </div>
+                    <div class="api-box">
+                        <h4>📄 OpenAPI Spec</h4>
+                        <p>Download the OpenAPI 3.0 specification for automated client generation</p>
+                        <a href="{BASE_URL}/api-docs/openapi.json" class="btn">Download JSON</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Quick Start</h2>
+
+                <h3>WebSocket API (Recommended)</h3>
+                <p>
+                    The WebSocket API provides <span class="highlight">real-time bidirectional communication</span>
+                    and automatic event notifications. Perfect for applications that need live updates.
+                </p>
+                <div class="code-block">
+<span class="comment"># Connect to WebSocket</span>
+ws://{SERVER_HOST}/ws
+
+<span class="comment"># Send a command</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"unique-id-123"</span>,
+  <span class="string">"command"</span>: <span class="string">"players/all"</span>,
+  <span class="string">"args"</span>: {}
+}
+
+<span class="comment"># Receive response</span>
+{
+  <span class="string">"message_id"</span>: <span class="string">"unique-id-123"</span>,
+  <span class="string">"result"</span>: [<span class="comment">...player data...</span>]
+}
+
+<span class="comment"># Receive automatic events</span>
+{
+  <span class="string">"event"</span>: <span class="string">"player_updated"</span>,
+  <span class="string">"data"</span>: {<span class="comment">...updated player...</span>}
+}
+                </div>
+
+                <h3>REST API (Simple)</h3>
+                <p>
+                    For simple, one-off commands without needing real-time updates.
+                </p>
+                <div class="code-block">
+<span class="comment"># Get all players</span>
+curl -X POST {BASE_URL}/api \
+  -H <span class="string">"Content-Type: application/json"</span> \
+  -d <span class="string">'{
+    "command": "players/all",
+    "args": {}
+  }'</span>
+
+<span class="comment"># Play media on a player</span>
+curl -X POST {BASE_URL}/api \
+  -H <span class="string">"Content-Type: application/json"</span> \
+  -d <span class="string">'{
+    "command": "player_queues/play_media",
+    "args": {
+      "queue_id": "player_123",
+      "media": ["library://track/456"]
+    }
+  }'</span>
+
+<span class="comment"># Get server info</span>
+curl {BASE_URL}/info
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>WebSocket Events</h2>
+                <p>
+                    When connected via WebSocket, you automatically receive real-time event notifications
+                    for all state changes. No polling required!
+                </p>
+
+                <div class="events-list">
+                    <h4>🔊 Player Events</h4>
+                    <ul>
+                        <li><code>player_added</code> - New player discovered</li>
+                        <li><code>player_updated</code> - Player state changed</li>
+                        <li><code>player_removed</code> - Player disconnected</li>
+                        <li><code>player_config_updated</code> - Settings changed</li>
+                    </ul>
+                </div>
+
+                <div class="events-list">
+                    <h4>🎵 Queue Events</h4>
+                    <ul>
+                        <li><code>queue_added</code> - New queue created</li>
+                        <li><code>queue_updated</code> - Queue state changed</li>
+                        <li><code>queue_items_updated</code> - Content changed</li>
+                        <li><code>queue_time_updated</code> - Playback position updated</li>
+                    </ul>
+                </div>
+
+                <div class="events-list">
+                    <h4>📚 Library Events</h4>
+                    <ul>
+                        <li><code>media_item_added</code> - New media added</li>
+                        <li><code>media_item_updated</code> - Metadata updated</li>
+                        <li><code>media_item_deleted</code> - Media removed</li>
+                        <li><code>media_item_played</code> - Playback started</li>
+                    </ul>
+                </div>
+
+                <div class="events-list">
+                    <h4>⚙️ System Events</h4>
+                    <ul>
+                        <li><code>providers_updated</code> - Provider status changed</li>
+                        <li><code>sync_tasks_updated</code> - Sync progress updated</li>
+                        <li><code>application_shutdown</code> - Server shutting down</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Client Libraries</h2>
+                <p>
+                    Don't want to implement the API from scratch? Use our official client libraries:
+                </p>
+
+                <h3>Python Client</h3>
+                <p>
+                    Official Python client library with full type hints and async support:
+                </p>
+                <div class="code-block">
+<span class="comment"># Install</span>
+pip install music-assistant-client
+
+<span class="comment"># Usage</span>
+<span class="keyword">from</span> music_assistant_client <span class="keyword">import</span> MusicAssistantClient
+
+<span class="keyword">async with</span> MusicAssistantClient(<span class="string">"{SERVER_HOST}"</span>) <span class="keyword">as</span> client:
+    <span class="comment"># Get all players</span>
+    players = <span class="keyword">await</span> client.get_players()
+
+    <span class="comment"># Play media</span>
+    <span class="keyword">await</span> client.play_media(
+        queue_id=<span class="string">"player_123"</span>,
+        media=[<span class="string">"library://track/456"</span>]
+    )
+                </div>
+                <div class="client-links">
+                    <a href="https://github.com/music-assistant/client" class="client-link">
+                        📦 GitHub Repository
+                    </a>
+                    <a href="https://pypi.org/project/music-assistant-client/" class="client-link">
+                        🐍 PyPI Package
+                    </a>
+                </div>
+
+                <h3>TypeScript/JavaScript</h3>
+                <p>
+                    Reference implementation in the Music Assistant frontend:
+                </p>
+                <div class="code-block">
+<span class="comment">// Example from frontend code</span>
+<span class="keyword">import</span> { MusicAssistantApi } <span class="keyword">from</span> <span class="string">'./api'</span>;
+
+<span class="keyword">const</span> api = <span class="keyword">new</span> MusicAssistantApi(<span class="string">'{SERVER_HOST}'</span>);
+
+<span class="comment">// Connect</span>
+<span class="keyword">await</span> api.connect();
+
+<span class="comment">// Subscribe to events</span>
+api.subscribe(<span class="string">'player_updated'</span>, (event) => {
+  console.log(<span class="string">'Player updated:'</span>, event.data);
+});
+
+<span class="comment">// Call commands</span>
+<span class="keyword">const</span> players = <span class="keyword">await</span> api.getPlayers();
+                </div>
+                <div class="client-links">
+                    <a href="https://github.com/music-assistant/frontend/tree/main/src/plugins/api" class="client-link">
+                        📦 Frontend API Code
+                    </a>
+                </div>
+                <div class="info-box">
+                    <strong>Coming Soon:</strong> A dedicated TypeScript client library is in development!
+                    For now, you can use the frontend's API implementation as a reference.
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>Best Practices</h2>
+                <p><strong>✓ Do:</strong></p>
+                <ul style="margin-left: 30px; margin-bottom: 15px;">
+                    <li>Use WebSocket API for real-time applications</li>
+                    <li>Handle connection drops and reconnect automatically</li>
+                    <li>Subscribe to relevant events instead of polling</li>
+                    <li>Use unique message IDs for WebSocket commands</li>
+                    <li>Implement proper error handling</li>
+                </ul>
+                <p><strong>✗ Don't:</strong></p>
+                <ul style="margin-left: 30px;">
+                    <li>Poll the REST API frequently for updates (use WebSocket events instead)</li>
+                    <li>Send commands without waiting for previous responses</li>
+                    <li>Ignore error responses</li>
+                    <li>Hardcode server URLs (make them configurable)</li>
+                </ul>
+            </div>
+
+            <div class="section">
+                <h2>Authentication</h2>
+                <div class="info-box">
+                    <strong>Note:</strong> Authentication is not yet implemented but will be added
+                    in a future release. For now, ensure your Music Assistant server is not directly
+                    exposed to the internet. Use a VPN or reverse proxy for secure access.
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>
+                Music Assistant {VERSION} •
+                <a href="https://music-assistant.io" style="color: #667eea;">music-assistant.io</a> •
+                <a href="https://github.com/music-assistant" style="color: #667eea;">GitHub</a>
+            </p>
+        </div>
+    </div>
+</body>
+</html>
