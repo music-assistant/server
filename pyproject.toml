@@ -60,7 +60,7 @@ test = [
   "pytest-aiohttp==1.1.0",
   "pytest-cov==7.0.0",
   "syrupy==5.0.0",
-  "tomli==2.2.1",
+  "tomli==2.3.0",
   "ruff==0.13.2",
 ]
 
