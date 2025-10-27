@@ -112,7 +112,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 func.__name__,
                 player_id,
             )
-            return None
+            return
 
         self.logger.debug(
             "Handling command %s for player %s",
