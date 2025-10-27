@@ -91,7 +91,6 @@ class SqueezelitePlayer(Player):
             PlayerFeature.MULTI_DEVICE_DSP,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
-            PlayerFeature.VOLUME_MUTE,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
             PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
@@ -638,7 +637,11 @@ class SqueezelitePlayer(Player):
                         SlimPreset(
                             uri=media_item.uri,
                             text=media_item.name,
-                            icon=self.mass.metadata.get_image_url(media_item.image),
+                            icon=(
+                                self.mass.metadata.get_image_url(media_item.image)
+                                if media_item.image
+                                else ""
+                            ),
                         )
                     )
                 except MusicAssistantError:

@@ -959,6 +959,9 @@ ATTR_ANNOUNCEMENT_IN_PROGRESS: Final[str] = "announcement_in_progress"
 ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
 ATTR_LAST_POLL: Final[str] = "last_poll"
 ATTR_GROUP_MEMBERS: Final[str] = "group_members"
+ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
+ATTR_ENABLED: Final[str] = "enabled"
+ATTR_AVAILABLE: Final[str] = "available"
 
 # Album type detection patterns
 LIVE_INDICATORS = [

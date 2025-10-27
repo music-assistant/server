@@ -49,6 +49,9 @@ from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
+    ATTR_AVAILABLE,
+    ATTR_ELAPSED_TIME,
+    ATTR_ENABLED,
     ATTR_FAKE_MUTE,
     ATTR_FAKE_POWER,
     ATTR_FAKE_VOLUME,
@@ -373,7 +376,16 @@ class PlayerController(CoreController):
                 return
 
         if player.playback_state == PlaybackState.PAUSED:
-            # handle command on player directly
+            # handle command on player/source directly
+            active_source = next(
+                (x for x in player.source_list if x.id == player.active_source), None
+            )
+            if active_source and not active_source.can_play_pause:
+                raise PlayerCommandFailed(
+                    "The active source (%s) on player %s does not support play/pause",
+                    active_source.name,
+                    player.display_name,
+                )
             async with self._player_throttlers[player.player_id]:
                 await player.play()
         else:
@@ -399,6 +411,15 @@ class PlayerController(CoreController):
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.pause(active_queue.queue_id)
             return
+
+        # handle command on player/source directly
+        active_source = next((x for x in player.source_list if x.id == player.active_source), None)
+        if active_source and not active_source.can_play_pause:
+            raise PlayerCommandFailed(
+                "The active source (%s) on player %s does not support play/pause",
+                active_source.name,
+                player.display_name,
+            )
         if PlayerFeature.PAUSE not in player.supported_features:
             # if player does not support pause, we need to send stop
             self.logger.debug(
@@ -481,6 +502,15 @@ class PlayerController(CoreController):
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.seek(active_queue.queue_id, position)
             return
+
+        # handle command on player/source directly
+        active_source = next((x for x in player.source_list if x.id == player.active_source), None)
+        if active_source and not active_source.can_seek:
+            raise PlayerCommandFailed(
+                "The active source (%s) on player %s does not support seeking",
+                active_source.name,
+                player.display_name,
+            )
         if PlayerFeature.SEEK not in player.supported_features:
             msg = f"Player {player.display_name} does not support seeking"
             raise UnsupportedFeaturedException(msg)
@@ -1507,7 +1537,7 @@ class PlayerController(CoreController):
             return
 
         # ignore updates for disabled players
-        if not player.enabled and "enabled" not in changed_values:
+        if not player.enabled and ATTR_ENABLED not in changed_values:
             return
 
         if len(changed_values) == 0 and not force_update:
@@ -1517,12 +1547,11 @@ class PlayerController(CoreController):
         # always signal update to the playerqueue
         self.mass.player_queues.on_player_update(player, changed_values)
 
-        if changed_values.keys() == {"elapsed_time"} and not force_update:
-            # ignore elapsed_time only changes
-            prev_value = changed_values["elapsed_time"][0] or 0
-            new_value = changed_values["elapsed_time"][1] or 0
-            if abs(prev_value - new_value) < 30:
-                # ignore small changes in elapsed time
+        if changed_values.keys() == {ATTR_ELAPSED_TIME} and not force_update:
+            # ignore small changes in elapsed time
+            prev_value = changed_values[ATTR_ELAPSED_TIME][0] or 0
+            new_value = changed_values[ATTR_ELAPSED_TIME][1] or 0
+            if abs(prev_value - new_value) < 5:
                 return
 
         # handle DSP reload of the leader when grouping/ungrouping
@@ -1541,10 +1570,10 @@ class PlayerController(CoreController):
                     removed_player.update_state()
 
         became_inactive = False
-        if "available" in changed_values:
-            became_inactive = changed_values["available"][1] is False
-        if not became_inactive and "enabled" in changed_values:
-            became_inactive = changed_values["enabled"][1] is False
+        if ATTR_AVAILABLE in changed_values:
+            became_inactive = changed_values[ATTR_AVAILABLE][1] is False
+        if not became_inactive and ATTR_ENABLED in changed_values:
+            became_inactive = changed_values[ATTR_ENABLED][1] is False
         if became_inactive and (player.active_group or player.synced_to):
             self.mass.create_task(self._cleanup_player_memberships(player.player_id))
 
@@ -1772,13 +1801,13 @@ class PlayerController(CoreController):
 
     async def on_player_config_change(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
-        player_disabled = "enabled" in changed_keys and not config.enabled
+        player_disabled = ATTR_ENABLED in changed_keys and not config.enabled
         # signal player provider that the player got enabled/disabled
         if player_provider := self.mass.get_provider(config.provider):
             assert isinstance(player_provider, PlayerProvider)  # for type checking
-            if "enabled" in changed_keys and not config.enabled:
+            if ATTR_ENABLED in changed_keys and not config.enabled:
                 player_provider.on_player_disabled(config.player_id)
-            elif "enabled" in changed_keys and config.enabled:
+            elif ATTR_ENABLED in changed_keys and config.enabled:
                 player_provider.on_player_enabled(config.player_id)
         # ensure player state gets updated with any updated config
         if not (player := self.get(config.player_id)):

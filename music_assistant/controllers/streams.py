@@ -119,7 +119,6 @@ class CrossfadeData:
     fade_in_size: int
     pcm_format: AudioFormat
     queue_item_id: str
-    session_id: str
 
 
 class StreamsController(CoreController):
@@ -318,6 +317,9 @@ class StreamsController(CoreController):
                 ),
             ],
         )
+        # Start periodic garbage collection task
+        # This ensures memory from audio buffers and streams is cleaned up regularly
+        self.mass.call_later(900, self._periodic_garbage_collection)  # 15 minutes
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -463,7 +465,6 @@ class StreamsController(CoreController):
             audio_input = self.get_queue_item_stream_with_smartfade(
                 queue_item=queue_item,
                 pcm_format=pcm_format,
-                session_id=session_id,
                 smart_fades_mode=smart_fades_mode,
                 standard_crossfade_duration=standard_crossfade_duration,
             )
@@ -478,6 +479,27 @@ class StreamsController(CoreController):
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
         # the desired output format for the player including any player specific filter params
         # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
+
+        # readrate filter input args to control buffering
+        # we need to slowly feed the music to avoid the player stopping and later
+        # restarting (or completely failing) the audio stream by keeping the buffer short.
+        # this is reported to be an issue especially with Chromecast players.
+        # see for example: https://github.com/music-assistant/support/issues/3717
+        user_agent = request.headers.get("User-Agent", "")
+        if queue_item.media_type == MediaType.RADIO:
+            # keep very short buffer for radio streams
+            # to keep them (more or less) realtime and prevent time outs
+            read_rate_input_args = ["-readrate", "1.0", "-readrate_initial_burst", "3"]
+        elif "Network_Module" in user_agent or "transferMode.dlna.org" in request.headers:
+            # and ofcourse we have an exception of the exception. Where most players actually NEED
+            # the readrate filter to avoid disconnecting, some other players (DLNA/MusicCast)
+            # actually fail when the filter is used. So we disable it completely for those players.
+            read_rate_input_args = None  # disable readrate for DLNA players
+        else:
+            # when using smart fades, we need to read the audio a bit faster
+            # to account for the crossfade processing time but still limit enough
+            read_rate_input_args = ["-readrate", "1.2", "-readrate_initial_burst", "30"]
+
         first_chunk_received = False
         async for chunk in get_ffmpeg_stream(
             audio_input=audio_input,
@@ -489,6 +511,7 @@ class StreamsController(CoreController):
                 input_format=pcm_format,
                 output_format=output_format,
             ),
+            extra_input_args=read_rate_input_args,
         ):
             try:
                 await resp.write(chunk)
@@ -524,9 +547,6 @@ class StreamsController(CoreController):
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
-        session_id = request.match_info["session_id"]
-        if session_id != queue.session_id:
-            raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (queue_player := self.mass.players.get(queue_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {queue_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
@@ -1070,9 +1090,10 @@ class StreamsController(CoreController):
         plugin_prov: PluginProvider = self.mass.get_provider(plugin_source_id)
         plugin_source = plugin_prov.get_source()
         if plugin_source.in_use_by and plugin_source.in_use_by != player_id:
-            raise RuntimeError(
-                f"PluginSource plugin_source.name is already in use by {plugin_source.in_use_by}"
-            )
+            # kick out existing player using this source
+            plugin_source.in_use_by = player_id
+            await asyncio.sleep(0.5)  # give some time to the other player to stop
+
         self.logger.debug(
             "Start streaming PluginSource %s to %s using output format %s",
             plugin_source_id,
@@ -1092,6 +1113,14 @@ class StreamsController(CoreController):
                 filter_params=player_filter_params,
                 extra_input_args=["-y", "-re"],
             ):
+                if plugin_source.in_use_by != player_id:
+                    self.logger.info(
+                        "Aborting streaming PluginSource %s to %s "
+                        "- another player took over control",
+                        plugin_source_id,
+                        player_id,
+                    )
+                    break
                 yield chunk
         finally:
             self.logger.debug(
@@ -1232,16 +1261,13 @@ class StreamsController(CoreController):
                 if TYPE_CHECKING:  # avoid circular import
                     assert isinstance(music_prov, MusicProvider)
                 self.mass.create_task(music_prov.on_streamed(streamdetails))
-            # Run garbage collection in executor to reclaim memory from large buffers
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, gc.collect)
+            # Periodic GC task will handle memory cleanup every 15 minutes
 
     @use_buffer(30, 1)
     async def get_queue_item_stream_with_smartfade(
         self,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
-        session_id: str | None = None,
         smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
         standard_crossfade_duration: int = 10,
     ) -> AsyncGenerator[bytes, None]:
@@ -1254,8 +1280,11 @@ class StreamsController(CoreController):
         assert streamdetails
         crossfade_data = self._crossfade_data.get(queue.queue_id)
 
-        if crossfade_data and crossfade_data.session_id != session_id:
-            # invalidate expired crossfade data
+        if crossfade_data and crossfade_data.queue_item_id != queue_item.queue_item_id:
+            # edge case alert: the next item changed just while we were preloading/crossfading
+            self.logger.warning(
+                "Skipping crossfade data for queue %s - next item changed!", queue.display_name
+            )
             crossfade_data = None
 
         self.logger.debug(
@@ -1361,6 +1390,10 @@ class StreamsController(CoreController):
                 next_queue_item = await self.mass.player_queues.load_next_queue_item(
                     queue.queue_id, queue_item.queue_item_id
                 )
+                # set index_in_buffer to prevent our next track is overwritten while preloading
+                queue.index_in_buffer = self.mass.player_queues.index_by_id(
+                    queue.queue_id, next_queue_item.queue_item_id
+                )
                 next_queue_item_pcm_format = AudioFormat(
                     content_type=INTERNAL_PCM_FORMAT.content_type,
                     bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
@@ -1416,7 +1449,6 @@ class StreamsController(CoreController):
                     fade_in_size=len(buffer),
                     pcm_format=pcm_format,
                     queue_item_id=next_queue_item.queue_item_id,
-                    session_id=session_id,
                 )
 
             except QueueEmpty:
@@ -1577,5 +1609,24 @@ class StreamsController(CoreController):
         ):
             self.logger.debug("Skipping crossfade: sample rate mismatch")
             return False
-        # all checks passed, crossfade is enabled/allowed
+
         return True
+
+    async def _periodic_garbage_collection(self) -> None:
+        """Periodic garbage collection to free up memory from audio buffers and streams."""
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Running periodic garbage collection...",
+        )
+        # Run garbage collection in executor to avoid blocking the event loop
+        # Since this runs periodically (not in response to subprocess cleanup),
+        # it's safe to run in a thread without causing thread-safety issues
+        loop = asyncio.get_running_loop()
+        collected = await loop.run_in_executor(None, gc.collect)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Garbage collection completed, collected %d objects",
+            collected,
+        )
+        # Schedule next run in 15 minutes
+        self.mass.call_later(900, self._periodic_garbage_collection)

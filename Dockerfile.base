@@ -84,6 +84,14 @@ RUN set -x \
         --enable-protocol=tcp \
         --enable-protocol=udp \
         --enable-protocol=rtp \
+        --enable-protocol=data \
+        --enable-protocol=pipe \
+        --enable-protocol=crypto \
+        --enable-protocol=tls \
+        --enable-protocol=hls \
+        --enable-protocol=concat \
+        --enable-protocol=async \
+        --enable-protocol=cache \
         # Optimizations
         --enable-small \
         --enable-runtime-cpudetect \

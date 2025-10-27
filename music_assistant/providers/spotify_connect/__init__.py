@@ -491,34 +491,38 @@ class SpotifyConnectProvider(PluginProvider):
             self._source_details.in_use_by = self.mass_player_id
 
         # parse metadata fields
-        if "common_metadata_fields" in json_data:
-            uri = json_data["common_metadata_fields"].get("uri", "Unknown")
-            title = json_data["common_metadata_fields"].get("name", "Unknown")
-            if artists := json_data.get("track_metadata_fields", {}).get("artists"):
-                artist = artists[0]
-            else:
-                artist = "Unknown"
-            album = json_data["common_metadata_fields"].get("album", "Unknown")
-            if images := json_data["common_metadata_fields"].get("covers"):
-                image_url = images[0]
-            else:
-                image_url = None
+        if common_meta := json_data.get("common_metadata_fields", {}):
+            uri = common_meta.get("uri", "Unknown")
+            title = common_meta.get("name", "Unknown")
+            image_url = images[0] if (images := common_meta.get("covers")) else None
             if self._source_details.metadata is None:
                 self._source_details.metadata = StreamMetadata(uri=uri, title=title)
-            self._source_details.metadata.uri = uri
-            self._source_details.metadata.title = title
-            self._source_details.metadata.artist = artist
-            self._source_details.metadata.album = album
-            self._source_details.metadata.image_url = image_url
-            self._source_details.metadata.description = json_data.get(
-                "episode_metadata_fields", {}
-            ).get("description")
-            self._source_details.metadata.duration = json_data.get("duration_ms", 0) * 0.001
-            self._source_details.metadata.elapsed_time = json_data.get("position", None)
-            self._source_details.metadata.elapsed_time_last_updated = time.time()
-            if self._source_details.in_use_by:
-                # tell connected player to update metadata
-                self.mass.players.trigger_player_update(self._source_details.in_use_by)
+                self._source_details.metadata.uri = uri
+                self._source_details.metadata.title = title
+                self._source_details.metadata.artist = None
+                self._source_details.metadata.album = None
+                self._source_details.metadata.image_url = image_url
+                self._source_details.metadata.description = None
+                duration_ms = common_meta.get("duration_ms", 0)
+                self._source_details.metadata.duration = (
+                    int(duration_ms) // 1000 if duration_ms is not None else None
+                )
+
+        if track_meta := json_data.get("track_metadata_fields", {}):
+            if artists := track_meta.get("artists"):
+                if self._source_details.metadata is not None:
+                    self._source_details.metadata.artist = artists[0]
+            if self._source_details.metadata is not None:
+                self._source_details.metadata.album = track_meta.get("album")
+
+        if episode_meta := json_data.get("episode_metadata_fields", {}):
+            if self._source_details.metadata is not None:
+                self._source_details.metadata.description = episode_meta.get("description")
+
+        if "position_ms" in json_data:
+            if self._source_details.metadata is not None:
+                self._source_details.metadata.elapsed_time = int(json_data["position_ms"]) // 1000
+                self._source_details.metadata.elapsed_time_last_updated = int(time.time())
 
         if event_name == "volume_changed" and (volume := json_data.get("volume")):
             # Spotify Connect volume is 0-65535
@@ -527,5 +531,9 @@ class SpotifyConnectProvider(PluginProvider):
                 await self.mass.players.cmd_volume_set(self.mass_player_id, volume)
             except UnsupportedFeaturedException:
                 self.logger.debug(f"Player {self.mass_player_id} does not support volume control")
+
+        # signal update to connected player
+        if self._source_details.in_use_by:
+            self.mass.players.trigger_player_update(self._source_details.in_use_by)
 
         return Response()
