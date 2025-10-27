@@ -20,7 +20,7 @@ audible==0.10.0
 bidict==0.23.1
 certifi==2025.10.5
 chardet>=5.2.0
-colorlog==6.9.0
+colorlog==6.10.1
 cryptography==46.0.3
 deezer-python-async==0.3.0
 defusedxml==0.7.1

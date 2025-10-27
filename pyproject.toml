@@ -19,7 +19,7 @@ dependencies = [
   "aiorun==2025.1.1",
   "aiosqlite==0.21.0",
   "certifi==2025.10.5",
-  "colorlog==6.9.0",
+  "colorlog==6.10.1",
   "cryptography==46.0.3",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
