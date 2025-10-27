@@ -182,7 +182,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download distributions
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: release-dists
           path: dist/
@@ -284,7 +284,7 @@ jobs:
       id-token: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: release-dists
           path: dist/
@@ -306,7 +306,7 @@ jobs:
           ref: ${{ needs.validate-and-build.outputs.branch }}
 
       - name: Download distributions
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: release-dists
           path: dist/
