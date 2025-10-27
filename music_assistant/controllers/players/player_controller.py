@@ -120,7 +120,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
             player.display_name,
         )
         try:
-            return await func(self, *args, **kwargs)
+           await func(self, *args, **kwargs)
         except Exception as err:
             raise PlayerCommandFailed(str(err)) from err
 
