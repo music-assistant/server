@@ -101,7 +101,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     """Check and log commands to players."""
 
     @functools.wraps(func)
-    async def wrapper(self: PlayerControllerT, *args: P.args, **kwargs: P.kwargs) -> R | None:
+    async def wrapper(self: PlayerControllerT, *args: P.args, **kwargs: P.kwargs) -> None:
         """Log and handle_player_command commands to players."""
         player_id = kwargs.get("player_id") or args[0]
         assert isinstance(player_id, str). # for type checking
