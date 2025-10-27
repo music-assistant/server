@@ -39,7 +39,7 @@ music-assistant-frontend==2.17.3
 music-assistant-models==1.1.65
 mutagen==1.47.0
 numpy==2.2.6
-orjson==3.11.3
+orjson==3.11.4
 pillow==11.3.0
 pkce==1.0.3
 plexapi==4.17.1
