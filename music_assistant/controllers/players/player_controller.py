@@ -104,7 +104,7 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
     async def wrapper(self: PlayerControllerT, *args: P.args, **kwargs: P.kwargs) -> None:
         """Log and handle_player_command commands to players."""
         player_id = kwargs.get("player_id") or args[0]
-        assert isinstance(player_id, str). # for type checking
+        assert isinstance(player_id, str)  # for type checking
         if (player := self._players.get(player_id)) is None or not player.available:
             # player not existent
             self.logger.warning(
