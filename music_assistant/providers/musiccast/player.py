@@ -213,7 +213,7 @@ class MusicCastPlayer(Player):
 
         # UPDATE PLAYBACK INFORMATION
         # Note to self:
-        # player.current_media tells queue controller what is playing
+        # player._current_media tells queue controller what is playing
         # and player.set_current_media is the helper function
         # do not access the queue controller to gain playback information here
         if (

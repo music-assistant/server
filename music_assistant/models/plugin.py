@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from mashumaro import field_options, pass_through
 from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
-from music_assistant.models.player import PlayerMedia, PlayerSource
+from music_assistant.models.player import PlayerSource
 
 from .provider import Provider
+
+if TYPE_CHECKING:
+    from music_assistant_models.streamdetails import StreamMetadata
 
 
 @dataclass
@@ -40,7 +44,7 @@ class PluginSource(PlayerSource):
     )
 
     # metadata of the current playing media (if known)
-    metadata: PlayerMedia | None = field(
+    metadata: StreamMetadata | None = field(
         default=None,
         compare=False,
         metadata=field_options(serialize="omit", deserialize=pass_through),

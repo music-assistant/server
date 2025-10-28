@@ -390,7 +390,8 @@ class SonosPlayer(Player):
 
         :param position: The position to seek to, in seconds.
         """
-        await self.client.player.group.seek(position)
+        # sonos expects milliseconds
+        await self.client.player.group.seek(position * 1000)
 
     async def play_media(
         self,
@@ -688,6 +689,13 @@ class SonosPlayer(Player):
             # the player has nothing loaded at all (empty queue and no service active)
             self._attr_active_source = None
 
+        # special case: Sonos reports PAUSED state when MA stopped playback
+        if (
+            active_service == MusicService.MUSIC_ASSISTANT
+            and self._attr_playback_state == PlaybackState.PAUSED
+        ):
+            self._attr_playback_state = PlaybackState.IDLE
+
         # parse current media
         self._attr_elapsed_time = self.client.player.group.position
         self._attr_elapsed_time_last_updated = time.time()
@@ -700,6 +708,7 @@ class SonosPlayer(Player):
             track_duration_millis = track.get("durationMillis")
             current_media = PlayerMedia(
                 uri=track.get("id", {}).get("objectId") or track.get("mediaUrl"),
+                media_type=MediaType.TRACK,
                 title=track["name"],
                 artist=track.get("artist", {}).get("name"),
                 album=track.get("album", {}).get("name"),
@@ -715,6 +724,7 @@ class SonosPlayer(Player):
             image_url = images[0].get("url") if images else None
             current_media = PlayerMedia(
                 uri=container.get("id", {}).get("objectId"),
+                media_type=MediaType.RADIO,
                 title=active_group.playback_metadata["streamInfo"],
                 album=container["name"],
                 image_url=image_url,
@@ -722,7 +732,9 @@ class SonosPlayer(Player):
         # generic info from container (also when MA is playing!)
         if container and container.get("name") and container.get("id"):
             if not current_media:
-                current_media = PlayerMedia(container["id"]["objectId"])
+                current_media = PlayerMedia(
+                    uri=container["id"]["objectId"], media_type=MediaType.UNKNOWN
+                )
             if not current_media.image_url:
                 images = container.get("images", [])
                 current_media.image_url = images[0].get("url") if images else None

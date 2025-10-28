@@ -8,6 +8,7 @@ this webserver allows for more fine grained configuration to better secure it.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import urllib.parse
@@ -16,6 +17,7 @@ from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
+import aiofiles
 from aiohttp import WSMsgType, web
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import (
@@ -30,6 +32,7 @@ from music_assistant_models.errors import InvalidCommand
 
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.api_docs import generate_openapi_spec
 from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps
 from music_assistant.helpers.util import get_ip_addresses
@@ -151,6 +154,11 @@ class WebserverController(CoreController):
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
         routes.append(("POST", "/api", self._handle_jsonrpc_api_command))
+        # add api documentation
+        routes.append(("GET", "/api-docs", self._handle_api_intro))
+        routes.append(("GET", "/api-docs/openapi.json", self._handle_openapi_spec))
+        routes.append(("GET", "/api-docs/swagger", self._handle_swagger_ui))
+        routes.append(("GET", "/api-docs/redoc", self._handle_redoc_ui))
         # start the webserver
         all_ip_addresses = await get_ip_addresses()
         default_publish_ip = all_ip_addresses[0]
@@ -259,6 +267,43 @@ class WebserverController(CoreController):
         """Handle request to get the application log."""
         log_data = await self.mass.get_application_log()
         return web.Response(text=log_data, content_type="text/text")
+
+    async def _handle_api_intro(self, request: web.Request) -> web.Response:
+        """Handle request for API introduction/documentation page."""
+        intro_html_path = os.path.join(
+            os.path.dirname(__file__), "..", "helpers", "resources", "api_docs.html"
+        )
+        # Read the template
+        async with aiofiles.open(intro_html_path) as f:
+            html_content = await f.read()
+
+        # Replace placeholders (escape values to prevent XSS)
+        html_content = html_content.replace("{VERSION}", html.escape(self.mass.version))
+        html_content = html_content.replace("{BASE_URL}", html.escape(self.base_url))
+        html_content = html_content.replace("{SERVER_HOST}", html.escape(request.host))
+
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def _handle_openapi_spec(self, request: web.Request) -> web.Response:
+        """Handle request for OpenAPI specification (generated on-the-fly)."""
+        spec = generate_openapi_spec(
+            self.mass.command_handlers, server_url=self.base_url, version=self.mass.version
+        )
+        return web.json_response(spec)
+
+    async def _handle_swagger_ui(self, request: web.Request) -> web.Response:
+        """Handle request for Swagger UI."""
+        swagger_html_path = os.path.join(
+            os.path.dirname(__file__), "..", "helpers", "resources", "swagger_ui.html"
+        )
+        return await self._server.serve_static(swagger_html_path, request)
+
+    async def _handle_redoc_ui(self, request: web.Request) -> web.Response:
+        """Handle request for ReDoc UI."""
+        redoc_html_path = os.path.join(
+            os.path.dirname(__file__), "..", "helpers", "resources", "redoc_ui.html"
+        )
+        return await self._server.serve_static(redoc_html_path, request)
 
 
 class WebsocketClientHandler:

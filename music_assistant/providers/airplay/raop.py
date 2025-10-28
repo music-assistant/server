@@ -29,7 +29,6 @@ from .constants import (
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
-    from music_assistant_models.player_queue import PlayerQueue
 
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
@@ -401,7 +400,6 @@ class RaopStream:
     async def _stderr_reader(self) -> None:
         """Monitor stderr for the running CLIRaop process."""
         player = self.player
-        queue = self.mass.players.get_active_queue(player)
         logger = player.logger
         lost_packets = 0
         prev_metadata_checksum: str = ""
@@ -417,24 +415,16 @@ class RaopStream:
                 # send metadata to player(s) if needed
                 # NOTE: this must all be done in separate tasks to not disturb audio
                 now = time.time()
-                if (
-                    (player.elapsed_time or 0) > 2
-                    and queue
-                    and queue.current_item
-                    and queue.current_item.streamdetails
-                ):
-                    metadata_checksum = (
-                        queue.current_item.streamdetails.stream_title
-                        or queue.current_item.queue_item_id
-                    )
+                if (player.elapsed_time or 0) > 2 and player.current_media:
+                    metadata_checksum = f"{player.current_media.uri}.{player.current_media.title}.{player.current_media.image_url}"  # noqa: E501
                     if prev_metadata_checksum != metadata_checksum:
                         prev_metadata_checksum = metadata_checksum
                         prev_progress_report = now
-                        self.mass.create_task(self._send_metadata(queue))
+                        self.mass.create_task(self._send_metadata())
                     # send the progress report every 5 seconds
                     elif now - prev_progress_report >= 5:
                         prev_progress_report = now
-                        self.mass.create_task(self._send_progress(queue))
+                        self.mass.create_task(self._send_progress())
             if "set pause" in line or "Pause at" in line:
                 player.set_state_from_raop(state=PlaybackState.PAUSED)
             if "Restarted at" in line or "restarting w/ pause" in line:
@@ -444,9 +434,9 @@ class RaopStream:
                 player.set_state_from_raop(state=PlaybackState.PLAYING, elapsed_time=0)
             if "lost packet out of backlog" in line:
                 lost_packets += 1
-                if lost_packets == 100 and queue:
+                if lost_packets == 100:
                     logger.error("High packet loss detected, restarting playback...")
-                    self.mass.create_task(self.mass.player_queues.resume(queue.queue_id, False))
+                    self.mass.create_task(self.mass.players.cmd_resume(self.player.player_id))
                 else:
                     logger.warning("Packet loss detected!")
             if "end of stream reached" in line:
@@ -457,48 +447,27 @@ class RaopStream:
         # ensure we're cleaned up afterwards (this also logs the returncode)
         await self.stop()
 
-    async def _send_metadata(self, queue: PlayerQueue) -> None:
+    async def _send_metadata(self) -> None:
         """Send metadata to player (and connected sync childs)."""
-        if not queue or not queue.current_item or self._stopped:
+        if not self.player or not self.player.current_media or self._stopped:
             return
-        duration = min(queue.current_item.duration or 0, 3600)
-        title = queue.current_item.name
-        artist = ""
-        album = ""
-        if queue.current_item.streamdetails and queue.current_item.streamdetails.stream_title:
-            # stream title/metadata from radio/live stream
-            if " - " in queue.current_item.streamdetails.stream_title:
-                artist, title = queue.current_item.streamdetails.stream_title.split(" - ", 1)
-            else:
-                title = queue.current_item.streamdetails.stream_title
-                artist = ""
-            # set album to radio station name
-            album = queue.current_item.name
-        elif media_item := queue.current_item.media_item:
-            title = media_item.name
-            if artist_str := getattr(media_item, "artist_str", None):
-                artist = artist_str
-            if _album := getattr(media_item, "album", None):
-                album = _album.name
-
-        cmd = f"TITLE={title or 'Music Assistant'}\nARTIST={artist}\nALBUM={album}\n"
+        duration = min(self.player.current_media.duration or 0, 3600)
+        title = self.player.current_media.title or ""
+        artist = self.player.current_media.artist or ""
+        album = self.player.current_media.album or ""
+        cmd = f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
         cmd += f"DURATION={duration}\nPROGRESS=0\nACTION=SENDMETA\n"
 
         await self.send_cli_command(cmd)
 
         # get image
-        if not queue.current_item.image or self._stopped:
+        if not self.player.current_media.image_url or self._stopped:
             return
+        await self.send_cli_command(f"ARTWORK={self.player.current_media.image_url}\n")
 
-        # the image format needs to be 500x500 jpeg for maximum compatibility with players
-        image_url = self.mass.metadata.get_image_url(
-            queue.current_item.image, size=500, prefer_proxy=True, image_format="jpeg"
-        )
-        await self.send_cli_command(f"ARTWORK={image_url}\n")
-
-    async def _send_progress(self, queue: PlayerQueue) -> None:
+    async def _send_progress(self) -> None:
         """Send progress report to player (and connected sync childs)."""
-        if not queue or not queue.current_item or self._stopped:
+        if not self.player.current_media or self._stopped:
             return
-        progress = int(queue.corrected_elapsed_time)
+        progress = int(self.player.corrected_elapsed_time or 0)
         await self.send_cli_command(f"PROGRESS={progress}\n")

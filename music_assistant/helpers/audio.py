@@ -442,6 +442,7 @@ async def get_buffered_media_stream(
     async def fill_buffer_task() -> None:
         """Background task to fill the audio buffer."""
         chunk_count = 0
+        status = "running"
         try:
             async for chunk in get_media_stream(
                 mass, streamdetails, pcm_format, seek_position=0, filter_params=filter_params
@@ -449,25 +450,17 @@ async def get_buffered_media_stream(
                 chunk_count += 1
                 await audio_buffer.put(chunk)
         except asyncio.CancelledError:
-            LOGGER.log(
-                VERBOSE_LOG_LEVEL,
-                "fill_buffer_task: Cancelled after %s chunks for %s",
-                chunk_count,
-                streamdetails.uri,
-            )
+            status = "cancelled"
             raise
-        except Exception as err:
-            LOGGER.error(
-                "fill audio buffer task: Error after %s chunks for %s: %s",
-                chunk_count,
-                streamdetails.uri,
-                err,
-            )
+        except Exception:
+            status = "aborted with error"
+            raise
         finally:
             await audio_buffer.set_eof()
             LOGGER.log(
                 VERBOSE_LOG_LEVEL,
-                "fill_buffer_task: Completed (%s chunks) for %s",
+                "fill_buffer_task: %s (%s chunks) for %s",
+                status,
                 chunk_count,
                 streamdetails.uri,
             )
@@ -526,7 +519,7 @@ async def get_buffered_media_stream(
         audio_buffer = AudioBuffer(pcm_format, checksum)
         streamdetails.buffer = audio_buffer
         task = mass.loop.create_task(fill_buffer_task())
-        audio_buffer.attach_fill_task(task)
+        audio_buffer.attach_producer_task(task)
 
     # special case: pcm format mismatch, resample on the fly
     # this may happen in some special situations such as crossfading

@@ -113,7 +113,7 @@ Each Spotify Connect provider instance:
 - Links to a specific Music Assistant player
 - Appears as a separate device in Spotify app
 
-This allows multiple Spotify Connect devices in one Music Assistant installation.
+This allows multiple Spotify Connect devices in one Music Assistant installation, for example one per player.
 
 ## Authentication & Credentials
 

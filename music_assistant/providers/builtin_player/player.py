@@ -253,7 +253,7 @@ class BuiltinPlayer(Player):
             # We don't early exit here since playback would otherwise never start
             # on iOS devices with Home Assistant OS installations.
 
-        media = player.current_media
+        media = player._current_media
         if queue is None or media is None:
             raise web.HTTPNotFound(reason="No active queue or media found!")
 

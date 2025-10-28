@@ -6,15 +6,19 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, Callable
 from functools import wraps
-from typing import Final, ParamSpec
+from typing import Any, Final, ParamSpec
 
-from music_assistant.helpers.util import empty_queue
+from music_assistant.helpers.util import close_async_generator, empty_queue
 
 # Type variables for the buffered decorator
 _P = ParamSpec("_P")
 
 DEFAULT_BUFFER_SIZE: Final = 30
 DEFAULT_MIN_BUFFER_BEFORE_YIELD: Final = 5
+
+# Keep strong references to producer tasks to prevent garbage collection
+# The event loop only keeps weak references to tasks
+_ACTIVE_PRODUCER_TASKS: set[asyncio.Task[Any]] = set()
 
 
 async def buffered(
@@ -52,21 +56,27 @@ async def buffered(
     async def producer() -> None:
         """Read from the original generator and fill the buffer."""
         nonlocal producer_error
+        generator_consumed = False
         try:
             async for chunk in generator:
+                generator_consumed = True
                 if cancelled.is_set():
                     # Consumer has stopped, exit cleanly
                     break
                 await buffer.put(chunk)
                 if not threshold_reached.is_set() and buffer.qsize() >= min_buffer_before_yield:
                     threshold_reached.set()
+                # Yield to event loop every chunk to prevent blocking
+                await asyncio.sleep(0)
         except Exception as err:
             producer_error = err
+            if isinstance(err, asyncio.CancelledError):
+                raise
         finally:
             threshold_reached.set()
-            # Clean up the generator
-            with contextlib.suppress(RuntimeError, asyncio.CancelledError):
-                await generator.aclose()
+            # Clean up the generator if needed
+            if not generator_consumed:
+                await close_async_generator(generator)
             # Signal end of stream by putting None
             with contextlib.suppress(asyncio.QueueFull):
                 buffer.put_nowait(None)
@@ -77,14 +87,10 @@ async def buffered(
 
     # Keep a strong reference to prevent garbage collection issues
     # The event loop only keeps weak references to tasks
-    _active_tasks = getattr(loop, "_buffered_generator_tasks", None)
-    if _active_tasks is None:
-        _active_tasks = set()
-        loop._buffered_generator_tasks = _active_tasks  # type: ignore[attr-defined]
-    _active_tasks.add(producer_task)
+    _ACTIVE_PRODUCER_TASKS.add(producer_task)
 
     # Remove from set when done
-    producer_task.add_done_callback(_active_tasks.discard)
+    producer_task.add_done_callback(_ACTIVE_PRODUCER_TASKS.discard)
 
     try:
         # Wait for initial buffer to fill
@@ -105,9 +111,9 @@ async def buffered(
         cancelled.set()
         # Drain the queue to unblock the producer if it's waiting on put()
         empty_queue(buffer)
-        # Wait for the producer to finish cleanly
-        with contextlib.suppress(asyncio.CancelledError, RuntimeError):
-            await producer_task
+        # Wait for the producer to finish cleanly with a timeout to prevent blocking
+        with contextlib.suppress(asyncio.CancelledError, RuntimeError, asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(producer_task), timeout=1.0)
 
 
 def use_buffer(

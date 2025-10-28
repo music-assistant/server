@@ -34,17 +34,14 @@ on:
 env:
   PYTHON_VERSION: "3.12"
   BASE_IMAGE_VERSION_STABLE: "1.3.1"
-  BASE_IMAGE_VERSION_BETA: "1.4.2"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.4.2"
+  BASE_IMAGE_VERSION_BETA: "1.4.4"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.4.4"
 
 jobs:
-  validate-and-build:
-    name: Validate version and build Python artifact
+  preflight-checks:
+    name: Run tests and linting before release
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ inputs.version }}
-      is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
-      base_image_version: ${{ steps.validate.outputs.base_image_version }}
       branch: ${{ steps.branch.outputs.branch }}
     steps:
       - name: Determine branch to use
@@ -60,9 +57,32 @@ jobs:
             echo "Using dev branch for $CHANNEL release"
           fi
 
+      - name: Trigger test workflow
+        uses: convictional/trigger-workflow-and-wait@v1.6.5
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: server
+          github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          workflow_file_name: test.yml
+          ref: ${{ steps.branch.outputs.branch }}
+          wait_interval: 10
+          propagate_failure: true
+          trigger_workflow: true
+          wait_workflow: true
+
+  validate-and-build:
+    name: Validate version and build Python artifact
+    runs-on: ubuntu-latest
+    needs: preflight-checks
+    outputs:
+      version: ${{ inputs.version }}
+      is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
+      base_image_version: ${{ steps.validate.outputs.base_image_version }}
+      branch: ${{ needs.preflight-checks.outputs.branch }}
+    steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ steps.branch.outputs.branch }}
+          ref: ${{ needs.preflight-checks.outputs.branch }}
           fetch-depth: 0
 
       - name: Validate version number format
@@ -140,7 +160,7 @@ jobs:
           python3 -m build
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: release-dists
           path: dist/
@@ -162,7 +182,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download distributions
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: release-dists
           path: dist/
@@ -216,18 +236,18 @@ jobs:
             if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
               BASE="${BASH_REMATCH[1]}"
               DATE="${BASH_REMATCH[2]}"
-              TITLE="$BASE Nightly $DATE"
+              TITLE="$BASE NIGHTLY $DATE"
             else
-              TITLE="$VERSION Nightly"
+              TITLE="$VERSION NIGHTLY"
             fi
           elif [[ "$CHANNEL" == "beta" ]]; then
             # Extract base version and beta number from X.Y.ZbN
             if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
               BASE="${BASH_REMATCH[1]}"
               BETA_NUM="${BASH_REMATCH[2]}"
-              TITLE="$BASE Beta $BETA_NUM"
+              TITLE="$BASE BETA $BETA_NUM"
             else
-              TITLE="$VERSION Beta"
+              TITLE="$VERSION BETA"
             fi
           else
             # Stable release - just use the version
@@ -264,7 +284,7 @@ jobs:
       id-token: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: release-dists
           path: dist/
@@ -286,7 +306,7 @@ jobs:
           ref: ${{ needs.validate-and-build.outputs.branch }}
 
       - name: Download distributions
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v6
         with:
           name: release-dists
           path: dist/

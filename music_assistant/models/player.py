@@ -75,6 +75,7 @@ from music_assistant.constants import (
     CONF_PRE_ANNOUNCE_CHIME_URL,
     CONF_VOLUME_CONTROL,
 )
+from music_assistant.helpers.cached_property import timed_cached_property
 from music_assistant.helpers.util import (
     get_changed_dataclass_values,
     validate_announcement_chime_url,
@@ -82,6 +83,7 @@ from music_assistant.helpers.util import (
 
 if TYPE_CHECKING:
     from .player_provider import PlayerProvider
+
 
 CONF_ENTRY_PRE_ANNOUNCE_CUSTOM_CHIME_URL = ConfigEntry(
     key=CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -672,7 +674,7 @@ class Player(ABC):
         elif self.group_members:
             await self.set_members(player_ids_to_remove=self.group_members)
 
-    @cached_property
+    @property
     def synced_to(self) -> str | None:
         """
         Return the id of the player this player is synced to (sync leader).
@@ -773,7 +775,7 @@ class Player(ABC):
             return control.power_state
         return None
 
-    @cached_property
+    @property
     @final
     def volume_level(self) -> int | None:
         """
@@ -793,7 +795,7 @@ class Player(ABC):
             return control.volume_level
         return None
 
-    @cached_property
+    @property
     @final
     def volume_muted(self) -> bool | None:
         """
@@ -813,7 +815,7 @@ class Player(ABC):
             return control.volume_muted
         return None
 
-    @property
+    @timed_cached_property
     @final
     def active_source(self) -> str | None:
         """
@@ -825,7 +827,7 @@ class Player(ABC):
         # if the player is grouped/synced, use the active source of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                return parent_player.active_source
+                return parent_player._active_source
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
                 return plugin_source.id
@@ -910,7 +912,7 @@ class Player(ABC):
         active_groups = self.active_groups
         return active_groups[0] if active_groups else None
 
-    @property
+    @timed_cached_property
     @final
     def current_media(self) -> PlayerMedia | None:
         """
@@ -922,14 +924,110 @@ class Player(ABC):
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                return parent_player.current_media
+                return cast("PlayerMedia | None", parent_player.current_media)
         # if a pluginsource is currently active, return those details
-        if self.active_source and (
-            source := self.mass.players.get_plugin_source(self.active_source)
+        if (
+            self.active_source
+            and (source := self.mass.players.get_plugin_source(self.active_source))
+            and source.metadata
         ):
-            return deepcopy(source.metadata)
+            return PlayerMedia(
+                uri=source.metadata.uri or source.id,
+                media_type=MediaType.PLUGIN_SOURCE,
+                title=source.metadata.title,
+                artist=source.metadata.artist,
+                album=source.metadata.album,
+                image_url=source.metadata.image_url,
+                duration=source.metadata.duration,
+                source_id=source.id,
+                elapsed_time=source.metadata.elapsed_time,
+                elapsed_time_last_updated=source.metadata.elapsed_time_last_updated,
+            )
+        # if MA queue is active, return those details
+        active_queue = None
+        if self._current_media and self._current_media.source_id:
+            active_queue = self.mass.player_queues.get(self._current_media.source_id)
+        if not active_queue and self.active_source:
+            active_queue = self.mass.player_queues.get(self.active_source)
 
-        return self._current_media
+        if active_queue and (current_item := active_queue.current_item):
+            item_image_url = (
+                # the image format needs to be 500x500 jpeg for maximum compatibility with players
+                self.mass.metadata.get_image_url(current_item.image, size=500, image_format="png")
+                if current_item.image
+                else None
+            )
+            if current_item.streamdetails and (
+                stream_metadata := current_item.streamdetails.stream_metadata
+            ):
+                # handle stream metadata in streamdetails (e.g. for radio stream)
+                return PlayerMedia(
+                    uri=current_item.uri,
+                    media_type=current_item.media_type,
+                    title=stream_metadata.title or current_item.name,
+                    artist=stream_metadata.artist,
+                    album=stream_metadata.album or current_item.name,
+                    image_url=(stream_metadata.image_url or item_image_url),
+                    duration=stream_metadata.duration or current_item.duration,
+                    source_id=active_queue.queue_id,
+                    queue_item_id=current_item.queue_item_id,
+                    elapsed_time=stream_metadata.elapsed_time or int(active_queue.elapsed_time),
+                    elapsed_time_last_updated=stream_metadata.elapsed_time_last_updated
+                    or active_queue.elapsed_time_last_updated,
+                )
+            if media_item := current_item.media_item:
+                # normal media item
+                return PlayerMedia(
+                    uri=str(media_item.uri),
+                    media_type=media_item.media_type,
+                    title=media_item.name,
+                    artist=getattr(media_item, "artist_str", None),
+                    album=album.name if (album := getattr(media_item, "album", None)) else None,
+                    # the image format needs to be 500x500 jpeg for maximum player compatibility
+                    image_url=self.mass.metadata.get_image_url(
+                        current_item.media_item.image, size=500, image_format="jpeg"
+                    )
+                    or item_image_url
+                    if current_item.media_item.image
+                    else item_image_url,
+                    duration=media_item.duration,
+                    source_id=active_queue.queue_id,
+                    queue_item_id=current_item.queue_item_id,
+                    elapsed_time=int(active_queue.elapsed_time),
+                    elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
+                )
+
+            # fallback to basic current item details
+            return PlayerMedia(
+                uri=current_item.uri,
+                media_type=current_item.media_type,
+                title=current_item.name,
+                image_url=item_image_url,
+                duration=current_item.duration,
+                source_id=active_queue.queue_id,
+                queue_item_id=current_item.queue_item_id,
+                elapsed_time=int(active_queue.elapsed_time),
+                elapsed_time_last_updated=active_queue.elapsed_time_last_updated,
+            )
+        # return native current media if no group/queue is active
+        if self._current_media:
+            return PlayerMedia(
+                uri=self._current_media.uri,
+                media_type=self._current_media.media_type,
+                title=self._current_media.title,
+                artist=self._current_media.artist,
+                album=self._current_media.album,
+                image_url=self._current_media.image_url,
+                duration=self._current_media.duration,
+                source_id=self._current_media.source_id or self._active_source,
+                queue_item_id=self._current_media.queue_item_id,
+                elapsed_time=self._current_media.elapsed_time or int(self.elapsed_time)
+                if self.elapsed_time
+                else None,
+                elapsed_time_last_updated=self._current_media.elapsed_time_last_updated
+                or self.elapsed_time_last_updated,
+            )
+        return None
 
     @cached_property
     @final
@@ -961,7 +1059,7 @@ class Player(ABC):
             return str(conf)
         return PLAYER_CONTROL_NONE
 
-    @cached_property
+    @property
     @final
     def group_volume(self) -> int:
         """

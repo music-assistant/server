@@ -17,8 +17,9 @@ from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_OUTPUT_CODEC,
+    create_sample_rates_config_entry,
 )
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.providers.bluesound.const import (
@@ -87,7 +88,13 @@ class BluesoundPlayer(Player):
         """Return all (provider/player specific) Config Entries for the player."""
         return [
             *await super().get_config_entries(),
-            CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+            create_sample_rates_config_entry(
+                max_sample_rate=192000,
+                safe_max_sample_rate=192000,
+                max_bit_depth=24,
+                safe_max_bit_depth=24,
+            ),
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             ConfigEntry.from_dict(
