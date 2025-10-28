@@ -15,6 +15,7 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    ImageType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -22,9 +23,12 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
+    MediaItemImage,
+    MediaItemMetadata,
     ProviderMapping,
     Radio,
     SearchResults,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails, StreamMetadata
 
@@ -207,18 +211,35 @@ class PandoraProvider(MusicProvider):
         self.logger.debug("Found %d Pandora stations", len(stations))
 
         for station in stations:
-            yield Radio(
-                item_id=station["stationId"],
-                provider=self.domain,
-                name=station["name"],
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=station["stationId"],
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
+            # Get station artwork (prefer 500px version)
+            station_image = None
+            if art := station.get("art"):
+                art_url = next(
+                    (item["url"] for item in art if item.get("size") == 500),
+                    art[-1]["url"] if art else None,
+                )
+                if art_url:
+                    station_image = MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=art_url,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
                     )
-                },
-            )
+                yield Radio(
+                    item_id=station["stationId"],
+                    provider=self.domain,
+                    name=station["name"],
+                    metadata=MediaItemMetadata(
+                        images=UniqueList([station_image]) if station_image else None,
+                    ),
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id=station["stationId"],
+                            provider_domain=self.domain,
+                            provider_instance=self.instance_id,
+                        )
+                    },
+                )
 
     @use_cache(3600)
     async def get_radio(self, prov_radio_id: str) -> Radio:
@@ -364,9 +385,21 @@ class PandoraProvider(MusicProvider):
             if queue_id and queue_item_id:
                 queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
                 if queue_item and queue_item.streamdetails:
+                    # Get the best quality album art
+                    album_art_url = None
+                    if album_art := track.get("albumArt"):
+                        # Get the 500px version (good balance of quality/size)
+                        album_art_url = next(
+                            (art["url"] for art in album_art if art.get("size") == 500),
+                            album_art[-1]["url"] if album_art else None,
+                        )
+
                     queue_item.streamdetails.stream_metadata = StreamMetadata(
                         title=track.get("songTitle", "Unknown Song"),
                         artist=track.get("artistName", "Unknown Artist"),
+                        album=track.get("albumTitle"),
+                        image_url=album_art_url,
+                        duration=track.get("trackLength"),
                     )
                     self.logger.debug(
                         "Updated stream metadata: %s - %s",
