@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -26,6 +25,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
     RepeatMode,
@@ -390,7 +390,8 @@ class SonosPlayer(Player):
 
         :param position: The position to seek to, in seconds.
         """
-        await self.client.player.group.seek(position)
+        # sonos expects milliseconds
+        await self.client.player.group.seek(position * 1000)
 
     async def play_media(
         self,
@@ -406,7 +407,6 @@ class SonosPlayer(Player):
         :param media: Details of the item that needs to be played on the player.
         """
         self.sonos_queue.set_items([media])
-        self._attr_current_media = deepcopy(media)
 
         if self.client.player.is_passive:
             # this should be already handled by the player manager, but just in case...
@@ -423,22 +423,14 @@ class SonosPlayer(Player):
             await self._play_media_airplay(airplay_player, media)
             return
 
-        if media.source_id and media.queue_item_id and media.duration:
+        if (media.source_id and media.queue_item_id) or media.media_type == MediaType.PLUGIN_SOURCE:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
-            track_data = self.provider._parse_sonos_queue_item(media)
             await self.client.player.group.play_cloud_queue(
                 cloud_queue_url,
                 item_id=media.queue_item_id,
-                track_metadata=track_data["track"],
             )
-            return
-
-        # All other playback types
-        if media.duration:
-            # use legacy playback for files with known duration
-            await self._play_media_legacy(media)
             return
 
         # play duration-less (long running) radio streams
@@ -697,6 +689,13 @@ class SonosPlayer(Player):
             # the player has nothing loaded at all (empty queue and no service active)
             self._attr_active_source = None
 
+        # special case: Sonos reports PAUSED state when MA stopped playback
+        if (
+            active_service == MusicService.MUSIC_ASSISTANT
+            and self._attr_playback_state == PlaybackState.PAUSED
+        ):
+            self._attr_playback_state = PlaybackState.IDLE
+
         # parse current media
         self._attr_elapsed_time = self.client.player.group.position
         self._attr_elapsed_time_last_updated = time.time()
@@ -709,6 +708,7 @@ class SonosPlayer(Player):
             track_duration_millis = track.get("durationMillis")
             current_media = PlayerMedia(
                 uri=track.get("id", {}).get("objectId") or track.get("mediaUrl"),
+                media_type=MediaType.TRACK,
                 title=track["name"],
                 artist=track.get("artist", {}).get("name"),
                 album=track.get("album", {}).get("name"),
@@ -724,6 +724,7 @@ class SonosPlayer(Player):
             image_url = images[0].get("url") if images else None
             current_media = PlayerMedia(
                 uri=container.get("id", {}).get("objectId"),
+                media_type=MediaType.RADIO,
                 title=active_group.playback_metadata["streamInfo"],
                 album=container["name"],
                 image_url=image_url,
@@ -731,7 +732,9 @@ class SonosPlayer(Player):
         # generic info from container (also when MA is playing!)
         if container and container.get("name") and container.get("id"):
             if not current_media:
-                current_media = PlayerMedia(container["id"]["objectId"])
+                current_media = PlayerMedia(
+                    uri=container["id"]["objectId"], media_type=MediaType.UNKNOWN
+                )
             if not current_media.image_url:
                 images = container.get("images", [])
                 current_media.image_url = images[0].get("url") if images else None

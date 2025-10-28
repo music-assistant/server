@@ -292,7 +292,7 @@ class SonosPlayerProvider(PlayerProvider):
                 "service": {"name": "Music Assistant", "id": "mass"},
                 "name": media.title,
                 "imageUrl": media.image_url,
-                "durationMillis": media.duration * 1000 if media.duration else 0,
+                "durationMillis": int(media.duration * 1000) if media.duration else 0,
                 "artist": {
                     "name": media.artist,
                 }

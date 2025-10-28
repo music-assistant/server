@@ -36,9 +36,9 @@ The workflow also manually identifies the previous release for context headers u
 - **Finds**: Latest stable release (no suffix)
 
 #### Beta Channel
-- **Pattern**: `^[0-9]+\.[0-9]+\.[0-9]+\.b[0-9]+$` (e.g., `2.1.0.b1`, `2.1.0.b2`)
+- **Pattern**: `^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$` (e.g., `2.1.0b1`, `2.1.0b2`)
 - **Branch**: `dev`
-- **Finds**: Latest beta release (`.bN` suffix)
+- **Finds**: Latest beta release (`bN` suffix)
 
 #### Nightly Channel
 - **Pattern**: `^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$` (e.g., `2.1.0.dev20251023`)
@@ -75,7 +75,7 @@ The workflow then enhances these notes by:
 - Include **only commits since the last beta release**
 - **Do NOT include** nightly commits
 - **Do NOT include** stable commits from stable branch
-- Example: `2.1.0.b2` → `2.1.0.b3` only shows dev branch commits since b2
+- Example: `2.1.0b2` → `2.1.0b3` only shows dev branch commits since b2
 
 #### ✅ Nightly Release Notes
 - Include **only commits since the last nightly release**
@@ -114,7 +114,7 @@ The configuration includes:
 ```markdown
 ## 📦 Beta Release
 
-_Changes since [2.1.0.b1](https://github.com/music-assistant/server/releases/tag/2.1.0.b1)_
+_Changes since [2.1.0b1](https://github.com/music-assistant/server/releases/tag/2.1.0b1)_
 
 ### ⚠ Breaking Changes
 

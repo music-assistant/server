@@ -80,10 +80,18 @@ async def get_image_thumb(
         except UnidentifiedImageError:
             raise FileNotFoundError(f"Invalid image: {path_or_url}")
         if size:
+            # Use LANCZOS for high quality downsampling
             img.thumbnail((size, size), Image.Resampling.LANCZOS)
 
         mode = "RGBA" if image_format == "PNG" else "RGB"
-        img.convert(mode).save(data, image_format, optimize=True)
+
+        # Save with high quality settings
+        if image_format == "JPEG":
+            # For JPEG, use quality=95 for better quality
+            img.convert(mode).save(data, image_format, quality=95, optimize=False)
+        else:
+            # For PNG, disable optimize to preserve quality
+            img.convert(mode).save(data, image_format, optimize=False)
         return data.getvalue()
 
     image_format = image_format.upper()

@@ -42,6 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Additional libraries
     libbluray-dev \
     libxml2-dev \
+    libssh-dev \
+    liblzma-dev \
     # SSL/TLS support for HTTPS
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -77,15 +79,11 @@ RUN set -x \
         --enable-libpulse \
         # SSL/TLS support for HTTPS
         --enable-openssl \
-        # Protocols needed for streaming
-        --enable-protocol=file \
-        --enable-protocol=http \
-        --enable-protocol=https \
-        --enable-protocol=tcp \
-        --enable-protocol=udp \
-        --enable-protocol=rtp \
+        # Additional libraries for playlist and network support
+        --enable-libxml2 \
+        --enable-libssh \
+        --enable-lzma \
         # Optimizations
-        --enable-small \
         --enable-runtime-cpudetect \
         # Disable unnecessary features for smaller build
         --disable-doc \
@@ -149,6 +147,8 @@ RUN set -x \
         # Additional libraries
         libbluray2 \
         libxml2 \
+        libssh-4 \
+        liblzma5 \
         # Snapcast dependencies
         libasound2 \
         libvorbisidec1 \

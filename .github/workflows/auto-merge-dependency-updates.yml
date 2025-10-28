@@ -131,6 +131,70 @@ jobs:
 
           echo "✅ Changes are version bumps"
 
+      # Security check 7: Wait for package to be available on PyPI
+      - name: Wait for package availability on PyPI
+        run: |
+          # Extract the package name and version from the changes
+          DIFF=$(git diff HEAD~1 HEAD pyproject.toml)
+
+          if echo "$DIFF" | grep -q "music-assistant-frontend=="; then
+            PACKAGE="music-assistant-frontend"
+            VERSION=$(echo "$DIFF" | grep -oP 'music-assistant-frontend==\K[0-9.]+' | head -1)
+          elif echo "$DIFF" | grep -q "music-assistant-models=="; then
+            PACKAGE="music-assistant-models"
+            VERSION=$(echo "$DIFF" | grep -oP 'music-assistant-models==\K[0-9.]+' | head -1)
+          else
+            echo "❌ Could not determine package name and version"
+            exit 1
+          fi
+
+          echo "Waiting for $PACKAGE version $VERSION to be available on PyPI..."
+
+          # Retry for up to 20 minutes (20 attempts with 60 second intervals)
+          MAX_ATTEMPTS=20
+          SLEEP_DURATION=60
+          ATTEMPT=1
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS: Checking if $PACKAGE==$VERSION is available..."
+
+            # Try to get package info from PyPI JSON API
+            HTTP_CODE=$(curl -s -o /tmp/pypi_response.json -w "%{http_code}" "https://pypi.org/pypi/$PACKAGE/json")
+
+            if [ "$HTTP_CODE" -eq 200 ]; then
+              # Check if the specific version exists
+              if grep -q "\"$VERSION\"" /tmp/pypi_response.json; then
+                echo "✅ Package $PACKAGE version $VERSION is available on PyPI"
+
+                # Additional verification: try to download the package
+                if python3 -m pip download --no-deps "$PACKAGE==$VERSION" > /dev/null 2>&1; then
+                  echo "✅ Package $PACKAGE==$VERSION can be installed"
+                  exit 0
+                else
+                  echo "⚠️  Package found in PyPI API but pip download failed, retrying..."
+                fi
+              else
+                echo "ℹ️  Package $PACKAGE exists but version $VERSION not yet available"
+              fi
+            else
+              echo "ℹ️  HTTP $HTTP_CODE when accessing PyPI API"
+            fi
+
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "Waiting ${SLEEP_DURATION}s before retry..."
+              sleep $SLEEP_DURATION
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          echo "❌ Package $PACKAGE version $VERSION did not become available within the timeout period"
+          echo "This might indicate:"
+          echo "  - The package was not published to PyPI"
+          echo "  - PyPI is experiencing delays"
+          echo "  - The version number in the PR is incorrect"
+          exit 1
+
       # All security checks passed - approve the PR
       - name: Auto-approve PR
         run: |

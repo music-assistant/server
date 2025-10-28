@@ -353,8 +353,6 @@ class DLNAPlayer(Player):
 
     async def poll(self) -> None:
         """Poll player for state updates."""
-        assert self.device is not None  # for type checking
-
         # try to reconnect the device if the connection was lost
         if not self.device:
             if not self.force_poll:
