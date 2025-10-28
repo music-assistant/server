@@ -85,7 +85,7 @@ class ImageProvider:
 
     # TODO: keeping this in for demo purposes
     ICON_BASE_URL = (
-        "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/dark"
+        "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid"
     )
 
     ICON_MAPPING = {

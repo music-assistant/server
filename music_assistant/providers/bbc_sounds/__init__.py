@@ -526,7 +526,7 @@ class BBCSoundsProvider(MusicProvider):
                 name="Schedule and Programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
-                    path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/dark/listen_live.png",
+                    path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
                     remotely_accessible=True,
                     provider=self.domain,
                     type=ImageType.THUMB,
@@ -544,12 +544,24 @@ class BBCSoundsProvider(MusicProvider):
                 provider=self.domain,
                 name="Listen Live",
                 path=f"{self.domain}://listen_live",
+                image=MediaItemImage(
+                    path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/listen_live.png",
+                    remotely_accessible=True,
+                    provider=self.domain,
+                    type=ImageType.THUMB,
+                ),
             ),
             BrowseFolder(
                 item_id="stations",
                 provider=self.domain,
                 name="Schedules and Programmes",
                 path=f"{self.domain}://stations",
+                image=MediaItemImage(
+                    path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
+                    remotely_accessible=True,
+                    provider=self.domain,
+                    type=ImageType.THUMB,
+                ),
             ),
         ]
 
