@@ -53,5 +53,6 @@ BROKEN_RAOP_MODELS = (
     ("Sonos", "Arc Ultra"),
     # Samsung has been repeatedly being reported as having issues with AirPlay 1/raop
     ("Samsung", "*"),
-    ("Ubiquiti Inc.", "UPL-AMP"),
+    ("Ubiquiti Inc.", "*"),
+    ("Juke Audio", "*"),
 )
