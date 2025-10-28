@@ -78,8 +78,10 @@ async def buffered(
             if not generator_consumed:
                 await close_async_generator(generator)
             # Signal end of stream by putting None
-            with contextlib.suppress(asyncio.QueueFull):
-                buffer.put_nowait(None)
+            # We must wait for space in the queue if needed, otherwise the consumer may
+            # hang waiting for data that will never come
+            if not cancelled.is_set():
+                await buffer.put(None)
 
     # Start the producer task
     loop = asyncio.get_running_loop()
