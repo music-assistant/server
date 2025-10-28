@@ -235,10 +235,12 @@ class SqueezelitePlayer(Player):
             return
 
         # this is a syncgroup, we need to handle this with a multi client stream
+        flow_format = await self.mass.streams._select_flow_format(self)
         master_audio_format = AudioFormat(
             content_type=INTERNAL_PCM_FORMAT.content_type,
-            sample_rate=INTERNAL_PCM_FORMAT.sample_rate,
+            sample_rate=flow_format.sample_rate,
             bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+            channels=2,
         )
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
