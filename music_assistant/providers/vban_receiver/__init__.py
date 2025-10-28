@@ -1,10 +1,4 @@
-"""
-VBAN protocol receiver plugin for Music Assistant.
-
-We tie a single player to a single VBAN session name.
-The provider has multi instance support,
-so multiple players can be linked to multiple VBAN streams.
-"""
+"""VBAN protocol receiver plugin for Music Assistant."""
 
 from __future__ import annotations
 
@@ -14,19 +8,18 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
-from aiovban.asyncio import AsyncVBANClient
 from aiovban.asyncio.util import BackPressureStrategy
 from aiovban.enums import VBANSampleRate
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
-    MediaType,
     ProviderFeature,
     StreamType,
 )
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.constants import (
     CONF_BIND_IP,
@@ -36,8 +29,9 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import (
     get_ip_addresses,
 )
-from music_assistant.models.player import PlayerMedia
 from music_assistant.models.plugin import PluginProvider, PluginSource
+
+from .vban import AsyncVBANClientMod
 
 if TYPE_CHECKING:
     from aiovban.asyncio.device import VBANDevice
@@ -189,8 +183,8 @@ class VBANReceiverProvider(PluginProvider):
         self._pcm_audio_format: str = cast("str", self.config.get_value(CONF_PCM_AUDIO_FORMAT))
         self._pcm_sample_rate: int = cast("int", self.config.get_value(CONF_PCM_SAMPLE_RATE))
 
-        self._vban_receiver: AsyncVBANClient | None = None
-        self._vban_device: VBANDevice | None = None
+        self._vban_receiver: AsyncVBANClientMod | None = None
+        self._vban_sender: VBANDevice | None = None
         self._vban_stream: VBANIncomingStream | None = None
 
         self._source_details = PluginSource(
@@ -207,11 +201,9 @@ class VBANReceiverProvider(PluginProvider):
                 bit_depth=_get_supported_pcm_formats()[self._pcm_audio_format],
                 channels=2,
             ),
-            metadata=PlayerMedia(
-                "VBAN Receiver",
-                artist=self._sender_host,
+            metadata=StreamMetadata(
                 title=self._vban_stream_name,
-                media_type=MediaType.PLUGIN_SOURCE,
+                artist=self._sender_host,
             ),
             stream_type=StreamType.CUSTOM,
         )
@@ -228,17 +220,17 @@ class VBANReceiverProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._vban_receiver = AsyncVBANClient(ignore_audio_streams=False)
+        self._vban_receiver = AsyncVBANClientMod(ignore_audio_streams=False)
         try:
-            result = await self._vban_receiver.listen(self._bind_ip, self._bind_port)
+            self._udp_socket_task = asyncio.create_task(
+                self._vban_receiver.listen(self._bind_ip, self._bind_port)
+            )
         except OSError as err:
             raise SetupFailedError(f"Failed to start VBAN receiver plugin: {err}") from err
-        else:
-            self._udp_socket_fut = result
 
-        self._vban_device = self._vban_receiver.register_device(self._sender_host, self._bind_port)
-        if self._vban_device:
-            self._vban_stream = self._vban_device.receive_stream(
+        self._vban_sender = self._vban_receiver.register_device(self._sender_host)
+        if self._vban_sender:
+            self._vban_stream = self._vban_sender.receive_stream(
                 self._vban_stream_name, back_pressure_strategy=BackPressureStrategy.DRAIN_OLDEST
             )
 
@@ -246,18 +238,13 @@ class VBANReceiverProvider(PluginProvider):
         """Handle close/cleanup of the provider."""
         self.logger.debug("Unloading plugin")
         if self._vban_receiver:
-            self.logger.info("Closing UDP transport")
-            # Can raise an uncatchable exception due to bug in aiovban library.
+            self.logger.debug("Closing UDP transport")
             self._vban_receiver.close()
-
-        if self._udp_socket_fut and not self._udp_socket_fut.done():
-            self._udp_socket_fut.cancel()
             with suppress(asyncio.CancelledError):
-                await self._udp_socket_fut
+                await self._udp_socket_task
 
-        self._udp_socket_fut = None
         self._vban_receiver = None
-        self._vban_device = None
+        self._vban_sender = None
         self._vban_stream = None
         await asyncio.sleep(0.1)
 
@@ -268,13 +255,15 @@ class VBANReceiverProvider(PluginProvider):
     async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Yield raw PCM chunks from the VBANIncomingStream queue."""
         self.logger.debug(
-            "Sending VBAN PCM audio stream for Player: %s//Stream: %s//Config: %s",
+            "Getting VBAN PCM audio stream for Player: %s//Stream: %s//Config: %s",
             player_id,
             self._vban_stream_name,
-            self._source_details.audio_format.output_format_str,  # type: ignore[union-attr]
+            self._source_details.audio_format.output_format_str,
         )
         while (
-            self._source_details.in_use_by and self._vban_stream and not self._udp_socket_fut.done()
+            self._source_details.in_use_by
+            and self._vban_stream
+            and not self._udp_socket_task.done()
         ):
             try:
                 packet = await self._vban_stream.get_packet()
@@ -282,7 +271,7 @@ class VBANReceiverProvider(PluginProvider):
                 self.logger.error(
                     "Found VBANIncomingStream queue shut down when attempting to get VBAN packet"
                 )
-                raise
+                break
 
             # Skip processing full null packets.
             # pipewire vban-send module constantly sends full null VBAN packets when a "Stream"
