@@ -70,7 +70,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
 }
 
-FEATURES = {"catchup_segments": False}
+FEATURES = {"catchup_segments": False, "check_blank_image": False}
 
 
 async def setup(
@@ -387,9 +387,11 @@ class BBCSoundsProvider(MusicProvider):
                 self.logger.debug(f"Now playing for {station_id}: {now_playing}")
 
                 # removed check temporarily as images not working
-                # if self.BLANK_IMAGE_NAME not in now_playing.image_url:
-                image = now_playing.image_url
-                stream_details.stream_metadata.image_url = image
+                if (
+                    not FEATURES["check_blank_image"]
+                    or _Constants.BLANK_IMAGE_NAME not in now_playing.image_url
+                ):
+                    stream_details.stream_metadata.image_url = now_playing.image_url
                 song = now_playing.titles["secondary"]
                 artist = now_playing.titles["primary"]
                 stream_details.stream_metadata.title = song
