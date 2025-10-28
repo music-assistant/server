@@ -1,0 +1,217 @@
+# Auto approve and merge dependency update PRs
+# for the frontend and models packages.
+
+name: Auto-merge dependency updates
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    branches:
+      - dev
+
+# CRITICAL SECURITY: This workflow uses pull_request_target which runs in the context
+# of the base repository and has access to secrets. Multiple security checks ensure
+# only trusted automation PRs are auto-merged.
+
+jobs:
+  auto-merge:
+    name: Auto-approve and merge
+    runs-on: ubuntu-latest
+    # Only run if branch name matches the expected pattern
+    if: |
+      startsWith(github.event.pull_request.head.ref, 'auto-update-frontend-') ||
+      startsWith(github.event.pull_request.head.ref, 'auto-update-models-')
+
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      # Security check 1: Verify PR is from user with write access
+      - name: Verify PR is from trusted source
+        id: verify_pr_author
+        run: |
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+
+          # Check if PR author has write access to the repository (includes org members and bots)
+          if gh api "/repos/${{ github.repository }}/collaborators/$PR_AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
+            echo "✅ PR is from user with write access: $PR_AUTHOR"
+          else
+            echo "❌ PR author does not have write access: $PR_AUTHOR"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Security check 2: Verify PR labels and source branch
+      - name: Verify PR labels and source
+        run: |
+          LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+
+          if [[ "$LABELS" != *"dependencies"* ]]; then
+            echo "❌ PR does not have 'dependencies' label"
+            exit 1
+          fi
+
+          if [[ "$BRANCH" != auto-update-frontend-* && "$BRANCH" != auto-update-models-* ]]; then
+            echo "❌ Branch name does not match expected pattern: $BRANCH"
+            exit 1
+          fi
+
+          echo "✅ PR has 'dependencies' label and valid branch name"
+
+      # IMPORTANT: Checkout the PR's head to validate file changes
+      # This is required for the git commands in security check 5
+      - name: Checkout PR branch
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+
+      # Security check 3: Get PR details for validation
+      - name: Get PR details
+        id: pr
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          echo "number=$PR_NUMBER" >> $GITHUB_OUTPUT
+
+          # Get commit author
+          COMMIT_AUTHOR=$(gh pr view "$PR_NUMBER" --json commits --jq '.commits[0].authors[0].login')
+          echo "commit_author=$COMMIT_AUTHOR" >> $GITHUB_OUTPUT
+
+          echo "PR #$PR_NUMBER with commits from $COMMIT_AUTHOR"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Security check 4: Verify commit author has write access
+      - name: Verify commit author
+        run: |
+          COMMIT_AUTHOR="${{ steps.pr.outputs.commit_author }}"
+
+          # Check if commit author has write access to the repository
+          if gh api "/repos/${{ github.repository }}/collaborators/$COMMIT_AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
+            echo "✅ Commit author has write access: $COMMIT_AUTHOR"
+          else
+            echo "❌ Commit author does not have write access: $COMMIT_AUTHOR"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Security check 5: Verify only dependency files were changed
+      - name: Verify only dependency files were changed
+        run: |
+          # Only pyproject.toml and requirements_all.txt should be modified
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          for file in $CHANGED_FILES; do
+            if [[ "$file" != "pyproject.toml" ]] && [[ "$file" != "requirements_all.txt" ]]; then
+              echo "❌ Unexpected file changed: $file"
+              echo "Only pyproject.toml and requirements_all.txt should be modified"
+              exit 1
+            fi
+          done
+
+          echo "✅ Only expected dependency files were changed"
+
+      # Security check 6: Verify changes are only version bumps
+      - name: Verify changes are version bumps
+        run: |
+          # Check that only music-assistant-frontend or music-assistant-models version changed
+          DIFF=$(git diff HEAD~1 HEAD pyproject.toml requirements_all.txt)
+
+          if ! echo "$DIFF" | grep -qE "music-assistant-(frontend|models)=="; then
+            echo "❌ Changes do not appear to be version bumps"
+            exit 1
+          fi
+
+          echo "✅ Changes are version bumps"
+
+      # Security check 7: Wait for package to be available on PyPI
+      - name: Wait for package availability on PyPI
+        run: |
+          # Extract the package name and version from the changes
+          DIFF=$(git diff HEAD~1 HEAD pyproject.toml)
+
+          if echo "$DIFF" | grep -q "music-assistant-frontend=="; then
+            PACKAGE="music-assistant-frontend"
+            VERSION=$(echo "$DIFF" | grep -oP 'music-assistant-frontend==\K[0-9.]+' | head -1)
+          elif echo "$DIFF" | grep -q "music-assistant-models=="; then
+            PACKAGE="music-assistant-models"
+            VERSION=$(echo "$DIFF" | grep -oP 'music-assistant-models==\K[0-9.]+' | head -1)
+          else
+            echo "❌ Could not determine package name and version"
+            exit 1
+          fi
+
+          echo "Waiting for $PACKAGE version $VERSION to be available on PyPI..."
+
+          # Retry for up to 20 minutes (20 attempts with 60 second intervals)
+          MAX_ATTEMPTS=20
+          SLEEP_DURATION=60
+          ATTEMPT=1
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "Attempt $ATTEMPT/$MAX_ATTEMPTS: Checking if $PACKAGE==$VERSION is available..."
+
+            # Try to get package info from PyPI JSON API
+            HTTP_CODE=$(curl -s -o /tmp/pypi_response.json -w "%{http_code}" "https://pypi.org/pypi/$PACKAGE/json")
+
+            if [ "$HTTP_CODE" -eq 200 ]; then
+              # Check if the specific version exists
+              if grep -q "\"$VERSION\"" /tmp/pypi_response.json; then
+                echo "✅ Package $PACKAGE version $VERSION is available on PyPI"
+
+                # Additional verification: try to download the package
+                if python3 -m pip download --no-deps "$PACKAGE==$VERSION" > /dev/null 2>&1; then
+                  echo "✅ Package $PACKAGE==$VERSION can be installed"
+                  exit 0
+                else
+                  echo "⚠️  Package found in PyPI API but pip download failed, retrying..."
+                fi
+              else
+                echo "ℹ️  Package $PACKAGE exists but version $VERSION not yet available"
+              fi
+            else
+              echo "ℹ️  HTTP $HTTP_CODE when accessing PyPI API"
+            fi
+
+            if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+              echo "Waiting ${SLEEP_DURATION}s before retry..."
+              sleep $SLEEP_DURATION
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          echo "❌ Package $PACKAGE version $VERSION did not become available within the timeout period"
+          echo "This might indicate:"
+          echo "  - The package was not published to PyPI"
+          echo "  - PyPI is experiencing delays"
+          echo "  - The version number in the PR is incorrect"
+          exit 1
+
+      # All security checks passed - approve the PR
+      - name: Auto-approve PR
+        run: |
+          gh pr review "${{ steps.pr.outputs.number }}" --approve --body "✅ Automated dependency update - all security checks passed"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Enable auto-merge with squash
+      - name: Enable auto-merge
+        run: |
+          gh pr merge "${{ steps.pr.outputs.number }}" --auto --squash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on success
+        if: success()
+        run: |
+          gh pr comment "${{ steps.pr.outputs.number }}" --body "🤖 This PR has been automatically approved and will be merged once all checks pass."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

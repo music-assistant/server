@@ -1,0 +1,58 @@
+# Release Notes Configuration
+#
+# This file configures the automatic release notes generation for all release channels
+# (stable, beta, and nightly). The custom release notes generator action reads this file
+# to determine how to categorize pull requests and format the release notes.
+#
+# Location: .github/actions/generate-release-notes/generate_notes.py
+
+# Template for individual PR entries in the release notes
+change-template: '- $TITLE (by @$AUTHOR in #$NUMBER)'
+
+# Exclude bots from contributors list
+exclude-contributors:
+  - dependabot
+  - dependabot[bot]
+  - github-actions
+  - github-actions[bot]
+  - music-assistant-machine
+
+categories:
+
+  - title: "⚠ Breaking Changes"
+    labels:
+      - 'breaking-change'
+
+  - title: "🚀 New Providers"
+    labels:
+      - 'new-provider'
+
+  - title: "🚀 Features and enhancements"
+    labels:
+      - 'feature'
+      - 'enhancement'
+      - 'new-feature'
+
+  - title: "🐛 Bugfixes"
+    labels:
+      - 'bugfix'
+
+  - title: '🧰 Maintenance and dependency bumps'
+    after-other: true  # Show this section after "Other Changes"
+    collapse-after: 3
+    labels:
+      - 'ci'
+      - 'documentation'
+      - 'maintenance'
+      - 'dependencies'
+
+template: |
+
+  $CHANGES
+
+
+  ## :bow: Thanks to our contributors
+
+  Special thanks to the following contributors who helped with this release:
+
+  $CONTRIBUTORS
