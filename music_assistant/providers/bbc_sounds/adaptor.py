@@ -513,6 +513,8 @@ class PodcastConverter(BaseConverter):
         )
 
     async def _convert_radio_show(self, show: RadioShow) -> MAPodcastEpisode | Track:
+        from music_assistant.providers.bbc_sounds import _Constants  # noqa: PLC0415
+
         duration = self._get_attr(show, "duration.value")
         progress_ms = self._get_attr(show, "progress.value")
         resume_position = (progress_ms * 1000) if progress_ms else None
@@ -525,7 +527,11 @@ class PodcastConverter(BaseConverter):
         # Track example: latest BBC News, PodcastEpisode: latest episode of a radio show
         if (
             self.context.force_type == Track
-            or (not self.context.force_type and duration and duration < 300)
+            or (
+                not self.context.force_type
+                and duration
+                and duration < _Constants.TRACK_DURATION_THRESHOLD
+            )
             or (not hasattr(show, "container") or not show.container)
         ):
             return Track(
@@ -843,38 +849,26 @@ class Adaptor:
             BrowseConverter(context),
         ]
         for converter in converters:
-            self.logger.info(f"Checking if converter {converter} can convert {type(source_obj)}")
+            self.logger.debug(f"Checking if converter {converter} can convert {type(source_obj)}")
             if converter.can_convert(source_obj):
                 try:
                     result = await converter.convert(source_obj)
                     if context.force_type:
                         assert type(result) is context.force_type, (
                             f"Forced type to {context.force_type} but received {type(result)} "
+                            f"using {type(converter)}"
                         )
-                        "using {type(converter)}"
                     self.provider.logger.debug(
                         f"Successfully converted {type(source_obj).__name__}"
                         f" to {type(result).__name__} {result}"
                     )
-                    if isinstance(result, MATypes):
-                        return result
+                    return result
                 except Exception as e:
                     self.provider.logger.error(
                         f"Unexpected error in converter {type(converter).__name__}: {e}"
                     )
                     raise
-            self.logger.info(f"Converter {converter} could not convert {type(source_obj)}")
+            self.logger.debug(f"Converter {converter} could not convert {type(source_obj)}")
 
         self.logger.warning(f"No converter found for type {type(source_obj).__name__}")
         return None
-
-
-MATypes = (
-    Track
-    | Radio
-    | MAPodcast
-    | MAPodcastEpisode
-    | BrowseFolder
-    | RecommendationFolder
-    | RecommendedMenuItem
-)

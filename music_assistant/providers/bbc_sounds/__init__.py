@@ -40,6 +40,7 @@ from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.helpers.datetime as dt
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor
@@ -101,20 +102,18 @@ async def get_config_entries(
         ConfigEntry(
             key=_Constants.CONF_ENABLE_UK_CONTENT,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable U.K. Sounds content (beta)",
+            label="Enable UK Sounds content (beta)",
             default_value=False,
-            description="Enabling this setting unlocks the full content catalog if you are a U.K."
+            description="Enabling this setting unlocks the full content catalog if you are a UK"
             "listener. As the API returns a wide range of media items under the same type, this "
             "is turned off by default until it more widely tested for stability.",
         ),
         ConfigEntry(
             key=_Constants.CONF_INTRO,
             type=ConfigEntryType.LABEL,
-            label="A BBC Sounds account is optional, but some streams may not work or be served "
-            "in reduced quality if outside the U.K.",
+            label="A BBC Sounds account is optional, but some UK-only content may not work without",
             depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
             depends_on_value=True,
-            # hidden=True,
         ),
         ConfigEntry(
             key=CONF_USERNAME,
@@ -123,7 +122,6 @@ async def get_config_entries(
             required=False,
             depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
             depends_on_value=True,
-            # hidden=True,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
@@ -132,7 +130,6 @@ async def get_config_entries(
             required=False,
             depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
             depends_on_value=True,
-            # hidden=True,
         ),
         ConfigEntry(
             key=_Constants.CONF_SHOW_LOCAL,
@@ -142,7 +139,6 @@ async def get_config_entries(
             default_value=False,
             depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
             depends_on_value=True,
-            # hidden=True,
         ),
         ConfigEntry(
             key=_Constants.CONF_NOW_PLAYING,
@@ -173,15 +169,22 @@ async def get_config_entries(
             "and where these are shown",
             type=ConfigEntryType.STRING,
             options=[
-                ConfigValueOption("Show recommendations on the home page", "homepage"),
-                ConfigValueOption("Show recommendations in folders in the browse page", "browse"),
-                ConfigValueOption("Disable recommendations", "disable"),
+                ConfigValueOption(
+                    "Show recommendations on the home page",
+                    _Constants.CONF_RECOMMENDATIONS_HOMEPAGE,
+                ),
+                ConfigValueOption(
+                    "Show recommendations in folders in the browse page",
+                    _Constants.CONF_RECOMMENDATIONS_BROWSE,
+                ),
+                ConfigValueOption(
+                    "Disable recommendations", _Constants.CONF_RECOMMENDATIONS_DISABLE
+                ),
             ],
             default_value="homepage",
             required=True,
             depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
             depends_on_value=True,
-            # hidden=True,
         ),
     )
 
@@ -189,13 +192,17 @@ async def get_config_entries(
 class _Constants:
     # This is the image id that is shown when there's no track image
     BLANK_IMAGE_NAME = "p0bqcdzf"
-
+    DEFAULT_IMAGE_SIZE = 1280
+    TRACK_DURATION_THRESHOLD = 300  # 5 minutes
     CONF_UPDATE_INTERVAL = "update_interval"
     CONF_NOW_PLAYING = "now_playing"
     CONF_SHOW_LOCAL = "show_local"
     CONF_INTRO = "intro"
-    CONF_RECOMMENDATIONS = "recommendations"
     CONF_ENABLE_UK_CONTENT = "uk_content"
+    CONF_RECOMMENDATIONS = "recommendations"
+    CONF_RECOMMENDATIONS_HOMEPAGE = "homepage"
+    CONF_RECOMMENDATIONS_BROWSE = "browse"
+    CONF_RECOMMENDATIONS_DISABLE = "disable"
 
 
 class BBCSoundsProvider(MusicProvider):
@@ -203,6 +210,7 @@ class BBCSoundsProvider(MusicProvider):
 
     client: SoundsClient
     menu: Menu | None = None
+    current_task: asyncio.Task[None] | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -214,9 +222,15 @@ class BBCSoundsProvider(MusicProvider):
         )
 
         self.adaptor = Adaptor(self)
-        self.use_now_playing = self.config.get_value(_Constants.CONF_NOW_PLAYING)
-        self.now_playing_poll_time = self.config.get_value(_Constants.CONF_UPDATE_INTERVAL)
-        self.show_local_stations = self.config.get_value(_Constants.CONF_SHOW_LOCAL)
+        self.use_now_playing: bool = cast(
+            "bool", self.config.get_value(_Constants.CONF_NOW_PLAYING, False)
+        )
+        self.now_playing_poll_time: int = cast(
+            "int", self.config.get_value(_Constants.CONF_UPDATE_INTERVAL, 5)
+        )
+        self.show_local_stations: bool = bool(
+            self.config.get_value(_Constants.CONF_SHOW_LOCAL, False)
+        )
         self.recommendation_location = self.config.get_value(_Constants.CONF_RECOMMENDATIONS)
 
         # If we have an account, authenticate. Testing shows all features work without auth
@@ -245,6 +259,9 @@ class BBCSoundsProvider(MusicProvider):
             provider_instance=self.instance_id,
         )
 
+    def _stream_error(self, item_id: str, media_type: MediaType) -> MusicAssistantError:
+        return MusicAssistantError(f"Couldn't get stream details for {item_id} ({media_type})")
+
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
@@ -252,18 +269,8 @@ class BBCSoundsProvider(MusicProvider):
 
     @property
     def is_streaming_provider(self) -> bool:
-        """
-        Return True if the provider is a streaming provider.
-
-        This literally means that the catalog is not the same as the library contents.
-        For local based providers (files, plex), the catalog is the same as the library content.
-        It also means that data is if this provider is NOT a streaming provider,
-        data cross instances is unique, the catalog and library differs per instance.
-
-        Setting this to True will only query one instance of the provider for 75 and lookups.
-        Setting this to False will query all instances of this provider for search and lookups.
-        """
-        return False
+        """Return True if the provider is a streaming provider."""
+        return True
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id.
@@ -295,48 +302,50 @@ class BBCSoundsProvider(MusicProvider):
             episode_info = await self.client.streaming.get_by_pid(item_id, include_stream=True)
             stream_details = await self.adaptor.new_streamable_object(episode_info)
             if not stream_details:
-                raise MusicAssistantError(
-                    f"Couldn't get stream details for {item_id} ({media_type})"
-                )
+                raise self._stream_error(item_id, media_type)
 
             # Hide behind a feature flag until it can be better tested
             if self.use_now_playing and episode_info and FEATURES["catchup_segments"]:
                 # .item_id is the VPID
-                self.mass.create_task(self._check_for_segments(item_id, stream_details))
+                self.current_task = self.mass.create_task(
+                    self._check_for_segments(item_id, stream_details)
+                )
             return stream_details
         elif media_type is MediaType.TRACK:
             track = await self.client.streaming.get_by_pid(item_id, include_stream=True)
             stream_details = await self.adaptor.new_streamable_object(track)
             if not stream_details:
-                raise MusicAssistantError(
-                    "Couldn't get stream details for {item_id} ({media_type})"
-                )
+                raise self._stream_error(item_id, media_type)
             if self.use_now_playing:
-                self.mass.create_task(self._check_for_segments(item_id, stream_details))
+                self.current_task = self.mass.create_task(
+                    self._check_for_segments(item_id, stream_details)
+                )
             return stream_details
         else:
             self.logger.debug(f"Getting stream details for station {item_id}")
             station = await self.client.stations.get_station(item_id, include_stream=True)
             if not station:
-                raise MusicAssistantError("Couldn't get stream details for station {item_id}")
+                raise MusicAssistantError(f"Couldn't get stream details for station {item_id}")
 
             self.logger.debug(f"Found station: {station}")
-            if not station or not station.stream:
+            if not station.stream:
                 raise MusicAssistantError(f"No stream found for {item_id}")
 
             stream_details = await self.adaptor.new_streamable_object(station)
 
             if not stream_details:
-                raise MusicAssistantError(
-                    "Couldn't get stream details for {item_id} ({media_type})"
-                )
-            if stream_details.path and "norewind" in stream_details.path:
-                # Replace with skippable stream for future use
-                if isinstance(stream_details.path, str):
-                    stream_details.path = stream_details.path.replace(".norewind", "")
+                raise self._stream_error(item_id, media_type)
+            if (
+                isinstance(stream_details.path, str)
+                and stream_details.path
+                and "norewind" in stream_details.path
+            ):
+                stream_details.path = stream_details.path.replace(".norewind", "")
             # Start a background task to keep these details updated
             if self.use_now_playing:
-                self.mass.create_task(self._watch_stream_details(stream_details))
+                self.current_task = self.mass.create_task(
+                    self._watch_stream_details(stream_details)
+                )
             return stream_details
 
     async def _check_for_segments(self, vpid: str, stream_details: StreamDetails) -> None:
@@ -381,8 +390,13 @@ class BBCSoundsProvider(MusicProvider):
         # while not stream_details.seconds_streamed:
         while True:
             now_playing = await self.client.schedules.currently_playing_song(
-                station_id, image_size=1280
+                station_id, image_size=_Constants.DEFAULT_IMAGE_SIZE
             )
+
+            if not stream_details.stream_metadata:
+                await asyncio.sleep(self.now_playing_poll_time)
+                continue
+
             if now_playing and stream_details.stream_metadata:
                 self.logger.debug(f"Now playing for {station_id}: {now_playing}")
 
@@ -405,7 +419,7 @@ class BBCSoundsProvider(MusicProvider):
                         stream_details.stream_metadata.title = display
                         stream_details.stream_metadata.artist = None
                         stream_details.stream_metadata.image_url = station.image_url
-            await asyncio.sleep(cast("int", self.now_playing_poll_time))
+            await asyncio.sleep(float(self.now_playing_poll_time))
 
     def _station_programme_display(self, station: LiveStation) -> str | None:
         if station and station.titles:
@@ -615,7 +629,6 @@ class BBCSoundsProvider(MusicProvider):
                 station_id=sub_sub_path,
                 date=sub_sub_sub_path,
             )
-            self.logger.debug(schedule)
             items = []
             if schedule and schedule.sub_items:
                 for folder in schedule.sub_items:
@@ -699,8 +712,6 @@ class BBCSoundsProvider(MusicProvider):
             *[part for part in path_parts if len(part) > 0],
         ]
 
-        show_local = cast("bool", self.config.get_value("show_local"))
-
         if sub_path == "":
             return await self._get_menu()
         elif sub_path == "categories" and sub_sub_path:
@@ -711,7 +722,7 @@ class BBCSoundsProvider(MusicProvider):
             return await self._get_subpath_menu(sub_path)
         elif sub_path == "stations":
             return await self._get_station_schedule_menu(
-                show_local, path_parts, sub_sub_path, sub_sub_sub_path
+                self.show_local_stations, path_parts, sub_sub_path, sub_sub_sub_path
             )
         else:
             return []
@@ -742,7 +753,7 @@ class BBCSoundsProvider(MusicProvider):
 
         return results
 
-    async def get_podcast(self, prov_podcast_id: str, **kwargs: str) -> Podcast:
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get full podcast details by id.
 
         Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
@@ -773,7 +784,7 @@ class BBCSoundsProvider(MusicProvider):
                 if this_episode and isinstance(this_episode, PodcastEpisode):
                     yield this_episode
 
-    # @use_cache(3600)
+    @use_cache(3600)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get available recommendations."""
         folders = []
@@ -809,23 +820,6 @@ class BBCSoundsProvider(MusicProvider):
         self.logger.debug(f"{station} {ma_radio} {type(ma_radio)}")
         raise MusicAssistantError("No valid radio stream found")
 
-    async def on_streamed(
-        self,
-        streamdetails: StreamDetails,
-    ) -> None:
-        """
-        Handle callback when given streamdetails completed streaming.
-
-        To get the number of seconds streamed, see streamdetails.seconds_streamed.
-        To get the number of seconds seeked/skipped, see streamdetails.seek_position.
-        Note that seconds_streamed is the total streamed seconds, so without seeked time.
-
-        NOTE: Due to internal and player buffering,
-        this may be called in advance of the actual completion.
-        """
-        # This is an OPTIONAL callback that is called when an item has been streamed.
-        # You can use this e.g. for playback reporting or statistics.
-
     async def on_played(
         self,
         media_type: MediaType,
@@ -835,27 +829,11 @@ class BBCSoundsProvider(MusicProvider):
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """
-        Handle callback when a (playable) media item has been played.
-
-        This is called by the Queue controller when;
-            - a track has been fully played
-            - a track has been stopped (or skipped) after being played
-            - every 30s when a track is playing
-
-        Fully played is True when the track has been played to the end.
-
-        Position is the last known position of the track in seconds, to sync resume state.
-        When fully_played is set to false and position is 0,
-        the user marked the item as unplayed in the UI.
-
-        is_playing is True when the track is currently playing.
-
-        media_item is the full media item details of the played/playing track.
-        """
+        """Handle callback when a (playable) media item has been played."""
         # This is an OPTIONAL callback that is called when an item has been streamed.
         # You can use this e.g. for playback reporting or statistics.
         if media_type != MediaType.RADIO:
+            # Handle Sounds API play status updates
             action = None
 
             if is_playing:
@@ -870,3 +848,6 @@ class BBCSoundsProvider(MusicProvider):
                     pid=media_item.item_id, elapsed_time=position, action=action
                 )
                 self.logger.info(f"Updated play status: {success}")
+        # Cancel now playing task
+        if not is_playing and self.current_task:
+            self.current_task.cancel()
