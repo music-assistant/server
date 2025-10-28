@@ -66,9 +66,6 @@ from sounds import (
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
-    ProviderFeature.LIBRARY_PODCASTS,
-    ProviderFeature.LIBRARY_RADIOS,
-    ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SEARCH,
 }
