@@ -145,10 +145,9 @@ class SqueezelitePlayerProvider(PlayerProvider):
             self.mass.create_task(player.setup())
             return
 
-        if not (player := self.mass.players.get(event.player_id)):
+        if not (mass_player := self.mass.players.get(event.player_id)):
             return  # guard for unknown player
-        if TYPE_CHECKING:
-            player = cast("SqueezelitePlayer", player)
+        player = cast("SqueezelitePlayer", mass_player)
 
         # Handle player disconnect
         if event.type == SlimEventType.PLAYER_DISCONNECTED:
@@ -203,8 +202,8 @@ class SqueezelitePlayerProvider(PlayerProvider):
         output_format = await self.mass.streams.get_output_format(
             output_format_str=fmt,
             player=child_player,
-            content_sample_rate=stream.audio_format.sample_rate,
-            content_bit_depth=stream.audio_format.bit_depth,
+            content_sample_rate=stream.content_format.sample_rate,  # ← CHANGE
+            content_bit_depth=stream.content_format.bit_depth,
         )
 
         async for chunk in stream.get_stream(

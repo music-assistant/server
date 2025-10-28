@@ -242,6 +242,7 @@ class SqueezelitePlayer(Player):
             bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
             channels=2,
         )
+        content_format = master_audio_format
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             audio_source = self.mass.streams.get_announcement_stream(
@@ -267,24 +268,28 @@ class SqueezelitePlayer(Player):
             audio_source = ugp_stream.get_stream(master_audio_format, filter_params=None)
         elif media.source_id and media.queue_item_id:
             # regular queue stream request
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=self.mass.player_queues.get(media.source_id),
-                start_queue_item=self.mass.player_queues.get_item(
-                    media.source_id, media.queue_item_id
-                ),
+                start_queue_item=queue_item,
                 pcm_format=master_audio_format,
             )
+            content_format = queue_item.streamdetails.audio_format
         else:
             # assume url or some other direct path
             # NOTE: this will fail if its an uri not playable by ffmpeg
             audio_source = get_ffmpeg_stream(
                 audio_input=media.uri,
-                input_format=AudioFormat(ContentType.try_parse(media.uri)),
+                input_format=AudioFormat(
+                    content_type=ContentType.try_parse(media.uri) or ContentType.UNKNOWN
+                ),
                 output_format=master_audio_format,
             )
         # start the stream task
         self.multi_client_stream = stream = MultiClientStream(
-            audio_source=audio_source, audio_format=master_audio_format
+            audio_source=audio_source,
+            audio_format=master_audio_format,
+            content_format=content_format,
         )
         base_url = (
             f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}&fmt=flac"

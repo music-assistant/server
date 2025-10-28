@@ -7,7 +7,7 @@ from contextlib import suppress
 
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.helpers.audio import get_ffmpeg_stream
+from music_assistant.helpers.audio import get_ffmpeg_stream  # type: ignore[attr-defined]
 from music_assistant.helpers.util import empty_queue
 
 LOGGER = logging.getLogger(__name__)
@@ -20,12 +20,14 @@ class MultiClientStream:
         self,
         audio_source: AsyncGenerator[bytes, None],
         audio_format: AudioFormat,
+        content_format: AudioFormat,
         expected_clients: int = 0,
     ) -> None:
         """Initialize MultiClientStream."""
         self.audio_source = audio_source
         self.audio_format = audio_format
-        self.subscribers: list[asyncio.Queue] = []
+        self.content_format = content_format
+        self.subscribers: list[asyncio.Queue[bytes]] = []
         self.expected_clients = expected_clients
         self.task = asyncio.create_task(self._runner())
 
@@ -61,7 +63,7 @@ class MultiClientStream:
     async def subscribe_raw(self) -> AsyncGenerator[bytes, None]:
         """Subscribe to the raw/unaltered audio stream."""
         try:
-            queue = asyncio.Queue(2)
+            queue: asyncio.Queue[bytes] = asyncio.Queue(2)
             self.subscribers.append(queue)
             while True:
                 chunk = await queue.get()
