@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
-    from sounds.models import ScheduleItem, SoundsTypes
+    from sounds.models import SoundsTypes
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
@@ -72,6 +72,8 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SEARCH,
 }
+
+FEATURES = {"catchup_segments": False}
 
 
 async def setup(
@@ -266,18 +268,6 @@ class BBCSoundsProvider(MusicProvider):
         """
         return False
 
-    async def _get_episode_info(
-        self, station_id: str, episode_id: str, date: str
-    ) -> ScheduleItem | None:
-        station = await self.client.stations.get_station(
-            station_id=station_id, include_schedule=True, date=date
-        )
-        if station and station.schedule and station.schedule.sub_items:
-            for item in station.schedule.sub_items:
-                if item.episode_id == episode_id:
-                    return item
-        return None
-
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id.
 
@@ -312,8 +302,9 @@ class BBCSoundsProvider(MusicProvider):
                     f"Couldn't get stream details for {item_id} ({media_type})"
                 )
 
-            if self.use_now_playing and episode_info:
-                # .id is the VPID
+            # Hide behind a feature flag until it can be better tested
+            if self.use_now_playing and episode_info and FEATURES["catchup_segments"]:
+                # .item_id is the VPID
                 self.mass.create_task(self._check_for_segments(item_id, stream_details))
             return stream_details
         elif media_type is MediaType.TRACK:
@@ -425,7 +416,7 @@ class BBCSoundsProvider(MusicProvider):
     async def _station_list(self, include_local: bool = False) -> list[Radio]:
         return [
             Radio(
-                item_id=station.id,
+                item_id=station.item_id,
                 name=(
                     station.network.short_title
                     if station.network and station.network.short_title
@@ -451,14 +442,14 @@ class BBCSoundsProvider(MusicProvider):
                 ),
                 provider_mappings={
                     ProviderMapping(
-                        item_id=station.id,
+                        item_id=station.item_id,
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
                     )
                 },
             )
             for station in await self.client.stations.get_stations(include_local=include_local)
-            if station
+            if station and station.item_id
         ]
 
     async def _get_category(
@@ -743,7 +734,6 @@ class BBCSoundsProvider(MusicProvider):
         ):
             episodes = [await self.adaptor.new_object(track) for track in search_result.episodes]
             results.tracks = [track for track in episodes if type(track) is Track]
-            # results.podcasts = [podcast for podcast in episodes if type(podcast) is Track]
 
         if self.config.get_value(_Constants.CONF_ENABLE_UK_CONTENT) and (
             media_types is None or MediaType.PODCAST in media_types
@@ -812,8 +802,12 @@ class BBCSoundsProvider(MusicProvider):
         station = await self.client.stations.get_station(prov_radio_id, include_stream=True)
         if station:
             ma_radio = await self.adaptor.new_object(station, force_type=Radio)
-            if ma_radio and station.stream and isinstance(ma_radio, Radio):
+            if ma_radio and isinstance(ma_radio, Radio):  # and station.stream :
                 return ma_radio
+        else:
+            raise MusicAssistantError(f"No station found: {prov_radio_id}")
+
+        self.logger.debug(f"{station} {ma_radio} {type(ma_radio)}")
         raise MusicAssistantError("No valid radio stream found")
 
     async def on_streamed(
