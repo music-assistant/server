@@ -1,12 +1,14 @@
 {
   "type": "music",
   "domain": "bbc_sounds",
-  "stage": "alpha",
+  "stage": "beta",
   "name": "BBC Sounds",
   "description": "Listen to your favourite BBC radio stations in Music Assistant",
   "codeowners": [
     "@kieranhogg"
   ],
-  "requirements": [],
+  "requirements": [
+    "auntie-sounds==1.0.0b5"
+  ],
   "multi_instance": false
 }
