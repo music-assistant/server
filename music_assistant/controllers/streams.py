@@ -440,6 +440,7 @@ class StreamsController(CoreController):
         if queue_item.media_type != MediaType.TRACK:
             # no crossfade on non-tracks
             smart_fades_mode = SmartFadesMode.DISABLED
+            standard_crossfade_duration = 10
         else:
             smart_fades_mode = SmartFadesMode(
                 str(
@@ -1518,7 +1519,6 @@ class StreamsController(CoreController):
                     fade_in_size=len(buffer),
                     pcm_format=pcm_format,
                     queue_item_id=next_queue_item.queue_item_id,
-                    session_id=session_id or "",
                 )
 
             except QueueEmpty:
@@ -1648,20 +1648,22 @@ class StreamsController(CoreController):
             and next_item.media_type == MediaType.TRACK
             and queue_item.media_item is not None
             and next_item.media_item is not None
-            and hasattr(queue_item.media_item, "album")
-            and hasattr(next_item.media_item, "album")
-            and queue_item.media_item.album
-            and next_item.media_item.album
-            and queue_item.media_item.album == next_item.media_item.album
-            and not self.mass.config.get_raw_core_config_value(
-                self.domain, CONF_ALLOW_CROSSFADE_SAME_ALBUM, False
-            )
         ):
-            # in general, crossfade is not desired for tracks of the same (gapless) album
-            # because we have no accurate way to determine if the album is gapless or not,
-            # for now we just never crossfade between tracks of the same album
-            self.logger.debug("Skipping crossfade: next item is part of the same album")
-            return False
+            queue_album = getattr(queue_item.media_item, "album", None)
+            next_album = getattr(next_item.media_item, "album", None)
+            if (
+                queue_album is not None
+                and next_album is not None
+                and queue_album == next_album
+                and not self.mass.config.get_raw_core_config_value(
+                    self.domain, CONF_ALLOW_CROSSFADE_SAME_ALBUM, False
+                )
+            ):
+                # in general, crossfade is not desired for tracks of the same (gapless) album
+                # because we have no accurate way to determine if the album is gapless or not,
+                # for now we just never crossfade between tracks of the same album
+                self.logger.debug("Skipping crossfade: next item is part of the same album")
+                return False
 
         # check if next item sample rate matches
         if (
