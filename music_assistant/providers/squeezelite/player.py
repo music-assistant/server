@@ -36,6 +36,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_SYNC_ADJUST,
+    CONF_SAMPLE_RATES,
     INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -235,14 +236,24 @@ class SqueezelitePlayer(Player):
             return
 
         # this is a syncgroup, we need to handle this with a multi client stream
-        flow_format = await self.mass.streams._select_flow_format(self)
+        # Get player's maximum supported sample rate
+        supported_rates_conf = await self.mass.config.get_player_config_value(
+            self.player_id, CONF_SAMPLE_RATES, unpack_splitted_values=True
+        )
+        supported_sample_rates: tuple[int] = tuple(int(x[0]) for x in supported_rates_conf)
+        player_max_sample_rate = (
+            max(supported_sample_rates)
+            if supported_sample_rates
+            else INTERNAL_PCM_FORMAT.sample_rate
+        )
 
-        # For queue streams, use content sample rate (capped at player max)
-        content_sample_rate = flow_format.sample_rate  # Default to player max
+        # For queue streams, cap to content sample rate
+        content_sample_rate = player_max_sample_rate  # Default to player max
+        assert media.custom_data is not None  # for type checker
         if media.source_id and media.queue_item_id:
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             content_sample_rate = min(
-                queue_item.streamdetails.audio_format.sample_rate, flow_format.sample_rate
+                queue_item.streamdetails.audio_format.sample_rate, player_max_sample_rate
             )
 
         master_audio_format = AudioFormat(
@@ -531,6 +542,8 @@ class SqueezelitePlayer(Player):
         # TODO: fix this in the aioslimproto lib
         event_data = cast("str", event.data)
         queue = self.mass.player_queues.get_active_queue(self.player_id)
+        if not queue:
+            return
         if event_data.startswith("button preset_") and event_data.endswith(".single"):
             preset_id = event_data.split("preset_")[1].split(".")[0]
             preset_index = int(preset_id) - 1
@@ -568,7 +581,7 @@ class SqueezelitePlayer(Player):
         if not sync_master_id:
             # we only correct sync members, not the sync master itself
             return
-        if not (sync_master := self.provider.slimproto.get_player(sync_master_id)):
+        if not (sync_master := self._provider.slimproto.get_player(sync_master_id)):
             return  # just here as a guard as bad things can happen
 
         if sync_master.state != SlimPlayerState.PLAYING:
@@ -593,8 +606,8 @@ class SqueezelitePlayer(Player):
             sync_playpoints.clear()
 
         diff = int(
-            self.provider.get_corrected_elapsed_milliseconds(sync_master)
-            - self.provider.get_corrected_elapsed_milliseconds(self.client)
+            self._provider.get_corrected_elapsed_milliseconds(sync_master)
+            - self._provider.get_corrected_elapsed_milliseconds(self.client)
         )
 
         sync_playpoints.append(SyncPlayPoint(now, sync_master.player_id, diff))
@@ -688,12 +701,14 @@ class SqueezelitePlayer(Player):
         """Get all sync clients for a player."""
         yield self.client
         for member_id in self.group_members:
-            if slimplayer := self.provider.slimproto.get_player(member_id):
+            if self._provider.slimproto and (
+                slimplayer := self._provider.slimproto.get_player(member_id)
+            ):
                 yield slimplayer
 
 
 async def _patched_send_strm(  # noqa: PLR0913
-    self,
+    self: SlimClient,
     command: bytes = b"q",
     autostart: bytes = b"0",
     codec_details: bytes = b"p1321",
