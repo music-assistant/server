@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Radio, Track
 
-from music_assistant import MusicAssistant
 from music_assistant.constants import DB_TABLE_RADIOS
 from music_assistant.helpers.compare import create_safe_string, loose_compare_strings
 from music_assistant.helpers.json import serialize_to_json
 
 from .base import MediaControllerBase
+
+if TYPE_CHECKING:
+    from music_assistant import MusicAssistant
 
 
 class RadioController(MediaControllerBase[Radio]):
