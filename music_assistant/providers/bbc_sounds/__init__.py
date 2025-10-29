@@ -200,7 +200,6 @@ class BBCSoundsProvider(MusicProvider):
             session=self.mass.http_session,
             logger=self.logger,
             timezone=LOCAL_TIMEZONE,
-            debug_login=True,
         )
 
         self.adaptor = Adaptor(self)
@@ -245,20 +244,12 @@ class BBCSoundsProvider(MusicProvider):
         return MusicAssistantError(f"Couldn't get stream details for {item_id} ({media_type})")
 
     @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return SUPPORTED_FEATURES
-
-    @property
     def is_streaming_provider(self) -> bool:
-        """Return True if the provider is a streaming provider."""
+        """Return True as the provider is a streaming provider."""
         return True
 
     async def get_track(self, prov_track_id: str) -> Track:
-        """Get full track details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_TRACKS.
-        """
+        """Get full track details by id."""
         episode_info = await self.client.streaming.get_by_pid(prov_track_id)
         track = await self.adaptor.new_object(episode_info, force_type=Track)
         if not isinstance(track, Track):
@@ -742,10 +733,7 @@ class BBCSoundsProvider(MusicProvider):
         return results
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
-        """Get full podcast details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+        """Get full podcast details by id."""
         self.logger.debug(f"Getting podcast for {prov_podcast_id}")
         podcast = await self.client.streaming.get_podcast(pid=prov_podcast_id)
         ma_podcast = await self.adaptor.new_object(source_obj=podcast, force_type=Podcast)
@@ -758,10 +746,7 @@ class BBCSoundsProvider(MusicProvider):
         self,
         prov_podcast_id: str,
     ) -> AsyncGenerator[PodcastEpisode, None]:
-        """Get all PodcastEpisodes for given podcast id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+        """Get all PodcastEpisodes for given podcast id."""
         podcast_episodes = await self.client.streaming.get_podcast_episodes(prov_podcast_id)
 
         if podcast_episodes:
@@ -818,8 +803,6 @@ class BBCSoundsProvider(MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """Handle callback when a (playable) media item has been played."""
-        # This is an OPTIONAL callback that is called when an item has been streamed.
-        # You can use this e.g. for playback reporting or statistics.
         if media_type != MediaType.RADIO:
             # Handle Sounds API play status updates
             action = None
