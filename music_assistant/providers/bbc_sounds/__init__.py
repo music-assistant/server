@@ -260,7 +260,7 @@ class BBCSoundsProvider(MusicProvider):
         # If we are requesting a previously-aired radio show, we lose access to the
         # schedule time. The best we can find out from the API is original release
         # date, so the stream title loses access to the air date
-        """Get full podcast epsisode details by id."""
+        """Get full podcast episode details by id."""
         self.logger.debug(f"Getting podcast episode for {prov_episode_id}")
         episode = await self.client.streaming.get_podcast_episode(prov_episode_id)
         ma_episode = await self.adaptor.new_object(episode, force_type=PodcastEpisode)
