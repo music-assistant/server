@@ -20,6 +20,12 @@ CONF_PASSWORD: Final[str] = "password"
 CONF_READ_AHEAD_BUFFER: Final[str] = "read_ahead_buffer"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_CREDENTIALS: Final[str] = "credentials"
+CONF_AIRPLAY_VERSION: Final[str] = "airplay_version"
+
+AIRPLAY2_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
+RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
+
+AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
 
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
@@ -47,4 +53,6 @@ BROKEN_RAOP_MODELS = (
     ("Sonos", "Arc Ultra"),
     # Samsung has been repeatedly being reported as having issues with AirPlay 1/raop
     ("Samsung", "*"),
+    ("Ubiquiti Inc.", "*"),
+    ("Juke Audio", "*"),
 )

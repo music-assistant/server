@@ -57,6 +57,8 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:
         return ("Apple", "Apple TV 4K Gen2")
     if model == "AppleTV14,1":
         return ("Apple", "Apple TV 4K Gen3")
+    if model == "UPL-AMP":
+        return ("Ubiquiti Inc.", "UPL-AMP")
     if "AirPort" in model:
         return ("Apple", "AirPort Express")
     if "AudioAccessory" in model:
@@ -89,17 +91,31 @@ def is_broken_raop_model(manufacturer: str, model: str) -> bool:
     return False
 
 
-async def get_cliraop_binary() -> str:
+async def get_cli_binary(version: int) -> str:
     """Find the correct raop/airplay binary belonging to the platform."""
 
-    async def check_binary(cliraop_path: str) -> str | None:
+    async def check_binary(cli_path: str) -> str | None:
         try:
-            returncode, output = await check_output(
-                cliraop_path,
-                "-check",
-            )
-            if returncode == 0 and output.strip().decode() == "cliraop check":
-                return cliraop_path
+            if version == 1:
+                args = [
+                    cli_path,
+                    "-check",
+                ]
+                passing_output = "cliraop check"
+            else:
+                config_file = os.path.join(os.path.dirname(__file__), "bin", "cliap2.conf")
+                args = [
+                    cli_path,
+                    "--testrun",
+                    "--config",
+                    config_file,
+                ]
+
+            returncode, output = await check_output(*args)
+            if (version == 1 and returncode == 0 and output.strip().decode() == passing_output) or (
+                version == 2 and returncode == 0
+            ):
+                return cli_path
         except OSError:
             pass
         return None
@@ -107,11 +123,17 @@ async def get_cliraop_binary() -> str:
     base_path = os.path.join(os.path.dirname(__file__), "bin")
     system = platform.system().lower().replace("darwin", "macos")
     architecture = platform.machine().lower()
+    if version == 1:
+        package = "cliraop"
+    elif version == 2:
+        package = "cliap2"
+    else:
+        raise RuntimeError(f"Unsupported CLI binary version requested: {version}")
 
     if bridge_binary := await check_binary(
-        os.path.join(base_path, f"cliraop-{system}-{architecture}")
+        os.path.join(base_path, f"{package}-{system}-{architecture}")
     ):
         return bridge_binary
 
-    msg = f"Unable to locate RAOP Play binary for {system}/{architecture}"
+    msg = f"Unable to locate RAOP/AirPlay2 Play binary {package} for {system}/{architecture}"
     raise RuntimeError(msg)

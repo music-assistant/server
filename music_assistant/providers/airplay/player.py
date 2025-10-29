@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -30,18 +30,26 @@ from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
+from .airplay2 import AirPlay2StreamSession
 from .constants import (
+    AIRPLAY2_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_PCM_FORMAT,
     CACHE_CATEGORY_PREV_VOLUME,
+    CONF_AIRPLAY_VERSION,
     CONF_ALAC_ENCODE,
     CONF_ENCRYPTION,
     CONF_IGNORE_VOLUME,
     CONF_PASSWORD,
     CONF_READ_AHEAD_BUFFER,
     FALLBACK_VOLUME,
+    RAOP_DISCOVERY_TYPE,
 )
-from .helpers import get_primary_ip_address_from_zeroconf, is_broken_raop_model
+from .helpers import (
+    get_cli_binary,
+    get_primary_ip_address_from_zeroconf,
+    is_broken_raop_model,
+)
 from .raop import RaopStreamSession
 
 if TYPE_CHECKING:
@@ -49,6 +57,7 @@ if TYPE_CHECKING:
 
     from music_assistant.providers.universal_group import UniversalGroupPlayer
 
+    from .airplay2 import AirPlay2Stream
     from .provider import AirPlayProvider
     from .raop import RaopStream
 
@@ -70,7 +79,8 @@ class AirPlayPlayer(Player):
         self,
         provider: AirPlayProvider,
         player_id: str,
-        discovery_info: AsyncServiceInfo,
+        raop_discovery_info: AsyncServiceInfo | None,
+        airplay_discovery_info: AsyncServiceInfo | None,
         address: str,
         display_name: str,
         manufacturer: str,
@@ -79,11 +89,13 @@ class AirPlayPlayer(Player):
     ) -> None:
         """Initialize AirPlayPlayer."""
         super().__init__(provider, player_id)
-        self.discovery_info = discovery_info
+        self.raop_discovery_info = raop_discovery_info
+        self.airplay_discovery_info = airplay_discovery_info
         self.address = address
-        self.raop_stream: RaopStream | None = None
+        self.stream: RaopStream | AirPlay2Stream | None = None
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
+        self.cli_bin: str | None = None
 
         # Set (static) player attributes
         self._attr_type = PlayerType.PLAYER
@@ -103,6 +115,10 @@ class AirPlayPlayer(Player):
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_enabled_by_default = not is_broken_raop_model(manufacturer, model)
+        if self.airplay_discovery_info is None:
+            self._airplay_version = 1
+        else:
+            self._airplay_version = 2
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -171,6 +187,22 @@ class AirPlayPlayer(Player):
                 ),
                 category="airplay",
             ),
+            ConfigEntry(
+                key=CONF_AIRPLAY_VERSION,
+                type=ConfigEntryType.INTEGER,
+                default_value=1,
+                required=True,
+                label="AirPlay version to use for streaming",
+                description="AirPlay version 1 protocol uses RAOP.\n"
+                "AirPlay version 2 is an extension of RAOP.\n"
+                "Some newer devices do not fully support RAOP and "
+                "will only work with AirPlay version 2.",
+                category="airplay",
+                options=[
+                    ConfigValueOption("AirPlay 1 (RAOP)", 1),
+                    ConfigValueOption("AirPlay 2", 2),
+                ],
+            ),
         ]
 
         if is_broken_raop_model(self.device_info.manufacturer, self.device_info.model):
@@ -180,9 +212,9 @@ class AirPlayPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to player."""
-        if self.raop_stream and self.raop_stream.session:
+        if self.stream and self.stream.session:
             # forward stop to the entire stream session
-            await self.raop_stream.session.stop()
+            await self.stream.session.stop()
         self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
@@ -190,8 +222,8 @@ class AirPlayPlayer(Player):
     async def play(self) -> None:
         """Send PLAY (unpause) command to player."""
         async with self._lock:
-            if self.raop_stream and self.raop_stream.running:
-                await self.raop_stream.send_cli_command("ACTION=PLAY")
+            if self.stream and self.stream.running:
+                await self.stream.send_cli_command("ACTION=PLAY")
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
@@ -202,15 +234,69 @@ class AirPlayPlayer(Player):
             return
 
         async with self._lock:
-            if not self.raop_stream or not self.raop_stream.running:
+            if not self.stream or not self.stream.running:
                 return
-            await self.raop_stream.send_cli_command("ACTION=PAUSE")
+            await self.stream.send_cli_command("ACTION=PAUSE")
+
+    async def ap_version_consistency(self) -> None:
+        """
+        Ensure consistency between configured airplay version, mdns discovery info and cli binary.
+
+        Configured version takes precedence.
+        """
+        configured_version: int = await self.mass.config.get_player_config_value(
+            self.player_id, CONF_AIRPLAY_VERSION
+        )  # type: ignore[assignment]
+        if configured_version != self._airplay_version:
+            self.logger.info(
+                f"{self.name}:configured AirPlay version ({configured_version}) does not match "
+                f"detected device AirPlay version ({self._airplay_version}). "
+                f"Updating to {configured_version} if possible."
+            )
+            if configured_version == 1 and self.raop_discovery_info:
+                self._airplay_version = 1
+            elif configured_version == 2 and self.airplay_discovery_info:
+                self._airplay_version = 2
+            else:  # guard against invalid configured version
+                self.logger.error(
+                    f"{self.name}:unsupported combination of AirPlay version and discovery info. "
+                    f"configured version:{configured_version}, "
+                    f"raop_discovery_info:{self.raop_discovery_info}, "
+                    f"airplay_discovery_info:{self.airplay_discovery_info}"
+                )
+                if self.raop_discovery_info:
+                    self._airplay_version = 1
+                elif self.airplay_discovery_info:
+                    self._airplay_version = 2
+                else:  # guard
+                    self.logger.critical(
+                        f"{self.name}. No discovery info to determine airplay version"
+                    )
+                    self.airplay_version = 1
+
+        # ensure the cli binary is aligned with the airplay version
+        try:
+            self.cli_bin = await get_cli_binary(self._airplay_version)
+        except RuntimeError:
+            self.logger.error(
+                f"{self.name}: AirPlay CLI binary for version "
+                f"{self._airplay_version} not correctly installed"
+            )
+            raise
+        except Exception as exc:
+            self.logger.exception(
+                f"{self.name}:unexpected error getting AirPlay CLI binary for version"
+                f"{self._airplay_version}: {exc}"
+            )
+            raise
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         if self.synced_to:
             # this should not happen, but guard anyways
             raise RuntimeError("Player is synced")
+
+        await self.ap_version_consistency()
 
         # set the active source for the player to the media queue
         # this accounts for syncgroups and linked players (e.g. sonos)
@@ -271,25 +357,33 @@ class AirPlayPlayer(Player):
             )
 
         # if an existing stream session is running, we could replace it with the new stream
-        if self.raop_stream and self.raop_stream.running:
+        if self.stream and self.stream.running:
             # check if we need to replace the stream
-            if self.raop_stream.prevent_playback:
+            if self.stream.prevent_playback:
                 # player is in prevent playback mode, we need to stop the stream
                 await self.stop()
             else:
-                await self.raop_stream.session.replace_stream(audio_source)
+                await self.stream.session.replace_stream(audio_source)
                 return
 
-        # setup RaopStreamSession for player (and its sync childs if any)
+        # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
-        raop_stream_session = RaopStreamSession(provider, sync_clients, input_format, audio_source)
-        await raop_stream_session.start()
+        if self._airplay_version == 2:
+            ap2_stream_session: AirPlay2StreamSession = AirPlay2StreamSession(
+                provider, sync_clients, input_format, audio_source
+            )
+            await ap2_stream_session.start()
+        else:
+            raop_stream_session: RaopStreamSession = RaopStreamSession(
+                provider, sync_clients, input_format, audio_source
+            )
+            await raop_stream_session.start()
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        if self.raop_stream and self.raop_stream.running:
-            await self.raop_stream.send_cli_command(f"VOLUME={volume_level}\n")
+        if self.stream and self.stream.running:
+            await self.stream.send_cli_command(f"VOLUME={volume_level}\n")
         self._attr_volume_level = volume_level
         self.update_state()
         # store last state in cache
@@ -313,22 +407,22 @@ class AirPlayPlayer(Player):
             # nothing to do
             return
 
-        raop_session = self.raop_stream.session if self.raop_stream else None
+        stream_session = self.stream.session if self.stream else None
         # handle removals first
         if player_ids_to_remove:
             if self.player_id in player_ids_to_remove:
                 # dissolve the entire sync group
-                if self.raop_stream and self.raop_stream.running:
+                if self.stream and self.stream.running:
                     # stop the stream session if it is running
-                    await self.raop_stream.session.stop()
+                    await self.stream.session.stop()
                 self._attr_group_members = []
                 self.update_state()
                 return
 
             for child_player in self._get_sync_clients():
                 if child_player.player_id in player_ids_to_remove:
-                    if raop_session:
-                        await raop_session.remove_client(child_player)
+                    if stream_session:
+                        await stream_session.remove_client(child_player)
                     self._attr_group_members.remove(child_player.player_id)
 
         # handle additions
@@ -350,16 +444,16 @@ class AirPlayPlayer(Player):
                 "AirPlayPlayer | None", self.mass.players.get(player_id)
             ):
                 if (
-                    child_player_to_add.raop_stream
-                    and child_player_to_add.raop_stream.running
-                    and child_player_to_add.raop_stream.session != raop_session
+                    child_player_to_add.stream
+                    and child_player_to_add.stream.running
+                    and child_player_to_add.stream.session != stream_session
                 ):
-                    await child_player_to_add.raop_stream.session.remove_client(child_player_to_add)
+                    await child_player_to_add.stream.session.remove_client(child_player_to_add)
 
-            # add new child to the existing raop session (if any)
+            # add new child to the existing stream (RAOP or AirPlay2) session (if any)
             self._attr_group_members.append(player_id)
-            if raop_session:
-                await raop_session.add_client(child_player_to_add)
+            if stream_session:
+                await stream_session.add_client(child_player_to_add)
 
         # always update the state after modifying group members
         self.update_state()
@@ -384,7 +478,12 @@ class AirPlayPlayer(Player):
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
         """Set/update the discovery info for the player."""
         self._attr_name = display_name
-        self.discovery_info = discovery_info
+        if discovery_info.type == AIRPLAY2_DISCOVERY_TYPE:
+            self.airplay_discovery_info = discovery_info
+        elif discovery_info.type == RAOP_DISCOVERY_TYPE:
+            self.raop_discovery_info = discovery_info
+        else:  # guard
+            return
         cur_address = self.address
         new_address = get_primary_ip_address_from_zeroconf(discovery_info)
         if new_address is None:
@@ -396,10 +495,10 @@ class AirPlayPlayer(Player):
             self._attr_device_info.ip_address = new_address
         self.update_state()
 
-    def set_state_from_raop(
+    def set_state_from_stream(
         self, state: PlaybackState | None = None, elapsed_time: float | None = None
     ) -> None:
-        """Set the playback state from RAOP."""
+        """Set the playback state from stream (RAOP or AirPlay2)."""
         if state is not None:
             self._attr_playback_state = state
         if elapsed_time is not None:
@@ -410,11 +509,11 @@ class AirPlayPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
-        if self.raop_stream:
+        if self.stream:
             # stop the stream session if it is running
-            if self.raop_stream.running:
-                self.mass.create_task(self.raop_stream.session.stop())
-            self.raop_stream = None
+            if self.stream.running:
+                self.mass.create_task(self.stream.session.stop())
+            self.stream = None
 
     def _get_sync_clients(self) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""
