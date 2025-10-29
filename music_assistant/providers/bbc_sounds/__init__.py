@@ -374,9 +374,9 @@ class BBCSoundsProvider(MusicProvider):
                 self.logger.debug(f"Now playing for {station_id}: {now_playing}")
 
                 # removed check temporarily as images not working
-                if (
-                    not FEATURES["check_blank_image"]
-                    or _Constants.BLANK_IMAGE_NAME not in now_playing.image_url
+                if not FEATURES["check_blank_image"] or (
+                    now_playing.image_url
+                    and _Constants.BLANK_IMAGE_NAME not in now_playing.image_url
                 ):
                     stream_details.stream_metadata.image_url = now_playing.image_url
                 song = now_playing.titles["secondary"]
