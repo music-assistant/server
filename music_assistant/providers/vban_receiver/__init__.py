@@ -273,11 +273,4 @@ class VBANReceiverProvider(PluginProvider):
                 )
                 break
 
-            # Skip processing full null packets.
-            # pipewire vban-send module constantly sends full null VBAN packets when a "Stream"
-            # is established e.g when squeezelite starts up with the vban-send sink as its
-            # output device.
-            if packet.body.data == bytes(len(packet.body.data)):
-                continue
-
             yield packet.body.data
