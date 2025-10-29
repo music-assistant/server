@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -104,10 +104,14 @@ class AirPlayPlayer(Player):
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_enabled_by_default = not is_broken_raop_model(manufacturer, model)
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = [
-            *await super().get_config_entries(),
+        base_entries = await super().get_config_entries(action=action, values=values)
+        base_entries += [
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_DEPRECATED_EQ_BASS,
             CONF_ENTRY_DEPRECATED_EQ_MID,
