@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from aiohttp import ServerDisconnectedError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from propcache import under_cached_property as cached_property
@@ -580,9 +580,13 @@ class MusicCastPlayer(Player):
 
         await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Get player config entries."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
 
         zone_entries: list[ConfigEntry] = []
         if len(self.physical_device.zone_devices) > 1:

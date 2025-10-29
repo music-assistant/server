@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Concatenate
 from async_upnp_client.client import UpnpService, UpnpStateVariable
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo, PlayerMedia
@@ -260,9 +260,11 @@ class DLNAPlayer(Player):
 
     async def get_config_entries(
         self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         return base_entries + PLAYER_CONFIG_ENTRIES
 
     # async def on_player_config_change(

@@ -21,7 +21,7 @@ from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
 from aiosonos.exceptions import ConnectionFailed, FailedCommand
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
@@ -228,10 +228,12 @@ class SonosPlayer(Player):
 
     async def get_config_entries(
         self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = [
-            *await super().get_config_entries(),
+            *await super().get_config_entries(action=action, values=values),
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
             create_sample_rates_config_entry(

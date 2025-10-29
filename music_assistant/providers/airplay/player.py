@@ -121,20 +121,45 @@ class AirPlayPlayer(Player):
         else:
             self._airplay_version = 2
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_config_entries()
 
         # Handle pairing actions
-        # if action and self._requires_pairing():
-        #     await self._handle_pairing_action()
+        if action and self._requires_pairing():
+            await self._handle_pairing_action(action=action, values=values)
 
+        # Add pairing config entries for Apple TV and macOS devices
+        if self._requires_pairing():
+            base_entries = [*self._get_pairing_config_entries(), *base_entries]
+
+        base_entries = await super().get_config_entries(action=action, values=values)
         base_entries += [
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_DEPRECATED_EQ_BASS,
             CONF_ENTRY_DEPRECATED_EQ_MID,
             CONF_ENTRY_DEPRECATED_EQ_TREBLE,
             CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
+            ConfigEntry(
+                key=CONF_AIRPLAY_VERSION,
+                type=ConfigEntryType.INTEGER,
+                default_value=1,
+                required=True,
+                label="AirPlay version to use for streaming",
+                description="AirPlay version 1 protocol uses RAOP.\n"
+                "AirPlay version 2 is an extension of RAOP.\n"
+                "Some newer devices do not fully support RAOP and "
+                "will only work with AirPlay version 2.",
+                category="airplay",
+                options=[
+                    ConfigValueOption("AirPlay 1 (RAOP)", 1),
+                    ConfigValueOption("AirPlay 2", 2),
+                ],
+            ),
             ConfigEntry(
                 key=CONF_ENCRYPTION,
                 type=ConfigEntryType.BOOLEAN,
@@ -192,22 +217,6 @@ class AirPlayPlayer(Player):
                     "Enable this option to ignore these reports."
                 ),
                 category="airplay",
-            ),
-            ConfigEntry(
-                key=CONF_AIRPLAY_VERSION,
-                type=ConfigEntryType.INTEGER,
-                default_value=1,
-                required=True,
-                label="AirPlay version to use for streaming",
-                description="AirPlay version 1 protocol uses RAOP.\n"
-                "AirPlay version 2 is an extension of RAOP.\n"
-                "Some newer devices do not fully support RAOP and "
-                "will only work with AirPlay version 2.",
-                category="airplay",
-                options=[
-                    ConfigValueOption("AirPlay 1 (RAOP)", 1),
-                    ConfigValueOption("AirPlay 2", 2),
-                ],
             ),
         ]
 
@@ -278,10 +287,6 @@ class AirPlayPlayer(Player):
 
         if is_broken_raop_model(self.device_info.manufacturer, self.device_info.model):
             base_entries.insert(-1, BROKEN_RAOP_WARN)
-
-        # Add pairing config entries for Apple TV and macOS devices
-        if self._requires_pairing():
-            base_entries.extend(self._get_pairing_config_entries())
 
         return base_entries
 
