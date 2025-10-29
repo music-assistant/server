@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,8 @@ from aiovban.packet import VBANPacket
 from aiovban.packet.headers import VBANHeaderException
 
 logger = logging.getLogger(__name__)
+_aiovban_log_level = os.environ.get("AIOVBAN_LOG_LEVEL", "info").upper()
+logging.getLogger("aiovban.asyncio.aiovban.asyncio.util").setLevel(_aiovban_log_level)
 
 
 @dataclass
