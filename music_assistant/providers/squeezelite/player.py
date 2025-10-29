@@ -236,13 +236,21 @@ class SqueezelitePlayer(Player):
 
         # this is a syncgroup, we need to handle this with a multi client stream
         flow_format = await self.mass.streams._select_flow_format(self)
+
+        # For queue streams, use content sample rate (capped at player max)
+        content_sample_rate = flow_format.sample_rate  # Default to player max
+        if media.source_id and media.queue_item_id:
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            content_sample_rate = min(
+                queue_item.streamdetails.audio_format.sample_rate, flow_format.sample_rate
+            )
+
         master_audio_format = AudioFormat(
             content_type=INTERNAL_PCM_FORMAT.content_type,
-            sample_rate=flow_format.sample_rate,
-            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+            sample_rate=content_sample_rate,  # Use content rate (capped at player max)
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,  # 32-bit float for processing
             channels=2,
         )
-        content_format = master_audio_format
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             audio_source = self.mass.streams.get_announcement_stream(
@@ -268,28 +276,24 @@ class SqueezelitePlayer(Player):
             audio_source = ugp_stream.get_stream(master_audio_format, filter_params=None)
         elif media.source_id and media.queue_item_id:
             # regular queue stream request
-            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=self.mass.player_queues.get(media.source_id),
-                start_queue_item=queue_item,
+                start_queue_item=self.mass.player_queues.get_item(
+                    media.source_id, media.queue_item_id
+                ),
                 pcm_format=master_audio_format,
             )
-            content_format = queue_item.streamdetails.audio_format
         else:
             # assume url or some other direct path
             # NOTE: this will fail if its an uri not playable by ffmpeg
             audio_source = get_ffmpeg_stream(
                 audio_input=media.uri,
-                input_format=AudioFormat(
-                    content_type=ContentType.try_parse(media.uri) or ContentType.UNKNOWN
-                ),
+                input_format=AudioFormat(ContentType.try_parse(media.uri)),
                 output_format=master_audio_format,
             )
         # start the stream task
         self.multi_client_stream = stream = MultiClientStream(
-            audio_source=audio_source,
-            audio_format=master_audio_format,
-            content_format=content_format,
+            audio_source=audio_source, audio_format=master_audio_format
         )
         base_url = (
             f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}&fmt=flac"

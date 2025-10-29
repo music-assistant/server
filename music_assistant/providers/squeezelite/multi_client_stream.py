@@ -20,13 +20,11 @@ class MultiClientStream:
         self,
         audio_source: AsyncGenerator[bytes, None],
         audio_format: AudioFormat,
-        content_format: AudioFormat,
         expected_clients: int = 0,
     ) -> None:
         """Initialize MultiClientStream."""
         self.audio_source = audio_source
         self.audio_format = audio_format
-        self.content_format = content_format
         self.subscribers: list[asyncio.Queue[bytes]] = []
         self.expected_clients = expected_clients
         self.task = asyncio.create_task(self._runner())
