@@ -126,14 +126,15 @@ class MusicCastProvider(PlayerProvider):
             device_info = await self.mass.http_session.get(
                 f"http://{device_ip}/{MC_DEVICE_INFO_ENDPOINT}", raise_for_status=True
             )
+            device_info_json = await device_info.json()
         except ClientError:
             # typical Errors are
             # ClientResponseError -> raise_for_status
             # ClientConnectorError -> unable to connect/ not existing/ timeout
+            # ContentTypeError -> device returns something, but is not json
             # but we can use the base exception class, as we only check
             # if the device is suitable
             return
-        device_info_json = await device_info.json()
         device_id = device_info_json.get("device_id")
         if device_id is None:
             return

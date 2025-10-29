@@ -805,6 +805,11 @@ class PlayerQueuesController(CoreController):
         if isinstance(index, str):
             index = self.index_by_id(queue_id, index)
         queue.current_index = index
+        # update current item and elapsed time and signal update
+        # this way the UI knows immediately that a new item is loading
+        queue.current_item = self.get_item(queue_id, index)
+        queue.elapsed_time = seek_position
+        self.signal_update(queue_id)
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
         prefer_flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
@@ -823,7 +828,9 @@ class PlayerQueuesController(CoreController):
         # send play_media request to player
         # NOTE that we debounce this a bit to account for someone hitting the next button
         # like a madman. This will prevent the player from being overloaded with requests.
-        async def _play_index(index: int) -> None:
+        async def _play_index(index: int, debounce: bool) -> None:
+            if debounce:
+                await asyncio.sleep(0.25)
             for attempt in range(5):
                 try:
                     queue_item = self.get_item(queue_id, index)
@@ -856,6 +863,8 @@ class PlayerQueuesController(CoreController):
                 MediaType.RADIO,
                 MediaType.PLUGIN_SOURCE,
             )
+            if debounce:
+                await asyncio.sleep(0.25)
             queue.flow_mode = flow_mode
             await self.mass.players.play_media(
                 player_id=queue_id,
@@ -866,13 +875,15 @@ class PlayerQueuesController(CoreController):
 
         # we set a flag to notify the update logic that we're transitioning to a new track
         self._transitioning_players.add(queue_id)
-        self.mass.call_later(
-            1 if debounce else 0,
+        task = self.mass.create_task(
             _play_index,
             index,
+            debounce,
             task_id=f"play_media_{queue_id}",
+            abort_existing=True,
         )
         self.signal_update(queue_id)
+        await task
 
     @api_command("player_queues/transfer")
     async def transfer_queue(
@@ -930,7 +941,7 @@ class PlayerQueuesController(CoreController):
             key=queue_id, provider=self.domain, category=CACHE_CATEGORY_PLAYER_QUEUE_STATE
         ):
             try:
-                queue = PlayerQueue.from_cache(prev_state)
+                queue = PlayerQueue.from_dict(prev_state)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -938,6 +949,16 @@ class PlayerQueuesController(CoreController):
                     default=[],
                 )
                 queue_items = [QueueItem.from_cache(x) for x in prev_items]
+                if queue.enqueued_media_items:
+                    # we need to restore the MediaItem objects for the enqueued media items
+                    restored_enqueued_items = []
+                    for item in queue.enqueued_media_items:
+                        if isinstance(item, dict):
+                            restored_item = media_from_dict(item)
+                            restored_enqueued_items.append(restored_item)
+                        else:
+                            restored_enqueued_items.append(item)
+                    queue.enqueued_media_items = restored_enqueued_items
             except Exception as err:
                 self.logger.warning(
                     "Failed to restore the queue(items) for %s - %s",
@@ -1220,9 +1241,11 @@ class PlayerQueuesController(CoreController):
         # without having to compare the entire list
         queue.items_last_updated = time.time()
         self.signal_update(queue_id, True)
-        if queue.state == PlaybackState.PLAYING and queue.index_in_buffer is not None:
+        if queue.state == PlaybackState.PLAYING and queue.index_in_buffer == queue.current_index:
             # if the queue is playing,
             # ensure to (re)queue the next track because it might have changed
+            # note that we only do this if the player has loaded the current track
+            # if not, we wait until it has loaded to prevent conflicts
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
                 self._enqueue_next_item(queue_id, next_item)
 
@@ -1585,8 +1608,13 @@ class PlayerQueuesController(CoreController):
                         break
                     retries -= 1
                     await asyncio.sleep(1)
-
                 if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
+                    self.logger.debug(
+                        "Preloaded next item %s for queue %s",
+                        next_item.name,
+                        queue.display_name,
+                    )
+                    # enqueue the next item on the player
                     self._enqueue_next_item(queue_id, next_item)
 
             except QueueEmpty:
@@ -1833,19 +1861,27 @@ class PlayerQueuesController(CoreController):
         changed_keys = get_changed_keys(prev_state, new_state)
         with suppress(KeyError):
             changed_keys.remove("next_item_id")
+
         # return early if nothing changed
         if len(changed_keys) == 0:
             return
 
         # signal update and store state
+        send_update = True
         if changed_keys == {"elapsed_time"}:
-            # do not send full updates if only time was updated
-            self.mass.signal_event(
-                EventType.QUEUE_TIME_UPDATED,
-                object_id=queue_id,
-                data=queue.elapsed_time,
-            )
-        else:
+            # only elapsed time changed, do not send full queue update
+            send_update = False
+            prev_time = prev_state.get("elapsed_time") or 0
+            cur_time = new_state.get("elapsed_time") or 0
+            if abs(cur_time - prev_time) > 2:
+                # send dedicated event for time updates when seeking
+                self.mass.signal_event(
+                    EventType.QUEUE_TIME_UPDATED,
+                    object_id=queue_id,
+                    data=queue.elapsed_time,
+                )
+
+        if send_update:
             self.signal_update(queue_id)
 
         # store the new state
@@ -1950,32 +1986,33 @@ class PlayerQueuesController(CoreController):
 
     def _parse_player_current_item_id(self, queue_id: str, player: Player) -> str | None:
         """Parse QueueItem ID from Player's current url."""
-        if not player.current_media:
+        if not player._current_media:
+            # YES, we use player._current_media on purpose here because we need the raw metadata
             return None
         # prefer queue_id and queue_item_id within the current media
-        if player.current_media.source_id == queue_id and player.current_media.queue_item_id:
-            return player.current_media.queue_item_id
+        if player._current_media.source_id == queue_id and player._current_media.queue_item_id:
+            return player._current_media.queue_item_id
         # special case for sonos players
-        if player.current_media.uri and player.current_media.uri.startswith(f"mass:{queue_id}"):
-            if player.current_media.queue_item_id:
-                return player.current_media.queue_item_id
-            return player.current_media.uri.split(":")[-1]
+        if player._current_media.uri and player._current_media.uri.startswith(f"mass:{queue_id}"):
+            if player._current_media.queue_item_id:
+                return player._current_media.queue_item_id
+            return player._current_media.uri.split(":")[-1]
         # try to extract the item id from a mass stream url
         if (
-            player.current_media.uri
-            and queue_id in player.current_media.uri
-            and self.mass.streams.base_url in player.current_media.uri
+            player._current_media.uri
+            and queue_id in player._current_media.uri
+            and self.mass.streams.base_url in player._current_media.uri
         ):
-            current_item_id = player.current_media.uri.rsplit("/")[-1].split(".")[0]
+            current_item_id = player._current_media.uri.rsplit("/")[-1].split(".")[0]
             if self.get_item(queue_id, current_item_id):
                 return current_item_id
         # try to extract the item id from a queue_id/item_id combi
         if (
-            player.current_media.uri
-            and queue_id in player.current_media.uri
-            and "/" in player.current_media.uri
+            player._current_media.uri
+            and queue_id in player._current_media.uri
+            and "/" in player._current_media.uri
         ):
-            current_item_id = player.current_media.uri.split("/")[1]
+            current_item_id = player._current_media.uri.split("/")[1]
             if self.get_item(queue_id, current_item_id):
                 return current_item_id
 
@@ -1991,14 +2028,11 @@ class PlayerQueuesController(CoreController):
             and new_state["state"] == PlaybackState.IDLE
         ):
             return
-        # check if no more items in the queue
+        # check if no more items in the queue (next_item should be None at end of queue)
         if queue.next_item is not None:
             return
-        # check if we had a previous item
+        # check if we had a previous item playing
         if prev_state["current_item_id"] is None:
-            return
-        # check that we have a current item
-        if queue.current_item is None:
             return
 
         async def _clear_queue_delayed():
@@ -2011,14 +2045,20 @@ class PlayerQueuesController(CoreController):
             self.logger.info("End of queue reached, clearing items")
             self.clear(queue.queue_id)
 
-        # all checks passed, we stopped playback at the last (or single) of the queue
-        # now determine if the item was fully played
-        if streamdetails := queue.current_item.streamdetails:
+        # all checks passed, we stopped playback at the last (or single) track of the queue
+        # now determine if the item was fully played before clearing
+        if queue.current_item and (streamdetails := queue.current_item.streamdetails):
             duration = streamdetails.duration or queue.current_item.duration or 24 * 3600
-        else:
+        elif queue.current_item:
             duration = queue.current_item.duration or 24 * 3600
+        else:
+            # No current item means player has already cleared it, safe to clear queue
+            self.mass.create_task(_clear_queue_delayed())
+            return
+
         seconds_played = int(queue.elapsed_time)
         # debounce this a bit to make sure we're not clearing the queue by accident
+        # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
             self.mass.create_task(_clear_queue_delayed())
 

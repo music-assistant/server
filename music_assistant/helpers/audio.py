@@ -49,9 +49,10 @@ from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import clean_stream_title, remove_file
 
+from .audio_buffer import AudioBuffer
 from .datetime import utc
 from .dsp import filter_to_ffmpeg_params
-from .ffmpeg import FFMpeg, get_ffmpeg_stream
+from .ffmpeg import FFMpeg, get_ffmpeg_args, get_ffmpeg_stream
 from .playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from .process import AsyncProcess, communicate
 from .util import detect_charset
@@ -333,9 +334,9 @@ async def get_stream_details(
         raise MediaNotFoundError(
             f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
         )
-    if (
-        queue_item.streamdetails
-        and (utc() - queue_item.streamdetails.created_at).seconds < STREAMDETAILS_EXPIRATION
+    if queue_item.streamdetails and (
+        (utc() - queue_item.streamdetails.created_at).seconds < STREAMDETAILS_EXPIRATION
+        or queue_item.streamdetails.buffer
     ):
         # already got a fresh/unused (or cached) streamdetails
         # we assume that the streamdetails are valid for max STREAMDETAILS_EXPIRATION seconds
@@ -383,6 +384,14 @@ async def get_stream_details(
             resolved_url, stream_type = await resolve_radio_stream(mass, streamdetails.path)
             streamdetails.path = resolved_url
             streamdetails.stream_type = stream_type
+        # handle volume normalization details
+        if result := await mass.music.get_loudness(
+            streamdetails.item_id,
+            streamdetails.provider,
+            media_type=queue_item.media_type,
+        ):
+            streamdetails.loudness = result[0]
+            streamdetails.loudness_album = result[1]
 
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
@@ -391,21 +400,20 @@ async def get_stream_details(
     streamdetails.fade_in = fade_in
     if not streamdetails.duration:
         streamdetails.duration = queue_item.duration
-
-    # handle volume normalization details
-    if result := await mass.music.get_loudness(
-        streamdetails.item_id,
-        streamdetails.provider,
-        media_type=queue_item.media_type,
-    ):
-        streamdetails.loudness = result[0]
-        streamdetails.loudness_album = result[1]
     streamdetails.prefer_album_loudness = prefer_album_loudness
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
-    streamdetails.target_loudness = float(
-        str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET))
+    conf_volume_normalization_target = float(
+        str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -17))
     )
+    if conf_volume_normalization_target < -30 or conf_volume_normalization_target >= 0:
+        conf_volume_normalization_target = -17.0  # reset to default if out of bounds
+        LOGGER.warning(
+            "Invalid volume normalization target configured for player %s, "
+            "resetting to default of -17.0 dB",
+            streamdetails.queue_id,
+        )
+    streamdetails.target_loudness = conf_volume_normalization_target
     streamdetails.volume_normalization_mode = _get_normalization_mode(
         core_config, player_settings, streamdetails
     )
@@ -421,22 +429,151 @@ async def get_stream_details(
     return streamdetails
 
 
+async def get_buffered_media_stream(
+    mass: MusicAssistant,
+    streamdetails: StreamDetails,
+    pcm_format: AudioFormat,
+    seek_position: int = 0,
+    filter_params: list[str] | None = None,
+) -> AsyncGenerator[bytes, None]:
+    """Get audio stream for given media details as raw PCM with buffering."""
+    LOGGER.log(
+        VERBOSE_LOG_LEVEL,
+        "buffered_media_stream: Starting for %s (seek: %s)",
+        streamdetails.uri,
+        seek_position,
+    )
+
+    # checksum based on filter_params
+    checksum = f"{filter_params}"
+
+    async def fill_buffer_task() -> None:
+        """Background task to fill the audio buffer."""
+        chunk_count = 0
+        status = "running"
+        try:
+            async for chunk in get_media_stream(
+                mass, streamdetails, pcm_format, seek_position=0, filter_params=filter_params
+            ):
+                chunk_count += 1
+                await audio_buffer.put(chunk)
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        except Exception:
+            status = "aborted with error"
+            raise
+        finally:
+            await audio_buffer.set_eof()
+            LOGGER.log(
+                VERBOSE_LOG_LEVEL,
+                "fill_buffer_task: %s (%s chunks) for %s",
+                status,
+                chunk_count,
+                streamdetails.uri,
+            )
+
+    # check for existing buffer and reuse if possible
+    existing_buffer: AudioBuffer | None = streamdetails.buffer
+    if existing_buffer is not None:
+        if not existing_buffer.is_valid(checksum, seek_position):
+            LOGGER.log(
+                VERBOSE_LOG_LEVEL,
+                "buffered_media_stream: Existing buffer invalid for %s (seek: %s, discarded: %s)",
+                streamdetails.uri,
+                seek_position,
+                existing_buffer._discarded_chunks,
+            )
+            await existing_buffer.clear()
+            streamdetails.buffer = None
+            existing_buffer = None
+        else:
+            LOGGER.debug(
+                "buffered_media_stream: Reusing existing buffer for %s - "
+                "available: %ss, seek: %s, discarded: %s",
+                streamdetails.uri,
+                existing_buffer.seconds_available,
+                seek_position,
+                existing_buffer._discarded_chunks,
+            )
+            audio_buffer = existing_buffer
+
+    if not existing_buffer and seek_position > 60:
+        # If seeking into the track and no valid buffer exists,
+        # just start a normal stream without buffering,
+        # otherwise we would need to fill the buffer up to the seek position first
+        # which is not efficient.
+        LOGGER.debug(
+            "buffered_media_stream: No existing buffer and seek >60s for %s, "
+            "starting normal (unbuffered) stream",
+            streamdetails.uri,
+        )
+        async for chunk in get_media_stream(
+            mass,
+            streamdetails,
+            pcm_format,
+            seek_position=seek_position,
+            filter_params=filter_params,
+        ):
+            yield chunk
+        return
+
+    if not existing_buffer:
+        # create new audio buffer and start fill task
+        LOGGER.debug(
+            "buffered_media_stream: Creating new buffer for %s",
+            streamdetails.uri,
+        )
+        audio_buffer = AudioBuffer(pcm_format, checksum)
+        streamdetails.buffer = audio_buffer
+        task = mass.loop.create_task(fill_buffer_task())
+        audio_buffer.attach_producer_task(task)
+
+    # special case: pcm format mismatch, resample on the fly
+    # this may happen in some special situations such as crossfading
+    # and its a bit of a waste to throw away the existing buffer
+    if audio_buffer.pcm_format != pcm_format:
+        LOGGER.info(
+            "buffered_media_stream: pcm format mismatch, resampling on the fly for %s - "
+            "buffer format: %s - requested format: %s",
+            streamdetails.uri,
+            audio_buffer.pcm_format,
+            pcm_format,
+        )
+        async for chunk in get_ffmpeg_stream(
+            audio_input=audio_buffer.iter(seek_position=seek_position),
+            input_format=audio_buffer.pcm_format,
+            output_format=pcm_format,
+        ):
+            yield chunk
+        return
+
+    # yield data from the buffer
+    chunk_count = 0
+    try:
+        async for chunk in audio_buffer.iter(seek_position=seek_position):
+            chunk_count += 1
+            yield chunk
+    finally:
+        LOGGER.log(
+            VERBOSE_LOG_LEVEL,
+            "buffered_media_stream: Completed, yielded %s chunks",
+            chunk_count,
+        )
+
+
 async def get_media_stream(
     mass: MusicAssistant,
     streamdetails: StreamDetails,
     pcm_format: AudioFormat,
+    seek_position: int = 0,
     filter_params: list[str] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """Get audio stream for given media details as raw PCM."""
     logger = LOGGER.getChild("media_stream")
     logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
     extra_input_args = streamdetails.extra_input_args or []
-    if filter_params is None:
-        filter_params = []
-    if streamdetails.fade_in:
-        filter_params.append("afade=type=in:start_time=0:duration=3")
 
-    seek_position = streamdetails.seek_position
     # work out audio source for these streamdetails
     audio_source: str | AsyncGenerator[bytes, None]
     stream_type = streamdetails.stream_type
@@ -498,14 +635,9 @@ async def get_media_stream(
         await ffmpeg_proc.start()
         assert ffmpeg_proc.proc is not None  # for type checking
         logger.debug(
-            "Started media stream for %s"
-            " - using streamtype: %s"
-            " - volume normalization: %s"
-            " - output format: %s"
-            " - ffmpeg PID: %s",
+            "Started media stream for %s - using streamtype: %s - pcm format: %s - ffmpeg PID: %s",
             streamdetails.uri,
             streamdetails.stream_type,
-            streamdetails.volume_normalization_mode,
             pcm_format.content_type.value,
             ffmpeg_proc.proc.pid,
         )
@@ -519,8 +651,9 @@ async def get_media_stream(
                 first_chunk_received = True
                 streamdetails.audio_format.codec_type = ffmpeg_proc.input_format.codec_type
                 logger.debug(
-                    "First chunk received after %s seconds",
+                    "First chunk received after %.2f seconds (codec detected: %s)",
                     mass.loop.time() - stream_start,
+                    ffmpeg_proc.input_format.codec_type,
                 )
             yield chunk
             bytes_sent += len(chunk)
@@ -547,27 +680,26 @@ async def get_media_stream(
     finally:
         # always ensure close is called which also handles all cleanup
         await ffmpeg_proc.close()
-        # determine how many seconds we've streamed
+        # determine how many seconds we've received
         # for pcm output we can calculate this easily
-        seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-        streamdetails.seconds_streamed = seconds_streamed
+        seconds_received = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
         # store accurate duration
-        if finished and not streamdetails.seek_position and seconds_streamed:
-            streamdetails.duration = int(seconds_streamed)
+        if finished and not seek_position and seconds_received:
+            streamdetails.duration = int(seconds_received)
 
-        logger.debug(
-            "stream %s (with code %s) for %s - seconds streamed: %s",
+        logger.log(
+            VERBOSE_LOG_LEVEL,
+            "stream %s (with code %s) for %s",
             "cancelled" if cancelled else "finished" if finished else "aborted",
             ffmpeg_proc.returncode,
             streamdetails.uri,
-            seconds_streamed,
         )
 
         # parse loudnorm data if we have that collected (and enabled)
         if (
             (streamdetails.loudness is None or finished)
             and streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
-            and (finished or (seconds_streamed >= 300))
+            and (finished or (seconds_received >= 300))
         ):
             # if dynamic volume normalization is enabled and the entire track is streamed
             # the loudnorm filter will output the measurement in the log,
@@ -579,7 +711,6 @@ async def get_media_stream(
                     streamdetails.uri,
                     loudness_details,
                 )
-                streamdetails.loudness = loudness_details
                 mass.create_task(
                     mass.music.set_loudness(
                         streamdetails.item_id,
@@ -596,20 +727,12 @@ async def get_media_stream(
                 VolumeNormalizationMode.DISABLED,
                 VolumeNormalizationMode.FIXED_GAIN,
             )
-            and (finished or (seconds_streamed >= 300))
+            and (finished or (seconds_received >= 300))
         ):
             # dynamic mode not allowed and no measurement known, we need to analyze the audio
             # add background task to start analyzing the audio
             task_id = f"analyze_loudness_{streamdetails.uri}"
             mass.call_later(5, analyze_loudness, mass, streamdetails, task_id=task_id)
-
-        # report stream to provider
-        if (finished or seconds_streamed >= 30) and (
-            music_prov := mass.get_provider(streamdetails.provider)
-        ):
-            if TYPE_CHECKING:  # avoid circular import
-                assert isinstance(music_prov, MusicProvider)
-            mass.create_task(music_prov.on_streamed(streamdetails))
 
 
 def create_wave_header(
@@ -1106,23 +1229,19 @@ async def get_silence(
 
 
 async def resample_pcm_audio(
-    input_audio: bytes | AsyncGenerator[bytes, None],
+    input_audio: bytes,
     input_format: AudioFormat,
     output_format: AudioFormat,
-) -> AsyncGenerator[bytes, None]:
+) -> bytes:
     """Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg."""
-    LOGGER.debug(f"Resampling audio from {input_format} to {output_format}")
-
-    async def _yielder() -> AsyncGenerator[bytes, None]:
-        yield input_audio  # type: ignore[misc]
-
-    async for chunk in get_ffmpeg_stream(
-        audio_input=_yielder() if isinstance(input_audio, bytes) else input_audio,
-        input_format=input_format,
-        output_format=output_format,
-        raise_ffmpeg_exception=True,
-    ):
-        yield chunk
+    if input_format == output_format:
+        return input_audio
+    LOGGER.log(VERBOSE_LOG_LEVEL, f"Resampling audio from {input_format} to {output_format}")
+    ffmpeg_args = get_ffmpeg_args(
+        input_format=input_format, output_format=output_format, filter_params=[]
+    )
+    _, stdout, _ = await communicate(ffmpeg_args, input_audio)
+    return stdout
 
 
 def get_chunksize(
@@ -1288,14 +1407,12 @@ async def analyze_loudness(
     streamdetails: StreamDetails,
 ) -> None:
     """Analyze media item's audio, to calculate EBU R128 loudness."""
-    if result := await mass.music.get_loudness(
+    if await mass.music.get_loudness(
         streamdetails.item_id,
         streamdetails.provider,
         media_type=streamdetails.media_type,
     ):
         # only when needed we do the analyze job
-        streamdetails.loudness = result[0]
-        streamdetails.loudness_album = result[1]
         return
 
     logger = LOGGER.getChild("analyze_loudness")
@@ -1360,7 +1477,6 @@ async def analyze_loudness(
                 log_lines_str or "received empty value",
             )
         else:
-            streamdetails.loudness = loudness
             await mass.music.set_loudness(
                 streamdetails.item_id,
                 streamdetails.provider,

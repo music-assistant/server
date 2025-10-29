@@ -50,6 +50,18 @@ T = TypeVar("T")
 CALLBACK_TYPE = Callable[[], None]
 
 
+def get_total_system_memory() -> float:
+    """Get total system memory in GB."""
+    try:
+        # Works on Linux and macOS
+        total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return total_memory_bytes / (1024**3)  # Convert to GB
+    except (AttributeError, ValueError):
+        # Fallback if sysconf is not available (e.g., Windows)
+        # Return a conservative default to disable buffering by default
+        return 0.0
+
+
 keyword_pattern = re.compile("title=|artist=")
 title_pattern = re.compile(r"title=\"(?P<title>.*?)\"")
 artist_pattern = re.compile(r"artist=\"(?P<artist>.*?)\"")
@@ -796,7 +808,12 @@ def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
             cache_key_parts.append(f"{key}{kwargs[key]}")
         task_id = ".".join(map(str, cache_key_parts))
         task: asyncio.Task[R] = mass.create_task(
-            func, self, *args, **kwargs, task_id=task_id, abort_existing=False
+            func,
+            self,
+            *args,
+            task_id=task_id,
+            abort_existing=False,
+            **kwargs,
         )
         return await task
 

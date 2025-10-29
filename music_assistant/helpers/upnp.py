@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xmlescape
 
@@ -183,6 +182,7 @@ def create_didl_metadata(media: PlayerMedia) -> str:
     image_url = media.image_url or MASS_LOGO_ONLINE
     if media.media_type in (MediaType.FLOW_STREAM, MediaType.RADIO) or not media.duration:
         # flow stream, radio or other duration-less stream
+        # Use streaming-optimized DLNA flags to prevent buffering
         title = media.title or media.uri
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
@@ -192,14 +192,21 @@ def create_didl_metadata(media: PlayerMedia) -> str:
             f"<dc:queueItemId>{escape_metadata(media.uri)}</dc:queueItemId>"
             f"<dc:description>Music Assistant</dc:description>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
-            f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
-            f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_metadata(media.uri)}</res>'
+            f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">{escape_metadata(media.uri)}</res>'
             "</item>"
             "</DIDL-Lite>"
         )
-    duration_str = str(datetime.timedelta(seconds=media.duration or 0)) + ".000"
 
     assert media.queue_item_id is not None  # for type checking
+
+    # For regular tracks with duration, use flags optimized for on-demand content
+    # DLNA.ORG_FLAGS=01500000000000000000000000000000 indicates:
+    # - Streaming transfer mode (bit 24)
+    # - Background transfer mode supported (bit 22)
+    # - DLNA v1.5 (bit 20)
+    duration_str = str(int(media.duration or 0) // 3600).zfill(2) + ":"
+    duration_str += str((int(media.duration or 0) % 3600) // 60).zfill(2) + ":"
+    duration_str += str(int(media.duration or 0) % 60).zfill(2)
 
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/">'
@@ -208,13 +215,11 @@ def create_didl_metadata(media: PlayerMedia) -> str:
         f"<dc:creator>{escape_metadata(media.artist or '')}</dc:creator>"
         f"<upnp:album>{escape_metadata(media.album or '')}</upnp:album>"
         f"<upnp:artist>{escape_metadata(media.artist or '')}</upnp:artist>"
-        f"<upnp:duration>{int(media.duration or 0)}</upnp:duration>"
         f"<dc:queueItemId>{escape_metadata(media.queue_item_id)}</dc:queueItemId>"
         f"<dc:description>Music Assistant</dc:description>"
         f"<upnp:albumArtURI>{escape_metadata(image_url)}</upnp:albumArtURI>"
         "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
-        f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
-        f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_metadata(media.uri)}</res>'
+        f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01500000000000000000000000000000">{escape_metadata(media.uri)}</res>'
         '<desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">RINCON_AssociatedZPUDN</desc>'
         "</item>"
         "</DIDL-Lite>"

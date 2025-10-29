@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from aiohttp import ServerDisconnectedError
 from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 from propcache import under_cached_property as cached_property
@@ -213,7 +213,7 @@ class MusicCastPlayer(Player):
 
         # UPDATE PLAYBACK INFORMATION
         # Note to self:
-        # player.current_media tells queue controller what is playing
+        # player._current_media tells queue controller what is playing
         # and player.set_current_media is the helper function
         # do not access the queue controller to gain playback information here
         if (
@@ -527,9 +527,18 @@ class MusicCastPlayer(Player):
     ) -> None:
         """Set multiple members.
 
-        If we are a server, this is called.
-        We can ignore removed devices, these are handled via ungroup individually.
+        This function is called on the server.
         """
+        # Removing players
+        if player_ids_to_remove:
+            for player_id in player_ids_to_remove:
+                if player := self.mass.players.get(player_id):
+                    assert isinstance(player, MusicCastPlayer)  # for type checking
+                    await player.ungroup()
+
+        # Adding players
+        if not player_ids_to_add:
+            return
         children: set[str] = set()  # set[ma_player_id]
         children_zones: list[str] = []  # list[ma_player_id]
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
@@ -571,9 +580,13 @@ class MusicCastPlayer(Player):
 
         await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Get player config entries."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
 
         zone_entries: list[ConfigEntry] = []
         if len(self.physical_device.zone_devices) > 1:

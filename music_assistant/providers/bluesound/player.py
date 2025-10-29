@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
 from pyblu import Player as BluosPlayer
@@ -17,8 +17,9 @@ from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_OUTPUT_CODEC,
+    create_sample_rates_config_entry,
 )
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.providers.bluesound.const import (
@@ -83,11 +84,21 @@ class BluesoundPlayer(Player):
             self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
         await self.mass.players.register_or_update(self)
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            *await super().get_config_entries(),
-            CONF_ENTRY_HTTP_PROFILE_FORCED_2,
+            *await super().get_config_entries(action=action, values=values),
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+            create_sample_rates_config_entry(
+                max_sample_rate=192000,
+                safe_max_sample_rate=192000,
+                max_bit_depth=24,
+                safe_max_bit_depth=24,
+            ),
             CONF_ENTRY_OUTPUT_CODEC,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             ConfigEntry.from_dict(
