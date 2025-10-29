@@ -100,36 +100,22 @@ async def get_config_entries(
 
     return (
         ConfigEntry(
-            key=_Constants.CONF_ENABLE_UK_CONTENT,
-            type=ConfigEntryType.BOOLEAN,
-            label="Enable UK Sounds content (beta)",
-            default_value=False,
-            description="Enabling this setting unlocks the full content catalog if you are a UK"
-            "listener. As the API returns a wide range of media items under the same type, this "
-            "is turned off by default until it more widely tested for stability.",
-        ),
-        ConfigEntry(
             key=_Constants.CONF_INTRO,
             type=ConfigEntryType.LABEL,
-            label="A BBC Sounds account is optional, but some UK-only content may not work without",
-            depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
-            depends_on_value=True,
+            label="A BBC Sounds account is optional, but some UK-only content may not work without"
+            " it",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
             label="Email or username",
             required=False,
-            depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
-            depends_on_value=True,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
             label="Password",
             required=False,
-            depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
-            depends_on_value=True,
         ),
         ConfigEntry(
             key=_Constants.CONF_SHOW_LOCAL,
@@ -137,8 +123,6 @@ async def get_config_entries(
             type=ConfigEntryType.BOOLEAN,
             label="Show local radio stations?",
             default_value=False,
-            depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
-            depends_on_value=True,
         ),
         ConfigEntry(
             key=_Constants.CONF_NOW_PLAYING,
@@ -174,7 +158,7 @@ async def get_config_entries(
                     _Constants.CONF_RECOMMENDATIONS_HOMEPAGE,
                 ),
                 ConfigValueOption(
-                    "Show recommendations in folders in the browse page",
+                    "Show recommendations in folders on the browse page",
                     _Constants.CONF_RECOMMENDATIONS_BROWSE,
                 ),
                 ConfigValueOption(
@@ -183,8 +167,6 @@ async def get_config_entries(
             ],
             default_value="homepage",
             required=True,
-            depends_on=_Constants.CONF_ENABLE_UK_CONTENT,
-            depends_on_value=True,
         ),
     )
 
@@ -497,11 +479,7 @@ class BBCSoundsProvider(MusicProvider):
     async def _get_menu(
         self, path_parts: list[str] | None = None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        if (
-            self.config.get_value(_Constants.CONF_ENABLE_UK_CONTENT)
-            and self.client.auth.is_logged_in
-            and await self.client.auth.is_uk_listener
-        ):
+        if self.client.auth.is_logged_in and await self.client.auth.is_uk_listener:
             return await self._get_full_menu(path_parts=path_parts)
         else:
             return await self._get_slim_menu(path_parts=path_parts)
@@ -749,7 +727,7 @@ class BBCSoundsProvider(MusicProvider):
         if media_types is None or MediaType.RADIO in media_types:
             radios = [await self.adaptor.new_object(radio) for radio in search_result.stations]
             results.radio = [radio for radio in radios if isinstance(radio, Radio)]
-        if self.config.get_value(_Constants.CONF_ENABLE_UK_CONTENT) and (
+        if (
             media_types is None
             or MediaType.TRACK in media_types
             or MediaType.PODCAST_EPISODE in media_types
@@ -757,9 +735,7 @@ class BBCSoundsProvider(MusicProvider):
             episodes = [await self.adaptor.new_object(track) for track in search_result.episodes]
             results.tracks = [track for track in episodes if type(track) is Track]
 
-        if self.config.get_value(_Constants.CONF_ENABLE_UK_CONTENT) and (
-            media_types is None or MediaType.PODCAST in media_types
-        ):
+        if media_types is None or MediaType.PODCAST in media_types:
             podcasts = [await self.adaptor.new_object(show) for show in search_result.shows]
             results.podcasts = [podcast for podcast in podcasts if isinstance(podcast, Podcast)]
 
@@ -801,7 +777,7 @@ class BBCSoundsProvider(MusicProvider):
         """Get available recommendations."""
         folders = []
 
-        if self.config.get_value(_Constants.CONF_ENABLE_UK_CONTENT):
+        if self.client.auth.is_logged_in:
             if self.recommendation_location == "homepage":
                 recommendations = await self.client.personal.get_experience_menu(
                     recommendations=MenuRecommendationOptions.ONLY
