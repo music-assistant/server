@@ -3,12 +3,12 @@
   "domain": "bbc_sounds",
   "stage": "beta",
   "name": "BBC Sounds",
-  "description": "Listen to your favourite BBC radio stations in Music Assistant",
+  "description": "Stream live BBC radio shows, podcast series and on-demand audio.",
   "codeowners": [
     "@kieranhogg"
   ],
   "requirements": [
-    "auntie-sounds==1.0.0b5"
+    "auntie-sounds==1.0"
   ],
   "multi_instance": false
 }
