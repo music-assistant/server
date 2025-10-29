@@ -22,10 +22,19 @@ CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_CREDENTIALS: Final[str] = "credentials"
 CONF_AIRPLAY_VERSION: Final[str] = "airplay_version"
 
-AIRPLAY2_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
+AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
+DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
+CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
+CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
+CONF_ACTION_START_PAIRING: Final[str] = "start_ap_pairing"
+CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_ap_pairing"
+CONF_ACTION_START_MRP_PAIRING: Final[str] = "start_mrp_pairing"
+CONF_ACTION_FINISH_MRP_PAIRING: Final[str] = "finish_mrp_pairing"
+CONF_PAIRING_PIN: Final[str] = "pairing_pin"
+CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
 
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
