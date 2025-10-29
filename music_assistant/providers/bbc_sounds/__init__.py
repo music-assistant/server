@@ -78,7 +78,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Create new provider instance."""
-    instance = BBCSoundsProvider(mass, manifest, config)
+    instance = BBCSoundsProvider(mass, manifest, config, SUPPORTED_FEATURES)
     await instance.handle_async_init()
     return instance
 
