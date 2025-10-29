@@ -25,7 +25,7 @@ def convert_airplay_volume(value: float) -> int:
     return int(portion + normal_min)
 
 
-def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:
+def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
     """Return Manufacturer and Model name from mdns info."""
     manufacturer = info.decoded_properties.get("manufacturer")
     model = info.decoded_properties.get("model")
@@ -66,6 +66,26 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:
     if "AppleTV" in model:
         model = "Apple TV"
         manufacturer = "Apple"
+    # Detect Mac devices (Mac mini, MacBook, iMac, etc.)
+    # Model identifiers like: Mac16,11, MacBookPro18,3, iMac21,1
+    if model.startswith(("Mac", "iMac")):
+        # Parse Mac model to friendly name
+        if model.startswith("MacBookPro"):
+            return ("Apple", f"MacBook Pro ({model})")
+        if model.startswith("MacBookAir"):
+            return ("Apple", f"MacBook Air ({model})")
+        if model.startswith("MacBook"):
+            return ("Apple", f"MacBook ({model})")
+        if model.startswith("iMac"):
+            return ("Apple", f"iMac ({model})")
+        if model.startswith("Macmini"):
+            return ("Apple", f"Mac mini ({model})")
+        if model.startswith("MacPro"):
+            return ("Apple", f"Mac Pro ({model})")
+        if model.startswith("MacStudio"):
+            return ("Apple", f"Mac Studio ({model})")
+        # Generic Mac device (e.g. Mac16,11 for Mac mini M4)
+        return ("Apple", f"Mac ({model})")
 
     return (manufacturer or "AirPlay", model)
 
