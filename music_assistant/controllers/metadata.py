@@ -352,7 +352,7 @@ class MetaDataController(CoreController):
             retrieved_item = await self.mass.music.get_item_by_uri(media_item.uri)
             if isinstance(retrieved_item, BrowseFolder):
                 return None  # can not happen, but guard for type checker
-            media_item = cast("MediaItemType", retrieved_item)
+            media_item = retrieved_item
 
         if media_item and media_item.metadata.images:
             for img in media_item.metadata.images:
