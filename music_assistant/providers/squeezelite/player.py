@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import statistics
+import struct
 import time
 from collections import deque
 from collections.abc import Iterator
@@ -14,7 +15,7 @@ from aioslimproto.models import PlayerState as SlimPlayerState
 from aioslimproto.models import Preset as SlimPreset
 from aioslimproto.models import SlimEvent
 from aioslimproto.models import VisualisationType as SlimVisualisationType
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -90,7 +91,6 @@ class SqueezelitePlayer(Player):
             PlayerFeature.MULTI_DEVICE_DSP,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.PAUSE,
-            PlayerFeature.VOLUME_MUTE,
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
             PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
@@ -99,6 +99,10 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream: MultiClientStream | None = None
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
+        # TEMP: patch slimclient send_strm to adjust buffer thresholds
+        # this can be removed when we did a new release of aioslimproto with this change
+        # after this has been tested in beta for a while
+        client._send_strm = lambda *args, **kwargs: _patched_send_strm(client, *args, **kwargs)
 
     async def on_config_updated(self) -> None:
         """Handle logic when the player is registered or the config was updated."""
@@ -126,9 +130,13 @@ class SqueezelitePlayer(Player):
         await self.client.volume_set(init_volume)
         await self.mass.players.register_or_update(self)
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         max_sample_rate = int(self.client.max_sample_rate)
         # create preset entries (for players that support it)
         presets = []
@@ -633,7 +641,11 @@ class SqueezelitePlayer(Player):
                         SlimPreset(
                             uri=media_item.uri,
                             text=media_item.name,
-                            icon=self.mass.metadata.get_image_url(media_item.image),
+                            icon=(
+                                self.mass.metadata.get_image_url(media_item.image)
+                                if media_item.image
+                                else ""
+                            ),
                         )
                     )
                 except MusicAssistantError:
@@ -671,3 +683,41 @@ class SqueezelitePlayer(Player):
         for member_id in self.group_members:
             if slimplayer := self.provider.slimproto.get_player(member_id):
                 yield slimplayer
+
+
+async def _patched_send_strm(  # noqa: PLR0913
+    self,
+    command: bytes = b"q",
+    autostart: bytes = b"0",
+    codec_details: bytes = b"p1321",
+    threshold: int = 0,
+    spdif: bytes = b"0",
+    trans_duration: int = 0,
+    trans_type: bytes = b"0",
+    flags: int = 0x20,
+    output_threshold: int = 0,
+    replay_gain: int = 0,
+    server_port: int = 0,
+    server_ip: int = 0,
+    httpreq: bytes = b"",
+) -> None:
+    """Create stream request message based on given arguments."""
+    threshold = 64  # KB of input buffer data before autostart or notify
+    output_threshold = 1  # amount of output buffer data before playback starts, in tenths of second
+    data = struct.pack(
+        "!cc5sBcBcBBBLHL",
+        command,
+        autostart,
+        codec_details,
+        threshold,
+        spdif,
+        trans_duration,
+        trans_type,
+        flags,
+        output_threshold,
+        0,
+        replay_gain,
+        server_port,
+        server_ip,
+    )
+    await self.send_frame(b"strm", data + httpreq)

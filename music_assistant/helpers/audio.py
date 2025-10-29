@@ -403,9 +403,17 @@ async def get_stream_details(
     streamdetails.prefer_album_loudness = prefer_album_loudness
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
-    streamdetails.target_loudness = float(
-        str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET))
+    conf_volume_normalization_target = float(
+        str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -17))
     )
+    if conf_volume_normalization_target < -30 or conf_volume_normalization_target >= 0:
+        conf_volume_normalization_target = -17.0  # reset to default if out of bounds
+        LOGGER.warning(
+            "Invalid volume normalization target configured for player %s, "
+            "resetting to default of -17.0 dB",
+            streamdetails.queue_id,
+        )
+    streamdetails.target_loudness = conf_volume_normalization_target
     streamdetails.volume_normalization_mode = _get_normalization_mode(
         core_config, player_settings, streamdetails
     )
@@ -442,6 +450,7 @@ async def get_buffered_media_stream(
     async def fill_buffer_task() -> None:
         """Background task to fill the audio buffer."""
         chunk_count = 0
+        status = "running"
         try:
             async for chunk in get_media_stream(
                 mass, streamdetails, pcm_format, seek_position=0, filter_params=filter_params
@@ -449,25 +458,17 @@ async def get_buffered_media_stream(
                 chunk_count += 1
                 await audio_buffer.put(chunk)
         except asyncio.CancelledError:
-            LOGGER.log(
-                VERBOSE_LOG_LEVEL,
-                "fill_buffer_task: Cancelled after %s chunks for %s",
-                chunk_count,
-                streamdetails.uri,
-            )
+            status = "cancelled"
             raise
-        except Exception as err:
-            LOGGER.error(
-                "fill audio buffer task: Error after %s chunks for %s: %s",
-                chunk_count,
-                streamdetails.uri,
-                err,
-            )
+        except Exception:
+            status = "aborted with error"
+            raise
         finally:
             await audio_buffer.set_eof()
             LOGGER.log(
                 VERBOSE_LOG_LEVEL,
-                "fill_buffer_task: Completed (%s chunks) for %s",
+                "fill_buffer_task: %s (%s chunks) for %s",
+                status,
                 chunk_count,
                 streamdetails.uri,
             )
@@ -526,7 +527,7 @@ async def get_buffered_media_stream(
         audio_buffer = AudioBuffer(pcm_format, checksum)
         streamdetails.buffer = audio_buffer
         task = mass.loop.create_task(fill_buffer_task())
-        audio_buffer.attach_fill_task(task)
+        audio_buffer.attach_producer_task(task)
 
     # special case: pcm format mismatch, resample on the fly
     # this may happen in some special situations such as crossfading

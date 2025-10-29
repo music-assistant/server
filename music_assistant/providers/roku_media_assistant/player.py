@@ -15,7 +15,7 @@ from music_assistant.models.player import Player, PlayerMedia
 from .constants import CONF_ROKU_APP_ID
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
     from rokuecp import Roku
 
     from .provider import MediaAssistantprovider
@@ -65,9 +65,13 @@ class MediaAssistantPlayer(Player):
         """Return the interval in seconds to poll the player for state updates."""
         return 5 if self.powered else 30
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        default_entries = await super().get_config_entries()
+        default_entries = await super().get_config_entries(action=action, values=values)
         return [
             *default_entries,
             CONF_ENTRY_HTTP_PROFILE,
@@ -298,67 +302,26 @@ class MediaAssistantPlayer(Player):
                             "Playback Position received from %s Was Invalid", self.name
                         )
 
-                if self.current_media and self.current_media.source_id:
-                    if not (
-                        queue := self.mass.player_queues.get_active_queue(
-                            self.current_media.source_id
-                        )
-                    ):
-                        return
-                else:
+                if not self.current_media or self._attr_playback_state != PlaybackState.PLAYING:
                     return
 
-                if (
-                    self._attr_playback_state == PlaybackState.PLAYING
-                    and queue.next_item
-                    and queue.current_item
-                    and queue.current_item.duration
-                ):
-                    if queue.elapsed_time >= queue.current_item.duration:
-                        self._attr_current_media = self.queued
+                image_url = self.current_media.image_url or ""
 
-                if (
-                    self._attr_playback_state == PlaybackState.PLAYING
-                    and queue.current_item
-                    and queue.flow_mode
-                ):
-                    current_item = queue.current_item
-
-                    image_url = (
-                        self.mass.metadata.get_image_url(current_item.image, size=512)
-                        if current_item.image
-                        else ""
+                album_name = self.current_media.album or ""
+                song_name = self.current_media.title or ""
+                artist_name = self.current_media.artist or ""
+                if app_running:
+                    await self.roku_input(
+                        {
+                            "u": "",
+                            "t": "m",
+                            "albumName": album_name,
+                            "songName": song_name,
+                            "artistName": artist_name,
+                            "albumArt": image_url,
+                            "isLive": "true",
+                        },
                     )
-
-                    album_name = ""
-                    song_name = ""
-                    artist_name = ""
-
-                    if current_item.media_item is not None:
-                        media_item = current_item.media_item
-
-                        song_name = media_item.name if media_item is not None else ""
-
-                        if hasattr(media_item, "album"):
-                            album_name = (
-                                media_item.album.name if media_item.album is not None else ""
-                            )
-
-                        if hasattr(media_item, "artist_str"):
-                            artist_name = media_item.artist_str
-
-                    if app_running:
-                        await self.roku_input(
-                            {
-                                "u": "",
-                                "t": "m",
-                                "albumName": album_name,
-                                "songName": song_name,
-                                "artistName": artist_name,
-                                "albumArt": image_url,
-                                "isLive": "true",
-                            },
-                        )
             except Exception:
                 self.logger.warning("Failed to update media state for: %s", self.name)
 

@@ -165,27 +165,33 @@ class FFMpeg(AsyncProcess):
     async def _feed_stdin(self) -> None:
         """Feed stdin with audio chunks from an AsyncGenerator."""
         assert not isinstance(self.audio_input, str | int)
-
         generator_exhausted = False
         cancelled = False
+        status = "running"
+        chunk_count = 0
+        self.logger.log(VERBOSE_LOG_LEVEL, "Start reading audio data from source...")
         try:
             start = time.time()
-            self.logger.debug("Start reading audio data from source...")
             async for chunk in self.audio_input:
+                chunk_count += 1
                 if self.closed:
                     return
                 await self.write(chunk)
-            self.logger.debug("Audio data source exhausted in %.2fs", time.time() - start)
             generator_exhausted = True
-        except Exception as err:
-            cancelled = isinstance(err, asyncio.CancelledError)
-            self.logger.error(
-                "Stream error: %s",
-                str(err) or err.__class__.__name__,
-                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-            )
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        except Exception:
+            status = "aborted with error"
             raise
         finally:
+            LOGGER.log(
+                VERBOSE_LOG_LEVEL,
+                "fill_buffer_task: %s (%s chunks received) in in %.2fs",
+                status,
+                chunk_count,
+                time.time() - start,
+            )
             if not cancelled:
                 await self.write_eof()
             # we need to ensure that we close the async generator

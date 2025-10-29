@@ -11,9 +11,7 @@ from typing import TYPE_CHECKING, cast
 from aioresonate.models import MediaCommand
 from aioresonate.models.types import PlaybackStateType
 from aioresonate.models.types import RepeatMode as ResonateRepeatMode
-from aioresonate.server import (
-    AudioFormat as ResonateAudioFormat,
-)
+from aioresonate.server import AudioFormat as ResonateAudioFormat
 from aioresonate.server import (
     ClientEvent,
     GroupCommandEvent,
@@ -21,10 +19,7 @@ from aioresonate.server import (
     GroupStateChangedEvent,
     VolumeChangedEvent,
 )
-from aioresonate.server.client import (
-    ClientGroupChangedEvent,
-    DisconnectBehaviour,
-)
+from aioresonate.server.client import ClientGroupChangedEvent, DisconnectBehaviour
 from aioresonate.server.group import (
     AudioCodec,
     GroupDeletedEvent,
@@ -32,7 +27,7 @@ from aioresonate.server.group import (
     GroupMemberRemovedEvent,
     Metadata,
 )
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ContentType,
@@ -354,9 +349,13 @@ class ResonatePlayer(Player):
         # Send metadata to the group
         self.api.group.set_metadata(metadata)
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        default_entries = await super().get_config_entries()
+        default_entries = await super().get_config_entries(action=action, values=values)
         return [
             *default_entries,
             ConfigEntry.from_dict(

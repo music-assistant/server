@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import gc
 import logging
 import time
 from collections import deque
@@ -20,7 +19,11 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_buffer")
 
-DEFAULT_MAX_BUFFER_SIZE_SECONDS: int = 60 * 5  # 5 minutes
+DEFAULT_MAX_BUFFER_SIZE_SECONDS: int = 60 * 8  # 8 minutes
+
+
+class AudioBufferEOF(Exception):
+    """Exception raised when the audio buffer reaches end-of-file."""
 
 
 class AudioBuffer:
@@ -55,17 +58,18 @@ class AudioBuffer:
         self._data_available = asyncio.Condition(self._lock)
         self._space_available = asyncio.Condition(self._lock)
         self._eof_received = False
-        self._buffer_fill_task: asyncio.Task[None] | None = None
+        self._producer_task: asyncio.Task[None] | None = None
         self._last_access_time: float = time.time()
         self._inactivity_task: asyncio.Task[None] | None = None
         self._cancelled = False  # Set to True when buffer is cleared/cancelled
+        self._producer_error: Exception | None = None
 
     @property
     def cancelled(self) -> bool:
         """Return whether the buffer has been cancelled or cleared."""
         if self._cancelled:
             return True
-        return self._buffer_fill_task is not None and self._buffer_fill_task.cancelled()
+        return self._producer_task is not None and self._producer_task.cancelled()
 
     @property
     def chunk_size_bytes(self) -> int:
@@ -105,6 +109,9 @@ class AudioBuffer:
         inactivity_timeout = 60 * 5  # 5 minutes
         if time_since_access > (inactivity_timeout - 30):
             # Buffer is close to being cleared, don't reuse it
+            return False
+
+        if seek_position > self._discarded_chunks + self.max_size_seconds:
             return False
 
         # Check if the seek position has already been discarded
@@ -167,8 +174,9 @@ class AudioBuffer:
             Bytes containing one second of audio data
 
         Raises:
-            AudioError: If EOF is reached before chunk is available or
-                       if chunk has been discarded
+            AudioBufferEOF: If EOF is reached before chunk is available
+            AudioError: If chunk has been discarded
+            Exception: Any exception that occurred in the producer task
         """
         # Update last access time
         self._last_access_time = time.time()
@@ -186,7 +194,10 @@ class AudioBuffer:
             buffer_index = chunk_number - self._discarded_chunks
             while buffer_index >= len(self._chunks):
                 if self._eof_received:
-                    raise AudioError("EOF")
+                    # Check if producer had an error before raising EOF
+                    if self._producer_error:
+                        raise self._producer_error
+                    raise AudioBufferEOF
                 await self._data_available.wait()
                 buffer_index = chunk_number - self._discarded_chunks
 
@@ -224,38 +235,42 @@ class AudioBuffer:
             try:
                 yield await self.get(chunk_number=chunk_number)
                 chunk_number += 1
-            except AudioError:
+            except AudioBufferEOF:
                 break  # EOF reached
 
-    async def clear(self) -> None:
+    async def clear(self, cancel_inactivity_task: bool = True) -> None:
         """Reset the buffer completely, clearing all data."""
         chunk_count = len(self._chunks)
         LOGGER.log(
             VERBOSE_LOG_LEVEL,
-            "AudioBuffer.clear: Resetting buffer (had %s chunks, has fill task: %s)",
+            "AudioBuffer.clear: Resetting buffer (had %s chunks, has producer task: %s)",
             chunk_count,
-            self._buffer_fill_task is not None,
+            self._producer_task is not None,
         )
-        if self._buffer_fill_task:
-            self._buffer_fill_task.cancel()
+        # Cancel producer task if present and wait for it to finish
+        # This ensures any subprocess cleanup happens on the main event loop
+        if self._producer_task and not self._producer_task.done():
+            self._producer_task.cancel()
             with suppress(asyncio.CancelledError):
-                await self._buffer_fill_task
-        if self._inactivity_task:
+                await self._producer_task
+
+        # Cancel inactivity task if present
+        if cancel_inactivity_task and self._inactivity_task and not self._inactivity_task.done():
             self._inactivity_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._inactivity_task
+
         async with self._lock:
-            self._chunks.clear()
+            # Replace the deque instead of clearing it to avoid blocking
+            # Clearing a large deque can take >100ms
+            self._chunks = deque()
             self._discarded_chunks = 0
             self._eof_received = False
             self._cancelled = True  # Mark buffer as cancelled
+            self._producer_error = None  # Clear any producer error
             # Notify all waiting tasks
             self._data_available.notify_all()
             self._space_available.notify_all()
-
-        # Run garbage collection in executor to reclaim memory from large buffers
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, gc.collect)
 
     async def set_eof(self) -> None:
         """Signal that no more data will be added to the buffer."""
@@ -276,23 +291,10 @@ class AudioBuffer:
         check_interval = 30  # Check every 30 seconds
         while True:
             await asyncio.sleep(check_interval)
-
             # Check if buffer has been inactive (no data and no activity)
             time_since_access = time.time() - self._last_access_time
-
-            # If buffer is empty and hasn't been accessed for timeout period,
+            # If buffer hasn't been accessed for timeout period,
             # it likely means the producer failed or stream was abandoned
-            if len(self._chunks) == 0 and time_since_access > inactivity_timeout:
-                LOGGER.log(
-                    VERBOSE_LOG_LEVEL,
-                    "AudioBuffer: Empty buffer with no activity for %.1f seconds, "
-                    "clearing (likely abandoned stream)",
-                    time_since_access,
-                )
-                await self.clear()
-                break  # Stop monitoring after clearing
-
-            # If buffer has data but hasn't been consumed, clear it
             if len(self._chunks) > 0 and time_since_access > inactivity_timeout:
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL,
@@ -300,12 +302,28 @@ class AudioBuffer:
                     time_since_access,
                     len(self._chunks),
                 )
-                await self.clear()
                 break  # Stop monitoring after clearing
+        # if we reach here, we have broken out of the loop due to inactivity
+        await self.clear(cancel_inactivity_task=False)
 
-    def attach_fill_task(self, task: asyncio.Task[Any]) -> None:
+    def attach_producer_task(self, task: asyncio.Task[Any]) -> None:
         """Attach a background task that fills the buffer."""
-        self._buffer_fill_task = task
+        self._producer_task = task
+
+        # Add a callback to capture any exceptions from the producer task
+        def _on_producer_done(t: asyncio.Task[Any]) -> None:
+            """Handle producer task completion."""
+            if t.cancelled():
+                return
+            # Capture any exception that occurred
+            exc = t.exception()
+            if exc is not None and isinstance(exc, Exception):
+                self._producer_error = exc
+                # Wake up any waiting consumers so they can see the error
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(self._data_available.notify_all)
+
+        task.add_done_callback(_on_producer_done)
 
         # Start inactivity monitor if not already running
         if self._inactivity_task is None or self._inactivity_task.done():
