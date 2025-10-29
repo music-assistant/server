@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from hass_client.models import CompressedState
     from hass_client.models import Entity as HassEntity
     from hass_client.models import State as HassState
-    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
@@ -106,9 +106,13 @@ class HomeAssistantPlayer(Player):
         self.extra_data["hass_supported_features"] = hass_supported_features
         self._update_attributes(hass_state["attributes"])
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         base_entries = [*base_entries, *DEFAULT_PLAYER_CONFIG_ENTRIES]
         if self.extra_data.get("esphome_supported_audio_formats"):
             # optimized config for new ESPHome mediaplayer
