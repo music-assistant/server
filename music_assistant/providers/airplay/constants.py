@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Final
 
 from music_assistant_models.enums import ContentType
@@ -10,6 +11,14 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.constants import INTERNAL_PCM_FORMAT
 
 DOMAIN = "airplay"
+
+
+class StreamingProtocol(Enum):
+    """AirPlay streaming protocol versions."""
+
+    RAOP = 1  # AirPlay 1 (RAOP)
+    AIRPLAY2 = 2  # AirPlay 2
+
 
 CACHE_CATEGORY_PREV_VOLUME: Final[int] = 1
 
@@ -20,7 +29,7 @@ CONF_PASSWORD: Final[str] = "password"
 CONF_READ_AHEAD_BUFFER: Final[str] = "read_ahead_buffer"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_CREDENTIALS: Final[str] = "credentials"
-CONF_AIRPLAY_VERSION: Final[str] = "airplay_version"
+CONF_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
 
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
