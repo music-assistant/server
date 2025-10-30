@@ -64,7 +64,7 @@ class AirPlay2Stream(AirPlayProtocol):
             mass_level = 5  # always use max log level for now to capture all stderr output
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
 
-    async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
+    async def start(self, start_ntp: int) -> None:
         """Initialize CLI process for a player."""
         cli_binary = await get_cli_binary(self.player.protocol)
         assert self.player.airplay_discovery_info is not None
@@ -99,8 +99,6 @@ class AirPlay2Stream(AirPlayProtocol):
             txt_kv,
             "--ntpstart",
             str(start_ntp),
-            "--wait",
-            str(wait_start - sync_adjust),
             "--latency",
             str(read_ahead),
             "--volume",

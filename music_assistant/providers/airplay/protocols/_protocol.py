@@ -84,12 +84,11 @@ class AirPlayProtocol(ABC):
         """Get current NTP timestamp from the CLI binary."""
 
     @abstractmethod
-    async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
+    async def start(self, start_ntp: int) -> None:
         """Initialize streaming process for the player.
 
         Args:
             start_ntp: NTP timestamp to start streaming
-            wait_start: Milliseconds to wait before starting playback
         """
 
     async def _open_pipes(self) -> None:

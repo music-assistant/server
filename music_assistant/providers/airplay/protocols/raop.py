@@ -52,7 +52,7 @@ class RaopStream(AirPlayProtocol):
         self.prov.logger.debug(f"Output from ntp check: {stdout.decode().strip()}")
         return int(stdout.strip())
 
-    async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
+    async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
         assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
@@ -116,8 +116,6 @@ class RaopStream(AirPlayProtocol):
             str(start_ntp),
             "-port",
             str(self.player.raop_discovery_info.port),
-            "-wait",
-            str(wait_start - sync_adjust),
             "-latency",
             str(read_ahead),
             "-volume",

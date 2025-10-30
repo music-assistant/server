@@ -469,7 +469,7 @@ class AirPlayPlayer(Player):
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             assert media.custom_data
-            input_format = AIRPLAY_PCM_FORMAT
+            pcm_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
                 media.custom_data["announcement_url"],
                 output_format=AIRPLAY_PCM_FORMAT,
@@ -478,7 +478,7 @@ class AirPlayPlayer(Player):
             )
         elif media.media_type == MediaType.PLUGIN_SOURCE:
             # special case: plugin source stream
-            input_format = AIRPLAY_PCM_FORMAT
+            pcm_format = AIRPLAY_PCM_FORMAT
             assert media.custom_data
             audio_source = self.mass.streams.get_plugin_source_stream(
                 plugin_source_id=media.custom_data["source_id"],
@@ -492,11 +492,11 @@ class AirPlayPlayer(Player):
             ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
             ugp_stream = ugp_player.stream
             assert ugp_stream is not None  # for type checker
-            input_format = ugp_stream.base_pcm_format
+            pcm_format = ugp_stream.base_pcm_format
             audio_source = ugp_stream.subscribe_raw()
         elif media.source_id and media.queue_item_id:
             # regular queue (flow) stream request
-            input_format = AIRPLAY_FLOW_PCM_FORMAT
+            pcm_format = AIRPLAY_FLOW_PCM_FORMAT
             queue = self.mass.player_queues.get(media.source_id)
             assert queue
             start_queue_item = self.mass.player_queues.get_item(
@@ -506,12 +506,12 @@ class AirPlayPlayer(Player):
             audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=queue,
                 start_queue_item=start_queue_item,
-                pcm_format=input_format,
+                pcm_format=pcm_format,
             )
         else:
             # assume url or some other direct path
             # NOTE: this will fail if its an uri not playable by ffmpeg
-            input_format = AIRPLAY_PCM_FORMAT
+            pcm_format = AIRPLAY_PCM_FORMAT
             audio_source = get_ffmpeg_stream(
                 audio_input=media.uri,
                 input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
@@ -531,7 +531,7 @@ class AirPlayPlayer(Player):
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
-        stream_session = AirPlayStreamSession(provider, sync_clients, input_format, audio_source)
+        stream_session = AirPlayStreamSession(provider, sync_clients, pcm_format, audio_source)
         await stream_session.start()
 
     async def volume_set(self, volume_level: int) -> None:

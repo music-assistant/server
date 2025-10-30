@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import TaskManager, close_async_generator
-from music_assistant.providers.airplay.helpers import get_ntp_timestamp
+from music_assistant.providers.airplay.helpers import unix_time_to_ntp
 
 from .constants import StreamingProtocol
 from .protocols.airplay2 import AirPlay2Stream
@@ -33,7 +33,7 @@ class AirPlayStreamSession:
         self,
         airplay_provider: AirPlayProvider,
         sync_clients: list[AirPlayPlayer],
-        input_format: AudioFormat,
+        pcm_format: AudioFormat,
         audio_source: AsyncGenerator[bytes, None],
     ) -> None:
         """Initialize AirPlayStreamSession.
@@ -41,24 +41,29 @@ class AirPlayStreamSession:
         Args:
             airplay_provider: The AirPlay provider instance
             sync_clients: List of AirPlay players to stream to
-            input_format: Audio format of the input stream
+            pcm_format: PCM format of the input stream
             audio_source: Async generator yielding audio chunks
         """
         assert sync_clients
         self.prov = airplay_provider
         self.mass = airplay_provider.mass
-        self.input_format = input_format
+        self.pcm_format = pcm_format
         self.sync_clients = sync_clients
         self._audio_source = audio_source
         self._audio_source_task: asyncio.Task[None] | None = None
         self._player_ffmpeg: dict[str, FFMpeg] = {}
         self._lock = asyncio.Lock()
+        self.start_ntp: int = 0
+        self.start_time: float = 0.0
+        self.total_seconds_streamed: float = 0.0
 
     async def start(self) -> None:
         """Initialize stream session for all players."""
         # Get current NTP timestamp and calculate wait time
-        start_ntp = get_ntp_timestamp()
-        wait_start = 1750 + (250 * len(self.sync_clients))
+        cur_time = time.time()
+        wait_start = (1750 + (250 * len(self.sync_clients))) / 1000  # in seconds
+        self.start_time = cur_time + wait_start
+        self.start_ntp = unix_time_to_ntp(self.start_time)
 
         async def _start_client(airplay_player: AirPlayPlayer) -> None:
             """Start stream for a single client."""
@@ -80,20 +85,20 @@ class AirPlayStreamSession:
             filter_params = get_player_filter_params(
                 self.mass,
                 airplay_player.player_id,
-                self.input_format,
+                self.pcm_format,
                 airplay_player.stream.pcm_format,
             )
-            if filter_params or self.input_format != airplay_player.stream.pcm_format:
+            if filter_params or self.pcm_format != airplay_player.stream.pcm_format:
                 ffmpeg = FFMpeg(
                     audio_input="-",
-                    input_format=self.input_format,
+                    input_format=self.pcm_format,
                     output_format=airplay_player.stream.pcm_format,
                     filter_params=filter_params,
                 )
                 await ffmpeg.start()
                 self._player_ffmpeg[airplay_player.player_id] = ffmpeg
 
-            await airplay_player.stream.start(start_ntp, wait_start)
+            await airplay_player.stream.start(self.start_ntp)
 
         async with TaskManager(self.mass) as tm:
             for _airplay_player in self.sync_clients:
@@ -177,6 +182,7 @@ class AirPlayStreamSession:
         generator_exhausted = False
         _last_metadata: str | None = None
         try:
+            # each chunk is exactly one second of audio data based on the pcm format.
             async for chunk in self._audio_source:
                 async with self._lock:
                     sync_clients = [x for x in self.sync_clients if x.stream and x.stream.running]
@@ -186,6 +192,12 @@ class AirPlayStreamSession:
                         *[self._write_chunk_to_player(x, chunk) for x in sync_clients if x.stream],
                         return_exceptions=True,
                     )
+                # calculate how much time we've streamed so far
+                # NOTE: if we would have a late starting player we could
+                # potentially adjust its start_ntp_time based on this calculation ?!
+                seconds_written_this_chunk = len(chunk) / self.pcm_format.pcm_sample_size
+                self.total_seconds_streamed += seconds_written_this_chunk
+
                 # send metadata if changed
                 # do this in a separate task to not disturb audio streaming
                 # NOTE: we should probably move this out of the audio stream task into it's own task
@@ -230,7 +242,12 @@ class AirPlayStreamSession:
                 await close_async_generator(self._audio_source)
 
     async def _write_chunk_to_player(self, airplay_player: AirPlayPlayer, chunk: bytes) -> None:
-        """Write audio chunk to a specific player."""
+        """
+        Write audio chunk to a specific player.
+
+        each chunk is exactly one second of audio data based on the pcm format.
+        Blocks (async) until the data has been written.
+        """
         # if the player has an associated FFMpeg instance, use that first
         if ffmpeg := self._player_ffmpeg.get(airplay_player.player_id):
             await ffmpeg.write(chunk)

@@ -238,3 +238,25 @@ def ntp_to_unix_time(ntp_timestamp: int) -> float:
     microseconds = (fraction * 1_000_000) >> 32
 
     return unix_seconds + (microseconds / 1_000_000)
+
+
+def unix_time_to_ntp(unix_timestamp: float) -> int:
+    """
+    Convert Unix timestamp (float) to NTP timestamp.
+
+    Args:
+        unix_timestamp: Unix timestamp (seconds since 1970-01-01)
+
+    Returns:
+        int: 64-bit NTP timestamp
+    """
+    seconds = int(unix_timestamp)
+    microseconds = int((unix_timestamp - seconds) * 1_000_000)
+
+    # Convert to NTP epoch
+    ntp_seconds = seconds + NTP_EPOCH_DELTA
+
+    # Convert microseconds to NTP fraction
+    ntp_fraction = int((microseconds << 32) / 1_000_000)
+
+    return (ntp_seconds << 32) | ntp_fraction
