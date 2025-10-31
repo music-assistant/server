@@ -58,7 +58,16 @@ class VBANListenerProtocolMod(VBANBaseProtocolMod):
         try:
             if self.client.quick_reject(addr[0]):
                 return
-            packet = VBANPacket.unpack(data)
+            try:
+                packet = VBANPacket.unpack(data)
+            except ValueError as exc:
+                # Handle odd packet sent when Voicemeeter start/stops stream
+                error_msg = "6000 is not a valid VBANSampleRate"
+                if str(exc) == error_msg:
+                    logger.error(error_msg)
+                    return
+                else:
+                    raise
             task = asyncio.create_task(self.client.process_packet(addr[0], addr[1], packet))
             self.background_tasks.add(task)
             task.add_done_callback(self.background_tasks.discard)
