@@ -106,6 +106,10 @@ class AirPlayProtocol(ABC):
 
     async def _open_pipes(self) -> None:
         """Open both named pipes in non-blocking mode for async I/O."""
+        # Create named pipes first if they don't exist
+        await asyncio.to_thread(self._create_named_pipe, self.audio_named_pipe)
+        await asyncio.to_thread(self._create_named_pipe, self.commands_named_pipe)
+
         # Open audio pipe with buffer size optimization
         self._audio_pipe = AsyncNamedPipeWriter(self.audio_named_pipe, logger=self.player.logger)
         await self._audio_pipe.open(increase_buffer=True)
@@ -117,6 +121,11 @@ class AirPlayProtocol(ABC):
         await self._commands_pipe.open(increase_buffer=False)
 
         self.player.logger.debug("Named pipes opened in non-blocking mode for streaming session")
+
+    def _create_named_pipe(self, pipe_path: str) -> None:
+        """Create a named pipe (FIFO) if it doesn't exist."""
+        if not os.path.exists(pipe_path):
+            os.mkfifo(pipe_path)
 
     async def stop(self) -> None:
         """Stop playback and cleanup."""
