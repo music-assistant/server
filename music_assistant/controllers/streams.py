@@ -66,7 +66,7 @@ from music_assistant.helpers.audio import (
     get_stream_details,
     resample_pcm_audio,
 )
-from music_assistant.helpers.buffered_generator import use_buffer
+from music_assistant.helpers.buffered_generator import use_audio_buffer
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.smart_fades import (
@@ -319,7 +319,8 @@ class StreamsController(CoreController):
         )
         # Start periodic garbage collection task
         # This ensures memory from audio buffers and streams is cleaned up regularly
-        self.mass.call_later(900, self._periodic_garbage_collection)  # 15 minutes
+        # DISABLED FOR TESTING - may cause event loop blocking
+        # self.mass.call_later(900, self._periodic_garbage_collection)  # 15 minutes
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -827,14 +828,18 @@ class StreamsController(CoreController):
         # like https hosts and it also offers the pre-announce 'bell'
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
-    @use_buffer(30, 1)
+    @use_audio_buffer(buffer_size=30, min_buffer_before_yield=4)
     async def get_queue_flow_stream(
         self,
         queue: PlayerQueue,
         start_queue_item: QueueItem,
         pcm_format: AudioFormat,
     ) -> AsyncGenerator[bytes, None]:
-        """Get a flow stream of all tracks in the queue as raw PCM audio."""
+        """
+        Get a flow stream of all tracks in the queue as raw PCM audio.
+
+        yields chunks of exactly 1 second of audio in the given pcm_format.
+        """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
         queue_track = None
@@ -917,6 +922,7 @@ class StreamsController(CoreController):
             buffer = b""
             # handle incoming audio chunks
             first_chunk_received = False
+            buffer_filled = False
             async for chunk in self.get_queue_item_stream(
                 queue_track,
                 pcm_format=pcm_format,
@@ -941,7 +947,13 @@ class StreamsController(CoreController):
                 del chunk
                 if len(buffer) < req_buffer_size:
                     # buffer is not full enough, move on
+                    # yield control to event loop to prevent blocking pipe writes
+                    # use 10ms delay to ensure I/O operations can complete
+                    await asyncio.sleep(0.01)
                     continue
+
+                if not buffer_filled and last_fadeout_part:
+                    buffer_filled = True
 
                 ####  HANDLE CROSSFADE OF PREVIOUS TRACK AND NEW TRACK
                 if last_fadeout_part and last_streamdetails:
@@ -967,7 +979,7 @@ class StreamsController(CoreController):
                         last_play_log_entry.seconds_streamed += (
                             crossfade_part_len / 2 / pcm_sample_size
                         )
-                    # send crossfade_part (as one big chunk)
+                    # yield crossfade_part - buffered_generator will rechunk to 1-second
                     yield crossfade_part
                     del crossfade_part
                     # also write the leftover bytes from the crossfade action
@@ -1263,7 +1275,7 @@ class StreamsController(CoreController):
                 self.mass.create_task(music_prov.on_streamed(streamdetails))
             # Periodic GC task will handle memory cleanup every 15 minutes
 
-    @use_buffer(30, 1)
+    @use_audio_buffer(buffer_size=30, min_buffer_before_yield=4)
     async def get_queue_item_stream_with_smartfade(
         self,
         queue_item: QueueItem,
