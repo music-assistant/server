@@ -83,6 +83,8 @@ class AirPlayProtocol(ABC):
     @abstractmethod
     async def get_ntp(self) -> int:
         """Get current NTP timestamp from the CLI binary."""
+        # this can probably be removed now that we already get the ntp
+        # in python (within the stream session start)
 
     @abstractmethod
     async def start(self, start_ntp: int, skip: int = 0) -> None:

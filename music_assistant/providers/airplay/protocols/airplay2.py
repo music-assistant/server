@@ -35,7 +35,8 @@ class AirPlay2Stream(AirPlayProtocol):
 
     async def get_ntp(self) -> int:
         """Get current NTP timestamp."""
-        # TODO!
+        # this can probably be removed now that we already get the ntp
+        # in python (within the stream session start)
         return get_ntp_timestamp()
 
     @property
