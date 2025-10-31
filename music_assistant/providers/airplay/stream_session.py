@@ -83,9 +83,12 @@ class AirPlayStreamSession:
 
             # Create appropriate stream type based on protocol
             if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-                airplay_player.stream = AirPlay2Stream(self, airplay_player)
+                airplay_player.stream = AirPlay2Stream(airplay_player)
             else:
-                airplay_player.stream = RaopStream(self, airplay_player)
+                airplay_player.stream = RaopStream(airplay_player)
+
+            # Link stream session to player stream
+            airplay_player.stream.session = self
 
             await self._start_client_ffmpeg(airplay_player)
 
@@ -159,9 +162,12 @@ class AirPlayStreamSession:
 
         # Create appropriate stream type based on protocol
         if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-            airplay_player.stream = AirPlay2Stream(self, airplay_player)
+            airplay_player.stream = AirPlay2Stream(airplay_player)
         else:
-            airplay_player.stream = RaopStream(self, airplay_player)
+            airplay_player.stream = RaopStream(airplay_player)
+
+        # Link stream session to player stream
+        airplay_player.stream.session = self
 
         # Snapshot chunks_streamed inside lock to prevent race conditions
         # Keep lock held during stream.start() to ensure player doesn't miss any chunks

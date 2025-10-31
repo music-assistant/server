@@ -31,25 +31,26 @@ class AirPlayProtocol(ABC):
     with abstract methods for protocol-specific behavior.
     """
 
+    session: AirPlayStreamSession | None = None  # reference to the active stream session (if any)
+
     # the pcm audio format used for streaming to this protocol
     pcm_format = AudioFormat(
         content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
     )
+    supports_pairing = False  # whether this protocol supports pairing
+    is_pairing: bool = False  # whether this protocol instance is in pairing mode
 
     def __init__(
         self,
-        session: AirPlayStreamSession,
         player: AirPlayPlayer,
     ) -> None:
         """Initialize base AirPlay protocol.
 
         Args:
-            session: The stream session managing this protocol instance
             player: The player to stream to
         """
-        self.session = session
-        self.prov = session.prov
-        self.mass = session.prov.mass
+        self.prov = player.provider
+        self.mass = player.provider.mass
         self.player = player
         # Generate unique ID to prevent race conditions with named pipes
         self.active_remote_id: str = str(randint(1000, 8000))
@@ -94,6 +95,14 @@ class AirPlayProtocol(ABC):
             start_ntp: NTP timestamp to start streaming
             skip: Number of seconds to skip (for late joiners)
         """
+
+    async def start_pairing(self) -> None:
+        """Start pairing process for this protocol (if supported)."""
+        raise NotImplementedError("Pairing not implemented for this protocol")
+
+    async def finish_pairing(self, pin: str) -> str:
+        """Finish pairing process with given PIN (if supported)."""
+        raise NotImplementedError("Pairing not implemented for this protocol")
 
     async def _open_pipes(self) -> None:
         """Open both named pipes in non-blocking mode for async I/O."""

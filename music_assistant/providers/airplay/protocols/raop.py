@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
@@ -12,6 +13,7 @@ from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.providers.airplay.constants import (
     CONF_ALAC_ENCODE,
+    CONF_AP_CREDENTIALS,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_READ_AHEAD_BUFFER,
@@ -19,6 +21,9 @@ from music_assistant.providers.airplay.constants import (
 from music_assistant.providers.airplay.helpers import get_cli_binary
 
 from ._protocol import AirPlayProtocol
+
+if TYPE_CHECKING:
+    from music_assistant.providers.airplay.provider import AirPlayProvider
 
 
 class RaopStream(AirPlayProtocol):
@@ -31,6 +36,7 @@ class RaopStream(AirPlayProtocol):
     and we can send some interactive commands using a named pipe.
     """
 
+    supports_pairing = True
     _stderr_reader_task: asyncio.Task[None] | None = None
 
     @property
@@ -77,30 +83,9 @@ class RaopStream(AirPlayProtocol):
             player_id, CONF_PASSWORD, None
         ):
             extra_args += ["-password", str(device_password)]
-        # Add AirPlay credentials from pyatv pairing if available (for Apple devices)
-        # if raop_credentials := self.player.config.get_value(CONF_AP_CREDENTIALS):
-        #     # pyatv AirPlay credentials are in format "identifier:secret_key:other:data"
-        #     # cliraop expects just the secret_key (2nd part, 64-char hex string) for -secret
-        #     parts = str(raop_credentials).split(":")
-        #     if len(parts) >= 2:
-        #         # Take the second part (index 1) as the secret key
-        #         secret_key = parts[1]
-        #         self.prov.logger.debug(
-        #             "Using AirPlay credentials for %s: id=%s, secret_len=%d, parts=%d",
-        #             self.player.player_id,
-        #             parts[0],
-        #             len(secret_key),
-        #             len(parts),
-        #         )
-        #         extra_args += ["-secret", secret_key]
-        #     else:
-        #         # Fallback: assume it's already just the key
-        #         self.prov.logger.debug(
-        #             "Using AirPlay credentials for %s: single value, length=%d",
-        #             self.player.player_id,
-        #             len(str(raop_credentials)),
-        #         )
-        #         extra_args += ["-secret", str(raop_credentials)]
+        # Add AirPlay credentials from pairing if available (for Apple devices)
+        if ap_credentials := self.player.config.get_value(CONF_AP_CREDENTIALS):
+            extra_args += ["-secret", str(ap_credentials)]
         if self.prov.logger.isEnabledFor(logging.DEBUG):
             extra_args += ["-debug", "5"]
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -127,7 +112,7 @@ class RaopStream(AirPlayProtocol):
             str(self.player.volume_level),
             *extra_args,
             "-dacp",
-            self.prov.dacp_id,
+            cast("AirPlayProvider", self.prov).dacp_id,
             "-activeremote",
             self.active_remote_id,
             "-cmdpipe",
@@ -162,6 +147,57 @@ class RaopStream(AirPlayProtocol):
         await self.send_cli_command(f"VOLUME={self.player.volume_level}\n")
         # start reading the stderr of the cliraop process from another task
         self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
+
+    async def start_pairing(self) -> None:
+        """Start pairing process for this protocol (if supported)."""
+        assert self.player.discovery_info is not None  # for type checker
+        cli_binary = await get_cli_binary(self.player.protocol)
+        cliraop_args = [
+            cli_binary,
+            "-pair",
+            "-if",
+            self.mass.streams.bind_ip,
+            "-port",
+            str(self.player.discovery_info.port),
+            "-udn",
+            self.player.discovery_info.name,
+            self.player.address,
+            self.audio_named_pipe,
+        ]
+        self.player.logger.debug(
+            "Starting PAIRING with cliraop process for player %s with args: %s",
+            self.player.player_id,
+            cliraop_args,
+        )
+        self._cli_proc = AsyncProcess(cliraop_args, stdin=True, stderr=True, name="cliraop")
+        await self._cli_proc.start()
+        # read up to first 10 lines of stderr to get the initial status
+        for _ in range(10):
+            line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
+            self.player.logger.debug(line)
+            if "enter PIN code displayed on " in line:
+                self.is_pairing = True
+                return
+        await self._cli_proc.close()
+        raise PlayerCommandFailed("Pairing failed")
+
+    async def finish_pairing(self, pin: str) -> str:
+        """Finish pairing process with given PIN (if supported)."""
+        if not self.is_pairing:
+            await self.start_pairing()
+        if not self._cli_proc or self._cli_proc.closed:
+            raise PlayerCommandFailed("Pairing process not started")
+
+        self.is_pairing = False
+        _, _stderr = await self._cli_proc.communicate(input=f"{pin}\n".encode(), timeout=10)
+        for line in _stderr.decode().splitlines():
+            self.player.logger.debug(line)
+            for error in ("device did not respond", "can't authentify", "pin failed"):
+                if error in line.lower():
+                    raise PlayerCommandFailed(f"Pairing failed: {error}")
+            if "secret is " in line:
+                return line.split("secret is ")[1].strip()
+        raise PlayerCommandFailed(f"Pairing failed: {_stderr.decode().strip()}")
 
     async def _stderr_reader(self) -> None:
         """Monitor stderr for the running CLIRaop process."""

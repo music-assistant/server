@@ -300,7 +300,8 @@ class AirPlayProvider(PlayerProvider):
                 # device switched to another source (or is powered off)
                 if stream := player.stream:
                     stream.prevent_playback = True
-                    self.mass.create_task(player.stream.session.remove_client(player))
+                    if stream.session:
+                        self.mass.create_task(stream.session.remove_client(player))
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 if stream := player.stream:

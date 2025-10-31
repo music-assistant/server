@@ -1220,7 +1220,7 @@ class StreamsController(CoreController):
         first_chunk_received = False
         fade_in_buffer = b""
         bytes_received = 0
-        aborted = False
+        finished = False
         stream_started_at = asyncio.get_event_loop().time()
         try:
             async for chunk in media_stream_gen:
@@ -1251,9 +1251,9 @@ class StreamsController(CoreController):
                     yield chunk
                 # help garbage collection by explicitly deleting chunk
                 del chunk
-        except (Exception, GeneratorExit):
-            aborted = True
-            raise
+            if not bytes_received:
+                self.logger.error("No audio data received from source for %s", queue_item.name)
+            finished = True
         finally:
             # determine how many seconds we've streamed
             # for pcm output we can calculate this easily
@@ -1261,19 +1261,18 @@ class StreamsController(CoreController):
             streamdetails.seconds_streamed = seconds_streamed
             self.logger.debug(
                 "stream %s for %s in %.2f seconds - seconds streamed: %.2f",
-                "aborted" if aborted else "finished",
+                "aborted" if not finished else "finished",
                 streamdetails.uri,
                 asyncio.get_event_loop().time() - stream_started_at,
                 seconds_streamed,
             )
             # report stream to provider
-            if (not aborted and seconds_streamed >= 30) and (
+            if (finished or seconds_streamed >= 60) and (
                 music_prov := self.mass.get_provider(streamdetails.provider)
             ):
                 if TYPE_CHECKING:  # avoid circular import
                     assert isinstance(music_prov, MusicProvider)
                 self.mass.create_task(music_prov.on_streamed(streamdetails))
-            # Periodic GC task will handle memory cleanup every 15 minutes
 
     @use_audio_buffer(buffer_size=30, min_buffer_before_yield=4)
     async def get_queue_item_stream_with_smartfade(
