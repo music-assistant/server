@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import platform
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
@@ -112,14 +111,16 @@ class AirPlay2Stream(AirPlayProtocol):
             "--pipe",
             self.audio_named_pipe,
         ]
+
+        # Open pipes before starting the process
+        await self._open_pipes()
+
         self.player.logger.debug(
             "Starting cliap2 process for player %s with args: %s",
             player_id,
             cli_args,
         )
         self._cli_proc = AsyncProcess(cli_args, stdin=False, stderr=True, name="cliap2")
-        if platform.system() == "Darwin":
-            os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
         await self._cli_proc.start()
         # read up to first num_lines lines of stderr to get the initial status
         num_lines: int = 50
@@ -131,8 +132,6 @@ class AirPlay2Stream(AirPlayProtocol):
             if f"airplay: Adding AirPlay device '{self.player.display_name}'" in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
                 self._started.set()
-                # Open pipes now that cliap2 is ready
-                await self._open_pipes()
                 break
             if f"The AirPlay 2 device '{self.player.display_name}' failed" in line:
                 raise PlayerCommandFailed("Cannot connect to AirPlay device")
