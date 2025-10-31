@@ -453,11 +453,28 @@ class CrossfadeFilter(Filter):
         return [f"{input_fadeout_label}{input_fadein_label}acrossfade=d={self.crossfade_duration}"]
 
 
-class SmartCrossFade:
-    """Smart fades class that implements a Smart Fade mode."""
+class SmartFade(ABC):
+    """Abstract base class for Smart Fades."""
 
-    name: str = "smart_fades"
     filters: list[Filter]
+
+    @abstractmethod
+    def build(self) -> None:
+        """Build the smart fades filter chain."""
+        ...
+
+    @abstractmethod
+    def get_ffmpeg_filters(
+        self,
+        input_fadein_label: str = "[1]",
+        input_fadeout_label: str = "[0]",
+    ) -> list[str]:
+        """Get FFmpeg filters for smart fades."""
+        ...
+
+
+class SmartCrossFade(SmartFade):
+    """Smart fades class that implements a Smart Fade mode."""
 
     # Only apply time stretching if BPM difference is < this %
     time_stretch_bpm_percentage_threshold: float = 5.0
@@ -554,27 +571,13 @@ class SmartCrossFade:
             tempo_factor=tempo_factor,
         )
 
-        # Add EQ filters using FrequencySweepFilter
-        # Calculate EQ parameters based on BPM analysis
-        avg_bpm = (self.fade_out_analysis.bpm + self.fade_in_analysis.bpm) / 2
-        bpm_ratio = self.fade_in_analysis.bpm / self.fade_out_analysis.bpm
-
         # 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
+        avg_bpm = (self.fade_out_analysis.bpm + self.fade_in_analysis.bpm) / 2
         crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 2500))
 
         # Adjust for BPM mismatch
         if abs(bpm_ratio - 1.0) > 0.3:
             crossover_freq = int(crossover_freq * 0.85)
-
-        # Extended lowpass effect to gradually remove bass frequencies
-        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), SMART_CROSSFADE_DURATION)
-
-        # Quicker highpass removal to avoid lingering vocals after crossfade
-        fadein_eq_duration = crossfade_duration / 1.5
-
-        # Calculate when the EQ sweep should start
-        # The crossfade always happens at the END of the buffer, regardless of beat alignment
-        fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
 
         # For shorter fades, use exp/exp curves to avoid abruptness
         if crossfade_bars < 8:
@@ -587,20 +590,11 @@ class SmartCrossFade:
             # Use linear curve for transition, predictable and not too abrupt
             fadein_curve = "linear"
 
-        self.logger.debug(
-            "EQ: crossover=%dHz, EQ fadeout duration=%.1fs,"
-            " EQ fadein duration=%.1fs, BPM=%.1f, BPM ratio=%.2f,"
-            " EQ curves: %s/%s",
-            crossover_freq,
-            fadeout_eq_duration,
-            fadein_eq_duration,
-            avg_bpm,
-            bpm_ratio,
-            fadeout_curve,
-            fadein_curve,
-        )
-
-        # Create fadeout frequency sweep (unfiltered → low-pass)
+        # Create lowpass filter on the outgoing track (unfiltered → low-pass)
+        # Extended lowpass effect to gradually remove bass frequencies
+        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), SMART_CROSSFADE_DURATION)
+        # The crossfade always happens at the END of the buffer
+        fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
         fadeout_sweep = FrequencySweepFilter(
             sweep_type="lowpass",
             target_freq=crossover_freq,
@@ -613,7 +607,9 @@ class SmartCrossFade:
         )
         self.filters.append(fadeout_sweep)
 
-        # Create fadein frequency sweep (high-pass → unfiltered)
+        # Create high pass filter on the incoming track (high-pass → unfiltered)
+        # Quicker highpass removal to avoid lingering vocals after crossfade
+        fadein_eq_duration = crossfade_duration / 1.5
         fadein_sweep = FrequencySweepFilter(
             sweep_type="highpass",
             target_freq=crossover_freq,
