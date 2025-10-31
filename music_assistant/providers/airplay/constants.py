@@ -44,6 +44,7 @@ CONF_ACTION_START_MRP_PAIRING: Final[str] = "start_mrp_pairing"
 CONF_ACTION_FINISH_MRP_PAIRING: Final[str] = "finish_mrp_pairing"
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
 CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
+CONF_ENABLE_LATE_JOIN: Final[str] = "enable_late_join"
 
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes

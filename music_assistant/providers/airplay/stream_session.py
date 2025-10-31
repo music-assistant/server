@@ -14,7 +14,7 @@ from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import TaskManager, close_async_generator
 from music_assistant.providers.airplay.helpers import unix_time_to_ntp
 
-from .constants import StreamingProtocol
+from .constants import CONF_ENABLE_LATE_JOIN, StreamingProtocol
 from .protocols.airplay2 import AirPlay2Stream
 from .protocols.raop import RaopStream
 
@@ -161,6 +161,19 @@ class AirPlayStreamSession:
         sync_leader = self.sync_clients[0]
         if not sync_leader.stream or not sync_leader.stream.running:
             return
+
+        allow_late_join = self.prov.config.get_value(CONF_ENABLE_LATE_JOIN, False)
+        if not allow_late_join:
+            # Late joining is not allowed - restart the session for all players
+            await self.stop()  # we need to stop the current session to add a new client
+            # this could potentially be called by multiple players at the exact same time
+            # so we debounce the resync a bit here with a timer
+            if sync_leader.current_media:
+                self.mass.call_later(
+                    0.5,
+                    self.mass.players.cmd_resume(sync_leader.player_id),
+                    task_id=f"resync_session_{sync_leader.player_id}",
+                )
 
         # Stop existing stream if the player is already streaming
         if airplay_player.stream and airplay_player.stream.running:

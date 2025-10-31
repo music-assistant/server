@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ProviderConfig
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.mass import MusicAssistant
+from music_assistant.providers.airplay.constants import CONF_ENABLE_LATE_JOIN
 
 from .provider import AirPlayProvider
 
@@ -37,7 +38,20 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return ()
+    return (
+        ConfigEntry(
+            key=CONF_ENABLE_LATE_JOIN,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Enable late joining",
+            description=(
+                "Allow the player to join an existing AirPlay stream instead of "
+                "starting a new one. \n NOTE: may not work in all conditions. "
+                "If you experience issues or players are not fully in sync, disable this option."
+            ),
+            category="airplay",
+        ),
+    )
 
 
 async def setup(

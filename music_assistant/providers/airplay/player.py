@@ -149,7 +149,7 @@ class AirPlayPlayer(Player):
                 key=CONF_AIRPLAY_PROTOCOL,
                 type=ConfigEntryType.INTEGER,
                 default_value=StreamingProtocol.RAOP.value,
-                required=True,
+                required=False,
                 label="AirPlay version to use for streaming",
                 description="AirPlay version 1 protocol uses RAOP.\n"
                 "AirPlay version 2 is an extension of RAOP.\n"
@@ -160,6 +160,7 @@ class AirPlayPlayer(Player):
                     ConfigValueOption("AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value),
                     ConfigValueOption("AirPlay 2", StreamingProtocol.AIRPLAY2.value),
                 ],
+                hidden=True,
             ),
             ConfigEntry(
                 key=CONF_ENCRYPTION,
