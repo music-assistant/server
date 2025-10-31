@@ -90,7 +90,7 @@ class AirPlay2Stream(AirPlayProtocol):
         cli_args = [
             cli_binary,
             "--config",
-            os.path.join(os.path.dirname(__file__), "bin", "cliap2.conf"),
+            os.path.join(os.path.dirname(__file__), "..", "bin", "cliap2.conf"),
             "--name",
             self.player.display_name,
             "--hostname",
@@ -117,7 +117,7 @@ class AirPlay2Stream(AirPlayProtocol):
             player_id,
             cli_args,
         )
-        self._cli_proc = AsyncProcess(cli_args, stdin=True, stderr=True, name="cliap2")
+        self._cli_proc = AsyncProcess(cli_args, stdin=False, stderr=True, name="cliap2")
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
         await self._cli_proc.start()
@@ -131,7 +131,7 @@ class AirPlay2Stream(AirPlayProtocol):
             if f"airplay: Adding AirPlay device '{self.player.display_name}'" in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
                 self._started.set()
-                # Open pipes now that cliraop is ready
+                # Open pipes now that cliap2 is ready
                 await self._open_pipes()
                 break
             if f"The AirPlay 2 device '{self.player.display_name}' failed" in line:
