@@ -55,7 +55,6 @@ class WebserverController(CoreController):
     """Core Controller that manages the builtin webserver that hosts the api and frontend."""
 
     domain: str = "webserver"
-    _server: Webserver
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize instance."""
@@ -247,7 +246,7 @@ class WebserverController(CoreController):
         try:
             command_msg = CommandMessage.from_json(cmd_data)
         except ValueError:
-            error = f"Invalid JSON: {cmd_data!r}"
+            error = f"Invalid JSON: {cmd_data.decode()}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
         except MissingField as e:
@@ -271,7 +270,8 @@ class WebserverController(CoreController):
         result: Any = handler.target(**args)
         if hasattr(result, "__anext__"):
             # handle async generator (for really large listings)
-            result = [item async for item in result]
+            result_items: list[Any] = [item async for item in result]
+            result = result_items
         elif asyncio.iscoroutine(result):
             result = await result
         return web.json_response(result, dumps=json_dumps)
@@ -428,7 +428,7 @@ class WebsocketClientHandler:
         if handler is None:
             await self._send_message(
                 ErrorResultMessage(
-                    str(msg.message_id),
+                    msg.message_id,
                     InvalidCommand.error_code,
                     f"Invalid command: {msg.command}",
                 )
@@ -461,10 +461,8 @@ class WebsocketClientHandler:
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
-
             else:
                 self._logger.error("Error handling message: %s: %s", msg.command, str(err))
-
             err_msg = str(err) or err.__class__.__name__
             await self._send_message(
                 ErrorResultMessage(msg.message_id, getattr(err, "error_code", 999), err_msg)
@@ -477,6 +475,8 @@ class WebsocketClientHandler:
             while not self.wsock.closed:
                 if (process := await self._to_write.get()) is None:
                     break
+                self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", process)
+                await self.wsock.send_str(process)
 
                 if callable(process):
                     message: str = process()
