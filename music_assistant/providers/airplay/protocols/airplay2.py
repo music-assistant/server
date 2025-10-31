@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
@@ -19,6 +20,9 @@ from music_assistant.providers.airplay.helpers import get_cli_binary, get_ntp_ti
 
 from ._protocol import AirPlayProtocol
 
+if TYPE_CHECKING:
+    from music_assistant.providers.airplay.player import AirPlayPlayer
+
 
 class AirPlay2Stream(AirPlayProtocol):
     """
@@ -31,6 +35,12 @@ class AirPlay2Stream(AirPlayProtocol):
     """
 
     _stderr_reader_task: asyncio.Task[None] | None = None
+
+    def __init__(self, player: AirPlayPlayer) -> None:
+        """Initialize AirPlay2Stream with .metadata suffix for command pipe."""
+        super().__init__(player)
+        # AirPlay2 uses .metadata suffix for the command pipe instead of -cmd
+        self.commands_named_pipe = f"{self.audio_named_pipe}.metadata"
 
     async def get_ntp(self) -> int:
         """Get current NTP timestamp."""
@@ -86,6 +96,10 @@ class AirPlay2Stream(AirPlayProtocol):
         # cliap2 is the binary that handles the actual streaming to the player
         # this binary leverages from the AirPlay2 support in owntones
         # https://github.com/music-assistant/cliairplay
+
+        # Create named pipes before starting CLI process
+        await self._create_pipes()
+
         cli_args = [
             cli_binary,
             "--config",
@@ -132,6 +146,8 @@ class AirPlay2Stream(AirPlayProtocol):
             if f"airplay: Adding AirPlay device '{self.player.display_name}'" in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
                 self._started.set()
+                # Open pipes now that cliap2 is ready
+                await self._open_pipes()
                 break
             if f"The AirPlay 2 device '{self.player.display_name}' failed" in line:
                 raise PlayerCommandFailed("Cannot connect to AirPlay device")
