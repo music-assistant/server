@@ -6,11 +6,12 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, Callable
 from functools import wraps
-from typing import Any, Final, ParamSpec
-
-from music_assistant_models.streamdetails import AudioFormat
+from typing import TYPE_CHECKING, Any, Final, ParamSpec, cast
 
 from music_assistant.helpers.util import close_async_generator
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items.audio_format import AudioFormat
 
 # Type variables for the buffered decorator
 _P = ParamSpec("_P")
@@ -23,7 +24,7 @@ DEFAULT_MIN_BUFFER_BEFORE_YIELD: Final = 5
 _ACTIVE_PRODUCER_TASKS: set[asyncio.Task[Any]] = set()
 
 
-async def buffered_audio(
+async def buffered_audio(  # noqa: PLR0915
     generator: AsyncGenerator[bytes, None],
     pcm_format: AudioFormat,
     buffer_size: int = DEFAULT_BUFFER_SIZE,
@@ -82,7 +83,7 @@ async def buffered_audio(
                         await condition.wait()
 
                     if cancelled:
-                        break
+                        break  # type: ignore[unreachable]
 
                     # Append to shared buffer
                     data_buffer.extend(chunk)
@@ -200,7 +201,7 @@ def use_audio_buffer(
         @wraps(func)
         async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> AsyncGenerator[bytes, None]:
             # Extract pcm_format from function arguments
-            pcm_format = kwargs.get(pcm_format_arg)
+            pcm_format = cast("AudioFormat | None", kwargs.get(pcm_format_arg))
             if pcm_format is None:
                 msg = f"Audio buffer decorator requires '{pcm_format_arg}' argument"
                 raise ValueError(msg)
