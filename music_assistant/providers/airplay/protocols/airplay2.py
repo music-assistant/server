@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -11,6 +12,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.namedpipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
@@ -41,6 +43,39 @@ class AirPlay2Stream(AirPlayProtocol):
         super().__init__(player)
         # AirPlay2 uses .metadata suffix for the command pipe instead of -cmd
         self.commands_named_pipe = f"{self.audio_named_pipe}.metadata"
+
+    async def _open_pipes(self) -> None:
+        """Open pipes for AirPlay2 - command pipe opened on-demand."""
+        # Open audio pipe (required)
+        self._audio_pipe = AsyncNamedPipeWriter(self.audio_named_pipe, logger=self.player.logger)
+        await self._audio_pipe.open(increase_buffer=True)
+
+        # Don't open command pipe yet - cliap2 may not have it open for reading
+        # It will be opened on first use in send_cli_command()
+        self.player.logger.debug(
+            "Audio pipe opened, command pipe will open on-demand when first command is sent"
+        )
+
+    async def send_cli_command(self, command: str) -> None:
+        """Send command to cliap2, opening command pipe on first use."""
+        # Open command pipe on first use (lazy initialization)
+        if self._commands_pipe is None:
+            try:
+                self._commands_pipe = AsyncNamedPipeWriter(
+                    self.commands_named_pipe, logger=self.player.logger
+                )
+                await self._commands_pipe.open(increase_buffer=False)
+                self.player.logger.debug("Command pipe opened successfully on first use")
+            except OSError as e:
+                if e.errno == errno.ENXIO:  # No reader yet
+                    self.player.logger.debug(
+                        "Command pipe not ready yet, command will be skipped: %s", command.strip()
+                    )
+                    return
+                raise
+
+        # Send command using base implementation
+        await super().send_cli_command(command)
 
     async def get_ntp(self) -> int:
         """Get current NTP timestamp."""
@@ -125,9 +160,6 @@ class AirPlay2Stream(AirPlayProtocol):
             "--pipe",
             self.audio_named_pipe,
         ]
-
-        # Open pipes before starting the process
-        await self._open_pipes()
 
         self.player.logger.debug(
             "Starting cliap2 process for player %s with args: %s",
