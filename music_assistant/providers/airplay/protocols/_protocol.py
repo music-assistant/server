@@ -8,12 +8,13 @@ import time
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from random import randint
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.namedpipe import AsyncNamedPipeWriter
 
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
@@ -65,9 +66,9 @@ class AirPlayProtocol(ABC):
         self.commands_named_pipe = (
             f"/tmp/{player.protocol.value}-{self.player.player_id}-{self.active_remote_id}-cmd"  # noqa: S108
         )
-        # File descriptors for named pipes (kept open for session duration)
-        self._audio_pipe_fd: Any = None
-        self._commands_pipe_fd: Any = None
+        # Async named pipe writers (kept open for session duration)
+        self._audio_pipe: AsyncNamedPipeWriter | None = None
+        self._commands_pipe: AsyncNamedPipeWriter | None = None
 
     @property
     def running(self) -> bool:
@@ -84,48 +85,43 @@ class AirPlayProtocol(ABC):
         """Get current NTP timestamp from the CLI binary."""
 
     @abstractmethod
-    async def start(self, start_ntp: int) -> None:
+    async def start(self, start_ntp: int, skip: int = 0) -> None:
         """Initialize streaming process for the player.
 
         Args:
             start_ntp: NTP timestamp to start streaming
+            skip: Number of seconds to skip (for late joiners)
         """
 
     async def _open_pipes(self) -> None:
-        """Open both named pipes and keep them open for the session."""
+        """Open both named pipes in non-blocking mode for async I/O."""
+        # Open audio pipe with buffer size optimization
+        self._audio_pipe = AsyncNamedPipeWriter(self.audio_named_pipe, logger=self.player.logger)
+        await self._audio_pipe.open(increase_buffer=True)
 
-        def _open() -> None:
-            # Open audio pipe in binary mode, unbuffered
-            self._audio_pipe_fd = open(self.audio_named_pipe, "wb", buffering=0)  # noqa: SIM115
-            # Open metadata pipe in text mode, line buffered (buffering=1)
-            # Line buffering flushes automatically after each newline
-            self._commands_pipe_fd = open(self.commands_named_pipe, "w", buffering=1)  # noqa: SIM115
+        # Open command pipe (no need to increase buffer for small commands)
+        self._commands_pipe = AsyncNamedPipeWriter(
+            self.commands_named_pipe, logger=self.player.logger
+        )
+        await self._commands_pipe.open(increase_buffer=False)
 
-        await asyncio.to_thread(_open)
-        self.player.logger.debug("Named pipes opened for streaming session")
+        self.player.logger.debug("Named pipes opened in non-blocking mode for streaming session")
 
     async def stop(self) -> None:
         """Stop playback and cleanup."""
         # Send stop command before setting _stopped flag
         await self.send_cli_command("ACTION=STOP")
 
-        # Ensure the command is flushed (line buffering should handle this, but be explicit)
-        if self._commands_pipe_fd is not None:
-            with suppress(Exception):
-                await asyncio.to_thread(self._commands_pipe_fd.flush)
-
         self._stopped = True
 
-        # Close file descriptors (sends EOF to C side, triggering graceful shutdown)
-        if self._audio_pipe_fd is not None:
-            with suppress(Exception):
-                await asyncio.to_thread(self._audio_pipe_fd.close)
-            self._audio_pipe_fd = None
+        # Close named pipes (sends EOF to C side, triggering graceful shutdown)
+        if self._audio_pipe is not None:
+            await self._audio_pipe.close()
+            self._audio_pipe = None
 
-        if self._commands_pipe_fd is not None:
-            with suppress(Exception):
-                await asyncio.to_thread(self._commands_pipe_fd.close)
-            self._commands_pipe_fd = None
+        if self._commands_pipe is not None:
+            await self._commands_pipe.close()
+            self._commands_pipe = None
 
         # Close the CLI process (wait for it to terminate)
         if self._cli_proc and not self._cli_proc.closed:
@@ -144,33 +140,45 @@ class AirPlayProtocol(ABC):
         Write a (pcm) audio chunk to the stream.
 
         Writes one second worth of audio data based on the pcm format.
-        Blocks (async) until the data has been written.
+        Uses non-blocking I/O with asyncio event loop (no thread pool consumption).
         """
-        # default implementation simply writes the chunk to the named pipe
-        # can be overridden with protocol specific implementation if needed
-        if self._audio_pipe_fd is None:
+        if self._audio_pipe is None or not self._audio_pipe.is_open:
             return
 
-        def _write() -> None:
-            if self._audio_pipe_fd is not None:
-                self._audio_pipe_fd.write(chunk)
-            # No flush needed - unbuffered mode
+        pipe_write_start = time.time()
 
-        await asyncio.to_thread(_write)
+        try:
+            await self._audio_pipe.write(chunk)
+        except TimeoutError as e:
+            # Re-raise with player context
+            raise TimeoutError(f"Player {self.player.player_id}: {e}") from e
+
+        pipe_write_elapsed = time.time() - pipe_write_start
+
+        # Log only truly abnormal pipe writes (>5s indicates a real stall)
+        # Normal writes take ~1s due to pipe rate-limiting to playback speed
+        # Can take up to ~4s if player's latency buffer is full
+        if pipe_write_elapsed > 5.0:
+            self.player.logger.error(
+                "!!! STALLED PIPE WRITE: Player %s took %.3fs to write %d bytes to pipe",
+                self.player.player_id,
+                pipe_write_elapsed,
+                len(chunk),
+            )
 
     async def write_eof(self) -> None:
         """Write EOF to signal end of stream."""
         # default implementation simply closes the named pipe
         # can be overridden with protocol specific implementation if needed
-        if self._audio_pipe_fd is not None:
-            await asyncio.to_thread(self._audio_pipe_fd.close)
-            self._audio_pipe_fd = None
+        if self._audio_pipe is not None:
+            await self._audio_pipe.close()
+            self._audio_pipe = None
 
     async def send_cli_command(self, command: str) -> None:
-        """Send an interactive command to the running CLI binary."""
+        """Send an interactive command to the running CLI binary using non-blocking I/O."""
         if self._stopped or not self._cli_proc or self._cli_proc.closed:
             return
-        if self._commands_pipe_fd is None:
+        if self._commands_pipe is None or not self._commands_pipe.is_open:
             return
 
         await self._started.wait()
@@ -178,16 +186,18 @@ class AirPlayProtocol(ABC):
         if not command.endswith("\n"):
             command += "\n"
 
-        def send_data() -> None:
-            if self._commands_pipe_fd is not None:
-                self._commands_pipe_fd.write(command)
-            # Line buffering flushes automatically after newline
-
         self.player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
         self.player.last_command_sent = time.time()
 
+        # Write command to pipe
+        data = command.encode("utf-8")
+
         with suppress(BrokenPipeError):
-            await asyncio.to_thread(send_data)
+            try:
+                # Use shorter timeout for commands (1 second per wait iteration)
+                await self._commands_pipe.write(data, timeout_per_wait=1.0)
+            except TimeoutError:
+                self.player.logger.warning("Command pipe write timeout for %s", command.strip())
 
     async def send_metadata(self, progress: int | None, metadata: PlayerMedia | None) -> None:
         """Send metadata to player."""

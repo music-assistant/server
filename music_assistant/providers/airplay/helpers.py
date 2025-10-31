@@ -260,3 +260,25 @@ def unix_time_to_ntp(unix_timestamp: float) -> int:
     ntp_fraction = int((microseconds << 32) / 1_000_000)
 
     return (ntp_seconds << 32) | ntp_fraction
+
+
+def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
+    """
+    Add seconds to an NTP timestamp.
+
+    Args:
+        ntp_timestamp: 64-bit NTP timestamp
+        seconds: Number of seconds to add (can be fractional)
+
+    Returns:
+        int: New NTP timestamp with seconds added
+    """
+    # Extract whole seconds and fraction
+    whole_seconds = int(seconds)
+    fraction = seconds - whole_seconds
+
+    # Convert to NTP format (upper 32 bits = seconds, lower 32 bits = fraction)
+    ntp_seconds = whole_seconds << 32
+    ntp_fraction = int(fraction * (1 << 32))
+
+    return ntp_timestamp + ntp_seconds + ntp_fraction

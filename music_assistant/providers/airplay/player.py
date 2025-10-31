@@ -112,10 +112,6 @@ class AirPlayPlayer(Player):
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_enabled_by_default = not is_broken_raop_model(manufacturer, model)
-        if self.discovery_info is None:
-            self._airplay_version = 1
-        else:
-            self._airplay_version = 2
 
     @cached_property
     def protocol(self) -> StreamingProtocol:
@@ -201,9 +197,10 @@ class AirPlayPlayer(Player):
                 label="Audio buffer (ms)",
                 description="Amount of buffer (in milliseconds), "
                 "the player should keep to absorb network throughput jitter. "
-                "If you experience audio dropouts, try increasing this value.",
+                "Lower values reduce latency but may cause dropouts. "
+                "Recommended: 1000ms for stable playback.",
                 category="airplay",
-                range=(500, 3000),
+                range=(500, 2000),
             ),
             # airplay has fixed sample rate/bit depth so make this config entry static and hidden
             create_sample_rates_config_entry(

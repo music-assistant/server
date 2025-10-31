@@ -64,10 +64,10 @@ class AirPlay2Stream(AirPlayProtocol):
             mass_level = 5  # always use max log level for now to capture all stderr output
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
 
-    async def start(self, start_ntp: int) -> None:
+    async def start(self, start_ntp: int, skip: int = 0) -> None:
         """Initialize CLI process for a player."""
         cli_binary = await get_cli_binary(self.player.protocol)
-        assert self.player.airplay_discovery_info is not None
+        assert self.player.discovery_info is not None
 
         player_id = self.player.player_id
         sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
@@ -77,8 +77,11 @@ class AirPlay2Stream(AirPlayProtocol):
         )
 
         txt_kv: str = ""
-        for key, value in self.player.airplay_discovery_info.decoded_properties.items():
+        for key, value in self.player.discovery_info.decoded_properties.items():
             txt_kv += f'"{key}={value}" '
+
+        # Note: skip parameter is accepted for API compatibility with base class
+        # but is not currently used by the cliap2 binary (AirPlay2 handles late joiners differently)
 
         # cliap2 is the binary that handles the actual streaming to the player
         # this binary leverages from the AirPlay2 support in owntones
@@ -90,11 +93,11 @@ class AirPlay2Stream(AirPlayProtocol):
             "--name",
             self.player.display_name,
             "--hostname",
-            str(self.player.airplay_discovery_info.server),
+            str(self.player.discovery_info.server),
             "--address",
             str(self.player.address),
             "--port",
-            str(self.player.airplay_discovery_info.port),
+            str(self.player.discovery_info.port),
             "--txt",
             txt_kv,
             "--ntpstart",

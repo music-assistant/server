@@ -52,9 +52,9 @@ class RaopStream(AirPlayProtocol):
         self.prov.logger.debug(f"Output from ntp check: {stdout.decode().strip()}")
         return int(stdout.strip())
 
-    async def start(self, start_ntp: int) -> None:
+    async def start(self, start_ntp: int, skip: int = 0) -> None:
         """Initialize CLIRaop process for a player."""
-        assert self.player.raop_discovery_info is not None  # for type checker
+        assert self.player.discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
 
         extra_args: list[str] = []
@@ -65,8 +65,10 @@ class RaopStream(AirPlayProtocol):
         if self.player.config.get_value(CONF_ALAC_ENCODE, True):
             extra_args += ["-alac"]
         for prop in ("et", "md", "am", "pk", "pw"):
-            if prop_value := self.player.raop_discovery_info.decoded_properties.get(prop):
+            if prop_value := self.player.discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
+        if skip > 0:
+            extra_args += ["-skip", str(skip)]
         sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
         if device_password := self.mass.config.get_raw_player_config_value(
@@ -104,6 +106,7 @@ class RaopStream(AirPlayProtocol):
         read_ahead = await self.mass.config.get_player_config_value(
             player_id, CONF_READ_AHEAD_BUFFER
         )
+        self.player.logger.info("Starting cliraop with latency buffer: %dms", read_ahead)
 
         # cliraop is the binary that handles the actual raop streaming to the player
         # this is a slightly modified version of philippe44's libraop
@@ -115,7 +118,7 @@ class RaopStream(AirPlayProtocol):
             "-ntpstart",
             str(start_ntp),
             "-port",
-            str(self.player.raop_discovery_info.port),
+            str(self.player.discovery_info.port),
             "-latency",
             str(read_ahead),
             "-volume",
@@ -128,7 +131,7 @@ class RaopStream(AirPlayProtocol):
             "-cmdpipe",
             self.commands_named_pipe,
             "-udn",
-            self.player.raop_discovery_info.name,
+            self.player.discovery_info.name,
             self.player.address,
             self.audio_named_pipe,
         ]
@@ -171,7 +174,8 @@ class RaopStream(AirPlayProtocol):
                 # millis = int(line.split("elapsed milliseconds: ")[1])
                 # self.player.elapsed_time = (millis / 1000) - self.elapsed_time_correction
                 # self.player.elapsed_time_last_updated = time.time()
-                pass
+                logger.log(VERBOSE_LOG_LEVEL, line)
+                continue
             if "set pause" in line or "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED)
             if "Restarted at" in line or "restarting w/ pause" in line:
@@ -189,7 +193,8 @@ class RaopStream(AirPlayProtocol):
             if "end of stream reached" in line:
                 logger.debug("End of stream reached")
                 break
-            logger.log(VERBOSE_LOG_LEVEL, line)
+            logger.debug(line)
 
         # ensure we're cleaned up afterwards (this also logs the returncode)
+        logger.debug("CLIRaop stderr reader ended")
         await self.stop()
