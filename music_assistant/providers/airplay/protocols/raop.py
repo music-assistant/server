@@ -100,6 +100,10 @@ class RaopStream(AirPlayProtocol):
         # https://github.com/music-assistant/libraop
         # we use this intermediate binary to do the actual streaming because attempts to do
         # so using pure python (e.g. pyatv) were not successful due to the realtime nature
+
+        # Create named pipes before starting CLI process
+        await self._create_pipes()
+
         cliraop_args = [
             cli_binary,
             "-ntpstart",
@@ -152,6 +156,10 @@ class RaopStream(AirPlayProtocol):
         """Start pairing process for this protocol (if supported)."""
         assert self.player.discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
+
+        # Create named pipes before starting CLI process
+        await self._create_pipes()
+
         cliraop_args = [
             cli_binary,
             "-pair",

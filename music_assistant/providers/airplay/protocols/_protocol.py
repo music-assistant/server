@@ -104,12 +104,27 @@ class AirPlayProtocol(ABC):
         """Finish pairing process with given PIN (if supported)."""
         raise NotImplementedError("Pairing not implemented for this protocol")
 
-    async def _open_pipes(self) -> None:
-        """Open both named pipes in non-blocking mode for async I/O."""
-        # Create named pipes first if they don't exist
+    async def _create_pipes(self) -> None:
+        """Create named pipes (FIFOs) before starting CLI process.
+
+        This must be called before starting the CLI binary so the FIFOs exist
+        when the CLI tries to open them for reading.
+        """
         await asyncio.to_thread(self._create_named_pipe, self.audio_named_pipe)
         await asyncio.to_thread(self._create_named_pipe, self.commands_named_pipe)
+        self.player.logger.debug("Named pipes created for streaming session")
 
+    def _create_named_pipe(self, pipe_path: str) -> None:
+        """Create a named pipe (FIFO) if it doesn't exist."""
+        if not os.path.exists(pipe_path):
+            os.mkfifo(pipe_path)
+
+    async def _open_pipes(self) -> None:
+        """Open both named pipes in non-blocking mode for async I/O.
+
+        This must be called AFTER the CLI process has started and opened the pipes
+        for reading. Otherwise opening with O_WRONLY | O_NONBLOCK will fail with ENXIO.
+        """
         # Open audio pipe with buffer size optimization
         self._audio_pipe = AsyncNamedPipeWriter(self.audio_named_pipe, logger=self.player.logger)
         await self._audio_pipe.open(increase_buffer=True)
@@ -121,11 +136,6 @@ class AirPlayProtocol(ABC):
         await self._commands_pipe.open(increase_buffer=False)
 
         self.player.logger.debug("Named pipes opened in non-blocking mode for streaming session")
-
-    def _create_named_pipe(self, pipe_path: str) -> None:
-        """Create a named pipe (FIFO) if it doesn't exist."""
-        if not os.path.exists(pipe_path):
-            os.mkfifo(pipe_path)
 
     async def stop(self) -> None:
         """Stop playback and cleanup."""
