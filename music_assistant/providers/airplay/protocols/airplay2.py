@@ -96,9 +96,6 @@ class AirPlay2Stream(AirPlayProtocol):
         # this binary leverages from the AirPlay2 support in owntones
         # https://github.com/music-assistant/cliairplay
 
-        # Create named pipes before starting CLI process
-        await self._create_pipes()
-
         cli_args = [
             cli_binary,
             "--config",
@@ -122,7 +119,7 @@ class AirPlay2Stream(AirPlayProtocol):
             "--loglevel",
             str(self._cli_loglevel),
             "--pipe",
-            self.audio_named_pipe,
+            self.audio_pipe.path,
         ]
 
         self.player.logger.debug(
@@ -142,8 +139,6 @@ class AirPlay2Stream(AirPlayProtocol):
             if f"airplay: Adding AirPlay device '{self.player.display_name}'" in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
                 self._started.set()
-                # Open pipes now that cliap2 is ready
-                await self._open_pipes()
                 break
             if f"The AirPlay 2 device '{self.player.display_name}' failed" in line:
                 raise PlayerCommandFailed("Cannot connect to AirPlay device")
@@ -160,13 +155,6 @@ class AirPlay2Stream(AirPlayProtocol):
             return
         async for line in self._cli_proc.iter_stderr():
             # TODO @bradkeifer make cliap2 work this way
-            if "elapsed milliseconds:" in line:
-                # this is received more or less every second while playing
-                # millis = int(line.split("elapsed milliseconds: ")[1])
-                # self.player.elapsed_time = (millis / 1000) - self.elapsed_time_correction
-                # self.player.elapsed_time_last_updated = time.time()
-                # NOTE: Metadata is now handled at the session level
-                pass
             if "set pause" in line or "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED)
             if "Restarted at" in line or "restarting w/ pause" in line:
