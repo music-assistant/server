@@ -49,7 +49,7 @@ class RaopStream(AirPlayProtocol):
             and not self._cli_proc.closed
         )
 
-    async def start(self, start_ntp: int, skip: int = 0) -> None:
+    async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
         assert self.player.discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
@@ -63,8 +63,6 @@ class RaopStream(AirPlayProtocol):
         for prop in ("et", "md", "am", "pk", "pw"):
             if prop_value := self.player.discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
-        if skip > 0:
-            extra_args += ["-skip", str(skip)]
         sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
         if device_password := self.mass.config.get_raw_player_config_value(
@@ -81,7 +79,6 @@ class RaopStream(AirPlayProtocol):
         read_ahead = await self.mass.config.get_player_config_value(
             player_id, CONF_READ_AHEAD_BUFFER
         )
-        self.player.logger.info("Starting cliraop with latency buffer: %dms", read_ahead)
 
         # cliraop is the binary that handles the actual raop streaming to the player
         # this is a slightly modified version of philippe44's libraop

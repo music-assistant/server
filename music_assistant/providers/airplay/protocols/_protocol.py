@@ -81,12 +81,11 @@ class AirPlayProtocol(ABC):
         )
 
     @abstractmethod
-    async def start(self, start_ntp: int, skip: int = 0) -> None:
+    async def start(self, start_ntp: int) -> None:
         """Initialize streaming process for the player.
 
         Args:
             start_ntp: NTP timestamp to start streaming
-            skip: Number of seconds to skip (for late joiners)
         """
 
     async def stop(self) -> None:
