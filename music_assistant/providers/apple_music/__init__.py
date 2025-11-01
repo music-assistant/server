@@ -963,7 +963,7 @@ class AppleMusicProvider(MusicProvider):
             self.mass.cache.set(
                 key=item_id,
                 data=decryption_key,
-                expiration=7200,
+                expiration=1800,
                 provider=self.instance_id,
                 category=CACHE_CATEGORY_DECRYPT_KEY,
             )

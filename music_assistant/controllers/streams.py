@@ -15,7 +15,7 @@ import os
 import urllib.parse
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -66,7 +66,7 @@ from music_assistant.helpers.audio import (
     get_stream_details,
     resample_pcm_audio,
 )
-from music_assistant.helpers.buffered_generator import use_audio_buffer
+from music_assistant.helpers.buffered_generator import buffered_audio, use_audio_buffer
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.smart_fades import (
@@ -79,9 +79,12 @@ from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
+from music_assistant.providers.universal_group.constants import UGP_PREFIX
+from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.player import PlayerMedia
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamDetails
@@ -490,7 +493,7 @@ class StreamsController(CoreController):
         if queue_item.media_type == MediaType.RADIO:
             # keep very short buffer for radio streams
             # to keep them (more or less) realtime and prevent time outs
-            read_rate_input_args = ["-readrate", "1.0", "-readrate_initial_burst", "3"]
+            read_rate_input_args = ["-readrate", "1.00", "-readrate_initial_burst", "1"]
         elif "Network_Module" in user_agent or "transferMode.dlna.org" in request.headers:
             # and ofcourse we have an exception of the exception. Where most players actually NEED
             # the readrate filter to avoid disconnecting, some other players (DLNA/MusicCast)
@@ -828,6 +831,82 @@ class StreamsController(CoreController):
         # like https hosts and it also offers the pre-announce 'bell'
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}"
 
+    def get_stream(
+        self, media: PlayerMedia, pcm_format: AudioFormat
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Get a stream of the given media as raw PCM audio.
+
+        This is used as helper for player providers that can consume the raw PCM
+        audio stream directly (e.g. AirPlay) and not rely on HTTP transport.
+        """
+        # select audio source
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            # special case: stream announcement
+            assert media.custom_data
+            audio_source = self.get_announcement_stream(
+                media.custom_data["announcement_url"],
+                output_format=pcm_format,
+                pre_announce=media.custom_data["pre_announce"],
+                pre_announce_url=media.custom_data["pre_announce_url"],
+            )
+        elif media.media_type == MediaType.PLUGIN_SOURCE:
+            # special case: plugin source stream
+            assert media.custom_data
+            audio_source = self.get_plugin_source_stream(
+                plugin_source_id=media.custom_data["source_id"],
+                output_format=pcm_format,
+                # need to pass player_id from the PlayerMedia object
+                # because this could have been a group
+                player_id=media.custom_data["player_id"],
+                chunk_size=get_chunksize(pcm_format, 1),  # ensure 1 second chunks
+            )
+        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
+            # special case: UGP stream
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
+            ugp_stream = ugp_player.stream
+            assert ugp_stream is not None  # for type checker
+            if ugp_stream.base_pcm_format == pcm_format:
+                # no conversion needed
+                audio_source = ugp_stream.subscribe_raw()
+            else:
+                audio_source = ugp_stream.get_stream(output_format=pcm_format)
+        elif media.source_id and media.queue_item_id and media.media_type == MediaType.FLOW_STREAM:
+            # regular queue (flow) stream request
+            queue = self.mass.player_queues.get(media.source_id)
+            assert queue
+            start_queue_item = self.mass.player_queues.get_item(
+                media.source_id, media.queue_item_id
+            )
+            assert start_queue_item
+            audio_source = self.mass.streams.get_queue_flow_stream(
+                queue=queue,
+                start_queue_item=start_queue_item,
+                pcm_format=pcm_format,
+            )
+        elif media.source_id and media.queue_item_id:
+            # single item stream (e.g. radio)
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            assert queue_item
+            audio_source = buffered_audio(
+                self.get_queue_item_stream(
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                ),
+                pcm_format=pcm_format,
+                buffer_size=10,
+                min_buffer_before_yield=2,
+            )
+        else:
+            # assume url or some other direct path
+            # NOTE: this will fail if its an uri not playable by ffmpeg
+            audio_source = get_ffmpeg_stream(
+                audio_input=media.uri,
+                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
+                output_format=pcm_format,
+            )
+        return audio_source
+
     @use_audio_buffer(buffer_size=30, min_buffer_before_yield=4)
     async def get_queue_flow_stream(
         self,
@@ -1077,6 +1156,7 @@ class StreamsController(CoreController):
                 input_format=AudioFormat(content_type=ContentType.try_parse(pre_announce_url)),
                 output_format=output_format,
                 filter_params=filter_params,
+                chunk_size=get_chunksize(output_format, 1),
             ):
                 yield chunk
 
@@ -1088,6 +1168,7 @@ class StreamsController(CoreController):
             input_format=audio_format,
             output_format=output_format,
             filter_params=filter_params,
+            chunk_size=get_chunksize(output_format, 1),
         ):
             yield chunk
 
@@ -1097,6 +1178,7 @@ class StreamsController(CoreController):
         output_format: AudioFormat,
         player_id: str,
         player_filter_params: list[str] | None = None,
+        chunk_size: int | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Get the special plugin source stream."""
         plugin_prov: PluginProvider = self.mass.get_provider(plugin_source_id)
@@ -1124,6 +1206,7 @@ class StreamsController(CoreController):
                 output_format=output_format,
                 filter_params=player_filter_params,
                 extra_input_args=["-y", "-re"],
+                chunk_size=chunk_size,
             ):
                 if plugin_source.in_use_by != player_id:
                     self.logger.info(
@@ -1274,7 +1357,7 @@ class StreamsController(CoreController):
                     assert isinstance(music_prov, MusicProvider)
                 self.mass.create_task(music_prov.on_streamed(streamdetails))
 
-    @use_audio_buffer(buffer_size=30, min_buffer_before_yield=4)
+    @use_audio_buffer(buffer_size=30, min_buffer_before_yield=2)
     async def get_queue_item_stream_with_smartfade(
         self,
         queue_item: QueueItem,

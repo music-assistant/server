@@ -35,7 +35,7 @@ librosa==0.11.0
 llvmlite==0.44.0
 lyricsgenius==3.7.2
 mashumaro==3.16
-music-assistant-frontend==2.17.6
+music-assistant-frontend==2.17.7
 music-assistant-models==1.1.67
 mutagen==1.47.0
 numpy==2.2.6
