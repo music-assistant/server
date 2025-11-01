@@ -36,6 +36,7 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -138,7 +139,7 @@ class QobuzProvider(MusicProvider):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
         # try to get a token, raise if that fails
-        token = await self._auth_token()
+        token = await self._auth_token()  # type: ignore[func-returns-value]
         if not token:
             msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
             raise LoginFailed(msg)
@@ -357,11 +358,11 @@ class QobuzProvider(MusicProvider):
             )
         ]
 
-    async def get_similar_artists(self, prov_artist_id) -> None:
+    async def get_similar_artists(self, prov_artist_id: str) -> None:
         """Get similar artists for given artist."""
         # https://www.qobuz.com/api.json/0.2/artist/getSimilarArtists?artist_id=220020&offset=0&limit=3
 
-    async def library_add(self, item: MediaItemType):
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         result = None
         if item.media_type == MediaType.ARTIST:
@@ -372,9 +373,9 @@ class QobuzProvider(MusicProvider):
             result = await self._get_data("favorite/create", track_ids=item.item_id)
         elif item.media_type == MediaType.PLAYLIST:
             result = await self._get_data("playlist/subscribe", playlist_id=item.item_id)
-        return result
+        return result is not None
 
-    async def library_remove(self, prov_item_id, media_type: MediaType):
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from library."""
         result = None
         if media_type == MediaType.ARTIST:
@@ -389,11 +390,11 @@ class QobuzProvider(MusicProvider):
                 result = await self._get_data("playlist/delete", playlist_id=prov_item_id)
             else:
                 result = await self._get_data("playlist/unsubscribe", playlist_id=prov_item_id)
-        return result
+        return result is not None
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
-        return await self._get_data(
+        await self._get_data(
             "playlist/addTracks",
             playlist_id=prov_playlist_id,
             track_ids=",".join(prov_track_ids),
@@ -401,8 +402,8 @@ class QobuzProvider(MusicProvider):
         )
 
     async def remove_playlist_tracks(
-        self, prov_playlist_id: str, positions_to_remove: tuple[int]
-    ) -> Any:
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
+    ) -> None:
         """Remove track(s) from playlist."""
         playlist_track_ids = set()
         for pos in positions_to_remove:
@@ -420,7 +421,7 @@ class QobuzProvider(MusicProvider):
             playlist_track_id = qobuz_result["tracks"]["items"][0]["playlist_track_id"]
             playlist_track_ids.add(str(playlist_track_id))
 
-        return await self._get_data(
+        await self._get_data(
             "playlist/deleteTracks",
             playlist_id=prov_playlist_id,
             playlist_track_ids=",".join(playlist_track_ids),
@@ -531,14 +532,16 @@ class QobuzProvider(MusicProvider):
             artist.mbid = VARIOUS_ARTISTS_MBID
             artist.name = VARIOUS_ARTISTS_NAME
         if img := self.__get_image(artist_obj):
-            artist.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=img,
-                    provider=self.lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
+            artist.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=img,
+                        provider=self.lookup_key,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
         if artist_obj.get("biography"):
             artist.metadata.description = artist_obj["biography"].get("content")
         return artist
@@ -690,15 +693,16 @@ class QobuzProvider(MusicProvider):
         if track_obj.get("parental_warning"):
             track.metadata.explicit = True
         if img := self.__get_image(track_obj):
-            track.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=img,
-                    provider=self.lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
-
+            track.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=img,
+                        provider=self.lookup_key,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
         return track
 
     def _parse_playlist(self, playlist_obj: str) -> Playlist:
@@ -723,14 +727,16 @@ class QobuzProvider(MusicProvider):
             is_editable=is_editable,
         )
         if img := self.__get_image(playlist_obj):
-            playlist.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=img,
-                    provider=self.lookup_key,
-                    remotely_accessible=True,
-                )
-            ]
+            playlist.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=img,
+                        provider=self.lookup_key,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
         return playlist
 
     @lock
@@ -753,7 +759,7 @@ class QobuzProvider(MusicProvider):
             return details["user_auth_token"]
         return None
 
-    async def _get_all_items(self, endpoint, key="tracks", **kwargs) -> list[dict]:
+    async def _get_all_items(self, endpoint: str, key: str = "tracks", **kwargs: Any) -> list[dict]:
         """Get all items from a paged list."""
         limit = 50
         offset = 0
@@ -776,7 +782,7 @@ class QobuzProvider(MusicProvider):
     @throttle_with_retries
     async def _get_data(
         self, endpoint: str, sign_request: bool = False, **kwargs: Any
-    ) -> dict | None:
+    ) -> dict[str, Any] | list[Any] | None:
         """Get data from api."""
         self.logger.debug("Handling GET request to %s", endpoint)
         url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
