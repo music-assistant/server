@@ -43,6 +43,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     PlayerUnavailableError,
     ProviderUnavailableError,
+    QueueEmpty,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
@@ -1014,7 +1015,8 @@ class PlayerController(CoreController):
         # in that case we need to stop the player first
         prev_source = player.active_source
         if prev_source and source != prev_source:
-            if player.playback_state != PlaybackState.IDLE:
+            with suppress(PlayerCommandFailed, RuntimeError):
+                # just try to stop (regardless of state)
                 await self.cmd_stop(player_id)
                 await asyncio.sleep(0.5)  # small delay to allow stop to process
             player.state.active_source = None
@@ -1027,7 +1029,13 @@ class PlayerController(CoreController):
         # check if source is a mass queue
         # this can be used to restore the queue after a source switch
         if mass_queue := self.mass.player_queues.get(source):
-            await self.mass.player_queues.play(mass_queue.queue_id)
+            try:
+                await self.mass.player_queues.play(mass_queue.queue_id)
+            except QueueEmpty:
+                # queue is empty: we just set the active source optimistically
+                # this does not cover all edge cases, but is better than failing completely
+                player._attr_active_source = mass_queue.queue_id
+                player.update_state()
             return
         # basic check if player supports source selection
         if PlayerFeature.SELECT_SOURCE not in player.supported_features:

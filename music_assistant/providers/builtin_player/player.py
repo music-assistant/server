@@ -7,7 +7,7 @@ from time import time
 
 from aiohttp import web
 from music_assistant_models.builtin_player import BuiltinPlayerEvent, BuiltinPlayerState
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     BuiltinPlayerEventType,
@@ -95,9 +95,13 @@ class BuiltinPlayer(Player):
         if update_state:
             self.update_state()
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         return [
             *base_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
