@@ -902,7 +902,7 @@ class StreamsController(CoreController):
             # calculate crossfade buffer size
             crossfade_buffer_duration = (
                 SMART_CROSSFADE_DURATION
-                if smart_fades_mode == SmartFadesMode.SMART_FADES
+                if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE
                 else standard_crossfade_duration
             )
             crossfade_buffer_duration = min(
@@ -1268,7 +1268,7 @@ class StreamsController(CoreController):
         self,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
-        smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
+        smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_CROSSFADE,
         standard_crossfade_duration: int = 10,
     ) -> AsyncGenerator[bytes, None]:
         """Get the audio stream for a single queue item with (smart) crossfade to the next item."""
@@ -1303,7 +1303,7 @@ class StreamsController(CoreController):
         # calculate crossfade buffer size
         crossfade_buffer_duration = (
             SMART_CROSSFADE_DURATION
-            if smart_fades_mode == SmartFadesMode.SMART_FADES
+            if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE
             else standard_crossfade_duration
         )
         crossfade_buffer_duration = min(
