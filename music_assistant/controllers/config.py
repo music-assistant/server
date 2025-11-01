@@ -68,8 +68,8 @@ from music_assistant.constants import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
 from music_assistant.helpers.util import load_provider_module
-from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models import ProviderModuleType
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     import asyncio
