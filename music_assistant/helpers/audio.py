@@ -79,6 +79,7 @@ CACHE_CATEGORY_RESOLVED_RADIO_URL: Final[int] = 100
 CACHE_PROVIDER: Final[str] = "audio"
 STREAMDETAILS_EXPIRATION: Final[int] = 60 * 15  # 15 minutes
 
+
 async def strip_silence(
     mass: MusicAssistant,  # noqa: ARG001
     audio_data: bytes,
