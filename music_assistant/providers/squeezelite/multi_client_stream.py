@@ -60,8 +60,8 @@ class MultiClientStream:
 
     async def subscribe_raw(self) -> AsyncGenerator[bytes, None]:
         """Subscribe to the raw/unaltered audio stream."""
+        queue: asyncio.Queue[bytes] = asyncio.Queue(2)
         try:
-            queue: asyncio.Queue[bytes] = asyncio.Queue(2)
             self.subscribers.append(queue)
             while True:
                 chunk = await queue.get()
