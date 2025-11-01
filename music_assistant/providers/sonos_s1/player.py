@@ -45,7 +45,7 @@ from .constants import (
 from .helpers import SonosUpdateError, soco_error
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
     from soco.events_base import Event as SonosEvent
     from soco.events_base import SubscriptionBase
 
@@ -124,10 +124,14 @@ class SonosPlayer(Player):
         self.update_state()
         await self.unsubscribe()
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            *await super().get_config_entries(),
+            *await super().get_config_entries(action=action, values=values),
             CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
             CONF_ENTRY_OUTPUT_CODEC,

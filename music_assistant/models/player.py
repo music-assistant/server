@@ -15,7 +15,12 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast, final
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, PlayerConfig
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+    PlayerConfig,
+)
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -581,8 +586,14 @@ class Player(ABC):
 
     async def get_config_entries(
         self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
+        """Return all (provider/player specific) Config Entries for the player.
+
+        action: [optional] action key called from config entries UI.
+        values: the (intermediate) raw values for config entries sent with the action.
+        """
         # Return all base config entries for a player.
         # Feel free to override but ensure to include the base entries by calling super() first.
         # To override the default config entries, simply define an entry with the same key
@@ -1426,8 +1437,16 @@ class GroupPlayer(Player):
         # default implementation: groups can't be synced
         return None
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the player.
+
+        action: [optional] action key called from config entries UI.
+        values: the (intermediate) raw values for config entries sent with the action.
+        """
         # Return all base config entries for a group player.
         # Feel free to override but ensure to include the base entries by calling super() first.
         # To override the default config entries, simply define an entry with the same key

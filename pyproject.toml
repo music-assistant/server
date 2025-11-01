@@ -25,8 +25,8 @@ dependencies = [
   "ifaddr==0.2.0",
   "get-mac==0.9.2",
   "mashumaro==3.16",
-  "music-assistant-frontend==2.17.6",
-  "music-assistant-models==1.1.65",
+  "music-assistant-frontend==2.17.7",
+  "music-assistant-models==1.1.67",
   "mutagen==1.47.0",
   "orjson==3.11.4",
   "pillow==11.3.0",
@@ -132,7 +132,6 @@ enable_error_code = [
 exclude = [
   '^music_assistant/controllers/config.py$',
   '^music_assistant/controllers/media/.*$',
-  '^music_assistant/controllers/metadata.py$',
   '^music_assistant/controllers/music.py$',
   '^music_assistant/controllers/player_queues.py$',
   '^music_assistant/controllers/streams.py$',

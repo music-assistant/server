@@ -7,6 +7,10 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
+from music_assistant_models.config_entries import ConfigEntry
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigValueType
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
@@ -104,9 +108,13 @@ class ChromecastPlayer(Player):
             self.mz_controller = mz_controller
         self.cc.start()
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         if self.type == PlayerType.GROUP:
             return [
                 *base_entries,
