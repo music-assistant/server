@@ -263,7 +263,10 @@ class AirPlayStreamSession:
                             players_to_remove.append(player)
                         elif isinstance(result, Exception):
                             self.prov.logger.error(
-                                "Error writing chunk %d to player %s: %s - REMOVING from sync group!",
+                                (
+                                    "Error writing chunk %d to player %s: %s - "
+                                    "REMOVING from sync group!"
+                                ),
                                 self.chunks_streamed,
                                 player.player_id,
                                 result,
