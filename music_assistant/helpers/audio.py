@@ -403,9 +403,17 @@ async def get_stream_details(
     streamdetails.prefer_album_loudness = prefer_album_loudness
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     core_config = await mass.config.get_core_config("streams")
-    streamdetails.target_loudness = float(
-        str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET))
+    conf_volume_normalization_target = float(
+        str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -17))
     )
+    if conf_volume_normalization_target < -30 or conf_volume_normalization_target >= 0:
+        conf_volume_normalization_target = -17.0  # reset to default if out of bounds
+        LOGGER.warning(
+            "Invalid volume normalization target configured for player %s, "
+            "resetting to default of -17.0 dB",
+            streamdetails.queue_id,
+        )
+    streamdetails.target_loudness = conf_volume_normalization_target
     streamdetails.volume_normalization_mode = _get_normalization_mode(
         core_config, player_settings, streamdetails
     )

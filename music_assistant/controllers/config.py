@@ -68,6 +68,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
 from music_assistant.helpers.util import load_provider_module
+from music_assistant.models import ProviderModuleType
 
 if TYPE_CHECKING:
     import asyncio
@@ -244,7 +245,7 @@ class ConfigController:
         return val
 
     @api_command("config/providers/get_entries")
-    async def get_provider_config_entries(
+    async def get_provider_config_entries(  # noqa: PLR0915
         self,
         provider_domain: str,
         instance_id: str | None = None,
@@ -260,13 +261,21 @@ class ConfigController:
         values: the (intermediate) raw values for config entries sent with the action.
         """
         # lookup provider manifest and module
+        prov_mod: ProviderModuleType | None
         for manifest in self.mass.get_provider_manifests():
             if manifest.domain == provider_domain:
-                prov_mod = await load_provider_module(provider_domain, manifest.requirements)
+                try:
+                    prov_mod = await load_provider_module(provider_domain, manifest.requirements)
+                except Exception as e:
+                    msg = f"Failed to load provider module for {provider_domain}: {e}"
+                    LOGGER.exception(msg)
+                    return []
                 break
         else:
             msg = f"Unknown provider domain: {provider_domain}"
-            raise KeyError(msg)
+            LOGGER.exception(msg)
+            return []
+
         if values is None:
             values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
 
@@ -416,14 +425,22 @@ class ConfigController:
         ]
 
     @api_command("config/players/get")
-    async def get_player_config(self, player_id: str) -> PlayerConfig:
+    async def get_player_config(
+        self,
+        player_id: str,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> PlayerConfig:
         """Return (full) configuration for a single player."""
         raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if player := self.mass.players.get(player_id, False):
                 raw_conf["default_name"] = player.display_name
                 raw_conf["provider"] = player.provider.lookup_key
-                conf_entries = await player.get_config_entries()
+                # pass action and values to get_config_entries
+                if values is None:
+                    values = raw_conf.get("values", {})
+                conf_entries = await player.get_config_entries(action=action, values=values)
             else:
                 # handle unavailable player and/or provider
                 conf_entries = []
@@ -433,6 +450,29 @@ class ConfigController:
             return PlayerConfig.parse(conf_entries, raw_conf)
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
+
+    @api_command("config/players/get_entries")
+    async def get_player_config_entries(
+        self,
+        player_id: str,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """
+        Return Config entries to configure a player.
+
+        player_id: id of an existing player instance.
+        action: [optional] action key called from config entries UI.
+        values: the (intermediate) raw values for config entries sent with the action.
+        """
+        if not (player := self.mass.players.get(player_id, False)):
+            msg = f"Player {player_id} not found"
+            raise KeyError(msg)
+
+        if values is None:
+            values = self.get(f"{CONF_PLAYERS}/{player_id}/values", {})
+
+        return await player.get_config_entries(action=action, values=values)
 
     @api_command("config/players/get_value")
     async def get_player_config_value(
