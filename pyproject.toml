@@ -69,8 +69,7 @@ mass = "music_assistant.__main__:main"
 
 [tool.codespell]
 # explicit is misspelled in the iTunes API
-# anull is a valid FFmpeg audio filter name
-ignore-words-list = "provid,hass,followings,childs,explict,commitish,anull,"
+ignore-words-list = "provid,hass,followings,childs,explict,commitish,"
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 """
