@@ -19,14 +19,15 @@ from aioresonate.server import (
     GroupStateChangedEvent,
     VolumeChangedEvent,
 )
-from aioresonate.server.client import ClientGroupChangedEvent, DisconnectBehaviour
+from aioresonate.server.client import DisconnectBehaviour
+from aioresonate.server.events import ClientGroupChangedEvent
 from aioresonate.server.group import (
-    AudioCodec,
     GroupDeletedEvent,
     GroupMemberAddedEvent,
     GroupMemberRemovedEvent,
-    Metadata,
 )
+from aioresonate.server.metadata import Metadata
+from aioresonate.server.stream import AudioCodec, MediaStream
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
@@ -43,13 +44,14 @@ from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
 from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_OUTPUT_CODEC
+from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 if TYPE_CHECKING:
-    from aioresonate.server.client import Client
+    from aioresonate.server.client import ResonateClient
     from music_assistant_models.event import MassEvent
 
     from .provider import ResonateProvider
@@ -58,10 +60,11 @@ if TYPE_CHECKING:
 class ResonatePlayer(Player):
     """A resonate audio player in Music Assistant."""
 
-    api: Client
+    api: ResonateClient
     unsub_event_cb: Callable[[], None]
     unsub_group_event_cb: Callable[[], None]
     last_sent_artwork_url: str | None = None
+    _playback_task: asyncio.Task[None] | None = None
 
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -83,8 +86,9 @@ class ResonatePlayer(Player):
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._attr_device_info = DeviceInfo()
-        self._attr_volume_level = resonate_client.volume
-        self._attr_volume_muted = resonate_client.muted
+        if player_client := resonate_client.player:
+            self._attr_volume_level = player_client.volume
+            self._attr_volume_muted = player_client.muted
         self._attr_available = True
         self._on_unload_callbacks.append(
             self.mass.subscribe(
@@ -158,20 +162,24 @@ class ResonatePlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        self.api.set_volume(volume_level)
+        if player_client := self.api.player:
+            player_client.set_volume(volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
         """Handle VOLUME MUTE command on the player."""
-        if muted:
-            self.api.mute()
-        else:
-            self.api.unmute()
+        if player_client := self.api.player:
+            if muted:
+                player_client.mute()
+            else:
+                player_client.unmute()
 
     async def stop(self) -> None:
         """Stop command."""
         self.logger.debug("Received STOP command on player %s", self.display_name)
         # We don't care if we stopped the stream or it was already stopped
-        self.api.group.stop()
+        await self.api.group.stop()
+        # Clear the playback task reference (group.stop() handles stopping the stream)
+        self._playback_task = None
         self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
@@ -189,61 +197,93 @@ class ResonatePlayer(Player):
         self._attr_active_source = media.source_id
         # playback_state will be set by the group state change event
 
-        pcm_format = AudioFormat(
-            content_type=ContentType.PCM_S16LE,
-            sample_rate=48000,
-            bit_depth=16,
-            channels=2,
-        )
-
-        # select audio source
-        if media.media_type == MediaType.PLUGIN_SOURCE:
-            # special case: plugin source stream
-            assert media.custom_data is not None  # for type checking
-            audio_source = self.mass.streams.get_plugin_source_stream(
-                plugin_source_id=media.custom_data["provider"],
-                output_format=pcm_format,
-                player_id=self.player_id,
-            )
-        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
-            # special case: UGP stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
-            ugp_stream = ugp_player.stream
-            assert ugp_stream is not None  # for type checker
-            pcm_format.bit_depth = ugp_stream.base_pcm_format.bit_depth
-            pcm_format.bit_rate = ugp_stream.base_pcm_format.bit_rate
-            pcm_format.channels = ugp_stream.base_pcm_format.channels
-            audio_source = ugp_stream.subscribe_raw()
-        elif media.source_id and media.queue_item_id:
-            # regular queue (flow) stream request
-            queue = self.mass.player_queues.get(media.source_id)
-            start_queue_item = self.mass.player_queues.get_item(
-                media.source_id, media.queue_item_id
-            )
-            assert queue is not None  # for type checking
-            assert start_queue_item is not None  # for type checking
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue, start_queue_item=start_queue_item, pcm_format=pcm_format
-            )
-        else:
-            # assume url or some other direct path
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                output_format=pcm_format,
-            )
-
-        output_codec = cast("str", self.config.get_value(CONF_OUTPUT_CODEC, "pcm"))
-
-        # Convert string codec to AudioCodec enum
-        audio_codec = AudioCodec(output_codec)
-
-        await self.api.group.play_media(
-            audio_source,
-            ResonateAudioFormat(pcm_format.sample_rate, pcm_format.bit_depth, pcm_format.channels),
-            preferred_stream_codec=audio_codec,
-        )
+        # Stop previous stream in case we were already playing something
+        await self.api.group.stop()
+        # Run playback in background task to immediately return
+        self._playback_task = asyncio.create_task(self._run_playback(media))
         self.update_state()
+
+    async def _run_playback(self, media: PlayerMedia) -> None:
+        """Run the actual playback in a background task."""
+        try:
+            pcm_format = AudioFormat(
+                content_type=ContentType.PCM_S16LE,
+                sample_rate=48000,
+                bit_depth=16,
+                channels=2,
+            )
+
+            # select audio source
+            if media.media_type == MediaType.PLUGIN_SOURCE:
+                # special case: plugin source stream
+                assert media.custom_data is not None  # for type checking
+                audio_source = self.mass.streams.get_plugin_source_stream(
+                    plugin_source_id=media.custom_data["provider"],
+                    output_format=pcm_format,
+                    player_id=self.player_id,
+                )
+            elif media.source_id and media.source_id.startswith(UGP_PREFIX):
+                # special case: UGP stream
+                ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
+                ugp_stream = ugp_player.stream
+                assert ugp_stream is not None  # for type checker
+                pcm_format.bit_depth = ugp_stream.base_pcm_format.bit_depth
+                pcm_format.bit_rate = ugp_stream.base_pcm_format.bit_rate
+                pcm_format.channels = ugp_stream.base_pcm_format.channels
+                audio_source = ugp_stream.subscribe_raw()
+            elif media.source_id and media.queue_item_id:
+                # regular queue (flow) stream request
+                queue = self.mass.player_queues.get(media.source_id)
+                start_queue_item = self.mass.player_queues.get_item(
+                    media.source_id, media.queue_item_id
+                )
+                assert queue is not None  # for type checking
+                assert start_queue_item is not None  # for type checking
+                audio_source = self.mass.streams.get_queue_flow_stream(
+                    queue=queue, start_queue_item=start_queue_item, pcm_format=pcm_format
+                )
+            else:
+                # assume url or some other direct path
+                audio_source = get_ffmpeg_stream(
+                    audio_input=media.uri,
+                    input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
+                    output_format=pcm_format,
+                )
+
+            output_codec = cast("str", self.config.get_value(CONF_OUTPUT_CODEC, "pcm"))
+
+            # Convert string codec to AudioCodec enum
+            audio_codec = AudioCodec(output_codec)
+
+            # Apply DSP and other audio filters
+            audio_source = get_ffmpeg_stream(
+                audio_input=audio_source,
+                input_format=pcm_format,
+                output_format=pcm_format,
+                filter_params=get_player_filter_params(
+                    self.mass, self.player_id, pcm_format, pcm_format
+                ),
+            )
+
+            # Create MediaStream wrapping the audio source generator
+            media_stream = MediaStream(
+                source=audio_source,
+                audio_format=ResonateAudioFormat(
+                    sample_rate=pcm_format.sample_rate,
+                    bit_depth=pcm_format.bit_depth,
+                    channels=pcm_format.channels,
+                    codec=audio_codec,
+                ),
+            )
+
+            stop_time = await self.api.group.play_media(media_stream)
+            await self.api.group.stop(stop_time)
+        except asyncio.CancelledError:
+            self.logger.debug("Playback cancelled for player %s", self.display_name)
+            raise
+        except Exception:
+            self.logger.exception("Error during playback for player %s", self.display_name)
+            raise
 
     async def set_members(
         self,
@@ -257,14 +297,14 @@ class ResonatePlayer(Player):
         for player_id in player_ids_to_remove or []:
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
-            self.api.group.remove_client(player.api)
+            await self.api.group.remove_client(player.api)
             player.api.disconnect_behaviour = DisconnectBehaviour.STOP
             self._attr_group_members.remove(player_id)
         for player_id in player_ids_to_add or []:
             player = self.mass.players.get(player_id, True)
             player = cast("ResonatePlayer", player)  # For type checking
             player.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
-            self.api.group.add_client(player.api)
+            await self.api.group.add_client(player.api)
             self._attr_group_members.append(player_id)
         self.update_state()
 
@@ -303,7 +343,7 @@ class ResonatePlayer(Player):
                 artist = artist_str
             if _album := getattr(media_item, "album", None):
                 album = _album.name
-                year = _album.year
+                year = getattr(_album, "year", None)
                 album_artist = getattr(_album, "artist_str", None)
             if _track_number := getattr(media_item, "track_number", None):
                 track = _track_number
