@@ -155,6 +155,8 @@ RUN set -x \
         libflac12 \
         libavahi-client3 \
         libavahi-common3 \
+        # pkg-config needed for PyAV (for aioresonate) to find system FFmpeg
+        pkg-config \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -178,6 +180,13 @@ COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/
 COPY --from=ffmpeg-builder /usr/local/lib/libav*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libsw*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libpostproc.so* /usr/local/lib/
+
+# Copy FFmpeg headers and pkg-config files needed for PyAV compilation (adds around 2 MB)
+COPY --from=ffmpeg-builder /usr/local/include/ /usr/local/include/
+COPY --from=ffmpeg-builder /usr/local/lib/pkgconfig/ /usr/local/lib/pkgconfig/
+
+# Set PKG_CONFIG_PATH so pkg-config can find FFmpeg
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
 # Update shared library cache and verify FFmpeg
 RUN ldconfig && ffmpeg -version && ffprobe -version

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import PlayerSource
 
@@ -84,14 +84,18 @@ class DemoPlayer(Player):
             ),
         ]
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         # OPTIONAL
         # this method is optional and should be implemented if you need player specific
         # configuration entries. If you do not need player specific configuration entries,
         # you can leave this method out completely to accept the default implementation.
         # Please note that you need to call the super() method to get the default entries.
-        default_entries = await super().get_config_entries()
+        default_entries = await super().get_config_entries(action=action, values=values)
         return [
             *default_entries,
             # example of a player specific config entry

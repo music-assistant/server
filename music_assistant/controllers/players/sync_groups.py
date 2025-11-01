@@ -13,7 +13,7 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
 import shortuuid
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -184,11 +184,15 @@ class SyncGroupPlayer(GroupPlayer):
         else:
             return set()
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         entries: list[ConfigEntry] = [
             # default entries for player groups
-            *await super().get_config_entries(),
+            *await super().get_config_entries(action=action, values=values),
             # add syncgroup specific entries
             ConfigEntry(
                 key=CONF_GROUP_MEMBERS,
