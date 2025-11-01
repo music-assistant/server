@@ -383,7 +383,11 @@ class SqueezelitePlayer(Player):
         # always update the state after modifying group members
         self.update_state()
 
-        if players_added and self.current_media and self.playback_state == PlaybackState.PLAYING:
+        if (
+            (players_added or player_ids_to_remove)
+            and self.current_media
+            and self.playback_state == PlaybackState.PLAYING
+        ):
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
             self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
