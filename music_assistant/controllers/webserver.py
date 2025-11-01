@@ -41,8 +41,7 @@ from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
-
+    from aiohttp.typedefs import Handler
     from music_assistant_models.config_entries import ConfigValueType, CoreConfig
     from music_assistant_models.event import MassEvent
 
@@ -57,8 +56,9 @@ class WebserverController(CoreController):
     """Core Controller that manages the builtin webserver that hosts the api and frontend."""
 
     domain: str = "webserver"
+    _server: Webserver
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize instance."""
         super().__init__(*args, **kwargs)
         self._server = Webserver(self.logger, enable_dynamic_routes=True)
@@ -130,7 +130,7 @@ class WebserverController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         # work out all routes
-        routes: list[tuple[str, str, Awaitable]] = []
+        routes: list[tuple[str, str, Handler]] = []
         # frontend routes
         frontend_dir = locate_frontend()
         for filename in next(os.walk(frontend_dir))[2]:
@@ -173,9 +173,13 @@ class WebserverController(CoreController):
         else:
             ingress_tcp_site_params = None
         base_url = str(config.get_value(CONF_BASE_URL))
-        self.publish_port = int(config.get_value(CONF_BIND_PORT))
+        port_value = config.get_value(CONF_BIND_PORT)
+        self.publish_port = (
+            int(port_value) if isinstance(port_value, (int, float, str)) else DEFAULT_SERVER_PORT
+        )
         self.publish_ip = default_publish_ip
-        bind_ip = config.get_value(CONF_BIND_IP)
+        bind_ip_raw = config.get_value(CONF_BIND_IP)
+        bind_ip = str(bind_ip_raw) if bind_ip_raw is not None else None
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
         if not self.mass.config.onboard_done:
@@ -212,7 +216,7 @@ class WebserverController(CoreController):
             await client.disconnect()
         await self._server.close()
 
-    async def serve_preview_stream(self, request: web.Request):
+    async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""
         provider_instance_id_or_domain = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
@@ -245,7 +249,7 @@ class WebserverController(CoreController):
         try:
             command_msg = CommandMessage.from_json(cmd_data)
         except ValueError:
-            error = f"Invalid JSON: {cmd_data}"
+            error = f"Invalid JSON: {cmd_data!r}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
         except MissingField as e:
@@ -266,7 +270,7 @@ class WebserverController(CoreController):
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
         args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
-        result = handler.target(**args)
+        result: Any = handler.target(**args)
         if hasattr(result, "__anext__"):
             # handle async generator (for really large listings)
             result = [item async for item in result]
@@ -302,14 +306,14 @@ class WebserverController(CoreController):
         )
         return web.json_response(spec)
 
-    async def _handle_swagger_ui(self, request: web.Request) -> web.Response:
+    async def _handle_swagger_ui(self, request: web.Request) -> web.StreamResponse:
         """Handle request for Swagger UI."""
         swagger_html_path = os.path.join(
             os.path.dirname(__file__), "..", "helpers", "resources", "swagger_ui.html"
         )
         return await self._server.serve_static(swagger_html_path, request)
 
-    async def _handle_redoc_ui(self, request: web.Request) -> web.Response:
+    async def _handle_redoc_ui(self, request: web.Request) -> web.StreamResponse:
         """Handle request for ReDoc UI."""
         redoc_html_path = os.path.join(
             os.path.dirname(__file__), "..", "helpers", "resources", "redoc_ui.html"
@@ -325,16 +329,16 @@ class WebsocketClientHandler:
         self.mass = webserver.mass
         self.request = request
         self.wsock = web.WebSocketResponse(heartbeat=55)
-        self._to_write: asyncio.Queue = asyncio.Queue(maxsize=MAX_PENDING_MSG)
-        self._handle_task: asyncio.Task | None = None
-        self._writer_task: asyncio.Task | None = None
+        self._to_write: asyncio.Queue[str | None] = asyncio.Queue(maxsize=MAX_PENDING_MSG)
+        self._handle_task: asyncio.Task[Any] | None = None
+        self._writer_task: asyncio.Task[None] | None = None
         self._logger = webserver.logger
         # try to dynamically detect the base_url of a client if proxied or behind Ingress
-        self.base_url: str | None = None
+        self.client_base_url: str | None = None
         if forward_host := request.headers.get("X-Forwarded-Host"):
             ingress_path = request.headers.get("X-Ingress-Path", "")
             forward_proto = request.headers.get("X-Forwarded-Proto", request.protocol)
-            self.base_url = f"{forward_proto}://{forward_host}{ingress_path}"
+            self.client_base_url = f"{forward_proto}://{forward_host}{ingress_path}"
 
     async def disconnect(self) -> None:
         """Disconnect client."""
@@ -426,7 +430,7 @@ class WebsocketClientHandler:
         if handler is None:
             await self._send_message(
                 ErrorResultMessage(
-                    msg.message_id,
+                    str(msg.message_id),
                     InvalidCommand.error_code,
                     f"Invalid command: {msg.command}",
                 )
@@ -440,18 +444,19 @@ class WebsocketClientHandler:
     async def _run_handler(self, handler: APICommandHandler, msg: CommandMessage) -> None:
         try:
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
-            result = handler.target(**args)
+            result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 iterator = result
-                result: list[Any] = []
+                items: list[Any] = []
                 async for item in iterator:
                     result.append(item)
                     if len(result) >= 500:
                         await self._send_message(
                             SuccessResultMessage(msg.message_id, result, partial=True)
                         )
-                        result = []
+                        items = []
+                result = items
             elif asyncio.iscoroutine(result):
                 result = await result
             await self._send_message(SuccessResultMessage(msg.message_id, result))
@@ -473,7 +478,7 @@ class WebsocketClientHandler:
                 if (process := await self._to_write.get()) is None:
                     break
 
-                if not isinstance(process, str):
+                if callable(process):
                     message: str = process()
                 else:
                     message = process
