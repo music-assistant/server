@@ -259,8 +259,7 @@ class TimeStretchFilter(Filter):
         return [
             f"{input_fadeout_label}rubberband=tempo={self.stretch_ratio:.6f}:transients=mixed:detector=soft:pitchq=quality"
             f"[{self.output_fadeout_label}]",
-            # codespell:ignore anull
-            f"{input_fadein_label}anull[{self.output_fadein_label}]",
+            f"{input_fadein_label}anull[{self.output_fadein_label}]",  # codespell:ignore anull
         ]
 
     def __repr__(self) -> str:
@@ -401,7 +400,7 @@ class FrequencySweepFilter(Filter):
 
         return [
             # Pass through the other stream unchanged
-            f"{passthrough_input}anull[{passthrough_label}]",
+            f"{passthrough_input}anull[{passthrough_label}]",  # codespell:ignore anull
             # Split input into two paths
             f"{input_label}asplit=2[{orig_label}][{filter_label}]",
             # Apply frequency filter to one path
