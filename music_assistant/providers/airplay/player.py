@@ -7,15 +7,7 @@ import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    ContentType,
-    MediaType,
-    PlaybackState,
-    PlayerFeature,
-    PlayerType,
-)
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
@@ -27,13 +19,10 @@ from music_assistant.constants import (
     CONF_ENTRY_SYNC_ADJUST,
     create_sample_rates_config_entry,
 )
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
-    AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_PCM_FORMAT,
     CACHE_CATEGORY_PREV_VOLUME,
     CONF_ACTION_FINISH_PAIRING,
@@ -55,8 +44,6 @@ from .stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
-
-    from music_assistant.providers.universal_group import UniversalGroupPlayer
 
     from .protocols.airplay2 import AirPlay2Stream
     from .protocols.raop import RaopStream
@@ -131,6 +118,13 @@ class AirPlayPlayer(Player):
             if not credentials:
                 return False
         return super().available
+
+    @property
+    def corrected_elapsed_time(self) -> float:
+        """Return the corrected elapsed time accounting for stream session restarts."""
+        if not self.stream or not self.stream.session:
+            return super().corrected_elapsed_time or 0.0
+        return time.time() - self.stream.session.last_stream_started
 
     async def get_config_entries(
         self,
@@ -439,57 +433,7 @@ class AirPlayPlayer(Player):
         self._attr_current_media = media
 
         # select audio source
-        if media.media_type == MediaType.ANNOUNCEMENT:
-            # special case: stream announcement
-            assert media.custom_data
-            pcm_format = AIRPLAY_PCM_FORMAT
-            audio_source = self.mass.streams.get_announcement_stream(
-                media.custom_data["announcement_url"],
-                output_format=AIRPLAY_PCM_FORMAT,
-                pre_announce=media.custom_data["pre_announce"],
-                pre_announce_url=media.custom_data["pre_announce_url"],
-            )
-        elif media.media_type == MediaType.PLUGIN_SOURCE:
-            # special case: plugin source stream
-            pcm_format = AIRPLAY_PCM_FORMAT
-            assert media.custom_data
-            audio_source = self.mass.streams.get_plugin_source_stream(
-                plugin_source_id=media.custom_data["source_id"],
-                output_format=AIRPLAY_PCM_FORMAT,
-                # need to pass player_id from the PlayerMedia object
-                # because this could have been a group
-                player_id=media.custom_data["player_id"],
-            )
-        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
-            # special case: UGP stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
-            ugp_stream = ugp_player.stream
-            assert ugp_stream is not None  # for type checker
-            pcm_format = ugp_stream.base_pcm_format
-            audio_source = ugp_stream.subscribe_raw()
-        elif media.source_id and media.queue_item_id:
-            # regular queue (flow) stream request
-            pcm_format = AIRPLAY_FLOW_PCM_FORMAT
-            queue = self.mass.player_queues.get(media.source_id)
-            assert queue
-            start_queue_item = self.mass.player_queues.get_item(
-                media.source_id, media.queue_item_id
-            )
-            assert start_queue_item
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=start_queue_item,
-                pcm_format=pcm_format,
-            )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            pcm_format = AIRPLAY_PCM_FORMAT
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                output_format=AIRPLAY_PCM_FORMAT,
-            )
+        audio_source = self.mass.streams.get_stream(media, AIRPLAY_PCM_FORMAT)
 
         # if an existing stream session is running, we could replace it with the new stream
         if self.stream and self.stream.running:
@@ -504,7 +448,9 @@ class AirPlayPlayer(Player):
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
-        stream_session = AirPlayStreamSession(provider, sync_clients, pcm_format, audio_source)
+        stream_session = AirPlayStreamSession(
+            provider, sync_clients, AIRPLAY_PCM_FORMAT, audio_source
+        )
         await stream_session.start()
 
     async def volume_set(self, volume_level: int) -> None:
@@ -534,14 +480,18 @@ class AirPlayPlayer(Player):
             # nothing to do
             return
 
-        stream_session = self.stream.session if self.stream else None
+        stream_session = (
+            self.stream.session
+            if self.stream and self.stream.running and self.stream.session
+            else None
+        )
         # handle removals first
         if player_ids_to_remove:
             if self.player_id in player_ids_to_remove:
                 # dissolve the entire sync group
-                if self.stream and self.stream.running and self.stream.session:
+                if stream_session:
                     # stop the stream session if it is running
-                    await self.stream.session.stop()
+                    await stream_session.stop()
                 self._attr_group_members = []
                 self.update_state()
                 return
