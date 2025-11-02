@@ -925,4 +925,8 @@ class QobuzProvider(MusicProvider):
         if obj.get("images300"):
             # playlists seem to use this strange format
             return str(obj["images300"][0])
+        if obj.get("album"):
+            return self.__get_image(obj["album"])
+        if obj.get("artist"):
+            return self.__get_image(obj["artist"])
         return None
