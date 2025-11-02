@@ -86,7 +86,6 @@ from music_assistant.models.smart_fades import SmartFadesMode
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
-
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player import PlayerMedia
