@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY2_MIN_LOG_LEVEL,
@@ -20,9 +17,6 @@ from music_assistant.providers.airplay.constants import (
 from music_assistant.providers.airplay.helpers import get_cli_binary
 
 from ._protocol import AirPlayProtocol
-
-if TYPE_CHECKING:
-    from music_assistant.providers.airplay.player import AirPlayPlayer
 
 
 class AirPlay2Stream(AirPlayProtocol):
@@ -36,16 +30,6 @@ class AirPlay2Stream(AirPlayProtocol):
     """
 
     _stderr_reader_task: asyncio.Task[None] | None = None
-
-    def __init__(self, player: AirPlayPlayer) -> None:
-        """Initialize AirPlay2Stream with .metadata suffix for command pipe."""
-        super().__init__(player)
-        # AirPlay2 uses .metadata suffix for the command pipe instead of -cmd
-        # TODO: Fix this and allow specifying the command pipe to cliap2 as a argument
-        self.commands_pipe = AsyncNamedPipeWriter(
-            f"{self.audio_pipe.path}.metadata",
-            self.logger,
-        )
 
     @property
     def _cli_loglevel(self) -> int:
@@ -98,8 +82,6 @@ class AirPlay2Stream(AirPlayProtocol):
 
         cli_args = [
             cli_binary,
-            "--config",
-            os.path.join(os.path.dirname(__file__), "..", "bin", "cliap2.conf"),
             "--name",
             self.player.display_name,
             "--hostname",
@@ -120,6 +102,8 @@ class AirPlay2Stream(AirPlayProtocol):
             str(self._cli_loglevel),
             "--pipe",
             self.audio_pipe.path,
+            "--command_pipe",
+            self.commands_pipe.path,
         ]
 
         self.player.logger.debug(
