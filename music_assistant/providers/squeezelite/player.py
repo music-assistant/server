@@ -711,7 +711,7 @@ class SqueezelitePlayer(Player):
         """Get all sync clients for a player."""
         yield self.client
         for member_id in self.group_members:
-            if member_id == self.player_id:  # ← Skip if it's the master itself
+            if member_id == self.player_id:  # ← Skip if it's the leader itself
                 continue
             if self._provider.slimproto and (
                 slimplayer := self._provider.slimproto.get_player(member_id)
