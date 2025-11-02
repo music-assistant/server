@@ -10,7 +10,7 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.process import AsyncProcess, check_output
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     CONF_ALAC_ENCODE,
     CONF_AP_CREDENTIALS,
@@ -49,22 +49,10 @@ class RaopStream(AirPlayProtocol):
             and not self._cli_proc.closed
         )
 
-    async def get_ntp(self) -> int:
-        """Get current NTP timestamp from the CLI binary."""
-        # this can probably be removed now that we already get the ntp
-        # in python (within the stream session start)
-        cli_binary = await get_cli_binary(self.player.protocol)
-        # TODO: we can potentially also just generate this ourselves?
-        self.prov.logger.debug("Getting NTP timestamp from %s CLI binary", self.player.protocol)
-        _, stdout = await check_output(cli_binary, "-ntp")
-        self.prov.logger.debug(f"Output from ntp check: {stdout.decode().strip()}")
-        return int(stdout.strip())
-
-    async def start(self, start_ntp: int, skip: int = 0) -> None:
+    async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
         assert self.player.discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
-
         extra_args: list[str] = []
         player_id = self.player.player_id
         extra_args += ["-if", self.mass.streams.bind_ip]
@@ -75,8 +63,6 @@ class RaopStream(AirPlayProtocol):
         for prop in ("et", "md", "am", "pk", "pw"):
             if prop_value := self.player.discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
-        if skip > 0:
-            extra_args += ["-skip", str(skip)]
         sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
         if device_password := self.mass.config.get_raw_player_config_value(
@@ -93,13 +79,13 @@ class RaopStream(AirPlayProtocol):
         read_ahead = await self.mass.config.get_player_config_value(
             player_id, CONF_READ_AHEAD_BUFFER
         )
-        self.player.logger.info("Starting cliraop with latency buffer: %dms", read_ahead)
 
         # cliraop is the binary that handles the actual raop streaming to the player
         # this is a slightly modified version of philippe44's libraop
         # https://github.com/music-assistant/libraop
         # we use this intermediate binary to do the actual streaming because attempts to do
         # so using pure python (e.g. pyatv) were not successful due to the realtime nature
+
         cliraop_args = [
             cli_binary,
             "-ntpstart",
@@ -116,19 +102,20 @@ class RaopStream(AirPlayProtocol):
             "-activeremote",
             self.active_remote_id,
             "-cmdpipe",
-            self.commands_named_pipe,
+            self.commands_pipe.path,
             "-udn",
             self.player.discovery_info.name,
             self.player.address,
-            self.audio_named_pipe,
+            self.audio_pipe.path,
         ]
         self.player.logger.debug(
             "Starting cliraop process for player %s with args: %s",
             self.player.player_id,
             cliraop_args,
         )
-        self._cli_proc = AsyncProcess(cliraop_args, stdin=False, stderr=True, name="cliraop")
+        self._cli_proc = AsyncProcess(cliraop_args, stdin=True, stderr=True, name="cliraop")
         await self._cli_proc.start()
+
         # read up to first 50 lines of stderr to get the initial status
         for _ in range(50):
             line = (await self._cli_proc.read_stderr()).decode("utf-8", errors="ignore")
@@ -136,15 +123,10 @@ class RaopStream(AirPlayProtocol):
             if "connected to " in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
                 self._started.set()
-                # Open pipes now that cliraop is ready
-                await self._open_pipes()
                 break
             if "Cannot connect to AirPlay device" in line:
                 raise PlayerCommandFailed("Cannot connect to AirPlay device")
-        # repeat sending the volume level to the player because some players seem
-        # to ignore it the first time
-        # https://github.com/music-assistant/support/issues/3330
-        await self.send_cli_command(f"VOLUME={self.player.volume_level}\n")
+
         # start reading the stderr of the cliraop process from another task
         self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
 
@@ -152,6 +134,7 @@ class RaopStream(AirPlayProtocol):
         """Start pairing process for this protocol (if supported)."""
         assert self.player.discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
+
         cliraop_args = [
             cli_binary,
             "-pair",
@@ -162,7 +145,6 @@ class RaopStream(AirPlayProtocol):
             "-udn",
             self.player.discovery_info.name,
             self.player.address,
-            self.audio_named_pipe,
         ]
         self.player.logger.debug(
             "Starting PAIRING with cliraop process for player %s with args: %s",
@@ -209,11 +191,10 @@ class RaopStream(AirPlayProtocol):
         async for line in self._cli_proc.iter_stderr():
             if "elapsed milliseconds:" in line:
                 # this is received more or less every second while playing
-                # millis = int(line.split("elapsed milliseconds: ")[1])
-                # self.player.elapsed_time = (millis / 1000) - self.elapsed_time_correction
-                # self.player.elapsed_time_last_updated = time.time()
-                logger.log(VERBOSE_LOG_LEVEL, line)
-                continue
+                millis = int(line.split("elapsed milliseconds: ")[1])
+                # note that this represents the total elapsed time of the streaming session
+                elapsed_time = millis / 1000
+                player.set_state_from_stream(elapsed_time=elapsed_time)
             if "set pause" in line or "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED)
             if "Restarted at" in line or "restarting w/ pause" in line:

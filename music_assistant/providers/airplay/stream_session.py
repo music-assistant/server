@@ -9,12 +9,14 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import PlaybackState
+
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import TaskManager, close_async_generator
 from music_assistant.providers.airplay.helpers import unix_time_to_ntp
 
-from .constants import CONF_ENABLE_LATE_JOIN, StreamingProtocol
+from .constants import CONF_ENABLE_LATE_JOIN, ENABLE_LATE_JOIN_DEFAULT, StreamingProtocol
 from .protocols.airplay2 import AirPlay2Stream
 from .protocols.raop import RaopStream
 
@@ -59,6 +61,7 @@ class AirPlayStreamSession:
         # because we reuse an existing stream session for new play_media requests,
         # we need to track when the last stream was started
         self.last_stream_started: float = 0.0
+        self._clients_ready_event = asyncio.Event()
 
     async def start(self) -> None:
         """Initialize stream session for all players."""
@@ -69,11 +72,14 @@ class AirPlayStreamSession:
         self.wait_start = wait_start_seconds  # in seconds
         self.start_time = cur_time + wait_start_seconds
         self.start_ntp = unix_time_to_ntp(self.start_time)
-
-        self.prov.logger.info(
+        self.prov.logger.debug(
             "Starting stream session with %d clients",
             len(self.sync_clients),
         )
+        # Start audio source streamer task
+        # this will read from the audio source and distribute to all players
+        # we start this task early so it can buffer audio while players are starting
+        self._audio_source_task = asyncio.create_task(self._audio_streamer())
 
         async def _start_client(airplay_player: AirPlayPlayer) -> None:
             """Start stream for a single client."""
@@ -89,18 +95,26 @@ class AirPlayStreamSession:
 
             # Link stream session to player stream
             airplay_player.stream.session = self
-
-            await self._start_client_ffmpeg(airplay_player)
-
+            # create the named pipes
+            await airplay_player.stream.audio_pipe.create()
+            await airplay_player.stream.commands_pipe.create()
             # start the stream
             await airplay_player.stream.start(self.start_ntp)
+            # start the (player-specific) ffmpeg process
+            # note that ffmpeg will open the named pipe for writing
+            await self._start_client_ffmpeg(airplay_player)
+            # open the command pipe for writing
+            await airplay_player.stream.commands_pipe.open()
+            # repeat sending the volume level to the player because some players seem
+            # to ignore it the first time
+            # https://github.com/music-assistant/support/issues/3330
+            await airplay_player.stream.send_cli_command(f"VOLUME={airplay_player.volume_level}\n")
 
         async with TaskManager(self.mass) as tm:
             for _airplay_player in self.sync_clients:
                 tm.create_task(_start_client(_airplay_player))
-        # Start audio source streamer task
-        # this will read from the audio source and distribute to all players
-        self._audio_source_task = asyncio.create_task(self._audio_streamer())
+        # All clients started
+        self._clients_ready_event.set()
 
     async def stop(self) -> None:
         """Stop playback and cleanup."""
@@ -121,10 +135,10 @@ class AirPlayStreamSession:
         assert airplay_player.stream.session == self
         async with self._lock:
             self.sync_clients.remove(airplay_player)
+        await airplay_player.stream.stop()
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.close()
             del ffmpeg
-        await airplay_player.stream.stop()
         airplay_player.stream = None
         # If this was the last client, stop the session
         if not self.sync_clients:
@@ -143,7 +157,9 @@ class AirPlayStreamSession:
         if not sync_leader.stream or not sync_leader.stream.running:
             return
 
-        allow_late_join = self.prov.config.get_value(CONF_ENABLE_LATE_JOIN, False)
+        allow_late_join = self.prov.config.get_value(
+            CONF_ENABLE_LATE_JOIN, ENABLE_LATE_JOIN_DEFAULT
+        )
         if not allow_late_join:
             # Late joining is not allowed - restart the session for all players
             await self.stop()  # we need to stop the current session to add a new client
@@ -155,8 +171,10 @@ class AirPlayStreamSession:
                     self.mass.players.cmd_resume(sync_leader.player_id),
                     task_id=f"resync_session_{sync_leader.player_id}",
                 )
+            return
 
         # Stop existing stream if the player is already streaming
+        # should not happen, but guard just in case
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
 
@@ -177,12 +195,19 @@ class AirPlayStreamSession:
 
             # Calculate skip_seconds based on how many chunks have been sent
             skip_seconds = self.chunks_streamed
-
+            # Start the stream at compensated NTP timestamp
+            start_at = self.start_time + skip_seconds
+            start_ntp = unix_time_to_ntp(start_at)
+            self.prov.logger.debug(
+                "Adding late joiner %s to session, playback starts %.3fs from now",
+                airplay_player.player_id,
+                start_at - time.time(),
+            )
             # Add player to sync clients list
             if airplay_player not in self.sync_clients:
                 self.sync_clients.append(airplay_player)
 
-            await airplay_player.stream.start(self.start_ntp, skip_seconds)
+            await airplay_player.stream.start(start_ntp)
 
     async def replace_stream(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Replace the audio source of the stream."""
@@ -203,46 +228,53 @@ class AirPlayStreamSession:
         # Set new audio source and restart the stream
         self._audio_source = audio_source
         self._audio_source_task = asyncio.create_task(self._audio_streamer())
-
         self.last_stream_started = time.time()
         for sync_client in self.sync_clients:
             sync_client.set_state_from_stream(state=None, elapsed_time=0)
 
-    async def _audio_streamer(self) -> None:
+    async def _audio_streamer(self) -> None:  # noqa: PLR0915
         """Stream audio to all players."""
         generator_exhausted = False
         _last_metadata: str | None = None
+        chunk_size = self.pcm_format.pcm_sample_size
+        stream_start_time = time.time()
+        first_chunk_received = False
         try:
             # each chunk is exactly one second of audio data based on the pcm format.
             async for chunk in self._audio_source:
+                if len(chunk) != chunk_size:
+                    self.prov.logger.warning(
+                        "Audio source yielded chunk of unexpected size %d (expected %d), "
+                        "this may lead to desync issues",
+                        len(chunk),
+                        chunk_size,
+                    )
+                if first_chunk_received is False:
+                    first_chunk_received = True
+                    self.prov.logger.debug(
+                        "First audio chunk received after %.3fs, "
+                        "which is %.3fs before scheduled start time",
+                        time.time() - stream_start_time,
+                        time.time() - self.start_time,
+                    )
+                    # wait until the clients are ready to receive audio
+                    await asyncio.wait_for(self._clients_ready_event.wait(), timeout=10)
                 async with self._lock:
                     sync_clients = [x for x in self.sync_clients if x.stream and x.stream.running]
                     if not sync_clients:
-                        self.prov.logger.error(
-                            "!!! AUDIO STREAMER EXITING: No running clients left! "
-                            "Total sync_clients: %d, Details: %s",
-                            len(self.sync_clients),
-                            [
-                                (x.player_id, x.stream.running if x.stream else None)
-                                for x in self.sync_clients
-                            ],
+                        self.prov.logger.debug(
+                            "Audio streamer exiting: No running clients left in session"
                         )
                         return
 
-                    # Write to all players with a timeout (10 seconds)
-                    # Timeout must account for player's internal latency buffer (1-4 seconds)
-                    # The player may legitimately not accept data while draining its buffer
-                    write_start = time.time()
+                    # Write chunk to all players
                     write_tasks = [
-                        asyncio.wait_for(self._write_chunk_to_player(x, chunk), timeout=10.0)
-                        for x in sync_clients
-                        if x.stream
+                        self._write_chunk_to_player(x, chunk) for x in sync_clients if x.stream
                     ]
                     results = await asyncio.gather(*write_tasks, return_exceptions=True)
-                    write_elapsed = time.time() - write_start
 
                     # Check for write errors or timeouts
-                    players_to_remove = []
+                    players_to_remove: list[AirPlayPlayer] = []
                     for i, result in enumerate(results):
                         if i >= len(sync_clients):
                             continue
@@ -250,21 +282,20 @@ class AirPlayStreamSession:
 
                         if isinstance(result, asyncio.TimeoutError):
                             self.prov.logger.error(
-                                "!!! TIMEOUT writing chunk %d to player %s - "
-                                "REMOVING from sync group! Total write time=%.3fs",
+                                "TIMEOUT writing chunk %d to player %s - REMOVING from sync group!",
                                 self.chunks_streamed,
                                 player.player_id,
-                                write_elapsed,
                             )
                             players_to_remove.append(player)
                         elif isinstance(result, Exception):
                             self.prov.logger.error(
-                                "!!! Error writing chunk %d to player %s: %s - "
-                                "REMOVING from sync group! Total write time=%.3fs",
+                                (
+                                    "Error writing chunk %d to player %s: %s - "
+                                    "REMOVING from sync group!"
+                                ),
                                 self.chunks_streamed,
                                 player.player_id,
                                 result,
-                                write_elapsed,
                             )
                             players_to_remove.append(player)
 
@@ -338,20 +369,20 @@ class AirPlayStreamSession:
         chunk_number = self.chunks_streamed + 1
         player_id = airplay_player.player_id
 
-        # if the player has an associated FFMpeg instance, use that first
+        # don't write a chunk if we're paused
+        while airplay_player.playback_state == PlaybackState.PAUSED:
+            await asyncio.sleep(0.1)
+
+        # we write the chunk to the player's ffmpeg process which
+        # applies any player-specific filters (e.g. volume, dsp, etc)
+        # and outputs in the correct format for the player stream
+        # to the named pipe associated with the player's stream
         if ffmpeg := self._player_ffmpeg.get(player_id):
             await ffmpeg.write(chunk)
-            chunk_to_send = await ffmpeg.read(len(chunk))
-        else:
-            chunk_to_send = chunk
 
-        assert airplay_player.stream
         stream_write_start = time.time()
-        await airplay_player.stream.write_chunk(chunk_to_send)
         stream_write_elapsed = time.time() - stream_write_start
-
         total_elapsed = time.time() - write_start
-
         # Log only truly abnormal writes (>5s indicates a real stall)
         # Can take up to ~4s if player's latency buffer is being drained
         if total_elapsed > 5.0:
@@ -369,8 +400,6 @@ class AirPlayStreamSession:
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.write_eof()
             await ffmpeg.close()
-        assert airplay_player.stream
-        await airplay_player.stream.write_eof()
 
     async def _send_metadata(self, progress: int | None, metadata: PlayerMedia | None) -> None:
         """Send metadata to all players."""
@@ -391,19 +420,23 @@ class AirPlayStreamSession:
             await ffmpeg.close()
             del ffmpeg
         assert airplay_player.stream  # for type checker
-        # Create optional FFMpeg instance per player if needed
+        # Create the FFMpeg instance per player which accepts our PCM audio
+        # applies any player-specific filters (e.g. volume, dsp, etc)
+        # and outputs in the correct format for the player stream
+        # to the named pipe associated with the player's stream
         filter_params = get_player_filter_params(
             self.mass,
             airplay_player.player_id,
             self.pcm_format,
             airplay_player.stream.pcm_format,
         )
-        if filter_params or self.pcm_format != airplay_player.stream.pcm_format:
-            ffmpeg = FFMpeg(
-                audio_input="-",
-                input_format=self.pcm_format,
-                output_format=airplay_player.stream.pcm_format,
-                filter_params=filter_params,
-            )
-            await ffmpeg.start()
-            self._player_ffmpeg[airplay_player.player_id] = ffmpeg
+        ffmpeg = FFMpeg(
+            audio_input="-",
+            input_format=self.pcm_format,
+            output_format=airplay_player.stream.pcm_format,
+            filter_params=filter_params,
+            audio_output=airplay_player.stream.audio_pipe.path,
+            extra_input_args=["-y"],
+        )
+        await ffmpeg.start()
+        self._player_ffmpeg[airplay_player.player_id] = ffmpeg
