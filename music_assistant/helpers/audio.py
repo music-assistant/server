@@ -672,6 +672,7 @@ async def get_media_stream(
         if isinstance(err, asyncio.CancelledError | GeneratorExit):
             # we were cancelled, just raise
             cancelled = True
+            raise
         logger.error("Error while streaming %s: %s", streamdetails.uri, err)
         # dump the last 10 lines of the log in case of an unclean exit
         logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
