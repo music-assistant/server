@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from music_assistant_models.errors import MediaNotFoundError
-
 from music_assistant.providers.nicovideo.constants import SENSITIVE_CONTENTS
 from music_assistant.providers.nicovideo.services.base import NicovideoBaseService
 
@@ -169,21 +167,7 @@ class NicovideoUserService(NicovideoBaseService):
                 if len(video_ids) >= limit:
                     break
 
-        # Process tracks with limited concurrency to avoid DB overload
-
-        semaphore = asyncio.Semaphore(5)  # Limit to 5 concurrent requests
-
-        async def get_track_with_limit(video_id: str) -> Track | None:
-            async with semaphore:
-                try:
-                    return await self.service_manager.provider.mass.music.tracks.get_provider_item(
-                        video_id, self.service_manager.provider.instance_id
-                    )
-                except MediaNotFoundError:
-                    return None
-
-        # Execute with limited concurrency
-        track_tasks = [get_track_with_limit(video_id) for video_id in video_ids]
+        track_tasks = [self.service_manager.provider.get_track(video_id) for video_id in video_ids]
         tracks_results = await asyncio.gather(*track_tasks, return_exceptions=True)
 
         # Filter successful results
