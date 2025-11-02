@@ -38,6 +38,7 @@ class FFMpeg(AsyncProcess):
         filter_params: list[str] | None = None,
         extra_args: list[str] | None = None,
         extra_input_args: list[str] | None = None,
+        extra_output_args: list[str] | None = None,
         audio_output: str | int = "-",
         collect_log_history: bool = False,
         loglevel: str = "info",
@@ -51,6 +52,7 @@ class FFMpeg(AsyncProcess):
             input_path=audio_input if isinstance(audio_input, str) else "-",
             output_path=audio_output if isinstance(audio_output, str) else "-",
             extra_input_args=extra_input_args or [],
+            extra_output_args=extra_output_args or [],
             loglevel=loglevel,
         )
         self.audio_input = audio_input
@@ -101,9 +103,14 @@ class FFMpeg(AsyncProcess):
         timeout: float | None = None,
     ) -> tuple[bytes, bytes]:
         """Override communicate to avoid blocking."""
-        if self._stdin_task and not self._stdin_task.done():
-            self._stdin_task.cancel()
-            with suppress(asyncio.CancelledError):
+        if self._stdin_task:
+            if not self._stdin_task.done():
+                self._stdin_task.cancel()
+            # Always await the task to consume any exception and prevent
+            # "Task exception was never retrieved" errors.
+            # Suppress CancelledError (from cancel) and any other exception
+            # since exceptions have already been propagated through the generator chain.
+            with suppress(asyncio.CancelledError, Exception):
                 await self._stdin_task
         if self._logger_task and not self._logger_task.done():
             self._logger_task.cancel()
@@ -113,9 +120,14 @@ class FFMpeg(AsyncProcess):
         """Close/terminate the process and wait for exit."""
         if self.closed:
             return
-        if self._stdin_task and not self._stdin_task.done():
-            self._stdin_task.cancel()
-            with suppress(asyncio.CancelledError):
+        if self._stdin_task:
+            if not self._stdin_task.done():
+                self._stdin_task.cancel()
+            # Always await the task to consume any exception and prevent
+            # "Task exception was never retrieved" errors.
+            # Suppress CancelledError (from cancel) and any other exception
+            # since exceptions have already been propagated through the generator chain.
+            with suppress(asyncio.CancelledError, Exception):
                 await self._stdin_task
         await super().close(send_signal)
         if self._logger_task and not self._logger_task.done():
@@ -163,27 +175,33 @@ class FFMpeg(AsyncProcess):
     async def _feed_stdin(self) -> None:
         """Feed stdin with audio chunks from an AsyncGenerator."""
         assert not isinstance(self.audio_input, str | int)
-
         generator_exhausted = False
         cancelled = False
+        status = "running"
+        chunk_count = 0
+        self.logger.log(VERBOSE_LOG_LEVEL, "Start reading audio data from source...")
         try:
             start = time.time()
-            self.logger.debug("Start reading audio data from source...")
             async for chunk in self.audio_input:
+                chunk_count += 1
                 if self.closed:
                     return
                 await self.write(chunk)
-            self.logger.debug("Audio data source exhausted in %.2fs", time.time() - start)
             generator_exhausted = True
-        except Exception as err:
-            cancelled = isinstance(err, asyncio.CancelledError)
-            self.logger.error(
-                "Stream error: %s",
-                str(err) or err.__class__.__name__,
-                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-            )
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
+        except Exception:
+            status = "aborted with error"
             raise
         finally:
+            LOGGER.log(
+                VERBOSE_LOG_LEVEL,
+                "fill_buffer_task: %s (%s chunks received) in in %.2fs",
+                status,
+                chunk_count,
+                time.time() - start,
+            )
             if not cancelled:
                 await self.write_eof()
             # we need to ensure that we close the async generator
@@ -200,6 +218,7 @@ async def get_ffmpeg_stream(
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
+    extra_output_args: list[str] | None = None,
     raise_ffmpeg_exception: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """
@@ -215,6 +234,7 @@ async def get_ffmpeg_stream(
         filter_params=filter_params,
         extra_args=extra_args,
         extra_input_args=extra_input_args,
+        extra_output_args=extra_output_args,
         collect_log_history=True,
     ) as ffmpeg_proc:
         # read final chunks from stdout
@@ -238,6 +258,7 @@ def get_ffmpeg_args(  # noqa: PLR0915
     input_path: str = "-",
     output_path: str = "-",
     extra_input_args: list[str] | None = None,
+    extra_output_args: list[str] | None = None,
     loglevel: str = "error",
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
@@ -245,6 +266,8 @@ def get_ffmpeg_args(  # noqa: PLR0915
         extra_args = []
     if extra_input_args is None:
         extra_input_args = []
+    if extra_output_args is None:
+        extra_output_args = []
     # generic args
     generic_args = [
         "ffmpeg",
@@ -367,6 +390,7 @@ def get_ffmpeg_args(  # noqa: PLR0915
     else:
         raise RuntimeError("Invalid/unsupported output format specified")
 
+    output_args += extra_output_args  # append the extra output args
     # append (final) output path at the end of the args
     output_args.append(output_path)
 

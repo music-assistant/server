@@ -4,39 +4,38 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import suppress
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
-from soco import SoCo
+from music_assistant_models.enums import PlayerFeature
+from requests.exceptions import RequestException
+from soco import SoCo, events_asyncio, zonegroupstate
 from soco import config as soco_config
-from soco.discovery import discover, scan_network
+from soco.discovery import discover
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
 from music_assistant.models.player_provider import PlayerProvider
 
+from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN, SUBSCRIPTION_TIMEOUT
 from .player import SonosPlayer
-
-
-@dataclass
-class DiscoveredPlayer:
-    """Discovered Sonos player info."""
-
-    soco: SoCo
-    sonos_player: SonosPlayer | None = None
 
 
 class SonosPlayerProvider(PlayerProvider):
     """Sonos S1 Player Provider for legacy Sonos speakers."""
 
+    _discovery_running: bool = False
+    _discovery_reschedule_timer: asyncio.TimerHandle | None = None
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
         super().__init__(*args, **kwargs)
-        self.sonosplayers: dict[str, SonosPlayer] = {}
-        self._discovered_players: dict[str, DiscoveredPlayer] = {}
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # Configure SoCo to use async event system
+        soco_config.EVENTS_MODULE = events_asyncio
+        zonegroupstate.EVENT_CACHE_TIMEOUT = SUBSCRIPTION_TIMEOUT
+        self.topology_condition = asyncio.Condition()
+
         # Set up SoCo logging
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("soco").setLevel(logging.DEBUG)
@@ -51,68 +50,115 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        if self._discovery_reschedule_timer:
+            self._discovery_reschedule_timer.cancel()
+            self._discovery_reschedule_timer = None
+        # await any in-progress discovery
+        while self._discovery_running:
+            await asyncio.sleep(0.5)
         # Clean up subscriptions and connections
-        for sonos_player in self.sonosplayers.values():
-            if hasattr(sonos_player, "subscriptions"):
-                for subscription in sonos_player.subscriptions:
-                    with suppress(Exception):
-                        subscription.unsubscribe()
+        for sonos_player in self.mass.players.all(provider_filter=self.lookup_key):
+            sonos_player = cast("SonosPlayer", sonos_player)
+            await sonos_player.offline()
+        # Stop the async event listener
+        if events_asyncio.event_listener:
+            await events_asyncio.event_listener.async_stop()
 
     async def discover_players(self) -> None:
         """Discover Sonos players on the network."""
-        try:
-            # Discover players using SoCo
-            discovered = await asyncio.to_thread(discover)
-            if not discovered:
-                # Try manual discovery
-                discovered = await asyncio.to_thread(scan_network)
+        if self._discovery_running:
+            return
 
-            for soco in discovered:
-                await self._setup_player(soco)
+        # Handle config option for manual IP's
+        manual_ip_config = cast(
+            "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
+        )
+        for ip_address in manual_ip_config:
+            try:
+                player = SoCo(ip_address)
+                await self._setup_player(player)
+            except RequestException as err:
+                # player is offline
+                self.logger.debug("Failed to add SonosPlayer %s: %s", player, err)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to add SonosPlayer %s: %s",
+                    player,
+                    err,
+                    exc_info=err if self.logger.isEnabledFor(10) else None,
+                )
 
-        except Exception as err:
-            self.logger.error("Error discovering Sonos players: %s", err)
+        allow_network_scan = self.config.get_value(CONF_NETWORK_SCAN)
+        if not (household_id := self.config.get_value(CONF_HOUSEHOLD_ID)):
+            household_id = "Sonos"
+
+        def do_discover() -> None:
+            """Run discovery and add players in executor thread."""
+            self._discovery_running = True
+            try:
+                self.logger.debug("Sonos discovery started...")
+                discovered_devices: set[SoCo] = (
+                    discover(
+                        timeout=30, household_id=household_id, allow_network_scan=allow_network_scan
+                    )
+                    or set()
+                )
+
+                # process new players
+                for soco in discovered_devices:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._setup_player(soco), self.mass.loop
+                        ).result()
+                    except RequestException as err:
+                        # player is offline
+                        self.logger.debug("Failed to add SonosPlayer %s: %s", soco, err)
+                    except Exception as err:
+                        self.logger.warning(
+                            "Failed to add SonosPlayer %s: %s",
+                            soco,
+                            err,
+                            exc_info=err if self.logger.isEnabledFor(10) else None,
+                        )
+            finally:
+                self._discovery_running = False
+
+        await asyncio.to_thread(do_discover)
+
+        def reschedule() -> None:
+            self._discovery_reschedule_timer = None
+            self.mass.create_task(self.discover_players())
+
+        # reschedule self once finished
+        self._discovery_reschedule_timer = self.mass.loop.call_later(1800, reschedule)
 
     async def _setup_player(self, soco: SoCo) -> None:
         """Set up a discovered Sonos player."""
         player_id = soco.uid
 
-        if player_id in self.sonosplayers:
+        if existing := cast("SonosPlayer", self.mass.players.get(player_id=player_id)):
+            if existing.soco.ip_address != soco.ip_address:
+                existing.update_ip(soco.ip_address)
             return
-
+        if not soco.is_visible:
+            return
+        enabled = self.mass.config.get_raw_player_config_value(player_id, "enabled", True)
+        if not enabled:
+            self.logger.debug("Ignoring disabled player: %s", player_id)
+            return
         try:
-            # Create SonosPlayer instance
+            # Ensure speaker info is available during setup
+            if not soco.speaker_info:
+                soco.get_speaker_info(True, timeout=7)
             sonos_player = SonosPlayer(self, soco)
-            self.sonosplayers[player_id] = sonos_player
-
-            # Create discovery info
-            discovered_player = DiscoveredPlayer(
-                soco=soco,
-                sonos_player=sonos_player,
-            )
-            self._discovered_players[player_id] = discovered_player
+            if not soco.fixed_volume:
+                sonos_player._attr_supported_features = {
+                    *sonos_player._attr_supported_features,
+                    PlayerFeature.VOLUME_SET,
+                }
 
             # Register with Music Assistant
             await sonos_player.setup()
 
-            # Set up event subscriptions
-            await self._setup_subscriptions(sonos_player)
-
         except Exception as err:
             self.logger.error("Error setting up Sonos player %s: %s", player_id, err)
-
-    async def _setup_subscriptions(self, sonos_player: SonosPlayer) -> None:
-        """Set up event subscriptions for a Sonos player."""
-        try:
-            # Set up event subscriptions
-            # This would involve subscribing to SoCo events for state changes
-            pass
-        except Exception as err:
-            self.logger.debug(
-                "Error setting up subscriptions for %s: %s", sonos_player.player_id, err
-            )
-
-    async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates."""
-        if sonos_player := self.sonosplayers.get(player_id):
-            await sonos_player.poll()

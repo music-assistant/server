@@ -120,7 +120,7 @@ YT_PERSONAL_PLAYLISTS = (
 )
 DYNAMIC_PLAYLIST_TRACK_LIMIT = 300
 YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
-PACKAGES_TO_INSTALL = ("yt-dlp", "bgutil-ytdlp-pot-provider")
+PACKAGES_TO_INSTALL = ("yt-dlp[default]", "bgutil-ytdlp-pot-provider")
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,

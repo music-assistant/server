@@ -611,29 +611,12 @@ class MusicController(CoreController):
             full_item.item_id,
             True,
         )
-        # add to provider(s) library if needed/wanted
-        provider_mappings_updated = False
+        # forward to provider(s) if needed
         for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider.library_edit_supported(item.media_type):
-                continue
-            if not provider.library_sync_back_enabled(full_item.media_type):
-                continue
-            if not prov_mapping.in_library:
-                # add to provider library first
-                prov_item = deepcopy(full_item)
-                prov_item.provider = prov_mapping.provider_instance
-                prov_item.item_id = prov_mapping.item_id
-                await provider.library_add(prov_item)
-                provider_mappings_updated = True
-                prov_mapping.in_library = True
-            # set favorite at provider
             if not provider.library_favorites_edit_supported(full_item.media_type):
                 continue
             await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
-
-        if provider_mappings_updated:
-            await ctrl.set_provider_mappings(full_item.item_id, full_item.provider_mappings)
 
     @api_command("music/favorites/remove_item")
     async def remove_item_from_favorites(
@@ -647,22 +630,13 @@ class MusicController(CoreController):
             library_item_id,
             False,
         )
-        # remove from provider(s) library if needed
-        provider_mappings_updated = False
+        # forward to provider(s) if needed
         full_item = await ctrl.get_library_item(library_item_id)
         for prov_mapping in full_item.provider_mappings:
-            if not prov_mapping.in_library:
-                continue
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if not provider.library_favorites_edit_supported(full_item.media_type):
                 continue
-            if not provider.library_sync_back_enabled(full_item.media_type):
-                continue
             self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
-            prov_mapping.in_library = False
-            provider_mappings_updated = True
-        if provider_mappings_updated:
-            await ctrl.set_provider_mappings(library_item_id, full_item.provider_mappings)
 
     @api_command("music/library/remove_item")
     async def remove_item_from_library(

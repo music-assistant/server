@@ -10,5 +10,5 @@
   "multi_instance": false,
   "builtin": false,
   "icon": "cast-variant",
-  "mdns_discovery": ["_raop._tcp.local."]
+  "mdns_discovery": ["_airplay._tcp.local.", "_raop._tcp.local."]
 }

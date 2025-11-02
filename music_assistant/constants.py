@@ -580,6 +580,9 @@ CONF_ENTRY_HTTP_PROFILE_DEFAULT_1 = ConfigEntry.from_dict(
 CONF_ENTRY_HTTP_PROFILE_DEFAULT_2 = ConfigEntry.from_dict(
     {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "no_content_length"}
 )
+CONF_ENTRY_HTTP_PROFILE_DEFAULT_3 = ConfigEntry.from_dict(
+    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "forced_content_length"}
+)
 
 CONF_ENTRY_HTTP_PROFILE_FORCED_1 = ConfigEntry.from_dict(
     {**CONF_ENTRY_HTTP_PROFILE_DEFAULT_1.to_dict(), "hidden": True}
@@ -625,6 +628,18 @@ CONF_ENTRY_ICY_METADATA_HIDDEN_DISABLED = ConfigEntry.from_dict(
         "value": False,
         "hidden": True,
     }
+)
+
+CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES = ConfigEntry(
+    key="crossfade_different_sample_rates",
+    type=ConfigEntryType.BOOLEAN,
+    label="Allow crossfade between tracks with different sample rates",
+    description="Enable this option to allow crossfading between tracks that have different "
+    "sample rates (e.g. 44.1kHz to 48kHz). \n\n "
+    "Only enable this option if your player actually support this, otherwise you may "
+    "experience audio glitches during crossfades.",
+    default_value=False,
+    category="advanced",
 )
 
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
@@ -915,9 +930,10 @@ def create_sample_rates_config_entry(
 DEFAULT_STREAM_HEADERS = {
     "Server": APPLICATION_NAME,
     "transferMode.dlna.org": "Streaming",
-    "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
+    "contentFeatures.dlna.org": "DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
+    "icy-name": APPLICATION_NAME,
 }
 ICY_HEADERS = {
     "icy-name": APPLICATION_NAME,
@@ -926,13 +942,13 @@ ICY_HEADERS = {
     "icy-logo": MASS_LOGO_ONLINE,
 }
 
-DEFAULT_PCM_FORMAT = AudioFormat(
+INTERNAL_PCM_FORMAT = AudioFormat(
     # always prefer float32 as internal pcm format to create headroom
     # for filters such as dsp and volume normalization
     content_type=ContentType.PCM_F32LE,
-    sample_rate=48000,
-    bit_depth=32,
-    channels=2,
+    bit_depth=32,  # related to float32
+    sample_rate=48000,  # static for flow stream, dynamic for anything else
+    channels=2,  # static for flow stream, dynamic for anything else
 )
 
 # extra data / extra attributes keys
@@ -943,6 +959,9 @@ ATTR_ANNOUNCEMENT_IN_PROGRESS: Final[str] = "announcement_in_progress"
 ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
 ATTR_LAST_POLL: Final[str] = "last_poll"
 ATTR_GROUP_MEMBERS: Final[str] = "group_members"
+ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
+ATTR_ENABLED: Final[str] = "enabled"
+ATTR_AVAILABLE: Final[str] = "available"
 
 # Album type detection patterns
 LIVE_INDICATORS = [

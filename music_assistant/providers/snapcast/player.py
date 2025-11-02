@@ -7,7 +7,7 @@ import urllib.parse
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ContentType, MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.player import DeviceInfo, PlayerMedia
@@ -19,7 +19,7 @@ from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-    DEFAULT_PCM_FORMAT,
+    INTERNAL_PCM_FORMAT,
 )
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.compare import create_safe_string
@@ -216,7 +216,7 @@ class SnapCastPlayer(Player):
             audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=queue,
                 start_queue_item=start_queue_item,
-                pcm_format=DEFAULT_PCM_FORMAT,
+                pcm_format=INTERNAL_PCM_FORMAT,
             )
         else:
             # assume url or some other direct path
@@ -333,9 +333,13 @@ class SnapCastPlayer(Player):
         assert group is not None  # for type checking
         await group.set_stream(new_stream_name)
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Player config."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         return [
             *base_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,

@@ -234,15 +234,17 @@ class AsyncProcess:
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
         # abort existing readers on stderr/stdout first before we send communicate
-        waiter: asyncio.Future[None]
-        if self.proc.stdout and (waiter := self.proc.stdout._waiter):  # type: ignore[attr-defined]
-            self.proc.stdout._waiter = None  # type: ignore[attr-defined]
-            if waiter and not waiter.done():
-                waiter.set_exception(asyncio.CancelledError())
-        if self.proc.stderr and (waiter := self.proc.stderr._waiter):  # type: ignore[attr-defined]
-            self.proc.stderr._waiter = None  # type: ignore[attr-defined]
-            if waiter and not waiter.done():
-                waiter.set_exception(asyncio.CancelledError())
+        # waiter: asyncio.Future[None]
+        # stdout_waiter = self.proc.stdout._waiter  # type: ignore[attr-defined]
+        # if self.proc.stdout and stdout_waiter:
+        #     self.proc.stdout._waiter = None  # type: ignore[attr-defined]
+        #     if stdout_waiter and not stdout_waiter.done():
+        #         stdout_waiter.set_exception(asyncio.CancelledError())
+        # stderr_waiter = self.proc.stderr._waiter  # type: ignore[attr-defined]
+        # if self.proc.stderr and stderr_waiter:
+        #     self.proc.stderr._waiter = None  # type: ignore[attr-defined]
+        #     if stderr_waiter and not stderr_waiter.done():
+        #         stderr_waiter.set_exception(asyncio.CancelledError())
         await asyncio.sleep(0)  # yield to loop
 
         # make sure the process is really cleaned up.
