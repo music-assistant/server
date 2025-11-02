@@ -345,6 +345,12 @@ class AirPlayStreamSession:
                     ],
                     return_exceptions=True,
                 )
+                # Set all players to IDLE state after queue finishes
+                # This ensures the state is updated even if the CLI binary doesn't
+                # reliably report "end of stream reached" via stderr
+                for sync_client in self.sync_clients:
+                    if sync_client.stream:
+                        sync_client.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
         except Exception as err:
             logger = self.prov.logger
             logger.error(
