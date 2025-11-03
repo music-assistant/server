@@ -91,7 +91,8 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint.pydocstyle]
-# Use Google-style docstrings.
+# Use Sphinx-style docstrings with :param: syntax
+# pep257 is the base convention, we enforce Sphinx-style parameters separately
 convention = "pep257"
 
 [tool.ruff.lint.pylint]

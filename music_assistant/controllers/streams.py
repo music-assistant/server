@@ -1304,15 +1304,6 @@ class StreamsController(CoreController):
                 filter_params=filter_params,
             )
 
-        if (
-            streamdetails.media_type == MediaType.RADIO
-            and streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
-        ):
-            # prepend 3 seconds of silence to give loudnorm filter time to adjust
-            # fixes https://github.com/music-assistant/support/issues/4028#issuecomment-3478449178
-            silence = b"\0" * int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2) * 3
-            yield silence
-
         first_chunk_received = False
         fade_in_buffer = b""
         bytes_received = 0

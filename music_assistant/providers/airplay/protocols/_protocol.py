@@ -89,7 +89,7 @@ class AirPlayProtocol(ABC):
 
         # Close the CLI process (wait for it to terminate)
         if self._cli_proc and not self._cli_proc.closed:
-            await self._cli_proc.close(True)
+            await self._cli_proc.close()
 
         self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 

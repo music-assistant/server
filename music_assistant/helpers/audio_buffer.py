@@ -307,6 +307,15 @@ class AudioBuffer:
         # if we reach here, we have broken out of the loop due to inactivity
         await self.clear(cancel_inactivity_task=False)
 
+    async def _notify_on_producer_error(self) -> None:
+        """Notify waiting consumers that producer has failed.
+
+        This is called from the producer task done callback and properly
+        acquires the lock before calling notify_all.
+        """
+        async with self._lock:
+            self._data_available.notify_all()
+
     def attach_producer_task(self, task: asyncio.Task[Any]) -> None:
         """Attach a background task that fills the buffer."""
         self._producer_task = task
@@ -324,8 +333,9 @@ class AudioBuffer:
                 # This prevents reuse of a buffer in error state
                 self._cancelled = True
                 # Wake up any waiting consumers so they can see the error
+                # We need to acquire the lock before calling notify_all
                 loop = asyncio.get_running_loop()
-                loop.call_soon_threadsafe(self._data_available.notify_all)
+                loop.create_task(self._notify_on_producer_error())
 
         task.add_done_callback(_on_producer_done)
 

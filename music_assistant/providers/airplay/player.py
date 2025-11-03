@@ -466,10 +466,8 @@ class AirPlayPlayer(Player):
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
-        stream_session = AirPlayStreamSession(
-            provider, sync_clients, AIRPLAY_PCM_FORMAT, audio_source
-        )
-        await stream_session.start()
+        stream_session = AirPlayStreamSession(provider, sync_clients, AIRPLAY_PCM_FORMAT)
+        await stream_session.start(audio_source)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""

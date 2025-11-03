@@ -33,7 +33,11 @@ from music_assistant_models.errors import InvalidCommand
 
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
-from music_assistant.helpers.api_docs import generate_openapi_spec
+from music_assistant.helpers.api_docs import (
+    generate_commands_reference,
+    generate_openapi_spec,
+    generate_schemas_reference,
+)
 from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import get_ip_addresses
@@ -157,9 +161,14 @@ class WebserverController(CoreController):
         routes.append(("POST", "/api", self._handle_jsonrpc_api_command))
         # add api documentation
         routes.append(("GET", "/api-docs", self._handle_api_intro))
+        routes.append(("GET", "/api-docs/", self._handle_api_intro))
+        routes.append(("GET", "/api-docs/commands", self._handle_commands_reference))
+        routes.append(("GET", "/api-docs/commands/", self._handle_commands_reference))
+        routes.append(("GET", "/api-docs/schemas", self._handle_schemas_reference))
+        routes.append(("GET", "/api-docs/schemas/", self._handle_schemas_reference))
         routes.append(("GET", "/api-docs/openapi.json", self._handle_openapi_spec))
         routes.append(("GET", "/api-docs/swagger", self._handle_swagger_ui))
-        routes.append(("GET", "/api-docs/redoc", self._handle_redoc_ui))
+        routes.append(("GET", "/api-docs/swagger/", self._handle_swagger_ui))
         # start the webserver
         all_ip_addresses = await get_ip_addresses()
         default_publish_ip = all_ip_addresses[0]
@@ -265,14 +274,23 @@ class WebserverController(CoreController):
             error = f"Invalid Command: {command_msg.command}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
-        args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
-        result = handler.target(**args)
-        if hasattr(result, "__anext__"):
-            # handle async generator (for really large listings)
-            result = [item async for item in result]
-        elif asyncio.iscoroutine(result):
-            result = await result
-        return web.json_response(result, dumps=json_dumps)
+
+        try:
+            args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
+            result = handler.target(**args)
+            if hasattr(result, "__anext__"):
+                # handle async generator (for really large listings)
+                result = [item async for item in result]
+            elif asyncio.iscoroutine(result):
+                result = await result
+            return web.json_response(result, dumps=json_dumps)
+        except Exception as e:
+            # Return clean error message without stacktrace
+            error_type = type(e).__name__
+            error_msg = str(e)
+            error = f"{error_type}: {error_msg}"
+            self.logger.error("Error executing command %s: %s", command_msg.command, error)
+            return web.Response(status=500, text=error)
 
     async def _handle_application_log(self, request: web.Request) -> web.Response:
         """Handle request to get the application log."""
@@ -302,19 +320,22 @@ class WebserverController(CoreController):
         )
         return web.json_response(spec)
 
+    async def _handle_commands_reference(self, request: web.Request) -> web.Response:
+        """Handle request for commands reference page (generated on-the-fly)."""
+        html = generate_commands_reference(self.mass.command_handlers, server_url=self.base_url)
+        return web.Response(text=html, content_type="text/html")
+
+    async def _handle_schemas_reference(self, request: web.Request) -> web.Response:
+        """Handle request for schemas reference page (generated on-the-fly)."""
+        html = generate_schemas_reference(self.mass.command_handlers)
+        return web.Response(text=html, content_type="text/html")
+
     async def _handle_swagger_ui(self, request: web.Request) -> web.Response:
         """Handle request for Swagger UI."""
         swagger_html_path = os.path.join(
             os.path.dirname(__file__), "..", "helpers", "resources", "swagger_ui.html"
         )
         return await self._server.serve_static(swagger_html_path, request)
-
-    async def _handle_redoc_ui(self, request: web.Request) -> web.Response:
-        """Handle request for ReDoc UI."""
-        redoc_html_path = os.path.join(
-            os.path.dirname(__file__), "..", "helpers", "resources", "redoc_ui.html"
-        )
-        return await self._server.serve_static(redoc_html_path, request)
 
 
 class WebsocketClientHandler:

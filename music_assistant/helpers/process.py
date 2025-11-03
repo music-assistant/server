@@ -90,8 +90,8 @@ class AsyncProcess:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Exit context manager."""
-        # send interrupt signal to process when we're cancelled
-        await self.close(send_signal=exc_type in (GeneratorExit, asyncio.CancelledError))
+        # make sure we close and cleanup the process
+        await self.close()
         self._returncode = self.returncode
         return None
 
@@ -228,13 +228,11 @@ class AsyncProcess:
         stdout, stderr = await asyncio.wait_for(self.proc.communicate(input), timeout)
         return (stdout, stderr)
 
-    async def close(self, send_signal: bool = False) -> None:
+    async def close(self) -> None:
         """Close/terminate the process and wait for exit."""
         self._close_called = True
         if not self.proc:
             return
-        if send_signal and self.returncode is None:
-            self.proc.send_signal(SIGINT)
 
         # cancel existing stdin feeder task if any
         if self._stdin_feeder_task:
@@ -251,6 +249,8 @@ class AsyncProcess:
         await asyncio.wait_for(self._stdin_lock.acquire(), 10)
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
+        elif not self.proc.stdin and self.proc.returncode is None:
+            self.proc.send_signal(SIGINT)
 
         # ensure we have no more readers active and stdout is drained
         await asyncio.wait_for(self._stdout_lock.acquire(), 10)
@@ -299,6 +299,10 @@ class AsyncProcess:
     async def wait_with_timeout(self, timeout: int) -> int:
         """Wait for the process and return the returncode with a timeout."""
         return await asyncio.wait_for(self.wait(), timeout)
+
+    def attach_stderr_reader(self, task: asyncio.Task[None]) -> None:
+        """Attach a stderr reader task to this process."""
+        self._stderr_reader_task = task
 
 
 async def check_output(*args: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
