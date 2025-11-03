@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from music_assistant_models.enums import PlaybackState
@@ -28,8 +27,6 @@ class AirPlay2Stream(AirPlayProtocol):
     the actual timestamped playback. It reads pcm audio from a named pipe
     and we can send some interactive commands using another named pipe.
     """
-
-    _stderr_reader_task: asyncio.Task[None] | None = None
 
     @property
     def _cli_loglevel(self) -> int:
@@ -122,19 +119,16 @@ class AirPlay2Stream(AirPlayProtocol):
             self.player.logger.debug(line)
             if f"airplay: Adding AirPlay device '{self.player.display_name}'" in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
-                self._started.set()
                 break
             if f"The AirPlay 2 device '{self.player.display_name}' failed" in line:
                 raise PlayerCommandFailed("Cannot connect to AirPlay device")
         # start reading the stderr of the cliap2 process from another task
-        self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
+        self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
 
     async def _stderr_reader(self) -> None:
         """Monitor stderr for the running CLIap2 process."""
         player = self.player
-        queue = self.mass.players.get_active_queue(player)
         logger = player.logger
-        lost_packets = 0
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
@@ -147,12 +141,7 @@ class AirPlay2Stream(AirPlayProtocol):
                 # streaming has started
                 player.set_state_from_stream(state=PlaybackState.PLAYING, elapsed_time=0)
             if "lost packet out of backlog" in line:
-                lost_packets += 1
-                if lost_packets == 100 and queue:
-                    logger.error("High packet loss detected, restarting playback...")
-                    self.mass.create_task(self.mass.player_queues.resume(queue.queue_id, False))
-                else:
-                    logger.warning("Packet loss detected!")
+                logger.warning("Packet loss detected!")
             if "end of stream reached" in line:
                 logger.debug("End of stream reached")
                 break
