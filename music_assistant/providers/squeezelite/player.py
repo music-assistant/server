@@ -256,9 +256,10 @@ class SqueezelitePlayer(Player):
         # For queue streams, further cap to content sample rate
         if media.source_id and media.queue_item_id:
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            min_sample_rate = min(
-                min_sample_rate, queue_item.streamdetails.audio_format.sample_rate
-            )
+            if queue_item and queue_item.streamdetails and queue_item.streamdetails.audio_format:
+                min_sample_rate = min(
+                    min_sample_rate, queue_item.streamdetails.audio_format.sample_rate
+                )
 
         master_audio_format = AudioFormat(
             content_type=INTERNAL_PCM_FORMAT.content_type,
@@ -266,8 +267,11 @@ class SqueezelitePlayer(Player):
             bit_depth=INTERNAL_PCM_FORMAT.bit_depth,  # 32-bit float for processing
             channels=2,
         )
+
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
+            if not media.custom_data:
+                raise RuntimeError("Missing custom_data for announcement")
             audio_source = self.mass.streams.get_announcement_stream(
                 media.custom_data["announcement_url"],
                 output_format=master_audio_format,
@@ -276,6 +280,8 @@ class SqueezelitePlayer(Player):
             )
         elif media.media_type == MediaType.PLUGIN_SOURCE:
             # special case: plugin source stream
+            if not media.custom_data:
+                raise RuntimeError("Missing custom_data for plugin source")
             audio_source = self.mass.streams.get_plugin_source_stream(
                 plugin_source_id=media.custom_data["source_id"],
                 output_format=master_audio_format,
@@ -283,20 +289,23 @@ class SqueezelitePlayer(Player):
                 # because this could have been a group
                 player_id=media.custom_data["player_id"],
             )
-        elif media.source_id.startswith("ugp_"):
+        elif media.source_id and media.source_id.startswith("ugp_"):
             # special case: UGP stream
-            ugp_player: UniversalGroupPlayer = self.mass.players.get(media.source_id)
+            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
+            if not ugp_player or not ugp_player.stream:
+                raise RuntimeError("UGP player or stream not available")
             ugp_stream = ugp_player.stream
             # Filter is later applied in MultiClientStream
             audio_source = ugp_stream.get_stream(master_audio_format, filter_params=None)
         elif media.source_id and media.queue_item_id:
             # regular queue stream request
+            queue = self.mass.player_queues.get(media.source_id)
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            if not queue or not queue_item:
+                raise RuntimeError("Queue or queue item not found")
             audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=self.mass.player_queues.get(media.source_id),
-                start_queue_item=self.mass.player_queues.get_item(
-                    media.source_id,
-                    media.queue_item_id,
-                ),
+                queue=queue,
+                start_queue_item=queue_item,
                 pcm_format=master_audio_format,
             )
         else:
@@ -304,7 +313,9 @@ class SqueezelitePlayer(Player):
             # NOTE: this will fail if its an uri not playable by ffmpeg
             audio_source = get_ffmpeg_stream(
                 audio_input=media.uri,
-                input_format=AudioFormat(ContentType.try_parse(media.uri)),
+                input_format=AudioFormat(
+                    content_type=ContentType.try_parse(media.uri) or ContentType.UNKNOWN
+                ),
                 output_format=master_audio_format,
             )
         # start the stream task
@@ -374,7 +385,7 @@ class SqueezelitePlayer(Player):
             if player_id == self.player_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
-            child_player: SqueezelitePlayer | None = self.mass.players.get(player_id)
+            child_player = cast("SqueezelitePlayer | None", self.mass.players.get(player_id))
             if not child_player:
                 # should not happen, but guard against it
                 continue
@@ -466,7 +477,7 @@ class SqueezelitePlayer(Player):
             "source_id": media.source_id,
             "queue_item_id": media.queue_item_id,
         }
-        if queue := self.mass.player_queues.get(media.source_id):
+        if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
         await slimplayer.play_url(
@@ -554,6 +565,8 @@ class SqueezelitePlayer(Player):
         # TODO: fix this in the aioslimproto lib
         event_data = cast("str", event.data)
         queue = self.mass.player_queues.get_active_queue(self.player_id)
+        if not queue:
+            return
         if event_data.startswith("button preset_") and event_data.endswith(".single"):
             preset_id = event_data.split("preset_")[1].split(".")[0]
             preset_index = int(preset_id) - 1
@@ -591,7 +604,9 @@ class SqueezelitePlayer(Player):
         if not sync_master_id:
             # we only correct sync members, not the sync master itself
             return
-        if not (sync_master := self.provider.slimproto.get_player(sync_master_id)):
+        if not self._provider.slimproto or not (
+            sync_master := self._provider.slimproto.get_player(sync_master_id)
+        ):
             return  # just here as a guard as bad things can happen
 
         if sync_master.state != SlimPlayerState.PLAYING:
@@ -616,8 +631,8 @@ class SqueezelitePlayer(Player):
             sync_playpoints.clear()
 
         diff = int(
-            self.provider.get_corrected_elapsed_milliseconds(sync_master)
-            - self.provider.get_corrected_elapsed_milliseconds(self.client)
+            self._provider.get_corrected_elapsed_milliseconds(sync_master)
+            - self._provider.get_corrected_elapsed_milliseconds(self.client)
         )
 
         sync_playpoints.append(SyncPlayPoint(now, sync_master.player_id, diff))
@@ -666,7 +681,7 @@ class SqueezelitePlayer(Player):
                 self.player_id, f"preset_{preset_index}"
             ):
                 try:
-                    media_item = await self.mass.music.get_item_by_uri(preset_conf)
+                    media_item = await self.mass.music.get_item_by_uri(cast("str", preset_conf))
                     preset_items.append(
                         SlimPreset(
                             uri=media_item.uri,
