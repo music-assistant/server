@@ -30,7 +30,6 @@ from music_assistant_models.errors import (
     InvalidCommand,
     InvalidDataError,
     MusicAssistantError,
-    PlayerUnavailableError,
     QueueEmpty,
 )
 from music_assistant_models.media_items import AudioFormat
@@ -299,8 +298,6 @@ class SqueezelitePlayer(Player):
         elif media.source_id and media.source_id.startswith("ugp_"):
             # special case: UGP stream
             ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
-            if not ugp_player:
-                raise PlayerUnavailableError(f"UGP player {media.source_id} not found")
             if not ugp_player.stream:
                 raise ActionUnavailable(f"UGP player {media.source_id} has no active stream")
             ugp_stream = ugp_player.stream
