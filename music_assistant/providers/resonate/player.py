@@ -288,10 +288,9 @@ class ResonatePlayer(Player):
 
                     # Return actual position in microseconds relative to main_stream start
                     player_instance.logger.debug(
-                        "Providing channel stream for player %s at position %d us - filters %s",
+                        "Providing channel stream for player %s at position %d us",
                         player_id,
                         actual_position_us,
-                        filter_params,
                     )
                     return (
                         stream_gen,
@@ -304,9 +303,9 @@ class ResonatePlayer(Player):
                         actual_position_us,
                     )
 
-            # Get main channel source and position
+            # Setup the main channel subscription
             main_channel_gen, main_position_us = await self.multi_client_stream.subscribe_raw()
-            assert main_position_us == 0  # main channel always starts at 0
+            assert main_position_us == 0  # first subscriber, should be zero
             media_stream = MusicAssistantMediaStream(
                 main_channel_source=main_channel_gen,
                 main_channel_format=ResonateAudioFormat(

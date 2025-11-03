@@ -22,6 +22,9 @@ LOGGER = logging.getLogger(__name__)
 MIN_BUFFER_DURATION_US = 10_000_000
 
 
+### This is not just a simple multi-client stream, it is specifically designed to work with
+### aioresonate. explain that. also in the module level docstring.
+### maybe even rename?
 class MultiClientStream:
     """Implementation of a simple multi-client (audio) stream task/job."""
 
@@ -31,26 +34,32 @@ class MultiClientStream:
         audio_format: AudioFormat,
     ) -> None:
         """Initialize MultiClientStream."""
+        ### move properties from __init_ to class level.
+        ### and docstrings there too
         self.audio_source = audio_source
         self.audio_format = audio_format
 
+        ### Rename to something better, name came from a old initial idea, not relevant anymore
         # Shared buffer - store chunks with their timestamps
         # Each item is a tuple of (chunk_data, timestamp_us)
         self.shared_buffer: deque[tuple[bytes, float]] = deque()
 
+        ### lets use uuid directly instead of str
         # Track subscriber positions and their read state
         # key: subscriber_id, value: position (index into shared_buffer)
         self.subscriber_positions: dict[str, int] = {}
 
-        # Lock for thread-safe buffer access
+        # Lock for buffer and shared state access
         self.buffer_lock = asyncio.Lock()
-
-        # Lock to ensure only one subscriber reads from source at a time
+        # Lock to serialize audio source reads
         self.source_read_lock = asyncio.Lock()
 
         # Track if stream has ended
         self.stream_ended = False
 
+        ### Lets consistently use seconds in this class, since its float we dont loose precision,
+        ### need to update uses too after that
+        ### Why explicitly naming it float in comments? I think that's obvious
         # Track current position in microseconds (from stream start) - float for precision
         self.current_position_us = 0.0
 
@@ -79,6 +88,7 @@ class MultiClientStream:
 
     async def _cleanup_old_chunks(self) -> None:
         """Remove old chunks when all subscribers read them and min duration exceeded."""
+        ### unneeded check? maybe not the only one in this file?
         if not self.shared_buffer:
             return
 
@@ -93,6 +103,7 @@ class MultiClientStream:
         target_oldest_us = self.current_position_us - MIN_BUFFER_DURATION_US
 
         # Find how many chunks we can remove (respecting min_position)
+        ### why not refactor so we pop in this loop?
         chunks_to_remove = 0
         for i in range(min_position):
             _chunk_bytes, chunk_timestamp_us = self.shared_buffer[i]
@@ -107,6 +118,7 @@ class MultiClientStream:
             self.shared_buffer.popleft()
 
         # Adjust all subscriber positions
+        ### do we need this? i mean with min_position set as above?
         for sub_id in self.subscriber_positions:
             pos = self.subscriber_positions[sub_id]
             self.subscriber_positions[sub_id] = max(0, pos - chunks_to_remove)
@@ -115,11 +127,6 @@ class MultiClientStream:
         """Read next chunk from audio source and add to buffer."""
         try:
             chunk = await self.audio_source.__anext__()
-            LOGGER.debug(
-                "Subscriber %s got chunk of %d bytes from source",
-                subscriber_id,
-                len(chunk),
-            )
             async with self.buffer_lock:
                 # Calculate timestamp for this chunk
                 chunk_timestamp_us = self.current_position_us
@@ -142,7 +149,8 @@ class MultiClientStream:
             raise
 
     async def _check_buffer_after_source_lock(self, subscriber_id: str) -> bool | None:
-        """Check if buffer has grown or stream ended after acquiring source lock.
+        """
+        Check if buffer has grown or stream ended after acquiring source lock.
 
         Returns:
             True if should continue reading loop (chunk found in buffer),
@@ -153,19 +161,15 @@ class MultiClientStream:
             position = self.subscriber_positions[subscriber_id]
             if position < len(self.shared_buffer):
                 # Another subscriber already read the chunk
-                LOGGER.debug(
-                    "Subscriber %s found chunk in buffer, continuing",
-                    subscriber_id,
-                )
                 return True
             if self.stream_ended:
                 # Stream ended while waiting for source lock
-                LOGGER.debug("Subscriber %s found stream ended", subscriber_id)
                 return False
         return None  # Continue to read from source
 
     async def _get_chunk_from_buffer(self, subscriber_id: str) -> bytes | None:
-        """Get next chunk from buffer for subscriber.
+        """
+        Get next chunk from buffer for subscriber.
 
         Returns:
             Chunk bytes if available, None if no chunk available, or empty bytes for EOF.
@@ -207,7 +211,8 @@ class MultiClientStream:
         output_format: AudioFormat,
         filter_params: list[str] | None = None,
     ) -> tuple[AsyncGenerator[bytes, None], int]:
-        """Get (client specific encoded) ffmpeg stream.
+        """
+        Get (client specific encoded) ffmpeg stream.
 
         Returns:
             A tuple of (audio generator, actual position in microseconds)
@@ -225,8 +230,10 @@ class MultiClientStream:
 
         return _stream_with_ffmpeg(), position_us
 
+    ### Review this method carefully
     async def subscribe_raw(self) -> tuple[AsyncGenerator[bytes, None], int]:
-        """Subscribe to the raw/unaltered audio stream.
+        """
+        Subscribe to the raw/unaltered audio stream.
 
         Returns:
             A tuple of (audio generator, actual position in microseconds).
@@ -243,7 +250,7 @@ class MultiClientStream:
                 newest_ts = self.shared_buffer[-1][1]
                 oldest_relative_ms = (oldest_ts - self.current_position_us) / 1000
                 newest_relative_ms = (newest_ts - self.current_position_us) / 1000
-                LOGGER.info(
+                LOGGER.debug(
                     "New subscriber joining: buffer contains %.0f ms (from t%.0fms to t%.0fms, "
                     "current_position=%.3fs)",
                     (newest_ts - oldest_ts) / 1000,
@@ -253,7 +260,7 @@ class MultiClientStream:
                 )
             else:
                 starting_position_us_float = self.current_position_us
-                LOGGER.info(
+                LOGGER.debug(
                     "New subscriber joining: buffer is empty, starting at current_position=%.3fs",
                     self.current_position_us / 1_000_000,
                 )
@@ -275,18 +282,11 @@ class MultiClientStream:
                         if chunk_bytes == b"":
                             # End of stream marker
                             break
-                        LOGGER.debug(
-                            "Subscriber %s read chunk of size %d bytes",
-                            subscriber_id,
-                            len(chunk_bytes),
-                        )
                         yield chunk_bytes
                     else:
                         # No chunk available, need to read from source
                         # Use source_read_lock to ensure only one subscriber reads at a time
-                        LOGGER.debug("Subscriber %s waiting for source_read_lock", subscriber_id)
                         async with self.source_read_lock:
-                            LOGGER.debug("Subscriber %s acquired source_read_lock", subscriber_id)
                             # Check again if buffer has grown or stream ended while waiting
                             check_result = await self._check_buffer_after_source_lock(subscriber_id)
                             if check_result is True:
@@ -298,7 +298,6 @@ class MultiClientStream:
 
                             # Read next chunk from source (check_result is None)
                             # Note: This may block if the audio_source does synchronous I/O
-                            LOGGER.debug("Subscriber %s reading from audio_source", subscriber_id)
                             await self._read_chunk_from_source(subscriber_id)
 
             finally:
