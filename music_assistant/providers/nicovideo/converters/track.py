@@ -22,11 +22,62 @@ from music_assistant.providers.nicovideo.converters.base import NicovideoConvert
 from music_assistant.providers.nicovideo.helpers import create_audio_format
 
 if TYPE_CHECKING:
+    from niconico.objects.nvapi import Activity
     from niconico.objects.video.watch import WatchData, WatchVideo, WatchVideoThumbnail
 
 
 class NicovideoTrackConverter(NicovideoConverterBase):
     """Handles track conversion for nicovideo."""
+
+    def convert_by_activity(self, activity: Activity) -> Track | None:
+        """Convert an Activity object from feed into a Track.
+
+        This is a lightweight conversion optimized for feed display,
+        using only the information available in the activity data.
+        Missing information like view counts and detailed metadata
+        will be absent, but this is acceptable for feed listings.
+        """
+        content = activity.content
+
+        # Only process video content
+        if content.type_ != "video" or not content.video:
+            return None
+
+        # Create audio format with minimal info
+        audio_format = create_audio_format()
+
+        # Build artists from actor information using ItemMapping
+        artists_list: UniqueList[Artist | ItemMapping] = UniqueList()
+        if activity.actor.id_ and activity.actor.name:
+            artist_mapping = ItemMapping(
+                item_id=activity.actor.id_,
+                provider=self.provider.domain,
+                name=activity.actor.name,
+            )
+            artists_list.append(artist_mapping)
+
+        # Create track with available information
+        return Track(
+            item_id=content.id_,
+            provider=self.provider.lookup_key,
+            name=content.title,
+            duration=content.video.duration,
+            artists=artists_list,
+            # Assume playable if duration > 0 (we don't have payment info here)
+            is_playable=content.video.duration > 0,
+            metadata=self._create_track_metadata(
+                video_id=content.id_,
+                release_date_str=content.started_at,
+                thumbnail_url=activity.thumbnail_url,
+            ),
+            provider_mappings=self.helper.create_provider_mapping(
+                item_id=content.id_,
+                url_path="watch",
+                # We don't have availability info, so default to True if playable
+                available=content.video.duration > 0,
+                audio_format=audio_format,
+            ),
+        )
 
     def convert_by_essential_video(self, video: EssentialVideo) -> Track | None:
         """Convert an EssentialVideo object into a Track."""

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant.providers.nicovideo.constants import SENSITIVE_CONTENTS
@@ -159,26 +158,17 @@ class NicovideoUserService(NicovideoBaseService):
         if not feed_data:
             return []
 
-        # Collect video IDs first
-        video_ids = []
+        # Convert activities directly to tracks using lightweight conversion
+        tracks = []
         for activity in feed_data.activities:
             if activity.content and activity.content.video and "video" in activity.kind.lower():
-                video_ids.append(activity.content.id_)
-                if len(video_ids) >= limit:
+                track = self.converter_manager.track.convert_by_activity(activity)
+                if track:
+                    tracks.append(track)
+                if len(tracks) >= limit:
                     break
 
-        track_tasks = [self.service_manager.provider.get_track(video_id) for video_id in video_ids]
-        tracks_results = await asyncio.gather(*track_tasks, return_exceptions=True)
-
-        # Filter successful results
-        tracks: list[Track] = []
-        for result in tracks_results:
-            if isinstance(result, Exception):
-                continue
-            if result is not None and not isinstance(result, BaseException):
-                tracks.append(result)
-
-        return tracks[:limit]
+        return tracks
 
     async def get_following_mylists(self) -> list[FollowingMylistItem]:
         """Get mylists the user is following."""
