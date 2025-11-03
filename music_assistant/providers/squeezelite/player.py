@@ -26,6 +26,7 @@ from music_assistant_models.enums import (
     RepeatMode,
 )
 from music_assistant_models.errors import (
+    ActionUnavailable,
     InvalidCommand,
     InvalidDataError,
     MusicAssistantError,
@@ -298,8 +299,10 @@ class SqueezelitePlayer(Player):
         elif media.source_id and media.source_id.startswith("ugp_"):
             # special case: UGP stream
             ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
-            if not ugp_player or not ugp_player.stream:
-                raise PlayerUnavailableError("UGP player or stream not available")
+            if not ugp_player:
+                raise PlayerUnavailableError(f"UGP player {media.source_id} not found")
+            if not ugp_player.stream:
+                raise ActionUnavailable(f"UGP player {media.source_id} has no active stream")
             ugp_stream = ugp_player.stream
             # Filter is later applied in MultiClientStream
             audio_source = ugp_stream.get_stream(master_audio_format, filter_params=None)
