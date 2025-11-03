@@ -9,7 +9,10 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.mass import MusicAssistant
-from music_assistant.providers.airplay.constants import CONF_ENABLE_LATE_JOIN
+from music_assistant.providers.airplay.constants import (
+    CONF_ENABLE_LATE_JOIN,
+    ENABLE_LATE_JOIN_DEFAULT,
+)
 
 from .provider import AirPlayProvider
 
@@ -42,12 +45,13 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_LATE_JOIN,
             type=ConfigEntryType.BOOLEAN,
-            default_value=False,
+            default_value=ENABLE_LATE_JOIN_DEFAULT,
             label="Enable late joining",
             description=(
                 "Allow the player to join an existing AirPlay stream instead of "
-                "starting a new one. \n NOTE: may not work in all conditions. "
-                "If you experience issues or players are not fully in sync, disable this option."
+                "restarting the whole stream. \n NOTE: may not work in all conditions. "
+                "If you experience issues or players are not fully in sync, disable this option. \n"
+                "Also note that a late joining player may take a few seconds to catch up."
             ),
             category="airplay",
         ),

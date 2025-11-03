@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from abc import ABC, abstractmethod
 from random import randint
@@ -65,7 +64,6 @@ class AirPlayProtocol(ABC):
             self.logger,
         )
         # State tracking
-        self._started = asyncio.Event()
         self._stopped = False
         self._total_bytes_sent = 0
         self._stream_bytes_sent = 0
@@ -73,20 +71,14 @@ class AirPlayProtocol(ABC):
     @property
     def running(self) -> bool:
         """Return boolean if this stream is running."""
-        return (
-            not self._stopped
-            and self._started.is_set()
-            and self._cli_proc is not None
-            and not self._cli_proc.closed
-        )
+        return not self._stopped and self._cli_proc is not None and not self._cli_proc.closed
 
     @abstractmethod
-    async def start(self, start_ntp: int, skip: int = 0) -> None:
+    async def start(self, start_ntp: int) -> None:
         """Initialize streaming process for the player.
 
         Args:
             start_ntp: NTP timestamp to start streaming
-            skip: Number of seconds to skip (for late joiners)
         """
 
     async def stop(self) -> None:
@@ -119,11 +111,6 @@ class AirPlayProtocol(ABC):
             return
         if not self.commands_pipe:
             return
-
-        if not self.commands_pipe.is_open:
-            await self.commands_pipe.open()
-
-        await self._started.wait()
 
         self.player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
         self.player.last_command_sent = time.time()

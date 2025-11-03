@@ -671,6 +671,11 @@ class MusicController(CoreController):
         # ensure we have a full item
         if isinstance(item, str):
             full_item = await self.get_item_by_uri(item)
+        # For builtin provider (manual URLs), use the provided item directly
+        # to preserve custom modifications (name, images, etc.)
+        # For other providers, fetch fresh to ensure data validity
+        elif item.provider == "builtin":
+            full_item = item
         else:
             full_item = await self.get_item(
                 item.media_type,

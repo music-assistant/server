@@ -8,8 +8,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ContentType, MediaType, PlaybackState, PlayerFeature
-from music_assistant_models.media_items.audio_format import AudioFormat
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from snapcast.control.client import Snapclient
 from snapcast.control.group import Snapgroup
@@ -19,23 +18,19 @@ from music_assistant.constants import (
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
-    INTERNAL_PCM_FORMAT,
 )
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.compare import create_safe_string
-from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_stream
+from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
     CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
     CONTROL_SCRIPT,
     DEFAULT_SNAPCAST_FORMAT,
-    DEFAULT_SNAPCAST_PCM_FORMAT,
     MASS_ANNOUNCEMENT_POSTFIX,
     MASS_STREAM_PREFIX,
     SnapCastStreamType,
 )
-from music_assistant.providers.universal_group.constants import UGP_PREFIX
-from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 if TYPE_CHECKING:
     from music_assistant.providers.snapcast.provider import SnapCastProvider
@@ -160,7 +155,6 @@ class SnapCastPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        # ruff: noqa: PLR0915
         if self.synced_to:
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
@@ -188,55 +182,17 @@ class SnapCastPlayer(Player):
         self._attr_active_source = media.source_id
 
         # select audio source
-        if media.media_type == MediaType.PLUGIN_SOURCE:
-            # special case: plugin source stream
-            input_format = DEFAULT_SNAPCAST_FORMAT
-            assert media.custom_data is not None  # for type checking
-            audio_source = self.mass.streams.get_plugin_source_stream(
-                plugin_source_id=media.custom_data["provider"],
-                output_format=DEFAULT_SNAPCAST_FORMAT,
-                player_id=self.player_id,
-            )
-        elif media.source_id and media.source_id.startswith(UGP_PREFIX):
-            # special case: UGP stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
-            ugp_stream = ugp_player.stream
-            assert ugp_stream is not None  # for type checker
-            input_format = ugp_stream.base_pcm_format
-            audio_source = ugp_stream.subscribe_raw()
-        elif media.source_id and media.queue_item_id:
-            # regular queue (flow) stream request
-            input_format = DEFAULT_SNAPCAST_PCM_FORMAT
-            queue = self.mass.player_queues.get(media.source_id)
-            start_queue_item = self.mass.player_queues.get_item(
-                media.source_id, media.queue_item_id
-            )
-            assert queue is not None  # for type checking
-            assert start_queue_item is not None  # for type checking
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=start_queue_item,
-                pcm_format=INTERNAL_PCM_FORMAT,
-            )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            input_format = DEFAULT_SNAPCAST_FORMAT
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                output_format=DEFAULT_SNAPCAST_FORMAT,
-            )
+        audio_source = self.mass.streams.get_stream(media, DEFAULT_SNAPCAST_FORMAT)
 
         async def _streamer() -> None:
             stream_path = self._get_stream_path(stream)
             self.logger.debug("Start streaming to %s", stream_path)
             async with FFMpeg(
                 audio_input=audio_source,
-                input_format=input_format,
+                input_format=DEFAULT_SNAPCAST_FORMAT,
                 output_format=DEFAULT_SNAPCAST_FORMAT,
                 filter_params=get_player_filter_params(
-                    self.mass, self.player_id, input_format, DEFAULT_SNAPCAST_FORMAT
+                    self.mass, self.player_id, DEFAULT_SNAPCAST_FORMAT, DEFAULT_SNAPCAST_FORMAT
                 ),
                 audio_output=stream_path,
                 extra_input_args=["-y", "-re"],
