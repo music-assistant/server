@@ -25,7 +25,13 @@ from music_assistant_models.enums import (
     PlayerType,
     RepeatMode,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import (
+    InvalidCommand,
+    InvalidDataError,
+    MusicAssistantError,
+    PlayerUnavailableError,
+    QueueEmpty,
+)
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -226,7 +232,7 @@ class SqueezelitePlayer(Player):
         """Handle PLAY MEDIA on the player."""
         if self.synced_to:
             msg = "A synced player cannot receive play commands directly"
-            raise RuntimeError(msg)
+            raise InvalidCommand(msg)
 
         if not self.group_members:
             # Simple, single-player playback
@@ -271,7 +277,7 @@ class SqueezelitePlayer(Player):
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             if not media.custom_data:
-                raise RuntimeError("Missing custom_data for announcement")
+                raise InvalidDataError("Missing custom_data for announcement")
             audio_source = self.mass.streams.get_announcement_stream(
                 media.custom_data["announcement_url"],
                 output_format=master_audio_format,
@@ -281,7 +287,7 @@ class SqueezelitePlayer(Player):
         elif media.media_type == MediaType.PLUGIN_SOURCE:
             # special case: plugin source stream
             if not media.custom_data:
-                raise RuntimeError("Missing custom_data for plugin source")
+                raise InvalidDataError("Missing custom_data for plugin source")
             audio_source = self.mass.streams.get_plugin_source_stream(
                 plugin_source_id=media.custom_data["source_id"],
                 output_format=master_audio_format,
@@ -293,7 +299,7 @@ class SqueezelitePlayer(Player):
             # special case: UGP stream
             ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
             if not ugp_player or not ugp_player.stream:
-                raise RuntimeError("UGP player or stream not available")
+                raise PlayerUnavailableError("UGP player or stream not available")
             ugp_stream = ugp_player.stream
             # Filter is later applied in MultiClientStream
             audio_source = ugp_stream.get_stream(master_audio_format, filter_params=None)
@@ -302,7 +308,7 @@ class SqueezelitePlayer(Player):
             queue = self.mass.player_queues.get(media.source_id)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             if not queue or not queue_item:
-                raise RuntimeError("Queue or queue item not found")
+                raise QueueEmpty("Queue or queue item not found")
             audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=queue,
                 start_queue_item=queue_item,
@@ -363,7 +369,7 @@ class SqueezelitePlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if self.synced_to:
             # this should not happen, but guard anyways
-            raise RuntimeError("Player is synced, cannot set members")
+            raise InvalidCommand("Player is synced, cannot set members")
         if not player_ids_to_add and not player_ids_to_remove:
             # nothing to do
             return
