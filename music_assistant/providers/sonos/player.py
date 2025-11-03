@@ -493,7 +493,7 @@ class SonosPlayer(Player):
         self.sonos_queue.enqueue_next(current_item_id, media)
         self.logger.debug(f"Enqueued next media item: {media.title}")
         self.logger.debug(
-            "Current Sonos queue items: %s", [x.title for x in self.sonos_queue.items]
+            "Current Sonos queue items: %s", [x.title for x in self.sonos_queue.items[-2:]]
         )
         if session_id := self.client.player.group.active_session_id:
             await self.client.api.playback_session.refresh_cloud_queue(session_id)
