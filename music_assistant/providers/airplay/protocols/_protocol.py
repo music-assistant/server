@@ -7,11 +7,11 @@ from abc import ABC, abstractmethod
 from random import randint
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ContentType, PlaybackState
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
+from music_assistant.providers.airplay.constants import AIRPLAY_PCM_FORMAT
 
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
@@ -32,9 +32,7 @@ class AirPlayProtocol(ABC):
     session: AirPlayStreamSession | None = None  # reference to the active stream session (if any)
 
     # the pcm audio format used for streaming to this protocol
-    pcm_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
-    )
+    pcm_format = AIRPLAY_PCM_FORMAT
     supports_pairing = False  # whether this protocol supports pairing
     is_pairing: bool = False  # whether this protocol instance is in pairing mode
 

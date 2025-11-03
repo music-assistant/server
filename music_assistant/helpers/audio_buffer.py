@@ -183,6 +183,10 @@ class AudioBuffer:
         self._last_access_time = time.time()
 
         async with self._data_available:
+            # Check if producer had an error - raise immediately
+            if self._producer_error:
+                raise self._producer_error
+
             # Check if the chunk was already discarded
             if chunk_number < self._discarded_chunks:
                 msg = (
@@ -194,10 +198,10 @@ class AudioBuffer:
             # Wait until the requested chunk is available or EOF
             buffer_index = chunk_number - self._discarded_chunks
             while buffer_index >= len(self._chunks):
+                # Check if producer had an error - raise immediately
+                if self._producer_error:
+                    raise self._producer_error
                 if self._eof_received:
-                    # Check if producer had an error before raising EOF
-                    if self._producer_error:
-                        raise self._producer_error
                     raise AudioBufferEOF
                 await self._data_available.wait()
                 buffer_index = chunk_number - self._discarded_chunks
