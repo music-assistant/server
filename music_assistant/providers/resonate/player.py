@@ -227,15 +227,15 @@ class ResonatePlayer(Player):
             # Convert string codec to AudioCodec enum
             audio_codec = AudioCodec(output_codec)
 
-            # Get clean audio source without player-specific DSP
-            # Format conversion only - per-player DSP will be applied via player_stream
-            audio_source = self.mass.streams.get_stream(media, pcm_format)
+            # Get clean audio source in flow format (high quality internal format)
+            # Format conversion and per-player DSP will be applied via player_stream
+            audio_source = self.mass.streams.get_stream(media, flow_pcm_format)
 
             # Create MultiClientStream to wrap the clean audio source
             # This distributes the audio to multiple subscribers without DSP
             self.multi_client_stream = MultiClientStream(
                 audio_source=audio_source,
-                audio_format=pcm_format,
+                audio_format=flow_pcm_format,
             )
 
             # Capture self and other variables for use in inner class
@@ -244,7 +244,7 @@ class ResonatePlayer(Player):
 
             # Create MediaStream wrapping the MultiClientStream
             class MusicAssistantMediaStream(MediaStream):
-                def player_channel(
+                async def player_channel(
                     self: MusicAssistantMediaStream,
                     player_id: str,
                     preferred_format: ResonateAudioFormat | None = None,
@@ -275,17 +275,26 @@ class ResonatePlayer(Player):
                         return None
 
                     # Get per-player DSP filter parameters
+                    # Convert from flow format to output format
                     filter_params = get_player_filter_params(
-                        mass, player_id, pcm_format, pcm_format
+                        mass, player_id, flow_pcm_format, pcm_format
+                    )
+
+                    # Get the stream with position
+                    stream_gen, actual_position_us = await multi_client_stream.get_stream(
+                        output_format=pcm_format,
+                        filter_params=filter_params,
                     )
 
                     # Return actual position in microseconds relative to main_stream start
-                    actual_position_us = multi_client_stream.position_us
+                    player_instance.logger.debug(
+                        "Providing channel stream for player %s at position %d us - filters %s",
+                        player_id,
+                        actual_position_us,
+                        filter_params,
+                    )
                     return (
-                        multi_client_stream.get_stream(
-                            output_format=pcm_format,
-                            filter_params=filter_params,
-                        ),
+                        stream_gen,
                         ResonateAudioFormat(
                             sample_rate=pcm_format.sample_rate,
                             bit_depth=pcm_format.bit_depth,
@@ -295,8 +304,11 @@ class ResonatePlayer(Player):
                         actual_position_us,
                     )
 
+            # Get main channel source and position
+            main_channel_gen, main_position_us = await self.multi_client_stream.subscribe_raw()
+            assert main_position_us == 0  # main channel always starts at 0
             media_stream = MusicAssistantMediaStream(
-                main_channel_source=self.multi_client_stream.subscribe_raw(),
+                main_channel_source=main_channel_gen,
                 main_channel_format=ResonateAudioFormat(
                     sample_rate=pcm_format.sample_rate,
                     bit_depth=pcm_format.bit_depth,
