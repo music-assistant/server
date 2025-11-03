@@ -18,19 +18,14 @@ from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
-    ContentType,
-    MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
     RepeatMode,
 )
 from music_assistant_models.errors import (
-    ActionUnavailable,
     InvalidCommand,
-    InvalidDataError,
     MusicAssistantError,
-    QueueEmpty,
 )
 from music_assistant_models.media_items import AudioFormat
 
@@ -47,7 +42,6 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
 )
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -67,8 +61,6 @@ from .multi_client_stream import MultiClientStream
 
 if TYPE_CHECKING:
     from aioslimproto.client import SlimClient
-
-    from music_assistant.providers.universal_group import UniversalGroupPlayer
 
     from .provider import SqueezelitePlayerProvider
 
@@ -274,56 +266,8 @@ class SqueezelitePlayer(Player):
             channels=2,
         )
 
-        if media.media_type == MediaType.ANNOUNCEMENT:
-            # special case: stream announcement
-            if not media.custom_data:
-                raise InvalidDataError("Missing custom_data for announcement")
-            audio_source = self.mass.streams.get_announcement_stream(
-                media.custom_data["announcement_url"],
-                output_format=master_audio_format,
-                pre_announce=media.custom_data["pre_announce"],
-                pre_announce_url=media.custom_data["pre_announce_url"],
-            )
-        elif media.media_type == MediaType.PLUGIN_SOURCE:
-            # special case: plugin source stream
-            if not media.custom_data:
-                raise InvalidDataError("Missing custom_data for plugin source")
-            audio_source = self.mass.streams.get_plugin_source_stream(
-                plugin_source_id=media.custom_data["source_id"],
-                output_format=master_audio_format,
-                # need to pass player_id from the PlayerMedia object
-                # because this could have been a group
-                player_id=media.custom_data["player_id"],
-            )
-        elif media.source_id and media.source_id.startswith("ugp_"):
-            # special case: UGP stream
-            ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
-            if not ugp_player.stream:
-                raise ActionUnavailable(f"UGP player {media.source_id} has no active stream")
-            ugp_stream = ugp_player.stream
-            # Filter is later applied in MultiClientStream
-            audio_source = ugp_stream.get_stream(master_audio_format, filter_params=None)
-        elif media.source_id and media.queue_item_id:
-            # regular queue stream request
-            queue = self.mass.player_queues.get(media.source_id)
-            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            if not queue or not queue_item:
-                raise QueueEmpty("Queue or queue item not found")
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=queue_item,
-                pcm_format=master_audio_format,
-            )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(
-                    content_type=ContentType.try_parse(media.uri) or ContentType.UNKNOWN
-                ),
-                output_format=master_audio_format,
-            )
+        # select audio source
+        audio_source = self.mass.streams.get_stream(media, master_audio_format)
         # start the stream task
         self.multi_client_stream = stream = MultiClientStream(
             audio_source=audio_source, audio_format=master_audio_format
