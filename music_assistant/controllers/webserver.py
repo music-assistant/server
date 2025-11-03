@@ -12,6 +12,7 @@ import html
 import logging
 import os
 import urllib.parse
+from collections.abc import Awaitable, Callable
 from concurrent import futures
 from contextlib import suppress
 from functools import partial
@@ -128,7 +129,7 @@ class WebserverController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         # work out all routes
-        routes: list[tuple[str, str, Any]] = []
+        routes: list[tuple[str, str, Callable[[web.Request], Awaitable[web.StreamResponse]]]] = []
         # frontend routes
         frontend_dir = locate_frontend()
         for filename in next(os.walk(frontend_dir))[2]:
