@@ -308,12 +308,7 @@ class BBCSoundsProvider(MusicProvider):
 
             if not stream_details:
                 raise self._stream_error(item_id, media_type)
-            if (
-                isinstance(stream_details.path, str)
-                and stream_details.path
-                and "norewind" in stream_details.path
-            ):
-                stream_details.path = stream_details.path.replace(".norewind", "")
+
             # Start a background task to keep these details updated
             if self.use_now_playing:
                 self.current_task = self.mass.create_task(
