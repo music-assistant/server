@@ -39,17 +39,7 @@ class RaopStream(AirPlayProtocol):
     supports_pairing = True
     _stderr_reader_task: asyncio.Task[None] | None = None
 
-    @property
-    def running(self) -> bool:
-        """Return boolean if this stream is running."""
-        return (
-            not self._stopped
-            and self._started.is_set()
-            and self._cli_proc is not None
-            and not self._cli_proc.closed
-        )
-
-    async def start(self, start_ntp: int, skip: int = 0) -> None:
+    async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
         assert self.player.discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
@@ -63,8 +53,6 @@ class RaopStream(AirPlayProtocol):
         for prop in ("et", "md", "am", "pk", "pw"):
             if prop_value := self.player.discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
-        if skip > 0:
-            extra_args += ["-skip", str(skip)]
         sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
         if device_password := self.mass.config.get_raw_player_config_value(
@@ -81,7 +69,6 @@ class RaopStream(AirPlayProtocol):
         read_ahead = await self.mass.config.get_player_config_value(
             player_id, CONF_READ_AHEAD_BUFFER
         )
-        self.player.logger.info("Starting cliraop with latency buffer: %dms", read_ahead)
 
         # cliraop is the binary that handles the actual raop streaming to the player
         # this is a slightly modified version of philippe44's libraop
@@ -125,7 +112,6 @@ class RaopStream(AirPlayProtocol):
             self.player.logger.debug(line)
             if "connected to " in line:
                 self.player.logger.info("AirPlay device connected. Starting playback.")
-                self._started.set()
                 break
             if "Cannot connect to AirPlay device" in line:
                 raise PlayerCommandFailed("Cannot connect to AirPlay device")
@@ -192,12 +178,6 @@ class RaopStream(AirPlayProtocol):
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
-            if "elapsed milliseconds:" in line:
-                # this is received more or less every second while playing
-                millis = int(line.split("elapsed milliseconds: ")[1])
-                # note that this represents the total elapsed time of the streaming session
-                elapsed_time = millis / 1000
-                player.set_state_from_stream(elapsed_time=elapsed_time)
             if "set pause" in line or "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED)
             if "Restarted at" in line or "restarting w/ pause" in line:

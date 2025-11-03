@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 import aiofiles
 from aiohttp import WSMsgType, web
+from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import (
     CommandMessage,
@@ -34,7 +35,7 @@ from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.helpers.api_docs import generate_openapi_spec
 from music_assistant.helpers.audio import get_preview_stream
-from music_assistant.helpers.json import json_dumps
+from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -247,6 +248,16 @@ class WebserverController(CoreController):
             error = f"Invalid JSON: {cmd_data}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
+        except MissingField as e:
+            # be forgiving if message_id is missing
+            cmd_data_dict = json_loads(cmd_data)
+            if e.field_name == "message_id" and "command" in cmd_data_dict:
+                cmd_data_dict["message_id"] = "unknown"
+                command_msg = CommandMessage.from_dict(cmd_data_dict)
+            else:
+                error = f"Missing field in JSON: {e!s}"
+                self.logger.error("Unhandled JSONRPC API error: %s", error)
+                return web.Response(status=400, text=error)
 
         # work out handler for the given path/command
         handler = self.mass.command_handlers.get(command_msg.command)

@@ -293,7 +293,7 @@ class BuiltinPlayer(Player):
             # Apple ignores "Accept-Ranges=none" on iOS and iPadOS for some reason,
             # so we need to slowly feed the music to avoid the Browser stopping and later
             # restarting the audio stream (from a wrong position!) by keeping the buffer short.
-            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "15"],
+            extra_input_args=["-readrate", "1.05", "-readrate_initial_burst", "8"],
             filter_params=get_player_filter_params(self.mass, player_id, pcm_format, stream_format),
         ):
             try:
