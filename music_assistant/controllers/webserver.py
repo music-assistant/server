@@ -445,13 +445,12 @@ class WebsocketClientHandler:
             result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
-                iterator = result
                 items: list[Any] = []
-                async for item in iterator:
-                    result.append(item)
-                    if len(result) >= 500:
+                async for item in result:
+                    items.append(item)
+                    if len(items) >= 500:
                         await self._send_message(
-                            SuccessResultMessage(msg.message_id, result, partial=True)
+                            SuccessResultMessage(msg.message_id, items, partial=True)
                         )
                         items = []
                 result = items
