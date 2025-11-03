@@ -34,7 +34,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
@@ -235,7 +235,7 @@ class SonosPlayer(Player):
         base_entries = [
             *await super().get_config_entries(action=action, values=values),
             CONF_ENTRY_OUTPUT_CODEC,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             create_sample_rates_config_entry(
                 # set safe max bit depth to 16 bits because the older Sonos players
                 # do not support 24 bit playback (e.g. Play:1)
@@ -491,6 +491,10 @@ class SonosPlayer(Player):
         """
         current_item_id = self.current_media.queue_item_id if self.current_media else None
         self.sonos_queue.enqueue_next(current_item_id, media)
+        self.logger.debug(f"Enqueued next media item: {media.title}")
+        self.logger.debug(
+            "Current Sonos queue items: %s", [x.title for x in self.sonos_queue.items]
+        )
         if session_id := self.client.player.group.active_session_id:
             await self.client.api.playback_session.refresh_cloud_queue(session_id)
 

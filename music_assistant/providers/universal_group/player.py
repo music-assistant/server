@@ -30,7 +30,6 @@ from music_assistant.constants import (
     DEFAULT_STREAM_HEADERS,
 )
 from music_assistant.helpers.audio import get_player_filter_params
-from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, GroupPlayer, PlayerMedia
 from music_assistant.providers.universal_group.constants import UGP_FORMAT
@@ -224,41 +223,7 @@ class UniversalGroupPlayer(GroupPlayer):
             await self.stream.stop()
 
         # select audio source
-        if media.media_type == MediaType.ANNOUNCEMENT and media.custom_data:
-            # special case: stream announcement
-            audio_source = self.mass.streams.get_announcement_stream(
-                media.custom_data["announcement_url"],
-                output_format=UGP_FORMAT,
-                pre_announce=media.custom_data["pre_announce"],
-                pre_announce_url=media.custom_data["pre_announce_url"],
-            )
-        elif media.media_type == MediaType.PLUGIN_SOURCE and media.custom_data:
-            # special case: plugin source stream
-            audio_source = self.mass.streams.get_plugin_source_stream(
-                plugin_source_id=media.custom_data["source_id"],
-                output_format=UGP_FORMAT,
-                player_id=media.custom_data["player_id"],
-            )
-        elif media.source_id and media.queue_item_id:
-            # regular queue stream request
-            queue = self.mass.player_queues.get(media.source_id)
-            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            if not queue or not queue_item:
-                # this should not happen, but guard just in case
-                raise RuntimeError(f"Invalid queue(item): {media.source_id}, {media.queue_item_id}")
-            audio_source = self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=queue_item,
-                pcm_format=UGP_FORMAT,
-            )
-        else:
-            # assume url or some other direct path
-            # NOTE: this will fail if its an uri not playable by ffmpeg
-            audio_source = get_ffmpeg_stream(
-                audio_input=media.uri,
-                input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                output_format=UGP_FORMAT,
-            )
+        audio_source = self.mass.streams.get_stream(media, UGP_FORMAT)
 
         # start the stream task
         self.stream = UGPStream(

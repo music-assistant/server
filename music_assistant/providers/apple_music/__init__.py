@@ -59,6 +59,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
+from shortuuid import uuid
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
@@ -263,6 +264,7 @@ class AppleMusicProvider(MusicProvider):
     _storefront: str | None = None
     _decrypt_client_id: bytes | None = None
     _decrypt_private_key: bytes | None = None
+    _session_id: str | None = None
     # rate limiter needs to be specified on provider-level,
     # so make it an instance attribute
     throttler = ThrottlerManager(rate_limit=1, period=2, initial_backoff=15)
@@ -272,6 +274,9 @@ class AppleMusicProvider(MusicProvider):
         self._music_user_token = self.config.get_value(CONF_MUSIC_USER_TOKEN)
         self._music_app_token = self.config.get_value(CONF_MUSIC_APP_TOKEN)
         self._storefront = await self._get_user_storefront()
+        # create random session id to use for decryption keys
+        # to invalidate cached keys on each provider initialization
+        self._session_id = str(uuid())
         async with aiofiles.open(
             os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
         ) as _file:
@@ -937,7 +942,10 @@ class AppleMusicProvider(MusicProvider):
     ) -> str:
         """Get the decryption key for a song."""
         if decryption_key := await self.mass.cache.get(
-            key=item_id, provider=self.instance_id, category=CACHE_CATEGORY_DECRYPT_KEY
+            key=item_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_DECRYPT_KEY,
+            checksum=self._session_id,
         ):
             self.logger.debug("Decryption key for %s found in cache.", item_id)
             return decryption_key
@@ -963,9 +971,10 @@ class AppleMusicProvider(MusicProvider):
             self.mass.cache.set(
                 key=item_id,
                 data=decryption_key,
-                expiration=1800,
+                expiration=3600,
                 provider=self.instance_id,
                 category=CACHE_CATEGORY_DECRYPT_KEY,
+                checksum=self._session_id,
             )
         )
         return decryption_key

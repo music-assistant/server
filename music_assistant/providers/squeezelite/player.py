@@ -36,6 +36,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_SYNC_ADJUST,
+    CONF_SAMPLE_RATES,
     INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -239,10 +240,31 @@ class SqueezelitePlayer(Player):
             return
 
         # this is a syncgroup, we need to handle this with a multi client stream
+        # Get the minimum supported sample rate across all group members (LCD)
+        min_sample_rate = 192000  # Start high
+        for member_id in [self.player_id, *self.group_members]:
+            supported_rates_conf = cast(
+                "list[tuple[str, str]]",
+                await self.mass.config.get_player_config_value(
+                    member_id, CONF_SAMPLE_RATES, unpack_splitted_values=True
+                ),
+            )
+            if supported_rates_conf:
+                member_max_rate = max(int(x[0]) for x in supported_rates_conf)
+                min_sample_rate = min(min_sample_rate, member_max_rate)
+
+        # For queue streams, further cap to content sample rate
+        if media.source_id and media.queue_item_id:
+            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            min_sample_rate = min(
+                min_sample_rate, queue_item.streamdetails.audio_format.sample_rate
+            )
+
         master_audio_format = AudioFormat(
             content_type=INTERNAL_PCM_FORMAT.content_type,
-            sample_rate=INTERNAL_PCM_FORMAT.sample_rate,
-            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+            sample_rate=min_sample_rate,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,  # 32-bit float for processing
+            channels=2,
         )
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
@@ -272,7 +294,8 @@ class SqueezelitePlayer(Player):
             audio_source = self.mass.streams.get_queue_flow_stream(
                 queue=self.mass.player_queues.get(media.source_id),
                 start_queue_item=self.mass.player_queues.get_item(
-                    media.source_id, media.queue_item_id
+                    media.source_id,
+                    media.queue_item_id,
                 ),
                 pcm_format=master_audio_format,
             )
@@ -292,11 +315,14 @@ class SqueezelitePlayer(Player):
             f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}&fmt=flac"
         )
 
+        # Count how many clients will connect
+        expected_clients = len(list(self._get_sync_clients()))
+        stream.expected_clients = expected_clients
+
         # forward to downstream play_media commands
         async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients():
                 url = f"{base_url}&child_player_id={slimplayer.player_id}"
-                stream.expected_clients += 1
                 tg.create_task(
                     self._handle_play_url_for_slimplayer(
                         slimplayer,
@@ -361,7 +387,11 @@ class SqueezelitePlayer(Player):
         # always update the state after modifying group members
         self.update_state()
 
-        if players_added and self.current_media and self.playback_state == PlaybackState.PLAYING:
+        if (
+            (players_added or player_ids_to_remove)
+            and self.current_media
+            and self.playback_state == PlaybackState.PLAYING
+        ):
             # restart stream session if it was already playing
             # for now, we dont support late joining into an existing stream
             self.mass.create_task(self.mass.players.cmd_resume(self.player_id))
@@ -681,12 +711,16 @@ class SqueezelitePlayer(Player):
         """Get all sync clients for a player."""
         yield self.client
         for member_id in self.group_members:
-            if slimplayer := self.provider.slimproto.get_player(member_id):
+            if member_id == self.player_id:  # ← Skip if it's the leader itself
+                continue
+            if self._provider.slimproto and (
+                slimplayer := self._provider.slimproto.get_player(member_id)
+            ):
                 yield slimplayer
 
 
 async def _patched_send_strm(  # noqa: PLR0913
-    self,
+    self: SlimClient,
     command: bytes = b"q",
     autostart: bytes = b"0",
     codec_details: bytes = b"p1321",

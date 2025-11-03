@@ -39,6 +39,20 @@ ANALYSIS_FPS = 100
 TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD = 5.0
 
 
+def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
+    """Align audio data to frame boundaries by truncating incomplete frames."""
+    bytes_per_sample = pcm_format.bit_depth // 8
+    frame_size = bytes_per_sample * pcm_format.channels
+    valid_bytes = (len(audio_data) // frame_size) * frame_size
+    if valid_bytes != len(audio_data):
+        logging.getLogger(__name__).debug(
+            "Truncating %d bytes from audio buffer to align to frame boundary",
+            len(audio_data) - valid_bytes,
+        )
+        return audio_data[:valid_bytes]
+    return audio_data
+
+
 class SmartFadesAnalyzer:
     """Smart fades analyzer that performs audio analysis."""
 
@@ -61,6 +75,10 @@ class SmartFadesAnalyzer:
         self.logger.debug(
             "Starting %s beat analysis for track : %s", fragment.name, stream_details_name
         )
+
+        # Validate input audio data is frame-aligned
+        audio_data = align_audio_to_frame_boundary(audio_data, pcm_format)
+
         fragment_duration = len(audio_data) / (pcm_format.pcm_sample_size)
         try:
             self.logger.log(
@@ -74,12 +92,33 @@ class SmartFadesAnalyzer:
             # Convert PCM bytes to numpy array and then to mono for analysis
             audio_array = np.frombuffer(audio_data, dtype=np.float32)
             if pcm_format.channels > 1:
+                # Ensure array size is divisible by channel count
+                samples_per_channel = len(audio_array) // pcm_format.channels
+                valid_samples = samples_per_channel * pcm_format.channels
+                if valid_samples != len(audio_array):
+                    self.logger.warning(
+                        "Audio buffer size (%d) not divisible by channels (%d), "
+                        "truncating %d samples",
+                        len(audio_array),
+                        pcm_format.channels,
+                        len(audio_array) - valid_samples,
+                    )
+                    audio_array = audio_array[:valid_samples]
+
                 # Reshape to separate channels and take average for mono conversion
                 audio_array = audio_array.reshape(-1, pcm_format.channels)
                 mono_audio = np.asarray(np.mean(audio_array, axis=1, dtype=np.float32))
             else:
                 # Single channel - ensure consistent array type
                 mono_audio = np.asarray(audio_array, dtype=np.float32)
+
+            # Validate that the audio is finite (no NaN or Inf values)
+            if not np.all(np.isfinite(mono_audio)):
+                self.logger.error(
+                    "Audio buffer contains non-finite values (NaN/Inf) for %s, cannot analyze",
+                    stream_details_name,
+                )
+                return None
 
             analysis = await self._analyze_track_beats(mono_audio, fragment, pcm_format.sample_rate)
 
@@ -266,6 +305,9 @@ class SmartFadesMixer:
             pcm_format=pcm_format,
             reverse=True,
         )
+        # Ensure frame alignment after silence stripping
+        fade_out_part = align_audio_to_frame_boundary(fade_out_part, pcm_format)
+
         # strip silence from begin of audio of fade_in_part
         fade_in_part = await strip_silence(
             self.mass,
@@ -273,6 +315,8 @@ class SmartFadesMixer:
             pcm_format=pcm_format,
             reverse=False,
         )
+        # Ensure frame alignment after silence stripping
+        fade_in_part = align_audio_to_frame_boundary(fade_in_part, pcm_format)
         if mode == SmartFadesMode.STANDARD_CROSSFADE:
             # crossfade with standard crossfade
             return await self._default_crossfade(
