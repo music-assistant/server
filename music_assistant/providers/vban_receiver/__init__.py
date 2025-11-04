@@ -50,6 +50,13 @@ CONF_VBAN_STREAM_NAME = "vban_stream_name"
 CONF_SENDER_HOST = "sender_host"
 CONF_PCM_AUDIO_FORMAT = "audio_format"
 CONF_PCM_SAMPLE_RATE = "sample_rate"
+CONF_VBAN_QUEUE_STRATEGY = "vban_queue_strategy"
+
+VBAN_QUEUE_STRATEGIES = {
+    "Clear entire queue": BackPressureStrategy.DROP,
+    "Clear the oldest half of queue": BackPressureStrategy.DRAIN_OLDEST,
+    "Remove single oldest queue entry": BackPressureStrategy.POP,
+}
 
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 
@@ -164,6 +171,16 @@ async def get_config_entries(
             category="advanced",
             required=True,
         ),
+        ConfigEntry(
+            key=CONF_VBAN_QUEUE_STRATEGY,
+            type=ConfigEntryType.STRING,
+            default_value=next(iter(VBAN_QUEUE_STRATEGIES)),
+            options=[ConfigValueOption(x, x) for x in VBAN_QUEUE_STRATEGIES],
+            label="Receiver: VBAN queue strategy",
+            description="What should happen if the receiving queue fills up?",
+            category="advanced",
+            required=True,
+        ),
     )
 
 
@@ -182,6 +199,9 @@ class VBANReceiverProvider(PluginProvider):
         self._vban_stream_name: str = cast("str", self.config.get_value(CONF_VBAN_STREAM_NAME))
         self._pcm_audio_format: str = cast("str", self.config.get_value(CONF_PCM_AUDIO_FORMAT))
         self._pcm_sample_rate: int = cast("int", self.config.get_value(CONF_PCM_SAMPLE_RATE))
+        self._vban_queue_strategy: BackPressureStrategy = VBAN_QUEUE_STRATEGIES[
+            cast("str", self.config.get_value(CONF_VBAN_QUEUE_STRATEGY))
+        ]
 
         self._vban_receiver: AsyncVBANClientMod | None = None
         self._vban_sender: VBANDevice | None = None
@@ -231,7 +251,7 @@ class VBANReceiverProvider(PluginProvider):
         self._vban_sender = self._vban_receiver.register_device(self._sender_host)
         if self._vban_sender:
             self._vban_stream = self._vban_sender.receive_stream(
-                self._vban_stream_name, back_pressure_strategy=BackPressureStrategy.DRAIN_OLDEST
+                self._vban_stream_name, back_pressure_strategy=self._vban_queue_strategy
             )
 
     async def unload(self, is_removed: bool = False) -> None:
