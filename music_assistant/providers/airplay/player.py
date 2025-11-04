@@ -424,7 +424,7 @@ class AirPlayPlayer(Player):
         """Send PLAY (unpause) command to player."""
         async with self._lock:
             if self.stream and self.stream.running:
-                await self.stream.send_cli_command("ACTION=PLAY")
+                await self.stream.send_cli_command("ACTION=PLAY\n")
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
@@ -437,7 +437,7 @@ class AirPlayPlayer(Player):
         async with self._lock:
             if not self.stream or not self.stream.running:
                 return
-            await self.stream.send_cli_command("ACTION=PAUSE")
+            await self.stream.send_cli_command("ACTION=PAUSE\n")
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
