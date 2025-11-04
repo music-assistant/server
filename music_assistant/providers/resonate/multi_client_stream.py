@@ -39,14 +39,12 @@ class MultiClientStream:
         self.audio_source = audio_source
         self.audio_format = audio_format
 
-        ### Rename to something better, name came from a old initial idea, not relevant anymore
-        # Shared buffer - store chunks with their timestamps
+        # Buffer storing chunks with their timestamps
         # Each item is a tuple of (chunk_data, timestamp_us)
-        self.shared_buffer: deque[tuple[bytes, float]] = deque()
+        self.chunk_buffer: deque[tuple[bytes, float]] = deque()
 
-        ### lets use uuid directly instead of str
         # Track subscriber positions and their read state
-        # key: subscriber_id, value: position (index into shared_buffer)
+        # key: subscriber_id, value: position (index into chunk_buffer)
         self.subscriber_positions: dict[str, int] = {}
 
         # Lock for buffer and shared state access
@@ -80,23 +78,23 @@ class MultiClientStream:
 
     def _get_buffer_duration_us(self) -> float:
         """Calculate total duration of buffered chunks in microseconds."""
-        if not self.shared_buffer:
+        if not self.chunk_buffer:
             return 0.0
         # Duration is from first chunk timestamp to current position
-        first_chunk_timestamp = self.shared_buffer[0][1]
+        first_chunk_timestamp = self.chunk_buffer[0][1]
         return self.current_position_us - first_chunk_timestamp
 
     async def _cleanup_old_chunks(self) -> None:
         """Remove old chunks when all subscribers read them and min duration exceeded."""
         ### unneeded check? maybe not the only one in this file?
-        if not self.shared_buffer:
+        if not self.chunk_buffer:
             return
 
         # Find the oldest position still needed by any subscriber
         if self.subscriber_positions:
             min_position = min(self.subscriber_positions.values())
         else:
-            min_position = len(self.shared_buffer)
+            min_position = len(self.chunk_buffer)
 
         # Calculate target oldest timestamp (t=-5 from current position)
         # This ensures buffer contains at least 5 seconds of recent data
@@ -106,7 +104,7 @@ class MultiClientStream:
         ### why not refactor so we pop in this loop?
         chunks_to_remove = 0
         for i in range(min_position):
-            _chunk_bytes, chunk_timestamp_us = self.shared_buffer[i]
+            _chunk_bytes, chunk_timestamp_us = self.chunk_buffer[i]
             # Remove chunks older than target, but stop when we reach chunks we want to keep
             if chunk_timestamp_us < target_oldest_us:
                 chunks_to_remove += 1
@@ -115,7 +113,7 @@ class MultiClientStream:
 
         # Remove old chunks and adjust subscriber positions
         for _ in range(chunks_to_remove):
-            self.shared_buffer.popleft()
+            self.chunk_buffer.popleft()
 
         # Adjust all subscriber positions
         ### do we need this? i mean with min_position set as above?
@@ -133,14 +131,14 @@ class MultiClientStream:
                 chunk_duration_us = self._bytes_to_microseconds(len(chunk))
 
                 # Append chunk with its timestamp
-                self.shared_buffer.append((chunk, chunk_timestamp_us))
+                self.chunk_buffer.append((chunk, chunk_timestamp_us))
 
                 # Update current position
                 self.current_position_us += chunk_duration_us
         except StopAsyncIteration:
             # Source exhausted, add EOF marker
             async with self.buffer_lock:
-                self.shared_buffer.append((b"", self.current_position_us))
+                self.chunk_buffer.append((b"", self.current_position_us))
                 self.stream_ended = True
         except Exception:
             # Source errored or was canceled, mark stream as ended
@@ -159,7 +157,7 @@ class MultiClientStream:
         """
         async with self.buffer_lock:
             position = self.subscriber_positions[subscriber_id]
-            if position < len(self.shared_buffer):
+            if position < len(self.chunk_buffer):
                 # Another subscriber already read the chunk
                 return True
             if self.stream_ended:
@@ -178,9 +176,9 @@ class MultiClientStream:
             position = self.subscriber_positions[subscriber_id]
 
             # Check if we have a chunk at this position
-            if position < len(self.shared_buffer):
+            if position < len(self.chunk_buffer):
                 # Chunk available in buffer
-                chunk_data, _ = self.shared_buffer[position]
+                chunk_data, _ = self.chunk_buffer[position]
 
                 # Move to next position
                 self.subscriber_positions[subscriber_id] = position + 1
@@ -243,11 +241,11 @@ class MultiClientStream:
 
         # Atomically capture starting position and register subscriber while holding lock
         async with self.buffer_lock:
-            if self.shared_buffer:
-                _, starting_position_us_float = self.shared_buffer[0]
+            if self.chunk_buffer:
+                _, starting_position_us_float = self.chunk_buffer[0]
                 # Log buffer time range for debugging
-                oldest_ts = self.shared_buffer[0][1]
-                newest_ts = self.shared_buffer[-1][1]
+                oldest_ts = self.chunk_buffer[0][1]
+                newest_ts = self.chunk_buffer[-1][1]
                 oldest_relative_ms = (oldest_ts - self.current_position_us) / 1000
                 newest_relative_ms = (newest_ts - self.current_position_us) / 1000
                 LOGGER.debug(
