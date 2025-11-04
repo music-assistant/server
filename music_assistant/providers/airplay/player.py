@@ -23,7 +23,7 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
-    AIRPLAY_PCM_FORMAT,
+    AIRPLAY_FLOW_PCM_FORMAT,
     CACHE_CATEGORY_PREV_VOLUME,
     CONF_ACTION_FINISH_PAIRING,
     CONF_ACTION_START_PAIRING,
@@ -433,7 +433,7 @@ class AirPlayPlayer(Player):
         self._attr_current_media = media
 
         # select audio source
-        audio_source = self.mass.streams.get_stream(media, AIRPLAY_PCM_FORMAT)
+        audio_source = self.mass.streams.get_stream(media, AIRPLAY_FLOW_PCM_FORMAT)
 
         # if an existing stream session is running, we could replace it with the new stream
         if self.stream and self.stream.running:
@@ -448,10 +448,8 @@ class AirPlayPlayer(Player):
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
-        stream_session = AirPlayStreamSession(
-            provider, sync_clients, AIRPLAY_PCM_FORMAT, audio_source
-        )
-        await stream_session.start()
+        stream_session = AirPlayStreamSession(provider, sync_clients, AIRPLAY_FLOW_PCM_FORMAT)
+        await stream_session.start(audio_source)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
