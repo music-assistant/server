@@ -131,7 +131,7 @@ RUN set -x \
         libevent-dev \
         libjson-c5 \
         libplist3 \
-        libgcrypto20 \
+        libgcrypt20 \
         libavfilter8 \
         # libsndfile needed for librosa audio file support (smartfades)
         libsndfile1 \
