@@ -523,9 +523,8 @@ class MusicController(CoreController):
         """Return a list of MediaType and provider_item_id of items in progress of provider."""
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE media_type in ('audiobook', 'podcast_episode') AND fully_played = 0 "
-            f"AND provider in ('library','{provider_instance_id}') "
-            "AND seconds_played > 0 "
+            "WHERE media_type in ('audiobook', 'podcast_episode') "
+            f"AND provider in ('library','{provider_instance_id}')"
         )
         assert self.mass.music.database is not None  # for type checking
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
