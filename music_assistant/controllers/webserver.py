@@ -278,7 +278,9 @@ class WebserverController(CoreController):
             return web.Response(status=400, text=error)
         try:
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
-            result = handler.target(**args)
+            result: Any = handler.target(**args)
+            if asyncio.iscoroutine(result):
+                result = await result
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 result = [item async for item in result]
@@ -331,7 +333,7 @@ class WebserverController(CoreController):
         html = generate_schemas_reference(self.mass.command_handlers)
         return web.Response(text=html, content_type="text/html")
 
-    async def _handle_swagger_ui(self, request: web.Request) -> web.Response:
+    async def _handle_swagger_ui(self, request: web.Request) -> web.FileResponse:
         """Handle request for Swagger UI."""
         swagger_html_path = os.path.join(
             os.path.dirname(__file__), "..", "helpers", "resources", "swagger_ui.html"
