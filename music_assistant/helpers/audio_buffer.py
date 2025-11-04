@@ -121,7 +121,8 @@ class AudioBuffer:
         """
         Put a chunk of data into the buffer.
 
-        Each chunk represents exactly 1 second of PCM audio.
+        Each chunk represents exactly 1 second of PCM audio
+        (except for the last one, which may be shorter).
         Waits if buffer is full.
 
         Args:
@@ -182,6 +183,10 @@ class AudioBuffer:
         self._last_access_time = time.time()
 
         async with self._data_available:
+            # Check if producer had an error - raise immediately
+            if self._producer_error:
+                raise self._producer_error
+
             # Check if the chunk was already discarded
             if chunk_number < self._discarded_chunks:
                 msg = (
@@ -193,10 +198,10 @@ class AudioBuffer:
             # Wait until the requested chunk is available or EOF
             buffer_index = chunk_number - self._discarded_chunks
             while buffer_index >= len(self._chunks):
+                # Check if producer had an error - raise immediately
+                if self._producer_error:
+                    raise self._producer_error
                 if self._eof_received:
-                    # Check if producer had an error before raising EOF
-                    if self._producer_error:
-                        raise self._producer_error
                     raise AudioBufferEOF
                 await self._data_available.wait()
                 buffer_index = chunk_number - self._discarded_chunks
@@ -306,6 +311,15 @@ class AudioBuffer:
         # if we reach here, we have broken out of the loop due to inactivity
         await self.clear(cancel_inactivity_task=False)
 
+    async def _notify_on_producer_error(self) -> None:
+        """Notify waiting consumers that producer has failed.
+
+        This is called from the producer task done callback and properly
+        acquires the lock before calling notify_all.
+        """
+        async with self._lock:
+            self._data_available.notify_all()
+
     def attach_producer_task(self, task: asyncio.Task[Any]) -> None:
         """Attach a background task that fills the buffer."""
         self._producer_task = task
@@ -319,9 +333,13 @@ class AudioBuffer:
             exc = t.exception()
             if exc is not None and isinstance(exc, Exception):
                 self._producer_error = exc
+                # Mark buffer as cancelled when producer fails
+                # This prevents reuse of a buffer in error state
+                self._cancelled = True
                 # Wake up any waiting consumers so they can see the error
+                # We need to acquire the lock before calling notify_all
                 loop = asyncio.get_running_loop()
-                loop.call_soon_threadsafe(self._data_available.notify_all)
+                loop.create_task(self._notify_on_producer_error())
 
         task.add_done_callback(_on_producer_done)
 
