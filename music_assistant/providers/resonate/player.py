@@ -33,7 +33,6 @@ from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ContentType,
     EventType,
-    MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -43,12 +42,15 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_OUTPUT_CODEC
+from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
+    CONF_ENTRY_OUTPUT_CODEC,
+    CONF_OUTPUT_CODEC,
+    INTERNAL_PCM_FORMAT,
+)
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.universal_group.constants import UGP_PREFIX
-from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
 if TYPE_CHECKING:
     from aioresonate.server.client import ResonateClient
@@ -212,43 +214,12 @@ class ResonatePlayer(Player):
                 bit_depth=16,
                 channels=2,
             )
-
-            # select audio source
-            if media.media_type == MediaType.PLUGIN_SOURCE:
-                # special case: plugin source stream
-                assert media.custom_data is not None  # for type checking
-                audio_source = self.mass.streams.get_plugin_source_stream(
-                    plugin_source_id=media.custom_data["provider"],
-                    output_format=pcm_format,
-                    player_id=self.player_id,
-                )
-            elif media.source_id and media.source_id.startswith(UGP_PREFIX):
-                # special case: UGP stream
-                ugp_player = cast("UniversalGroupPlayer", self.mass.players.get(media.source_id))
-                ugp_stream = ugp_player.stream
-                assert ugp_stream is not None  # for type checker
-                pcm_format.bit_depth = ugp_stream.base_pcm_format.bit_depth
-                pcm_format.bit_rate = ugp_stream.base_pcm_format.bit_rate
-                pcm_format.channels = ugp_stream.base_pcm_format.channels
-                audio_source = ugp_stream.subscribe_raw()
-            elif media.source_id and media.queue_item_id:
-                # regular queue (flow) stream request
-                queue = self.mass.player_queues.get(media.source_id)
-                start_queue_item = self.mass.player_queues.get_item(
-                    media.source_id, media.queue_item_id
-                )
-                assert queue is not None  # for type checking
-                assert start_queue_item is not None  # for type checking
-                audio_source = self.mass.streams.get_queue_flow_stream(
-                    queue=queue, start_queue_item=start_queue_item, pcm_format=pcm_format
-                )
-            else:
-                # assume url or some other direct path
-                audio_source = get_ffmpeg_stream(
-                    audio_input=media.uri,
-                    input_format=AudioFormat(content_type=ContentType.try_parse(media.uri)),
-                    output_format=pcm_format,
-                )
+            flow_pcm_format = AudioFormat(
+                content_type=INTERNAL_PCM_FORMAT.content_type,
+                sample_rate=pcm_format.sample_rate,
+                bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+                channels=pcm_format.channels,
+            )
 
             output_codec = cast("str", self.config.get_value(CONF_OUTPUT_CODEC, "pcm"))
 
@@ -257,11 +228,11 @@ class ResonatePlayer(Player):
 
             # Apply DSP and other audio filters
             audio_source = get_ffmpeg_stream(
-                audio_input=audio_source,
-                input_format=pcm_format,
+                audio_input=self.mass.streams.get_stream(media, flow_pcm_format),
+                input_format=flow_pcm_format,
                 output_format=pcm_format,
                 filter_params=get_player_filter_params(
-                    self.mass, self.player_id, pcm_format, pcm_format
+                    self.mass, self.player_id, flow_pcm_format, pcm_format
                 ),
             )
 
@@ -398,6 +369,7 @@ class ResonatePlayer(Player):
         default_entries = await super().get_config_entries(action=action, values=values)
         return [
             *default_entries,
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
             ConfigEntry.from_dict(
                 {
                     **CONF_ENTRY_OUTPUT_CODEC.to_dict(),

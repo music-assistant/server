@@ -364,17 +364,18 @@ class PlayerQueuesController(CoreController):
     async def play_media(
         self,
         queue_id: str,
-        media: MediaItemType | ItemMapping | list[MediaItemType | ItemMapping] | str | list[str],
+        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
     ) -> None:
         """Play media item(s) on the given queue.
 
-        - media: Media that should be played (MediaItem(s) or uri's).
-        - queue_opt: Which enqueue mode to use.
-        - radio_mode: Enable radio mode for the given item(s).
-        - start_item: Optional item to start the playlist or album from.
+        :param queue_id: The queue_id of the queue to play media on.
+        :param media: Media that should be played (MediaItem(s) and/or uri's).
+        :param option: Which enqueue mode to use.
+        :param radio_mode: Enable radio mode for the given item(s).
+        :param start_item: Optional item to start the playlist or album from.
         """
         # ruff: noqa: PLR0915
         # we use a contextvar to bypass the throttler for this asyncio task/context
