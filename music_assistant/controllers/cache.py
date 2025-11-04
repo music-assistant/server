@@ -25,8 +25,8 @@ from music_assistant.models.core_controller import CoreController
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
+    from music_assistant import MusicAssistant
     from music_assistant.models.provider import Provider
-
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
@@ -41,9 +41,9 @@ class CacheController(CoreController):
 
     domain: str = "cache"
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self.database: DatabaseConnection | None = None
         self._mem_cache = MemoryCache(500)
         self.manifest.name = "Cache controller"
