@@ -114,7 +114,7 @@ class TimedClientStream:
         for sub_id in self.subscriber_positions:
             self.subscriber_positions[sub_id] -= chunks_removed
 
-    async def _read_chunk_from_source(self, subscriber_id: UUID) -> None:
+    async def _read_chunk_from_source(self) -> None:
         """Read next chunk from audio source and add to buffer."""
         try:
             chunk = await self.audio_source.__anext__()
@@ -221,7 +221,6 @@ class TimedClientStream:
 
         return _stream_with_ffmpeg(), position
 
-    ### Review this method carefully
     async def subscribe_raw(self) -> tuple[AsyncGenerator[bytes, None], float]:
         """
         Subscribe to the raw/unaltered audio stream.
@@ -229,6 +228,10 @@ class TimedClientStream:
         Returns:
             A tuple of (audio generator, actual position in seconds).
             The position indicates where in the stream the first chunk will be from.
+
+        Note:
+            Callers must properly consume or cancel the returned generator to prevent
+            resource leaks.
         """
         subscriber_id = uuid4()
 
@@ -237,14 +240,13 @@ class TimedClientStream:
             if self.chunk_buffer:
                 _, starting_position = self.chunk_buffer[0]
                 # Log buffer time range for debugging
-                oldest_ts = self.chunk_buffer[0][1]
                 newest_ts = self.chunk_buffer[-1][1]
-                oldest_relative = oldest_ts - self.current_position
+                oldest_relative = starting_position - self.current_position
                 newest_relative = newest_ts - self.current_position
                 LOGGER.debug(
                     "New subscriber joining: buffer contains %.3fs (from %.3fs to %.3fs, "
                     "current_position=%.3fs)",
-                    newest_ts - oldest_ts,
+                    newest_ts - starting_position,
                     oldest_relative,
                     newest_relative,
                     self.current_position,
@@ -286,7 +288,7 @@ class TimedClientStream:
 
                             # Read next chunk from source (check_result is None)
                             # Note: This may block if the audio_source does synchronous I/O
-                            await self._read_chunk_from_source(subscriber_id)
+                            await self._read_chunk_from_source()
 
             finally:
                 await self._cleanup_subscriber(subscriber_id)
