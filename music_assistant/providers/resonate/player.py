@@ -42,7 +42,12 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC, CONF_OUTPUT_CODEC
+from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
+    CONF_ENTRY_OUTPUT_CODEC,
+    CONF_OUTPUT_CODEC,
+    INTERNAL_PCM_FORMAT,
+)
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.models.player import Player, PlayerMedia
@@ -209,9 +214,12 @@ class ResonatePlayer(Player):
                 bit_depth=16,
                 channels=2,
             )
-
-            # select audio source
-            audio_source = self.mass.streams.get_stream(media, pcm_format)
+            flow_pcm_format = AudioFormat(
+                content_type=INTERNAL_PCM_FORMAT.content_type,
+                sample_rate=pcm_format.sample_rate,
+                bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+                channels=pcm_format.channels,
+            )
 
             output_codec = cast("str", self.config.get_value(CONF_OUTPUT_CODEC, "pcm"))
 
@@ -220,11 +228,11 @@ class ResonatePlayer(Player):
 
             # Apply DSP and other audio filters
             audio_source = get_ffmpeg_stream(
-                audio_input=audio_source,
-                input_format=pcm_format,
+                audio_input=self.mass.streams.get_stream(media, flow_pcm_format),
+                input_format=flow_pcm_format,
                 output_format=pcm_format,
                 filter_params=get_player_filter_params(
-                    self.mass, self.player_id, pcm_format, pcm_format
+                    self.mass, self.player_id, flow_pcm_format, pcm_format
                 ),
             )
 
@@ -361,6 +369,7 @@ class ResonatePlayer(Player):
         default_entries = await super().get_config_entries(action=action, values=values)
         return [
             *default_entries,
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
             ConfigEntry.from_dict(
                 {
                     **CONF_ENTRY_OUTPUT_CODEC.to_dict(),

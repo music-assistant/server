@@ -202,7 +202,6 @@ async def get_ffmpeg_stream(
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
     extra_output_args: list[str] | None = None,
-    raise_ffmpeg_exception: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the ffmpeg audio stream as async generator.
@@ -225,12 +224,9 @@ async def get_ffmpeg_stream(
         async for chunk in iterator:
             yield chunk
         if ffmpeg_proc.returncode not in (None, 0):
+            # unclean exit of ffmpeg - raise error with log tail
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
-            if not raise_ffmpeg_exception:
-                # dump the last 5 lines of the log in case of an unclean exit
-                ffmpeg_proc.logger.error(log_tail)
-            else:
-                raise AudioError(log_tail)
+            raise AudioError(log_tail)
 
 
 def get_ffmpeg_args(  # noqa: PLR0915
@@ -280,17 +276,17 @@ def get_ffmpeg_args(  # noqa: PLR0915
                 "1",
                 # Set the maximum delay in seconds after which to give up reconnecting.
                 "-reconnect_delay_max",
-                "30",
+                "10",
                 # If set then even streamed/non seekable streams will be reconnected on errors.
                 "-reconnect_streamed",
                 "1",
                 # Reconnect automatically in case of TCP/TLS errors during connect.
                 "-reconnect_on_network_error",
-                "1",
+                "0",
                 # A comma separated list of HTTP status codes to reconnect on.
                 # The list can include specific status codes (e.g. 503) or the strings 4xx / 5xx.
                 "-reconnect_on_http_error",
-                "5xx,4xx",
+                "5xx,429",
             ]
         if input_format.content_type.is_pcm():
             input_args += [

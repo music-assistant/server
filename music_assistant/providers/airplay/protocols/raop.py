@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, cast
 
@@ -37,7 +36,6 @@ class RaopStream(AirPlayProtocol):
     """
 
     supports_pairing = True
-    _stderr_reader_task: asyncio.Task[None] | None = None
 
     async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
@@ -117,7 +115,7 @@ class RaopStream(AirPlayProtocol):
                 raise PlayerCommandFailed("Cannot connect to AirPlay device")
 
         # start reading the stderr of the cliraop process from another task
-        self._stderr_reader_task = self.mass.create_task(self._stderr_reader())
+        self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
 
     async def start_pairing(self) -> None:
         """Start pairing process for this protocol (if supported)."""
