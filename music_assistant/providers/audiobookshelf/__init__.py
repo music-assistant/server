@@ -6,6 +6,7 @@ import functools
 import itertools
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
@@ -61,7 +62,6 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
-from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
@@ -1457,45 +1457,28 @@ for more details.
         # In ABS the user may discard a progress, which removes the progress completely.
         # To prevent calling the ABS api for every single item, we compare what MA knows
         # with what ABS knows.
-        query = (
-            f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE media_type in ('audiobook', 'podcast_episode') AND fully_played = 0 "
-            f"AND provider in ('{self.lookup_key}', 'library')"
-            "AND seconds_played > 0 "
-            "ORDER BY timestamp DESC"
+        ma_playlog_state = await self.mass.music.get_in_progress_media_provider_item_ids(
+            provider_instance_id=self.instance_id
         )
-        assert self.mass.music.database is not None  # for type checking
-        db_rows = await self.mass.music.database.get_rows_from_query(query)
-        ma_ids_with_progress = set()
-        for db_row in db_rows:
-            if db_row["provider"] == self.lookup_key:
-                # these are podcast episodes
-                ma_ids_with_progress.add(db_row["item_id"])
-            else:
-                # library - these are audiobooks
-                try:
-                    if _item := await self.mass.music.get_library_item_by_prov_id(
-                        media_type=MediaType.AUDIOBOOK,
-                        item_id=db_row["item_id"],
-                        provider_instance_id_or_domain="library",
-                    ):
-                        for provider_mapping in _item.provider_mappings:
-                            if provider_mapping.provider_instance == self.instance_id:
-                                ma_ids_with_progress.add(provider_mapping.item_id)
-                except MediaNotFoundError:
-                    continue
-
+        ma_ids_with_progress = {x for _, x in ma_playlog_state}
         discarded_progresses_ids = ma_ids_with_progress.difference(abs_ids_with_progress)
-        self.logger.debug("Discarded progresses %s", discarded_progresses_ids)
         for discarded_progress_id in discarded_progresses_ids:
-            if discarded_item := await self.mass.music.get_library_item_by_prov_id(
-                media_type=MediaType.AUDIOBOOK
-                if len(discarded_progress_id.split(" ")) == 1
-                else MediaType.PODCAST_EPISODE,
-                item_id=discarded_progress_id,
-                provider_instance_id_or_domain=self.lookup_key,
-            ):
-                await self.mass.music.mark_item_unplayed(discarded_item)
+            if len(discarded_progress_id.split(" ")) == 1:
+                if discarded_item := await self.mass.music.get_library_item_by_prov_id(
+                    media_type=MediaType.AUDIOBOOK,
+                    item_id=discarded_progress_id,
+                    provider_instance_id_or_domain=self.lookup_key,
+                ):
+                    self.progress_guard.add_progress(discarded_progress_id)
+                    await self.mass.music.mark_item_unplayed(discarded_item)
+            else:
+                with suppress(MediaNotFoundError):
+                    discarded_item = await self.get_podcast_episode(
+                        prov_episode_id=discarded_progress_id, add_progress=False
+                    )
+                    self.progress_guard.add_progress(*discarded_progress_id.split(" "))
+                    await self.mass.music.mark_item_unplayed(discarded_item)
+            self.logger.debug("Discarded item %s ", discarded_progress_id)
 
         self.logger.debug(f"Updated {__updated_items} from full playlog.")
 
