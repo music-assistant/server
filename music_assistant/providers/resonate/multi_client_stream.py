@@ -5,7 +5,7 @@ import logging
 from collections import deque
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from music_assistant_models.media_items import AudioFormat
 
@@ -45,7 +45,7 @@ class MultiClientStream:
 
         # Track subscriber positions and their read state
         # key: subscriber_id, value: position (index into chunk_buffer)
-        self.subscriber_positions: dict[str, int] = {}
+        self.subscriber_positions: dict[UUID, int] = {}
 
         # Lock for buffer and shared state access
         self.buffer_lock = asyncio.Lock()
@@ -121,7 +121,7 @@ class MultiClientStream:
             pos = self.subscriber_positions[sub_id]
             self.subscriber_positions[sub_id] = max(0, pos - chunks_to_remove)
 
-    async def _read_chunk_from_source(self, subscriber_id: str) -> None:
+    async def _read_chunk_from_source(self, subscriber_id: UUID) -> None:
         """Read next chunk from audio source and add to buffer."""
         try:
             chunk = await self.audio_source.__anext__()
@@ -146,7 +146,7 @@ class MultiClientStream:
                 self.stream_ended = True
             raise
 
-    async def _check_buffer_after_source_lock(self, subscriber_id: str) -> bool | None:
+    async def _check_buffer_after_source_lock(self, subscriber_id: UUID) -> bool | None:
         """
         Check if buffer has grown or stream ended after acquiring source lock.
 
@@ -165,7 +165,7 @@ class MultiClientStream:
                 return False
         return None  # Continue to read from source
 
-    async def _get_chunk_from_buffer(self, subscriber_id: str) -> bytes | None:
+    async def _get_chunk_from_buffer(self, subscriber_id: UUID) -> bytes | None:
         """
         Get next chunk from buffer for subscriber.
 
@@ -191,7 +191,7 @@ class MultiClientStream:
                 return b""
         return None
 
-    async def _cleanup_subscriber(self, subscriber_id: str) -> None:
+    async def _cleanup_subscriber(self, subscriber_id: UUID) -> None:
         """Clean up subscriber and close stream if no subscribers left."""
         async with self.buffer_lock:
             if subscriber_id in self.subscriber_positions:
@@ -237,7 +237,7 @@ class MultiClientStream:
             A tuple of (audio generator, actual position in microseconds).
             The position indicates where in the stream the first chunk will be from.
         """
-        subscriber_id = str(uuid4())
+        subscriber_id = uuid4()
 
         # Atomically capture starting position and register subscriber while holding lock
         async with self.buffer_lock:
