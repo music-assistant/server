@@ -86,7 +86,7 @@ class AudioBuffer:
         """Return number of seconds of audio currently available in the buffer."""
         return len(self._chunks)
 
-    def is_valid(self, checksum: str, seek_position: int = 0) -> bool:
+    def is_valid(self, checksum: str | None = None, seek_position: int = 0) -> bool:
         """
         Validate the buffer's checksum and check if seek position is available.
 
@@ -100,7 +100,7 @@ class AudioBuffer:
         if self.cancelled:
             return False
 
-        if self.checksum != checksum:
+        if checksum is not None and self.checksum != checksum:
             return False
 
         # Check if buffer is close to inactivity timeout (within 30 seconds)

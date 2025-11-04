@@ -74,7 +74,8 @@ class AirPlayPlayer(Player):
         self,
         provider: AirPlayProvider,
         player_id: str,
-        discovery_info: AsyncServiceInfo | None,
+        raop_discovery_info: AsyncServiceInfo | None,
+        airplay_discovery_info: AsyncServiceInfo | None,
         address: str,
         display_name: str,
         manufacturer: str,
@@ -83,7 +84,8 @@ class AirPlayPlayer(Player):
     ) -> None:
         """Initialize AirPlayPlayer."""
         super().__init__(provider, player_id)
-        self.discovery_info = discovery_info
+        self.raop_discovery_info = raop_discovery_info
+        self.airplay_discovery_info = airplay_discovery_info
         self.address = address
         self.stream: RaopStream | AirPlay2Stream | None = None
         self.last_command_sent = 0.0

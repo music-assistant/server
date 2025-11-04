@@ -39,7 +39,7 @@ class RaopStream(AirPlayProtocol):
 
     async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
-        assert self.player.discovery_info is not None  # for type checker
+        assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
         player_id = self.player.player_id
@@ -49,7 +49,7 @@ class RaopStream(AirPlayProtocol):
         if self.player.config.get_value(CONF_ALAC_ENCODE, True):
             extra_args += ["-alac"]
         for prop in ("et", "md", "am", "pk", "pw"):
-            if prop_value := self.player.discovery_info.decoded_properties.get(prop):
+            if prop_value := self.player.raop_discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
         sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
@@ -79,7 +79,7 @@ class RaopStream(AirPlayProtocol):
             "-ntpstart",
             str(start_ntp),
             "-port",
-            str(self.player.discovery_info.port),
+            str(self.player.raop_discovery_info.port),
             "-latency",
             str(read_ahead),
             "-volume",
@@ -92,7 +92,7 @@ class RaopStream(AirPlayProtocol):
             "-cmdpipe",
             self.commands_pipe.path,
             "-udn",
-            self.player.discovery_info.name,
+            self.player.raop_discovery_info.name,
             self.player.address,
             self.audio_pipe.path,
         ]
@@ -119,7 +119,7 @@ class RaopStream(AirPlayProtocol):
 
     async def start_pairing(self) -> None:
         """Start pairing process for this protocol (if supported)."""
-        assert self.player.discovery_info is not None  # for type checker
+        assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
 
         cliraop_args = [
@@ -128,9 +128,9 @@ class RaopStream(AirPlayProtocol):
             "-if",
             self.mass.streams.bind_ip,
             "-port",
-            str(self.player.discovery_info.port),
+            str(self.player.raop_discovery_info.port),
             "-udn",
-            self.player.discovery_info.name,
+            self.player.raop_discovery_info.name,
             self.player.address,
         ]
         self.player.logger.debug(
