@@ -36,6 +36,9 @@ class AsyncNamedPipeWriter:
         def _create() -> None:
             with suppress(FileExistsError):
                 os.mkfifo(self._pipe_path)
+                # Should we handle the FileExistsError and check to make
+                # sure the file is indeed a named pipe using os.stat()
+                # and if it isn't then delete and re-create?
 
         await asyncio.to_thread(_create)
 
@@ -52,7 +55,7 @@ class AsyncNamedPipeWriter:
         start_time = time.time()
 
         def _write() -> None:
-            with open(self._pipe_path, "wb", buffering=0) as pipe_file:
+            with open(self._pipe_path, "r+b", buffering=0) as pipe_file:
                 pipe_file.write(data)
 
         # Run blocking write in thread pool
