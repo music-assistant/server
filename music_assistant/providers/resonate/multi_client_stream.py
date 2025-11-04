@@ -83,10 +83,6 @@ class MultiClientStream:
 
     async def _cleanup_old_chunks(self) -> None:
         """Remove old chunks when all subscribers read them and min duration exceeded."""
-        ### unneeded check? maybe not the only one in this file?
-        if not self.chunk_buffer:
-            return
-
         # Find the oldest position still needed by any subscriber
         if self.subscriber_positions:
             min_position = min(self.subscriber_positions.values())
