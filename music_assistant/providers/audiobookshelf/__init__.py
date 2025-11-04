@@ -1463,7 +1463,7 @@ for more details.
         # Get MA's known progresses of ABS.
         # In ABS the user may discard a progress, which removes the progress completely.
         # There is no socket notification for this event.
-        ma_playlog_state = await self.mass.music.get_in_progress_provider_item_ids(
+        ma_playlog_state = await self.mass.music.get_playlog_provider_item_ids(
             provider_instance_id=self.instance_id
         )
         ma_ids_with_progress = {x for _, x in ma_playlog_state}

@@ -517,10 +517,10 @@ class MusicController(CoreController):
             )
         return result
 
-    async def get_in_progress_provider_item_ids(
+    async def get_playlog_provider_item_ids(
         self, provider_instance_id: str, limit: int = 0
     ) -> list[tuple[MediaType, str]]:
-        """Return a list of MediaType and provider_item_id of items in progress of provider."""
+        """Return a list of MediaType and provider_item_id of items in playlog of provider."""
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
             "WHERE media_type in ('audiobook', 'podcast_episode') "
