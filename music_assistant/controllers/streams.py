@@ -1593,10 +1593,13 @@ class StreamsController(CoreController):
                     queue.queue_id, queue_item.queue_item_id
                 )
                 # set index_in_buffer to prevent our next track is overwritten while preloading
+                if next_queue_item.streamdetails is None:
+                    raise InvalidDataError(
+                        f"No streamdetails for next queue item {next_queue_item.queue_item_id}"
+                    )
                 queue.index_in_buffer = self.mass.player_queues.index_by_id(
                     queue.queue_id, next_queue_item.queue_item_id
                 )
-                assert next_queue_item.streamdetails is not None
                 next_queue_item_pcm_format = AudioFormat(
                     content_type=INTERNAL_PCM_FORMAT.content_type,
                     bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
@@ -1652,7 +1655,7 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     queue_item_id=next_queue_item.queue_item_id,
                 )
-            except (QueueEmpty, AudioError):
+            except (QueueEmpty, AudioError, InvalidDataError):
                 # end of queue reached, next item  skipped or crossfade failed
                 # no crossfade possible, just yield the fade_out_data
                 next_queue_item = None
