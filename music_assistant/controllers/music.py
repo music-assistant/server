@@ -85,6 +85,8 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
 
+    from music_assistant import MusicAssistant
+
 
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
@@ -102,9 +104,9 @@ class MusicController(CoreController):
     database: DatabaseConnection | None = None
     config: CoreConfig
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self.cache = self.mass.cache
         self.artists = ArtistsController(self.mass)
         self.albums = AlbumsController(self.mass)

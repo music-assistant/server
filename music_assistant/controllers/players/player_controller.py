@@ -88,6 +88,8 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig, PlayerConfig
     from music_assistant_models.player_queue import PlayerQueue
 
+    from music_assistant import MusicAssistant
+
 CACHE_CATEGORY_PLAYER_POWER = 1
 
 
@@ -136,9 +138,9 @@ class PlayerController(CoreController):
 
     domain: str = "players"
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self._players: dict[str, Player] = {}
         self._controls: dict[str, PlayerControl] = {}
         self.manifest.name = "Player Controller"

@@ -81,6 +81,7 @@ if TYPE_CHECKING:
         UniqueList,
     )
 
+    from music_assistant import MusicAssistant
     from music_assistant.models.player import Player
 
 
@@ -127,9 +128,9 @@ class PlayerQueuesController(CoreController):
 
     domain: str = "player_queues"
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self._queues: dict[str, PlayerQueue] = {}
         self._queue_items: dict[str, list[QueueItem]] = {}
         self._prev_states: dict[str, CompareState] = {}
