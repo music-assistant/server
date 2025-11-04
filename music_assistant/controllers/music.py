@@ -517,7 +517,7 @@ class MusicController(CoreController):
             )
         return result
 
-    async def get_in_progress_media_provider_item_ids(
+    async def get_in_progress_provider_item_ids(
         self, provider_instance_id: str, limit: int = 0
     ) -> list[tuple[MediaType, str]]:
         """Return a list of MediaType and provider_item_id of items in progress of provider."""
@@ -533,13 +533,13 @@ class MusicController(CoreController):
         result: list[tuple[MediaType, str]] = []
         for db_row in db_rows:
             if db_row["provider"] == "library":
-                # if the provider is library, we need to make sure that the item
-                # is part of the passed provider_instance_id
-                # a podcast_episode cannot be in the provider_mappings
-                # so these entries must be audiobooks
+                # If the provider is library, we need to make sure that the item
+                # is part of the passed provider_instance_id.
+                # A podcast_episode cannot be in the provider_mappings
+                # so these entries must be audiobooks.
                 subquery = (
                     f"SELECT * FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-                    f"WHERE media_type in ('audiobook') AND item_id = {db_row['item_id']} "
+                    f"WHERE media_type = 'audiobook' AND item_id = {db_row['item_id']} "
                     f"AND provider_instance = '{provider_instance_id}'"
                 )
                 subrow = await self.mass.music.database.get_rows_from_query(subquery)

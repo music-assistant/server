@@ -1457,7 +1457,7 @@ for more details.
         # In ABS the user may discard a progress, which removes the progress completely.
         # To prevent calling the ABS api for every single item, we compare what MA knows
         # with what ABS knows.
-        ma_playlog_state = await self.mass.music.get_in_progress_media_provider_item_ids(
+        ma_playlog_state = await self.mass.music.get_in_progress_provider_item_ids(
             provider_instance_id=self.instance_id
         )
         ma_ids_with_progress = {x for _, x in ma_playlog_state}
