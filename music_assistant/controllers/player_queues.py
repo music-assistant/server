@@ -1709,6 +1709,7 @@ class PlayerQueuesController(CoreController):
         )
         # Use a set to avoid duplicate dynamic tracks
         dynamic_tracks: set[Track] = set()
+        queue_track_items = [q.media_item for q in self._queue_items[queue_id]]
         # Use base tracks + Trackcontroller to obtain similar tracks for every base Track
         for allow_lookup in (False, True):
             if dynamic_tracks:
@@ -1722,6 +1723,8 @@ class PlayerQueuesController(CoreController):
                         allow_lookup=allow_lookup,
                     )
                     if track not in base_tracks
+                    # Exclude tracks we have already played / queued
+                    and track not in queue_track_items
                     # Ignore tracks that are too long for radio mode, e.g. mixes
                     and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
                 ]
