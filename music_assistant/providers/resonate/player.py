@@ -280,11 +280,14 @@ class ResonatePlayer(Player):
                         mass, player_id, flow_pcm_format, pcm_format
                     )
 
-                    # Get the stream with position
-                    stream_gen, actual_position_us = await multi_client_stream.get_stream(
+                    # Get the stream with position (in seconds)
+                    stream_gen, actual_position = await multi_client_stream.get_stream(
                         output_format=pcm_format,
                         filter_params=filter_params,
                     )
+
+                    # Convert position from seconds to microseconds for aioresonate API
+                    actual_position_us = int(actual_position * 1_000_000)
 
                     # Return actual position in microseconds relative to main_stream start
                     player_instance.logger.debug(
@@ -304,8 +307,8 @@ class ResonatePlayer(Player):
                     )
 
             # Setup the main channel subscription
-            main_channel_gen, main_position_us = await self.multi_client_stream.subscribe_raw()
-            assert main_position_us == 0  # first subscriber, should be zero
+            main_channel_gen, main_position = await self.multi_client_stream.subscribe_raw()
+            assert main_position == 0.0  # first subscriber, should be zero
             media_stream = MusicAssistantMediaStream(
                 main_channel_source=main_channel_gen,
                 main_channel_format=ResonateAudioFormat(
