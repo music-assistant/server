@@ -1434,6 +1434,14 @@ for more details.
         abs_ids_with_progress = set()
 
         for progress in progresses:
+            # save progress ids for later
+            ma_item_id = (
+                progress.library_item_id
+                if progress.episode_id is None
+                else f"{progress.library_item_id} {progress.episode_id}"
+            )
+            abs_ids_with_progress.add(ma_item_id)
+
             # Guard. Also makes sure, that we don't write to db again if no state change happened.
             # This is achieved by adding a Helper Progress in the update playlog functions, which
             # then has the most recent timestamp. If a subsequent progress sent by abs has an older
@@ -1448,21 +1456,19 @@ for more details.
             __updated_items += 1
             if progress.episode_id is None:
                 await self._update_playlog_book(progress)
-                abs_ids_with_progress.add(f"{progress.library_item_id}")
             else:
                 await self._update_playlog_episode(progress)
-                abs_ids_with_progress.add(f"{progress.library_item_id} {progress.episode_id}")
+        self.logger.debug(f"Updated {__updated_items} from full playlog.")
 
-        # Get known MA's known progresses of ABS
+        # Get MA's known progresses of ABS.
         # In ABS the user may discard a progress, which removes the progress completely.
-        # To prevent calling the ABS api for every single item, we compare what MA knows
-        # with what ABS knows.
+        # There is no socket notification for this event.
         ma_playlog_state = await self.mass.music.get_in_progress_provider_item_ids(
             provider_instance_id=self.instance_id
         )
         ma_ids_with_progress = {x for _, x in ma_playlog_state}
-        discarded_progresses_ids = ma_ids_with_progress.difference(abs_ids_with_progress)
-        for discarded_progress_id in discarded_progresses_ids:
+        discarded_progress_ids = ma_ids_with_progress.difference(abs_ids_with_progress)
+        for discarded_progress_id in discarded_progress_ids:
             if len(discarded_progress_id.split(" ")) == 1:
                 if discarded_item := await self.mass.music.get_library_item_by_prov_id(
                     media_type=MediaType.AUDIOBOOK,
@@ -1479,8 +1485,6 @@ for more details.
                     self.progress_guard.add_progress(*discarded_progress_id.split(" "))
                     await self.mass.music.mark_item_unplayed(discarded_item)
             self.logger.debug("Discarded item %s ", discarded_progress_id)
-
-        self.logger.debug(f"Updated {__updated_items} from full playlog.")
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
