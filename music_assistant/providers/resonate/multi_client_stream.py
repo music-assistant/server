@@ -93,26 +93,22 @@ class MultiClientStream:
         # This ensures buffer contains at least MIN_BUFFER_DURATION seconds of recent data
         target_oldest = self.current_position - MIN_BUFFER_DURATION
 
-        # Find how many chunks we can remove (respecting min_position)
-        ### why not refactor so we pop in this loop?
-        chunks_to_remove = 0
-        for i in range(min_position):
-            _chunk_bytes, chunk_timestamp = self.chunk_buffer[i]
-            # Remove chunks older than target, but stop when we reach chunks we want to keep
+        # Remove old chunks that meet both conditions:
+        # 1. Before min_position (no subscriber needs them)
+        # 2. Older than target_oldest (outside minimum retention window)
+        chunks_removed = 0
+        while chunks_removed < min_position and self.chunk_buffer:
+            _chunk_bytes, chunk_timestamp = self.chunk_buffer[0]
             if chunk_timestamp < target_oldest:
-                chunks_to_remove += 1
+                self.chunk_buffer.popleft()
+                chunks_removed += 1
             else:
+                # Stop when we reach chunks we want to keep
                 break
 
-        # Remove old chunks and adjust subscriber positions
-        for _ in range(chunks_to_remove):
-            self.chunk_buffer.popleft()
-
-        # Adjust all subscriber positions
-        ### do we need this? i mean with min_position set as above?
+        # Adjust all subscriber positions to account for removed chunks
         for sub_id in self.subscriber_positions:
-            pos = self.subscriber_positions[sub_id]
-            self.subscriber_positions[sub_id] = max(0, pos - chunks_to_remove)
+            self.subscriber_positions[sub_id] -= chunks_removed
 
     async def _read_chunk_from_source(self, subscriber_id: UUID) -> None:
         """Read next chunk from audio source and add to buffer."""
