@@ -1,4 +1,11 @@
-"""Implementation of a simple multi-client stream task/job."""
+"""
+Timestamped multi-client audio stream for position-aware playback.
+
+This module provides a multi-client streaming implementation optimized for
+aioresonate's synchronized multi-room audio playback. Each audio chunk is
+timestamped, allowing late-joining players to start at the correct position
+for synchronized playback across multiple devices.
+"""
 
 import asyncio
 import logging
@@ -22,11 +29,8 @@ LOGGER = logging.getLogger(__name__)
 MIN_BUFFER_DURATION = 10.0
 
 
-### This is not just a simple multi-client stream, it is specifically designed to work with
-### aioresonate. explain that. also in the module level docstring.
-### maybe even rename?
-class MultiClientStream:
-    """Implementation of a simple multi-client (audio) stream task/job."""
+class TimedClientStream:
+    """Multi-client audio stream with timestamped chunks for synchronized playback."""
 
     audio_source: AsyncGenerator[bytes, None]
     """The source audio stream to read from."""

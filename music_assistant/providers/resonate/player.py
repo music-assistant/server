@@ -51,7 +51,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.models.player import Player, PlayerMedia
 
-from .multi_client_stream import MultiClientStream
+from .timed_client_stream import TimedClientStream
 
 if TYPE_CHECKING:
     from aioresonate.server.client import ResonateClient
@@ -68,7 +68,7 @@ class ResonatePlayer(Player):
     unsub_group_event_cb: Callable[[], None]
     last_sent_artwork_url: str | None = None
     _playback_task: asyncio.Task[None] | None = None
-    multi_client_stream: MultiClientStream | None = None
+    timed_client_stream: TimedClientStream | None = None
 
     def __init__(self, provider: ResonateProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -228,12 +228,12 @@ class ResonatePlayer(Player):
             audio_codec = AudioCodec(output_codec)
 
             # Get clean audio source in flow format (high quality internal format)
-            # Format conversion and per-player DSP will be applied via player_stream
+            # Format conversion and per-player DSP will be applied via player_channel
             audio_source = self.mass.streams.get_stream(media, flow_pcm_format)
 
-            # Create MultiClientStream to wrap the clean audio source
+            # Create TimedClientStream to wrap the clean audio source
             # This distributes the audio to multiple subscribers without DSP
-            self.multi_client_stream = MultiClientStream(
+            self.timed_client_stream = TimedClientStream(
                 audio_source=audio_source,
                 audio_format=flow_pcm_format,
             )
@@ -242,7 +242,7 @@ class ResonatePlayer(Player):
             player_instance = self
             mass = self.mass
 
-            # Create MediaStream wrapping the MultiClientStream
+            # Create MediaStream wrapping the TimedClientStream
             class MusicAssistantMediaStream(MediaStream):
                 async def player_channel(
                     self: MusicAssistantMediaStream,
@@ -265,10 +265,10 @@ class ResonatePlayer(Player):
                         A tuple of (audio generator, audio format, actual position in microseconds)
                         or None if unavailable. If None, the main_stream is used as fallback.
                     """
-                    if not player_instance.multi_client_stream:
+                    if not player_instance.timed_client_stream:
                         return None
 
-                    multi_client_stream = player_instance.multi_client_stream
+                    multi_client_stream = player_instance.timed_client_stream
                     dsp = mass.config.get_player_dsp_config(player_id)
                     if not dsp.enabled:
                         # DSP is disabled for this player, use main_stream
@@ -307,7 +307,7 @@ class ResonatePlayer(Player):
                     )
 
             # Setup the main channel subscription
-            main_channel_gen, main_position = await self.multi_client_stream.subscribe_raw()
+            main_channel_gen, main_position = await self.timed_client_stream.subscribe_raw()
             assert main_position == 0.0  # first subscriber, should be zero
             media_stream = MusicAssistantMediaStream(
                 main_channel_source=main_channel_gen,
