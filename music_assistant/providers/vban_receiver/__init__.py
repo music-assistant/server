@@ -51,6 +51,7 @@ CONF_SENDER_HOST = "sender_host"
 CONF_PCM_AUDIO_FORMAT = "audio_format"
 CONF_PCM_SAMPLE_RATE = "sample_rate"
 CONF_VBAN_QUEUE_STRATEGY = "vban_queue_strategy"
+CONF_VBAN_QUEUE_SIZE = "vban_queue_size"
 
 VBAN_QUEUE_STRATEGIES = {
     "Clear entire queue": BackPressureStrategy.DROP,
@@ -181,6 +182,16 @@ async def get_config_entries(
             category="advanced",
             required=True,
         ),
+        ConfigEntry(
+            key=CONF_VBAN_QUEUE_SIZE,
+            type=ConfigEntryType.INTEGER,
+            default_value=AsyncVBANClientMod.default_queue_size,
+            label="Receiver: VBAN packets queue size",
+            description="Possibly increase if MA is running on a very low power device, "
+            "otherwise should not need changed.",
+            category="advanced",
+            required=True,
+        ),
     )
 
 
@@ -202,6 +213,7 @@ class VBANReceiverProvider(PluginProvider):
         self._vban_queue_strategy: BackPressureStrategy = VBAN_QUEUE_STRATEGIES[
             cast("str", self.config.get_value(CONF_VBAN_QUEUE_STRATEGY))
         ]
+        self._vban_queue_size: int = cast("int", self.config.get_value(CONF_VBAN_QUEUE_SIZE))
 
         self._vban_receiver: AsyncVBANClientMod | None = None
         self._vban_sender: VBANDevice | None = None
@@ -240,7 +252,9 @@ class VBANReceiverProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._vban_receiver = AsyncVBANClientMod(ignore_audio_streams=False)
+        self._vban_receiver = AsyncVBANClientMod(
+            default_queue_size=self._vban_queue_size, ignore_audio_streams=False
+        )
         try:
             self._udp_socket_task = asyncio.create_task(
                 self._vban_receiver.listen(self._bind_ip, self._bind_port)
