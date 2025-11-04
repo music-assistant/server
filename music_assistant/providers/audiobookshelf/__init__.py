@@ -61,6 +61,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
+from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
@@ -1430,6 +1431,7 @@ for more details.
         __updated_items = 0
 
         known_ids = self._get_all_known_item_ids()
+        abs_ids_with_progress = set()
 
         for progress in progresses:
             # Guard. Also makes sure, that we don't write to db again if no state change happened.
@@ -1446,8 +1448,55 @@ for more details.
             __updated_items += 1
             if progress.episode_id is None:
                 await self._update_playlog_book(progress)
+                abs_ids_with_progress.add(f"{progress.library_item_id}")
             else:
                 await self._update_playlog_episode(progress)
+                abs_ids_with_progress.add(f"{progress.library_item_id} {progress.episode_id}")
+
+        # Get known MA's known progresses of ABS
+        # In ABS the user may discard a progress, which removes the progress completely.
+        # To prevent calling the ABS api for every single item, we compare what MA knows
+        # with what ABS knows.
+        query = (
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} "
+            f"WHERE media_type in ('audiobook', 'podcast_episode') AND fully_played = 0 "
+            f"AND provider in ('{self.lookup_key}', 'library')"
+            "AND seconds_played > 0 "
+            "ORDER BY timestamp DESC"
+        )
+        assert self.mass.music.database is not None  # for type checking
+        db_rows = await self.mass.music.database.get_rows_from_query(query)
+        ma_ids_with_progress = set()
+        for db_row in db_rows:
+            if db_row["provider"] == self.lookup_key:
+                # these are podcast episodes
+                ma_ids_with_progress.add(db_row["item_id"])
+            else:
+                # library - these are audiobooks
+                try:
+                    if _item := await self.mass.music.get_library_item_by_prov_id(
+                        media_type=MediaType.AUDIOBOOK,
+                        item_id=db_row["item_id"],
+                        provider_instance_id_or_domain="library",
+                    ):
+                        for provider_mapping in _item.provider_mappings:
+                            if provider_mapping.provider_instance == self.instance_id:
+                                ma_ids_with_progress.add(provider_mapping.item_id)
+                except MediaNotFoundError:
+                    continue
+
+        discarded_progresses_ids = ma_ids_with_progress.difference(abs_ids_with_progress)
+        self.logger.debug("Discarded progresses %s", discarded_progresses_ids)
+        for discarded_progress_id in discarded_progresses_ids:
+            if discarded_item := await self.mass.music.get_library_item_by_prov_id(
+                media_type=MediaType.AUDIOBOOK
+                if len(discarded_progress_id.split(" ")) == 1
+                else MediaType.PODCAST_EPISODE,
+                item_id=discarded_progress_id,
+                provider_instance_id_or_domain=self.lookup_key,
+            ):
+                await self.mass.music.mark_item_unplayed(discarded_item)
+
         self.logger.debug(f"Updated {__updated_items} from full playlog.")
 
     async def _update_playlog_book(self, progress: MediaProgress) -> None:
