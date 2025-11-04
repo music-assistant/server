@@ -33,7 +33,6 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
@@ -62,7 +61,6 @@ SUPPORTED_FEATURES = {
     PlayerFeature.PAUSE,
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.ENQUEUE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
@@ -147,6 +145,8 @@ class SonosPlayer(Player):
             _supported_features.add(PlayerFeature.VOLUME_MUTE)
         if not self.get_linked_airplay_player(False):
             _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if not self.get_linked_airplay_player(True):
+            _supported_features.add(PlayerFeature.ENQUEUE)
         self._attr_supported_features = _supported_features
 
         self._attr_name = (
@@ -205,8 +205,6 @@ class SonosPlayer(Player):
                 hidden=False,
             ),
         ]
-        if self.get_linked_airplay_player(False):
-            base_entries.append(CONF_ENTRY_FLOW_MODE_ENFORCED)
         return [
             *base_entries,
             ConfigEntry(
