@@ -28,35 +28,35 @@ MIN_BUFFER_DURATION = 10.0
 class MultiClientStream:
     """Implementation of a simple multi-client (audio) stream task/job."""
 
+    audio_source: AsyncGenerator[bytes, None]
+    """The source audio stream to read from."""
+    audio_format: AudioFormat
+    """The audio format of the source stream."""
+    chunk_buffer: deque[tuple[bytes, float]]
+    """Buffer storing chunks with their timestamps in seconds (chunk_data, timestamp_seconds)."""
+    subscriber_positions: dict[UUID, int]
+    """Subscriber positions: maps subscriber_id to position (index into chunk_buffer)."""
+    buffer_lock: asyncio.Lock
+    """Lock for buffer and shared state access."""
+    source_read_lock: asyncio.Lock
+    """Lock to serialize audio source reads."""
+    stream_ended: bool = False
+    """Track if stream has ended."""
+    current_position: float = 0.0
+    """Current position in seconds (from stream start)."""
+
     def __init__(
         self,
         audio_source: AsyncGenerator[bytes, None],
         audio_format: AudioFormat,
     ) -> None:
         """Initialize MultiClientStream."""
-        ### move properties from __init_ to class level.
-        ### and docstrings there too
         self.audio_source = audio_source
         self.audio_format = audio_format
-
-        # Buffer storing chunks with their timestamps in seconds
-        # Each item is a tuple of (chunk_data, timestamp_seconds)
-        self.chunk_buffer: deque[tuple[bytes, float]] = deque()
-
-        # Track subscriber positions and their read state
-        # key: subscriber_id, value: position (index into chunk_buffer)
-        self.subscriber_positions: dict[UUID, int] = {}
-
-        # Lock for buffer and shared state access
+        self.chunk_buffer = deque()
+        self.subscriber_positions = {}
         self.buffer_lock = asyncio.Lock()
-        # Lock to serialize audio source reads
         self.source_read_lock = asyncio.Lock()
-
-        # Track if stream has ended
-        self.stream_ended = False
-
-        # Track current position in seconds (from stream start)
-        self.current_position = 0.0
 
     def _get_bytes_per_second(self) -> int:
         """Get bytes per second for the audio format."""
