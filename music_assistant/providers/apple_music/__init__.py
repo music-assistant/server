@@ -354,16 +354,19 @@ class AppleMusicProvider(MusicProvider):
         """Retrieve library tracks from the provider."""
         endpoint = "me/library/songs"
         song_catalog_ids = []
-        for item in await self._get_all_items(endpoint):
+        library_only_tracks = []
+        for item in await self._get_all_items(endpoint, extend="extendedAssetUrls"):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
+                # Track is library-only (private/uploaded), use library ID instead
                 self.logger.debug(
-                    "Skipping track. No catalog version found for %s - %s",
+                    "Found library-only track (no catalog version): %s - %s",
                     item["attributes"].get("artistName", ""),
                     item["attributes"].get("name", ""),
                 )
-                continue
-            song_catalog_ids.append(catalog_id)
+                library_only_tracks.append(item)
+            else:
+                song_catalog_ids.append(catalog_id)
         # Obtain catalog info per 200 songs, the documented limit of 300 results in a 504 timeout
         max_limit = 200
         for i in range(0, len(song_catalog_ids), max_limit):
@@ -374,6 +377,9 @@ class AppleMusicProvider(MusicProvider):
             )
             for item in response["data"]:
                 yield self._parse_track(item)
+        # Yield library-only tracks using their library metadata
+        for item in library_only_tracks:
+            yield self._parse_track(item)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from the provider."""
@@ -519,6 +525,8 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
+        # Use webPlayback API for all tracks (works with both catalog and library IDs)
+        # Library tracks have IDs starting with "i." and work with webPlayback
         stream_metadata = await self._fetch_song_stream_metadata(item_id)
         license_url = stream_metadata["hls-key-server-url"]
         stream_url, uri = await self._parse_stream_url_and_uri(stream_metadata["assets"])
@@ -687,10 +695,15 @@ class AppleMusicProvider(MusicProvider):
     ) -> Track:
         """Parse track object to generic layout."""
         relationships = track_obj.get("relationships", {})
-        if track_obj.get("type") == "library-songs" and relationships["catalog"]["data"] != []:
+        if (
+            track_obj.get("type") == "library-songs"
+            and relationships.get("catalog", {}).get("data", []) != []
+        ):
+            # Library track with catalog version available
             track_id = relationships.get("catalog", {})["data"][0]["id"]
             attributes = relationships.get("catalog", {})["data"][0]["attributes"]
         elif "attributes" in track_obj:
+            # Catalog track or library-only track
             track_id = track_obj["id"]
             attributes = track_obj["attributes"]
         else:
@@ -839,6 +852,7 @@ class AppleMusicProvider(MusicProvider):
             response.raise_for_status()
             return await response.json(loads=json_loads)
 
+    @throttle_with_retries
     async def _delete_data(self, endpoint, data=None, **kwargs) -> str:
         """Delete data from api."""
         raise NotImplementedError("Not implemented!")
