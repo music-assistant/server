@@ -8,7 +8,7 @@
     "@kieranhogg"
   ],
   "requirements": [
-    "auntie-sounds==1.0"
+    "auntie-sounds==1.1.1"
   ],
   "multi_instance": false
 }
