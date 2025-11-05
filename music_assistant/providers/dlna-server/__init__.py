@@ -672,13 +672,13 @@ class DLNAServerProvider(PluginProvider):
             didl_xml = self._wrap_didl_items(containers)
             return didl_xml, len(containers), len(containers)
 
-        if parent_id == ARTISTS_CONTAINER_ID:
+        elif parent_id == ARTISTS_CONTAINER_ID:
             artists, total = await self._get_filesystem_artists(limit, offset)
             artist_items = [self._create_artist_container(artist) for artist in artists]
             didl_xml = self._wrap_didl_items(artist_items)
             return didl_xml, len(artist_items), total
 
-        if parent_id == ALBUMS_CONTAINER_ID:
+        elif parent_id == ALBUMS_CONTAINER_ID:
             albums, total = await self._get_filesystem_albums(limit, offset)
             album_items = [
                 self._create_album_container(album, ALBUMS_CONTAINER_ID) for album in albums
@@ -686,21 +686,13 @@ class DLNAServerProvider(PluginProvider):
             didl_xml = self._wrap_didl_items(album_items)
             return didl_xml, len(album_items), total
 
-        if parent_id == TRACKS_CONTAINER_ID:
-            # Return all filesystem tracks
+        elif parent_id == TRACKS_CONTAINER_ID:
             tracks, total = await self._get_filesystem_tracks(limit, offset)
-
-            # Don't determine file extensions during bulk browsing (too slow)
-            # Extensions will be resolved during actual playback
-            track_items = [
-                await self._create_track_item(track, determine_file_extension=False)
-                for track in tracks
-            ]
-
+            track_items = [await self._create_track_item(track) for track in tracks]
             didl_xml = self._wrap_didl_items(track_items)
             return didl_xml, len(track_items), total
 
-        if parent_id.startswith("artist_"):
+        elif parent_id.startswith("artist_"):
             artist_id = parent_id[7:]
             albums = await self._get_filesystem_albums_for_artist(artist_id)
             paginated_albums = (
@@ -710,24 +702,18 @@ class DLNAServerProvider(PluginProvider):
             didl_xml = self._wrap_didl_items(album_items)
             return didl_xml, len(album_items), len(albums)
 
-        if parent_id.startswith("album_"):
-            # Return tracks for this album (filtered)
+        elif parent_id.startswith("album_"):
             album_id = parent_id[6:]
             tracks = await self._get_filesystem_tracks_for_album(album_id)
-
-            # Apply pagination manually
             paginated_tracks = (
                 list(tracks)[offset : offset + limit] if limit > 0 else list(tracks)[offset:]
             )
-
-            # Don't determine file extensions during browsing
-            track_items = [
-                await self._create_track_item(track, determine_file_extension=False)
-                for track in paginated_tracks
-            ]
+            track_items = [await self._create_track_item(track) for track in paginated_tracks]
             didl_xml = self._wrap_didl_items(track_items)
+            return didl_xml, len(track_items), len(tracks)
 
-        return didl_xml, len(track_items), len(tracks)
+        else:
+            return self._create_empty_didl(), 0, 0
 
     # Add this helper method to the class
     def _is_supported_item(self, item: MediaItem) -> bool:
@@ -884,58 +870,23 @@ class DLNAServerProvider(PluginProvider):
     {album_art_xml}
 </container>"""
 
-    async def _create_track_item(self, track: Track, determine_file_extension: bool = False) -> str:  # noqa: PLR0915
+    async def _create_track_item(self, track: Track) -> str:
         """Create DIDL-Lite XML for a track item."""
         track_id = f"track_{track.item_id}"
         parent_id = f"album_{track.album.item_id}" if track.album else ROOT_ID
         title = self._escape_xml(track.name)
 
-        # Default values
+        # Use generic extension - actual file type determined during streaming
+        # in _handle_track_stream. The extension in the URL is cosmetic; the
+        # actual file is served based on stream details
         file_ext = "mp3"
         mime_type = "audio/mpeg"
-        file_size = 0
 
-        if determine_file_extension:
-            # Only fetch stream details when explicitly requested (expensive operation)
-            # This should only be used for single item operations, not bulk browsing
-            provider_instance, prov_item_id = await self.mass.music.tracks.get_provider_mapping(
-                track
-            )
-            prov = self.mass.get_provider(provider_instance)
-
-            if prov and isinstance(prov, MusicProvider):
-                try:
-                    streamdetails = await prov.get_stream_details(prov_item_id, MediaType.TRACK)
-                    if hasattr(streamdetails.data, "filename"):
-                        filename = streamdetails.data.filename
-                        file_ext = filename.rsplit(".", 1)[-1].lower()
-                        mime_type = {
-                            "mp3": "audio/mpeg",
-                            "m4a": "audio/mp4",
-                            "flac": "audio/flac",
-                            "wav": "audio/wav",
-                            "ogg": "audio/ogg",
-                        }.get(file_ext, "audio/mpeg")
-
-                    if hasattr(streamdetails.data, "file_size"):
-                        file_size = streamdetails.data.file_size
-
-                except Exception as err:
-                    self.logger.debug("Could not determine file type, using defaults: %s", err)
-
-        # Build stream URL - actual extension will be resolved during
-        # playback in _handle_track_stream
+        # Build stream URL
         stream_url = f"{self.mass.streams.base_url}/dlna/track/library/{track.item_id}.{file_ext}"
 
         # Build protocol info
-        if file_ext == "m4a":
-            protocol_info = (
-                "http-get:*:audio/mp4:"
-                "DLNA.ORG_PN=AAC_ISO_320;DLNA.ORG_OP=01;"
-                "DLNA.ORG_FLAGS=01700000000000000000000000000000"
-            )
-        else:
-            protocol_info = f"http-get:*:{mime_type}:*"
+        protocol_info = f"http-get:*:{mime_type}:*"
 
         self.logger.debug("Generated DIDL for track %s:\n%s", track.item_id, stream_url)
 
@@ -943,28 +894,14 @@ class DLNAServerProvider(PluginProvider):
         bitrate = 0
         sample_rate = 44100
         channels = 2
+        file_size = 0  # Unknown without stream details
 
         if track.metadata:
             bitrate = getattr(track.metadata, "bitrate", 0) or 0
             sample_rate = getattr(track.metadata, "sample_rate", 44100) or 44100
             channels = getattr(track.metadata, "channels", 2) or 2
 
-        # Add album art if available
-        album_art_xml = ""
-        if track.image and track.image.path:
-            self.logger.debug(
-                "Track %s image path: %s (remotely_accessible: %s)",
-                track.name,
-                track.image.path,
-                track.image.remotely_accessible,
-            )
-            image_url = self._get_image_url(track.image)
-            if image_url:
-                album_art_xml = (
-                    f"<upnp:albumArtURI>{self._escape_xml(image_url)}</upnp:albumArtURI>"
-                )
-
-        # Add artist
+        # Add artist and creator
         artist_xml = ""
         creator_xml = ""
         if track.artists:
@@ -982,10 +919,8 @@ class DLNAServerProvider(PluginProvider):
         track_number_xml = ""
         if track.track_number:
             track_number_xml = (
-                f"<upnp:originalTrackNumber>{track.position}</upnp:originalTrackNumber>"
+                f"<upnp:originalTrackNumber>{track.track_number}</upnp:originalTrackNumber>"
             )
-        else:
-            self.logger.debug("Track %s has no position: %s", track.name, track.position)
 
         # Add release year (optional)
         date_xml = ""
@@ -993,6 +928,21 @@ class DLNAServerProvider(PluginProvider):
             album_year = getattr(track.album, "year", None)
             if album_year:
                 date_xml = f"<dc:date>{album_year}-01-01</dc:date>"
+
+        # Add album art if available
+        album_art_xml = ""
+        if track.image and track.image.path:
+            self.logger.debug(
+                "Track %s image path: %s (remotely_accessible: %s)",
+                track.name,
+                track.image.path,
+                track.image.remotely_accessible,
+            )
+            image_url = self._get_image_url(track.image)
+            if image_url:
+                album_art_xml = (
+                    f"<upnp:albumArtURI>{self._escape_xml(image_url)}</upnp:albumArtURI>"
+                )
 
         # Duration in H:MM:SS format
         duration_str = self._format_duration(track.duration)
@@ -1021,15 +971,6 @@ class DLNAServerProvider(PluginProvider):
         {album_art_xml}
         {res_element}
     </item>"""
-
-    def _wrap_didl_items(self, items: list[str]) -> str:
-        """Wrap DIDL items in DIDL-Lite container."""
-        items_xml = "\n".join(items)
-        return f"""<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
-    xmlns:dc="http://purl.org/dc/elements/1.1/"
-    xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">
-{items_xml}
-</DIDL-Lite>"""
 
     def _create_empty_didl(self) -> str:
         """Create empty DIDL-Lite XML."""
@@ -1079,6 +1020,15 @@ class DLNAServerProvider(PluginProvider):
             .replace('"', "&quot;")
             .replace("'", "&apos;")
         )
+
+    def _wrap_didl_items(self, items: list[str]) -> str:
+        """Wrap DIDL items in DIDL-Lite container."""
+        items_xml = "\n".join(items)
+        return f"""<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"
+        xmlns:dc="http://purl.org/dc/elements/1.1/"
+        xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">
+    {items_xml}
+    </DIDL-Lite>"""
 
     def _get_soap_param(self, action_elem: Element, param_name: str) -> str | None:
         """Extract a parameter from SOAP action element."""
