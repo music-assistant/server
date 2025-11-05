@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
@@ -72,6 +72,8 @@ SUPPORTED_FEATURES = {
 }
 
 FEATURES = {"catchup_segments": False, "check_blank_image": False}
+
+type _StreamTypes = Literal["hls", "dash"]
 
 
 async def setup(
@@ -165,7 +167,25 @@ async def get_config_entries(
                     "Disable recommendations", _Constants.CONF_RECOMMENDATIONS_DISABLE
                 ),
             ],
-            default_value="homepage",
+            default_value=_Constants.CONF_RECOMMENDATIONS_HOMEPAGE,
+            required=True,
+        ),
+        ConfigEntry(
+            key=_Constants.CONF_STREAM_FORMAT,
+            category="advanced",
+            label="Preferred stream format",
+            type=ConfigEntryType.STRING,
+            options=[
+                ConfigValueOption(
+                    "HLS",
+                    _Constants.CONF_STREAM_FORMAT_HLS,
+                ),
+                ConfigValueOption(
+                    "MPEG-DASH",
+                    _Constants.CONF_STREAM_FORMAT_DASH,
+                ),
+            ],
+            default_value=_Constants.CONF_STREAM_FORMAT_HLS,
             required=True,
         ),
     )
@@ -173,18 +193,23 @@ async def get_config_entries(
 
 class _Constants:
     # This is the image id that is shown when there's no track image
-    BLANK_IMAGE_NAME = "p0bqcdzf"
+    BLANK_IMAGE_NAME: str = "p0bqcdzf"
     DEFAULT_IMAGE_SIZE = 1280
-    TRACK_DURATION_THRESHOLD = 300  # 5 minutes
-    CONF_UPDATE_INTERVAL = "update_interval"
-    CONF_NOW_PLAYING = "now_playing"
-    CONF_SHOW_LOCAL = "show_local"
-    CONF_INTRO = "intro"
-    CONF_ENABLE_UK_CONTENT = "uk_content"
-    CONF_RECOMMENDATIONS = "recommendations"
-    CONF_RECOMMENDATIONS_HOMEPAGE = "homepage"
-    CONF_RECOMMENDATIONS_BROWSE = "browse"
-    CONF_RECOMMENDATIONS_DISABLE = "disable"
+    TRACK_DURATION_THRESHOLD: int = 300  # 5 minutes
+    HLS: Literal["hls"] = "hls"
+    DASH: Literal["dash"] = "dash"
+    CONF_UPDATE_INTERVAL: str = "update_interval"
+    CONF_NOW_PLAYING: str = "now_playing"
+    CONF_SHOW_LOCAL: str = "show_local"
+    CONF_INTRO: str = "intro"
+    CONF_ENABLE_UK_CONTENT: str = "uk_content"
+    CONF_RECOMMENDATIONS: str = "recommendations"
+    CONF_RECOMMENDATIONS_HOMEPAGE: str = "homepage"
+    CONF_RECOMMENDATIONS_BROWSE: str = "browse"
+    CONF_RECOMMENDATIONS_DISABLE: str = "disable"
+    CONF_STREAM_FORMAT: str = "stream_format"
+    CONF_STREAM_FORMAT_HLS: str = HLS
+    CONF_STREAM_FORMAT_DASH: str = DASH
 
 
 class BBCSoundsProvider(MusicProvider):
@@ -202,7 +227,6 @@ class BBCSoundsProvider(MusicProvider):
             timezone=LOCAL_TIMEZONE,
         )
 
-        self.adaptor = Adaptor(self)
         self.use_now_playing: bool = cast(
             "bool", self.config.get_value(_Constants.CONF_NOW_PLAYING, False)
         )
@@ -213,6 +237,12 @@ class BBCSoundsProvider(MusicProvider):
             self.config.get_value(_Constants.CONF_SHOW_LOCAL, False)
         )
         self.recommendation_location = self.config.get_value(_Constants.CONF_RECOMMENDATIONS)
+        self.stream_format: _StreamTypes = (
+            _Constants.DASH
+            if self.config.get_value(_Constants.CONF_STREAM_FORMAT) == _Constants.DASH
+            else _Constants.HLS
+        )
+        self.adaptor = Adaptor(self)
 
         # If we have an account, authenticate. Testing shows all features work without auth
         # but BBC will be disabling BBC Sounds from outside the UK at some point
@@ -267,7 +297,9 @@ class BBCSoundsProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        episode_info = await self.client.streaming.get_by_pid(prov_track_id)
+        episode_info = await self.client.streaming.get_by_pid(
+            pid=prov_track_id, stream_format=self.stream_format
+        )
         track = await self.adaptor.new_object(episode_info, force_type=Track)
         if not isinstance(track, Track):
             raise MusicAssistantError(f"Incorrect track returned for {prov_track_id}")
@@ -289,7 +321,9 @@ class BBCSoundsProvider(MusicProvider):
         """Get streamdetails for a track/radio."""
         self.logger.debug(f"Getting stream details for {item_id} ({media_type})")
         if media_type == MediaType.PODCAST_EPISODE:
-            episode_info = await self.client.streaming.get_by_pid(item_id, include_stream=True)
+            episode_info = await self.client.streaming.get_by_pid(
+                item_id, include_stream=True, stream_format=self.stream_format
+            )
             stream_details = await self.adaptor.new_streamable_object(episode_info)
             if not stream_details:
                 raise self._stream_error(item_id, media_type)
@@ -302,7 +336,9 @@ class BBCSoundsProvider(MusicProvider):
                 )
             return stream_details
         elif media_type is MediaType.TRACK:
-            track = await self.client.streaming.get_by_pid(item_id, include_stream=True)
+            track = await self.client.streaming.get_by_pid(
+                item_id, include_stream=True, stream_format=self.stream_format
+            )
             stream_details = await self.adaptor.new_streamable_object(track)
             if not stream_details:
                 raise self._stream_error(item_id, media_type)
@@ -313,7 +349,9 @@ class BBCSoundsProvider(MusicProvider):
             return stream_details
         else:
             self.logger.debug(f"Getting stream details for station {item_id}")
-            station = await self.client.stations.get_station(item_id, include_stream=True)
+            station = await self.client.stations.get_station(
+                item_id, include_stream=True, stream_format=self.stream_format
+            )
             if not station:
                 raise MusicAssistantError(f"Couldn't get stream details for station {item_id}")
 
@@ -371,8 +409,6 @@ class BBCSoundsProvider(MusicProvider):
     async def _watch_stream_details(self, stream_details: StreamDetails) -> None:
         station_id = stream_details.data["station"]
 
-        # this didn't work
-        # while not stream_details.seconds_streamed:
         while True:
             now_playing = await self.client.schedules.currently_playing_song(
                 station_id, image_size=_Constants.DEFAULT_IMAGE_SIZE
@@ -681,8 +717,6 @@ class BBCSoundsProvider(MusicProvider):
         :param path: The path to browse, (e.g. provider_id://artists).
         """
         self.logger.debug(f"Browsing path: {path}")
-        if not self.menu:
-            await self._fetch_menu()
         if not path.startswith(f"{self.domain}://"):
             raise MusicAssistantError(f"Invalid path for {self.domain} provider: {path}")
         path_parts = path.split("://", 1)[1].split("/")

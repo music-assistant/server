@@ -229,6 +229,8 @@ class StationConverter(BaseConverter):
 
     async def get_stream_details(self, source_obj: Station | LiveStation) -> StreamDetails | None:
         """Convert the source object to a stream."""
+        from music_assistant.providers.bbc_sounds import _Constants  # noqa: PLC0415
+
         # TODO: can't seek this stream
         station = await self.convert(source_obj)
         if not station or not source_obj.stream:
@@ -248,7 +250,9 @@ class StationConverter(BaseConverter):
             stream_details = StreamDetails(
                 stream_metadata=stream_metadata,
                 media_type=MediaType.RADIO,
-                stream_type=StreamType.HLS,
+                stream_type=StreamType.HLS
+                if self.context.provider.stream_format == _Constants.HLS
+                else StreamType.HTTP,
                 path=str(source_obj.stream),
                 item_id=station.item_id,
                 provider=station.provider,
@@ -300,7 +304,6 @@ class StationConverter(BaseConverter):
                 image_url, self.context.provider_domain
             ),
             provider_mappings={self._create_provider_mapping(station.item_id)},
-            duration=station.stream.duration if station.stream else None,
         )
         if station.stream:
             radio.uri = station.stream.uri
@@ -401,6 +404,8 @@ class PodcastConverter(BaseConverter):
 
     async def get_stream_details(self, source_obj: ConvertableTypes) -> StreamDetails | None:
         """Convert the source object to a stream."""
+        from music_assistant.providers.bbc_sounds import _Constants  # noqa: PLC0415
+
         if isinstance(source_obj, (Podcast, RadioSeries)):
             return None
         stream_details = None
@@ -417,7 +422,9 @@ class PodcastConverter(BaseConverter):
                     uri=source_obj.stream,
                 ),
                 media_type=MediaType.PODCAST_EPISODE,
-                stream_type=StreamType.HLS,
+                stream_type=StreamType.HLS
+                if self.context.provider.stream_format == _Constants.HLS
+                else StreamType.HTTP,
                 path=source_obj.stream,
                 item_id=source_obj.id,
                 provider=self.context.provider_domain,
@@ -438,7 +445,9 @@ class PodcastConverter(BaseConverter):
             stream_details = StreamDetails(
                 stream_metadata=metadata,
                 media_type=MediaType.TRACK,
-                stream_type=StreamType.HLS,
+                stream_type=StreamType.HLS
+                if self.context.provider.stream_format == _Constants.HLS
+                else StreamType.HTTP,
                 path=source_obj.stream,
                 item_id=episode.item_id,
                 provider=self.context.provider_domain,
