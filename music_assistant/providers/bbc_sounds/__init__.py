@@ -233,12 +233,29 @@ class BBCSoundsProvider(MusicProvider):
             except exceptions.LoginFailedError as e:
                 raise LoginFailed(e)
 
+    async def loaded_in_mass(self) -> None:
+        """Do post-loaded actions."""
+        if not self.menu or (
+            isinstance(self.menu, Menu) and self.menu.sub_items and len(self.menu.sub_items) == 0
+        ):
+            await self._fetch_menu()
+
     def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
         return ProviderMapping(
             item_id=item_id,
             provider_domain=self.domain,
             provider_instance=self.instance_id,
         )
+
+    async def _fetch_menu(self) -> None:
+        self.logger.debug("No cached menu, fetching from API")
+
+        # Include recommendation folders in the menu if set in settings
+        recommendations = MenuRecommendationOptions.EXCLUDE
+        if self.recommendation_location == "browse":
+            recommendations = MenuRecommendationOptions.INCLUDE
+
+        self.menu = await self.client.personal.get_experience_menu(recommendations=recommendations)
 
     def _stream_error(self, item_id: str, media_type: MediaType) -> MusicAssistantError:
         return MusicAssistantError(f"Couldn't get stream details for {item_id} ({media_type})")
@@ -542,16 +559,6 @@ class BBCSoundsProvider(MusicProvider):
             return new_item
         else:
             return None
-
-    async def _fetch_menu(self) -> None:
-        self.logger.debug("No cached menu, fetching from API")
-
-        # Include recommendation folders in the menu if set in settings
-        recommendations = MenuRecommendationOptions.EXCLUDE
-        if self.recommendation_location == "browse":
-            recommendations = MenuRecommendationOptions.INCLUDE
-
-        self.menu = await self.client.personal.get_experience_menu(recommendations=recommendations)
 
     async def _get_subpath_menu(
         self, sub_path: str
