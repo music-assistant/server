@@ -840,11 +840,14 @@ class Player(ABC):
         # if the player is grouped/synced, use the active source of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                return parent_player._active_source
+                return parent_player.active_source
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
                 return plugin_source.id
-        if self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        if (
+            self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            and self._active_source
+        ):
             # active source as reported by the player itself
             # but only if playing/paused, otherwise we always prefer the MA source
             return self._active_source
