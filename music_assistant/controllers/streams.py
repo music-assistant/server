@@ -858,7 +858,6 @@ class StreamsController(CoreController):
                 # need to pass player_id from the PlayerMedia object
                 # because this could have been a group
                 player_id=media.custom_data["player_id"],
-                chunk_size=get_chunksize(pcm_format, 1),  # ensure 1 second chunks
             )
         elif media.source_id and media.source_id.startswith(UGP_PREFIX):
             # special case: UGP stream
@@ -1182,7 +1181,6 @@ class StreamsController(CoreController):
         output_format: AudioFormat,
         player_id: str,
         player_filter_params: list[str] | None = None,
-        chunk_size: int | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Get the special plugin source stream."""
         plugin_prov: PluginProvider = self.mass.get_provider(plugin_source_id)
@@ -1207,7 +1205,6 @@ class StreamsController(CoreController):
                 output_format=output_format,
                 filter_params=player_filter_params,
                 extra_input_args=["-y", "-re"],
-                chunk_size=chunk_size,
             ):
                 if plugin_source.in_use_by != player_id:
                     self.logger.debug(
