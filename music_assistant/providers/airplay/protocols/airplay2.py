@@ -35,7 +35,6 @@ class AirPlay2Stream(AirPlayProtocol):
 
         Ensures that minimum level required for required cliap2 stderr output is respected.
         """
-        force_verbose: bool = False  # just for now
         mass_level: int = 0
         match self.prov.logger.level:
             case logging.CRITICAL:
@@ -50,8 +49,6 @@ class AirPlay2Stream(AirPlayProtocol):
                 mass_level = 4
         if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             mass_level = 5
-        if force_verbose:
-            mass_level = 5  # always use max log level for now to capture all stderr output
         return max(mass_level, AIRPLAY2_MIN_LOG_LEVEL)
 
     async def start(self, start_ntp: int, skip: int = 0) -> None:
@@ -132,7 +129,8 @@ class AirPlay2Stream(AirPlayProtocol):
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
-            # TODO @bradkeifer make cliap2 work this way
+            # TODO @bradkeifer make cliap2 work this way - done
+            # need to test and confirm all working
             if "set pause" in line or "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED)
             if "Restarted at" in line or "restarting w/ pause" in line:
@@ -140,8 +138,12 @@ class AirPlay2Stream(AirPlayProtocol):
             if "restarting w/o pause" in line:
                 # streaming has started
                 player.set_state_from_stream(state=PlaybackState.PLAYING, elapsed_time=0)
-            if "lost packet out of backlog" in line:
-                logger.warning("Packet loss detected!")
+            if "put delay detected" in line:
+                if "resetting all outputs" in line:
+                    logger.error("High packet loss detected, restarting playback...")
+                    self.mass.create_task(self.mass.players.cmd_resume(self.player.player_id))
+                else:
+                    logger.warning("Packet loss detected!")
             if "end of stream reached" in line:
                 logger.debug("End of stream reached")
                 break
