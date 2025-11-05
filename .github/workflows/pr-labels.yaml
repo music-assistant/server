@@ -5,9 +5,23 @@ name: PR Labels
 on:
   pull_request:
     types:
+      - opened
       - synchronize
+      - reopened
       - labeled
       - unlabeled
+      - ready_for_review
+    branches:
+      - stable
+      - dev
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+      - ready_for_review
     branches:
       - stable
       - dev
@@ -20,5 +34,5 @@ jobs:
       - name: 🏷 Verify PR has a valid label
         uses: ludeeus/action-require-labels@1.1.0
         with:
-         labels: >-
+          labels: >-
             breaking-change, bugfix, refactor, new-feature, maintenance, ci, dependencies, documentation, new-provider, enhancement

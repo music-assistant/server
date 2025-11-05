@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Concatenate
 from async_upnp_client.client import UpnpService, UpnpStateVariable
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import DeviceInfo, PlayerMedia
@@ -219,14 +219,12 @@ class DLNAPlayer(Player):
         _device_uri = self.device.current_track_uri or ""
         self.set_current_media(uri=_device_uri, clear_all=True)
 
-        if self.player_id in _device_uri:
-            self._attr_active_source = self.player_id
-        elif "spotify" in _device_uri:
+        if "spotify" in _device_uri:
             self._attr_active_source = "spotify"
         elif _device_uri.startswith("http"):
             self._attr_active_source = "http"
         else:
-            # TODO: handle other possible sources here
+            # TODO: extend this list with other possible sources
             self._attr_active_source = None
         if self.device.media_position:
             # only update elapsed_time if the device actually reports it
@@ -260,9 +258,11 @@ class DLNAPlayer(Player):
 
     async def get_config_entries(
         self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         return base_entries + PLAYER_CONFIG_ENTRIES
 
     # async def on_player_config_change(
@@ -353,8 +353,6 @@ class DLNAPlayer(Player):
 
     async def poll(self) -> None:
         """Poll player for state updates."""
-        assert self.device is not None  # for type checking
-
         # try to reconnect the device if the connection was lost
         if not self.device:
             if not self.force_poll:

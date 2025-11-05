@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from aiohttp import ClientConnectorError
@@ -20,10 +20,11 @@ from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
 from aiosonos.exceptions import ConnectionFailed, FailedCommand
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
     RepeatMode,
@@ -32,13 +33,12 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.helpers.upnp import get_xml_soap_set_url
+from music_assistant.helpers.upnp import get_xml_soap_set_next_url, get_xml_soap_set_url
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import (
     CONF_AIRPLAY_MODE,
@@ -59,15 +59,20 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     PlayerFeature.PAUSE,
-    PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.ENQUEUE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
 }
+
+
+@dataclass
+class SonosQueue:
+    """Simple representation of a Sonos (cloud) Queue."""
+
+    items: list[PlayerMedia] = field(default_factory=list)
+    last_updated: float = time.time()
 
 
 class SonosPlayer(Player):
@@ -89,6 +94,7 @@ class SonosPlayer(Player):
         # We can do some smart stuff if we link them together where possible.
         # The player we can just guess from the sonos player id (mac address).
         self.airplay_player_id = f"ap{self.player_id[7:-5].lower()}"
+        self.sonos_queue: SonosQueue = SonosQueue()
 
     @property
     def airplay_mode_enabled(self) -> bool:
@@ -139,6 +145,8 @@ class SonosPlayer(Player):
             _supported_features.add(PlayerFeature.VOLUME_MUTE)
         if not self.get_linked_airplay_player(False):
             _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if not self.get_linked_airplay_player(True):
+            _supported_features.add(PlayerFeature.ENQUEUE)
         self._attr_supported_features = _supported_features
 
         self._attr_name = (
@@ -177,30 +185,16 @@ class SonosPlayer(Player):
                 self.airplay_player_id,
             )
         )
-        # register callback for playerqueue state changes
-        # note we don't filter on the player_id here because we also need to catch
-        # events from group players
-        self._on_unload_callbacks.append(
-            self.mass.subscribe(
-                self._on_mass_queue_items_event,
-                EventType.QUEUE_ITEMS_UPDATED,
-            )
-        )
-        self._on_unload_callbacks.append(
-            self.mass.subscribe(
-                self._on_mass_queue_event,
-                (EventType.QUEUE_UPDATED, EventType.QUEUE_ITEMS_UPDATED),
-            )
-        )
 
     async def get_config_entries(
         self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = [
-            *await super().get_config_entries(),
+            *await super().get_config_entries(action=action, values=values),
             CONF_ENTRY_OUTPUT_CODEC,
-            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             create_sample_rates_config_entry(
                 # set safe max bit depth to 16 bits because the older Sonos players
@@ -358,7 +352,8 @@ class SonosPlayer(Player):
 
         :param position: The position to seek to, in seconds.
         """
-        await self.client.player.group.seek(position)
+        # sonos expects milliseconds
+        await self.client.player.group.seek(position * 1000)
 
     async def play_media(
         self,
@@ -373,8 +368,6 @@ class SonosPlayer(Player):
 
         :param media: Details of the item that needs to be played on the player.
         """
-        self._attr_current_media = deepcopy(media)
-
         if self.client.player.is_passive:
             # this should be already handled by the player manager, but just in case...
             msg = (
@@ -389,27 +382,22 @@ class SonosPlayer(Player):
             self.logger.debug("Redirecting PLAY_MEDIA command to linked airplay player.")
             await self._play_media_airplay(airplay_player, media)
             return
+        if media.source_id:
+            await self._set_sonos_queue_from_mass_queue(media.source_id)
 
-        if media.source_id and media.queue_item_id and media.duration:
+        if (media.source_id and media.queue_item_id) or media.media_type == MediaType.PLUGIN_SOURCE:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/v2.3/"
-            mass_queue = self.mass.player_queues.get(media.source_id)
             await self.client.player.group.play_cloud_queue(
                 cloud_queue_url,
-                http_authorization=media.source_id,
                 item_id=media.queue_item_id,
-                queue_version=str(int(mass_queue.items_last_updated)),
             )
-            self.mass.call_later(5, self.sync_play_modes, media.source_id)
             return
 
-        # All other playback types
-        # play a single uri/url
-        # note that this most probably will only work for (long running) radio streams
-        if not media.duration:
-            # enforce mp3 here because Sonos really does not support FLAC streams without duration
-            media.uri = media.uri.replace(".flac", ".mp3")
+        # play duration-less (long running) radio streams
+        # enforce AAC here because Sonos really does not support FLAC streams without duration
+        media.uri = media.uri.replace(".flac", ".aac").replace(".wav", ".aac")
         if media.source_id and media.queue_item_id:
             object_id = f"mass:{media.source_id}:{media.queue_item_id}"
         else:
@@ -418,7 +406,7 @@ class SonosPlayer(Player):
             media.uri,
             {
                 "name": media.title,
-                "type": "station",
+                "type": "track",
                 "imageUrl": media.image_url,
                 "id": {
                     "objectId": object_id,
@@ -461,8 +449,14 @@ class SonosPlayer(Player):
 
          :param media: Details of the item that needs to be enqueued on the player.
         """
+        if media.source_id:
+            await self._set_sonos_queue_from_mass_queue(media.source_id)
         if session_id := self.client.player.group.active_session_id:
             await self.client.api.playback_session.refresh_cloud_queue(session_id)
+            # repeat the command after a while because sonos seems to miss it sometimes ?!
+            self.mass.call_later(
+                30, self.client.api.playback_session.refresh_cloud_queue(session_id)
+            )
 
     async def set_members(
         self,
@@ -661,6 +655,13 @@ class SonosPlayer(Player):
             # the player has nothing loaded at all (empty queue and no service active)
             self._attr_active_source = None
 
+        # special case: Sonos reports PAUSED state when MA stopped playback
+        if (
+            active_service == MusicService.MUSIC_ASSISTANT
+            and self._attr_playback_state == PlaybackState.PAUSED
+        ):
+            self._attr_playback_state = PlaybackState.IDLE
+
         # parse current media
         self._attr_elapsed_time = self.client.player.group.position
         self._attr_elapsed_time_last_updated = time.time()
@@ -673,6 +674,7 @@ class SonosPlayer(Player):
             track_duration_millis = track.get("durationMillis")
             current_media = PlayerMedia(
                 uri=track.get("id", {}).get("objectId") or track.get("mediaUrl"),
+                media_type=MediaType.TRACK,
                 title=track["name"],
                 artist=track.get("artist", {}).get("name"),
                 album=track.get("album", {}).get("name"),
@@ -688,6 +690,7 @@ class SonosPlayer(Player):
             image_url = images[0].get("url") if images else None
             current_media = PlayerMedia(
                 uri=container.get("id", {}).get("objectId"),
+                media_type=MediaType.RADIO,
                 title=active_group.playback_metadata["streamInfo"],
                 album=container["name"],
                 image_url=image_url,
@@ -695,7 +698,9 @@ class SonosPlayer(Player):
         # generic info from container (also when MA is playing!)
         if container and container.get("name") and container.get("id"):
             if not current_media:
-                current_media = PlayerMedia(container["id"]["objectId"])
+                current_media = PlayerMedia(
+                    uri=container["id"]["objectId"], media_type=MediaType.UNKNOWN
+                )
             if not current_media.image_url:
                 images = container.get("images", [])
                 current_media.image_url = images[0].get("url") if images else None
@@ -777,36 +782,6 @@ class SonosPlayer(Player):
         self.update_attributes()
         self.update_state()
 
-    async def _on_mass_queue_items_event(self, event: MassEvent) -> None:
-        """Handle incoming event from linked MA playerqueue."""
-        # If the queue items changed and we have an active sonos queue,
-        # we need to inform the sonos queue to refresh the items.
-        if self._attr_active_source != event.object_id:
-            return
-        if not self.connected:
-            return
-        queue = self.mass.player_queues.get(event.object_id)
-        if not queue or queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-            return
-        if session_id := self.client.player.group.active_session_id:
-            await self.client.api.playback_session.refresh_cloud_queue(session_id)
-
-    async def _on_mass_queue_event(self, event: MassEvent) -> None:
-        """Handle incoming event from linked MA playerqueue."""
-        if self._attr_active_source != event.object_id:
-            return
-        if not self.connected:
-            return
-        if not self.client.player.is_coordinator:
-            return
-        if event.event == EventType.QUEUE_UPDATED:
-            # sync crossfade and repeat modes
-            await self.sync_play_modes(event.object_id)
-        elif event.event == EventType.QUEUE_ITEMS_UPDATED:
-            # refresh cloud queue
-            if session_id := self.client.player.group.active_session_id:
-                await self.client.api.playback_session.refresh_cloud_queue(session_id)
-
     async def sync_play_modes(self, queue_id: str) -> None:
         """Sync the play modes between MA and Sonos."""
         queue = self.mass.player_queues.get(queue_id)
@@ -870,8 +845,6 @@ class SonosPlayer(Player):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA using the legacy upnp api."""
-        # enforce mp3 here because Sonos really does not support FLAC streams without duration
-        media.uri = media.uri.replace(".flac", ".mp3")
         xml_data, soap_action = get_xml_soap_set_url(media)
         player_ip = self.device_info.ip_address
         async with self.mass.http_session_no_ssl.post(
@@ -888,4 +861,46 @@ class SonosPlayer(Player):
                     f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
                 )
             await self.play()
+
+    async def _enqueue_next_legacy(
+        self,
+        media: PlayerMedia,
+    ) -> None:
+        """Handle enqueuing of the next (queue) item on the player using legacy upnp api."""
+        xml_data, soap_action = get_xml_soap_set_next_url(media)
+        player_ip = self.device_info.ip_address
+        async with self.mass.http_session_no_ssl.post(
+            f"http://{player_ip}:1400/MediaRenderer/AVTransport/Control",
+            headers={
+                "SOAPACTION": soap_action,
+                "Content-Type": "text/xml; charset=utf-8",
+                "Connection": "close",
+            },
+            data=xml_data,
+        ) as resp:
+            if resp.status != 200:
+                raise PlayerCommandFailed(
+                    f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
+                )
+
+    async def _set_sonos_queue_from_mass_queue(self, queue_id: str) -> None:
+        """Set the SonosQueue items from the given MA PlayerQueue."""
+        items = []
+        queue = self.mass.player_queues.get(queue_id)
+        if not queue:
+            self.sonos_queue.items.clear()
             return
+        current_index = queue.current_index or 0
+        offset = max(0, current_index - 4)
+        queue_items = self.mass.player_queues.items(queue_id=queue_id, offset=offset, limit=10)
+        for item in queue_items:
+            if not item.available:
+                continue
+            media = await self.mass.player_queues.player_media_from_queue_item(item, False)
+            items.append(media)
+        self.sonos_queue.items = items
+        self.logger.debug(
+            "Set Sonos queue items from MA queue %s: %s",
+            queue_id,
+            [x.title for x in self.sonos_queue.items],
+        )

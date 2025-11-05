@@ -7,8 +7,6 @@ from typing import Final
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
-from music_assistant.constants import CONF_LIBRARY_IMPORT_OPTIONS
-
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 CONF_CONTENT_TYPE = "content_type"
 
@@ -53,56 +51,52 @@ CONF_ENTRY_CONTENT_TYPE_READ_ONLY = ConfigEntry.from_dict(
     {**CONF_ENTRY_CONTENT_TYPE.to_dict(), "read_only": True}
 )
 
-CONF_ENTRY_LIBRARY_IMPORT_TRACKS = ConfigEntry(
-    key="library_import_tracks",
-    type=ConfigEntryType.STRING,
+CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
+    key="library_sync_tracks",
+    type=ConfigEntryType.BOOLEAN,
     label="Import tracks/files into the Music Assistant library",
     description="Define how/if you want to import tracks/files from the filesystem "
     "into the Music Assistant Library. \nWhen not importing into the library, "
     "they can still be manually browsed using the Browse feature. \n\n"
     "Please note that by adding a Track into the Music Assistant library, "
-    "the track artists and album will always be imported as well (not as favorites though).",
-    options=CONF_LIBRARY_IMPORT_OPTIONS,
-    default_value="import_only",
+    "the track artists and album will always be imported as well.",
+    default_value=True,
     category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="music",
 )
-CONF_ENTRY_LIBRARY_IMPORT_PLAYLISTS = ConfigEntry(
-    key="library_import_playlists",
-    type=ConfigEntryType.STRING,
+CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS = ConfigEntry(
+    key="library_sync_playlists",
+    type=ConfigEntryType.BOOLEAN,
     label="Import playlists (m3u files) into the Music Assistant library",
     description="Define how/if you want to import playlists (m3u files) from the filesystem "
     "into the Music Assistant Library. \nWhen not importing into the library, "
     "they can still be manually browsed using the Browse feature.",
-    options=CONF_LIBRARY_IMPORT_OPTIONS,
-    default_value="import_only",
+    default_value=True,
     category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="music",
 )
-CONF_ENTRY_LIBRARY_IMPORT_PODCASTS = ConfigEntry(
-    key="library_import_podcasts",
-    type=ConfigEntryType.STRING,
+CONF_ENTRY_LIBRARY_SYNC_PODCASTS = ConfigEntry(
+    key="library_sync_podcasts",
+    type=ConfigEntryType.BOOLEAN,
     label="Import Podcasts(files) into the Music Assistant library",
     description="Define how/if you want to import Podcasts(files) from the filesystem "
     "into the Music Assistant Library. \nWhen not importing into the library, "
     "they can still be manually browsed using the Browse feature.",
-    options=CONF_LIBRARY_IMPORT_OPTIONS,
-    default_value="import_only",
+    default_value=True,
     category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="podcasts",
 )
-CONF_ENTRY_LIBRARY_IMPORT_AUDIOBOOKS = ConfigEntry(
-    key="library_import_audiobooks",
-    type=ConfigEntryType.STRING,
+CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
+    key="library_sync_audiobooks",
+    type=ConfigEntryType.BOOLEAN,
     label="Import Audiobooks(files) into the Music Assistant library",
     description="Define how/if you want to import Audiobooks(files) from the filesystem "
     "into the Music Assistant Library. \nWhen not importing into the library, "
     "they can still be manually browsed using the Browse feature.",
-    options=CONF_LIBRARY_IMPORT_OPTIONS,
-    default_value="import_only",
+    default_value=True,
     category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="audiobooks",

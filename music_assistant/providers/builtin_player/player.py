@@ -7,7 +7,7 @@ from time import time
 
 from aiohttp import web
 from music_assistant_models.builtin_player import BuiltinPlayerEvent, BuiltinPlayerState
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     BuiltinPlayerEventType,
@@ -27,8 +27,8 @@ from music_assistant.constants import (
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
-    DEFAULT_PCM_FORMAT,
     DEFAULT_STREAM_HEADERS,
+    INTERNAL_PCM_FORMAT,
     create_sample_rates_config_entry,
 )
 from music_assistant.helpers.audio import get_player_filter_params
@@ -95,9 +95,13 @@ class BuiltinPlayer(Player):
         if update_state:
             self.update_state()
 
-    async def get_config_entries(self) -> list[ConfigEntry]:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        base_entries = await super().get_config_entries()
+        base_entries = await super().get_config_entries(action=action, values=values)
         return [
             *base_entries,
             CONF_ENTRY_FLOW_MODE_ENFORCED,
@@ -135,7 +139,6 @@ class BuiltinPlayer(Player):
             self.player_id,
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.STOP),
         )
-        self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
 
@@ -178,7 +181,6 @@ class BuiltinPlayer(Player):
         url = f"builtin_player/flow/{self.player_id}.mp3"
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_active_source = media.source_id
         self.update_state()
         self.mass.signal_event(
             EventType.BUILTIN_PLAYER,
@@ -253,7 +255,7 @@ class BuiltinPlayer(Player):
             # We don't early exit here since playback would otherwise never start
             # on iOS devices with Home Assistant OS installations.
 
-        media = player.current_media
+        media = player._current_media
         if queue is None or media is None:
             raise web.HTTPNotFound(reason="No active queue or media found!")
 
@@ -274,9 +276,9 @@ class BuiltinPlayer(Player):
 
         pcm_format = AudioFormat(
             sample_rate=stream_format.sample_rate,
-            content_type=DEFAULT_PCM_FORMAT.content_type,
-            bit_depth=DEFAULT_PCM_FORMAT.bit_depth,
-            channels=DEFAULT_PCM_FORMAT.channels,
+            content_type=INTERNAL_PCM_FORMAT.content_type,
+            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
+            channels=INTERNAL_PCM_FORMAT.channels,
         )
         async for chunk in get_ffmpeg_stream(
             audio_input=self.mass.streams.get_queue_flow_stream(
@@ -289,7 +291,7 @@ class BuiltinPlayer(Player):
             # Apple ignores "Accept-Ranges=none" on iOS and iPadOS for some reason,
             # so we need to slowly feed the music to avoid the Browser stopping and later
             # restarting the audio stream (from a wrong position!) by keeping the buffer short.
-            extra_input_args=["-readrate", "1.0", "-readrate_initial_burst", "15"],
+            extra_input_args=["-readrate", "1.02", "-readrate_initial_burst", "6"],
             filter_params=get_player_filter_params(self.mass, player_id, pcm_format, stream_format),
         ):
             try:
