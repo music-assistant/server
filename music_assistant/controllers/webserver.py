@@ -8,6 +8,7 @@ this webserver allows for more fine grained configuration to better secure it.
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import os
 import urllib.parse
@@ -16,7 +17,9 @@ from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
 
+import aiofiles
 from aiohttp import WSMsgType, web
+from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import (
     CommandMessage,
@@ -30,8 +33,13 @@ from music_assistant_models.errors import InvalidCommand
 
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.api_docs import (
+    generate_commands_reference,
+    generate_openapi_spec,
+    generate_schemas_reference,
+)
 from music_assistant.helpers.audio import get_preview_stream
-from music_assistant.helpers.json import json_dumps
+from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
@@ -151,6 +159,16 @@ class WebserverController(CoreController):
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
         routes.append(("POST", "/api", self._handle_jsonrpc_api_command))
+        # add api documentation
+        routes.append(("GET", "/api-docs", self._handle_api_intro))
+        routes.append(("GET", "/api-docs/", self._handle_api_intro))
+        routes.append(("GET", "/api-docs/commands", self._handle_commands_reference))
+        routes.append(("GET", "/api-docs/commands/", self._handle_commands_reference))
+        routes.append(("GET", "/api-docs/schemas", self._handle_schemas_reference))
+        routes.append(("GET", "/api-docs/schemas/", self._handle_schemas_reference))
+        routes.append(("GET", "/api-docs/openapi.json", self._handle_openapi_spec))
+        routes.append(("GET", "/api-docs/swagger", self._handle_swagger_ui))
+        routes.append(("GET", "/api-docs/swagger/", self._handle_swagger_ui))
         # start the webserver
         all_ip_addresses = await get_ip_addresses()
         default_publish_ip = all_ip_addresses[0]
@@ -239,6 +257,16 @@ class WebserverController(CoreController):
             error = f"Invalid JSON: {cmd_data}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
+        except MissingField as e:
+            # be forgiving if message_id is missing
+            cmd_data_dict = json_loads(cmd_data)
+            if e.field_name == "message_id" and "command" in cmd_data_dict:
+                cmd_data_dict["message_id"] = "unknown"
+                command_msg = CommandMessage.from_dict(cmd_data_dict)
+            else:
+                error = f"Missing field in JSON: {e!s}"
+                self.logger.error("Unhandled JSONRPC API error: %s", error)
+                return web.Response(status=400, text=error)
 
         # work out handler for the given path/command
         handler = self.mass.command_handlers.get(command_msg.command)
@@ -246,19 +274,68 @@ class WebserverController(CoreController):
             error = f"Invalid Command: {command_msg.command}"
             self.logger.error("Unhandled JSONRPC API error: %s", error)
             return web.Response(status=400, text=error)
-        args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
-        result = handler.target(**args)
-        if hasattr(result, "__anext__"):
-            # handle async generator (for really large listings)
-            result = [item async for item in result]
-        elif asyncio.iscoroutine(result):
-            result = await result
-        return web.json_response(result, dumps=json_dumps)
+
+        try:
+            args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
+            result = handler.target(**args)
+            if hasattr(result, "__anext__"):
+                # handle async generator (for really large listings)
+                result = [item async for item in result]
+            elif asyncio.iscoroutine(result):
+                result = await result
+            return web.json_response(result, dumps=json_dumps)
+        except Exception as e:
+            # Return clean error message without stacktrace
+            error_type = type(e).__name__
+            error_msg = str(e)
+            error = f"{error_type}: {error_msg}"
+            self.logger.error("Error executing command %s: %s", command_msg.command, error)
+            return web.Response(status=500, text=error)
 
     async def _handle_application_log(self, request: web.Request) -> web.Response:
         """Handle request to get the application log."""
         log_data = await self.mass.get_application_log()
         return web.Response(text=log_data, content_type="text/text")
+
+    async def _handle_api_intro(self, request: web.Request) -> web.Response:
+        """Handle request for API introduction/documentation page."""
+        intro_html_path = os.path.join(
+            os.path.dirname(__file__), "..", "helpers", "resources", "api_docs.html"
+        )
+        # Read the template
+        async with aiofiles.open(intro_html_path) as f:
+            html_content = await f.read()
+
+        # Replace placeholders (escape values to prevent XSS)
+        html_content = html_content.replace("{VERSION}", html.escape(self.mass.version))
+        html_content = html_content.replace("{BASE_URL}", html.escape(self.base_url))
+        html_content = html_content.replace("{SERVER_HOST}", html.escape(request.host))
+
+        return web.Response(text=html_content, content_type="text/html")
+
+    async def _handle_openapi_spec(self, request: web.Request) -> web.Response:
+        """Handle request for OpenAPI specification (generated on-the-fly)."""
+        spec = generate_openapi_spec(
+            self.mass.command_handlers, server_url=self.base_url, version=self.mass.version
+        )
+        return web.json_response(spec)
+
+    async def _handle_commands_reference(self, request: web.Request) -> web.Response:
+        """Handle request for commands reference page (generated on-the-fly)."""
+        html = generate_commands_reference(self.mass.command_handlers, server_url=self.base_url)
+        return web.Response(text=html, content_type="text/html")
+
+    async def _handle_schemas_reference(self, request: web.Request) -> web.Response:
+        """Handle request for schemas reference page (generated on-the-fly)."""
+        html = generate_schemas_reference(self.mass.command_handlers)
+        return web.Response(text=html, content_type="text/html")
+
+    async def _handle_swagger_ui(self, request: web.Request) -> web.Response:
+        """Handle request for Swagger UI."""
+        swagger_html_path = os.path.join(
+            os.path.dirname(__file__), "..", "helpers", "resources", "swagger_ui.html"
+        )
+        return await self._server.serve_static(swagger_html_path, request)
 
 
 class WebsocketClientHandler:
@@ -303,11 +380,11 @@ class WebsocketClientHandler:
         self._writer_task = self.mass.create_task(self._writer())
 
         # send server(version) info when client connects
-        self._send_message(self.mass.get_server_info())
+        await self._send_message(self.mass.get_server_info())
 
         # forward all events to clients
         def handle_event(event: MassEvent) -> None:
-            self._send_message(event)
+            self._send_message_sync(event)
 
         unsub_callback = self.mass.subscribe(handle_event)
 
@@ -331,7 +408,7 @@ class WebsocketClientHandler:
                     disconnect_warn = f"Received invalid JSON: {msg.data}"
                     break
 
-                self._handle_command(command_msg)
+                await self._handle_command(command_msg)
 
         except asyncio.CancelledError:
             self._logger.debug("Connection closed by client")
@@ -360,7 +437,7 @@ class WebsocketClientHandler:
 
         return wsock
 
-    def _handle_command(self, msg: CommandMessage) -> None:
+    async def _handle_command(self, msg: CommandMessage) -> None:
         """Handle an incoming command from the client."""
         self._logger.debug("Handling command %s", msg.command)
 
@@ -368,7 +445,7 @@ class WebsocketClientHandler:
         handler = self.mass.command_handlers.get(msg.command)
 
         if handler is None:
-            self._send_message(
+            await self._send_message(
                 ErrorResultMessage(
                     msg.message_id,
                     InvalidCommand.error_code,
@@ -392,20 +469,20 @@ class WebsocketClientHandler:
                 async for item in iterator:
                     result.append(item)
                     if len(result) >= 500:
-                        self._send_message(
+                        await self._send_message(
                             SuccessResultMessage(msg.message_id, result, partial=True)
                         )
                         result = []
             elif asyncio.iscoroutine(result):
                 result = await result
-            self._send_message(SuccessResultMessage(msg.message_id, result))
+            await self._send_message(SuccessResultMessage(msg.message_id, result))
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
             else:
                 self._logger.error("Error handling message: %s: %s", msg.command, str(err))
             err_msg = str(err) or err.__class__.__name__
-            self._send_message(
+            await self._send_message(
                 ErrorResultMessage(msg.message_id, getattr(err, "error_code", 999), err_msg)
             )
 
@@ -424,12 +501,29 @@ class WebsocketClientHandler:
                 self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", message)
                 await self.wsock.send_str(message)
 
-    def _send_message(self, message: MessageType) -> None:
-        """Send a message to the client.
+    async def _send_message(self, message: MessageType) -> None:
+        """Send a message to the client (for large response messages).
 
+        Runs JSON serialization in executor to avoid blocking for large messages.
         Closes connection if the client is not reading the messages.
 
         Async friendly.
+        """
+        # Run JSON serialization in executor to avoid blocking for large messages
+        loop = asyncio.get_running_loop()
+        _message = await loop.run_in_executor(None, message.to_json)
+
+        try:
+            self._to_write.put_nowait(_message)
+        except asyncio.QueueFull:
+            self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
+
+            self._cancel()
+
+    def _send_message_sync(self, message: MessageType) -> None:
+        """Send a message from a sync context (for small messages like events).
+
+        Serializes inline without executor overhead since events are typically small.
         """
         _message = message.to_json()
 

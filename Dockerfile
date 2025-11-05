@@ -11,6 +11,13 @@ COPY requirements_all.txt .
 # ensure UV is installed
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# Install build tools for PyAV compilation (for aioresonate)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # create venv which will be copied to the final image
 ENV VIRTUAL_ENV=/app/venv
 RUN uv venv $VIRTUAL_ENV
@@ -19,14 +26,17 @@ RUN uv venv $VIRTUAL_ENV
 # comes at a cost of a slightly larger image size but is faster to start
 # because we do not have to install dependencies at runtime
 RUN uv pip install \
-    --find-links "https://wheels.home-assistant.io/musllinux/" \
     -r requirements_all.txt
+
+# Reinstall PyAV from source to use system FFmpeg instead of bundled FFmpeg
+# Use the version already resolved by requirements_all.txt to ensure compatibility
+RUN uv pip install --no-binary av --force-reinstall --no-deps \
+    "av==$($VIRTUAL_ENV/bin/python -c 'import importlib.metadata; print(importlib.metadata.version("av"))')"
 
 # Install Music Assistant from prebuilt wheel
 ARG MASS_VERSION
 RUN uv pip install \
     --no-cache \
-    --find-links "https://wheels.home-assistant.io/musllinux/" \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
 
 # we need to set (very permissive) permissions to the workdir
@@ -44,7 +54,7 @@ FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION
 ENV VIRTUAL_ENV=/app/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-# copy the already build /app dir
+# copy the already built /app dir
 COPY --from=builder /app /app
 
 # the /app contents have correct permissions but for some reason /app itself does not.

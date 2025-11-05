@@ -197,9 +197,9 @@ class CastStatusListener:
             if TYPE_CHECKING:
                 assert isinstance(group_player, ChromecastPlayer)
             if group_player.cc.media_controller.is_active:
-                self.castplayer.active_group = group_uuid
-            elif group_uuid == self.castplayer.active_group:
-                self.castplayer.active_group = None
+                self.castplayer.active_cast_group = group_uuid
+            elif group_uuid == self.castplayer.active_cast_group:
+                self.castplayer.active_cast_group = None
 
         self.castplayer.logger.log(
             VERBOSE_LOG_LEVEL,
