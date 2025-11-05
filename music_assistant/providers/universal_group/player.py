@@ -57,7 +57,6 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_name = self.config.name or f"Universal Group {player_id}"
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
-        self._attr_active_source = player_id
         self._attr_device_info = DeviceInfo(model="Universal Group", manufacturer=provider.name)
         self._attr_supported_features = {*BASE_FEATURES}
         self._attr_needs_poll = True
@@ -236,7 +235,6 @@ class UniversalGroupPlayer(GroupPlayer):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time() - 1
         self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_active_source = media.source_id
         self.update_state()
 
         # forward to downstream play_media commands

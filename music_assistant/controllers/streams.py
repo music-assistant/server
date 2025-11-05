@@ -1187,18 +1187,15 @@ class StreamsController(CoreController):
         """Get the special plugin source stream."""
         plugin_prov: PluginProvider = self.mass.get_provider(plugin_source_id)
         plugin_source = plugin_prov.get_source()
-        if plugin_source.in_use_by and plugin_source.in_use_by != player_id:
-            # kick out existing player using this source
-            plugin_source.in_use_by = player_id
-            await asyncio.sleep(0.5)  # give some time to the other player to stop
-
         self.logger.debug(
             "Start streaming PluginSource %s to %s using output format %s",
             plugin_source_id,
             player_id,
             output_format,
         )
+        # this should already be set by the player controller, but just to be sure
         plugin_source.in_use_by = player_id
+
         try:
             async for chunk in get_ffmpeg_stream(
                 audio_input=(
@@ -1213,7 +1210,7 @@ class StreamsController(CoreController):
                 chunk_size=chunk_size,
             ):
                 if plugin_source.in_use_by != player_id:
-                    self.logger.info(
+                    self.logger.debug(
                         "Aborting streaming PluginSource %s to %s "
                         "- another player took over control",
                         plugin_source_id,
@@ -1225,7 +1222,10 @@ class StreamsController(CoreController):
             self.logger.debug(
                 "Finished streaming PluginSource %s to %s", plugin_source_id, player_id
             )
-            plugin_source.in_use_by = None
+            await asyncio.sleep(1)  # prevent race conditions when selecting source
+            if plugin_source.in_use_by == player_id:
+                # release control
+                plugin_source.in_use_by = None
 
     async def get_queue_item_stream(
         self,

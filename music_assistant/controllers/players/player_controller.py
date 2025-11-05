@@ -353,10 +353,10 @@ class PlayerController(CoreController):
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.stop(active_queue.queue_id)
-            return
-        # handle command on player directly
-        async with self._player_throttlers[player.player_id]:
-            await player.stop()
+        else:
+            # handle command on player directly
+            async with self._player_throttlers[player.player_id]:
+                await player.stop()
 
     @api_command("players/cmd/play")
     @handle_player_command
@@ -477,7 +477,7 @@ class PlayerController(CoreController):
             await player.play()
             return
         if active_source and not active_source.passive:
-            await player.select_source(active_source.id)
+            await self.select_source(player_id, active_source.id)
             return
         if media:
             # try to re-play the current media item
@@ -997,6 +997,8 @@ class PlayerController(CoreController):
         # power on the player if needed
         if player.powered is False and player.power_control != PLAYER_CONTROL_NONE:
             await self.cmd_power(player.player_id, True)
+        if media.source_id:
+            player.set_active_mass_source(media.source_id)
         await player.play_media(media)
 
     @api_command("players/cmd/select_source")
@@ -1019,17 +1021,17 @@ class PlayerController(CoreController):
                 # just try to stop (regardless of state)
                 await self.cmd_stop(player_id)
                 await asyncio.sleep(0.5)  # small delay to allow stop to process
-            player.state.active_source = None
-            player.state.current_media = None
         # check if source is a pluginsource
         # in that case the source id is the instance_id of the plugin provider
         if plugin_prov := self.mass.get_provider(source):
+            player.set_active_mass_source(source)
             await self._handle_select_plugin_source(player, cast("PluginProvider", plugin_prov))
             return
         # check if source is a mass queue
         # this can be used to restore the queue after a source switch
         if mass_queue := self.mass.player_queues.get(source):
             try:
+                player.set_active_mass_source(mass_queue.queue_id)
                 await self.mass.player_queues.play(mass_queue.queue_id)
             except QueueEmpty:
                 # queue is empty: we just set the active source optimistically
@@ -1910,6 +1912,8 @@ class PlayerController(CoreController):
         for plugin_source in self.get_plugin_sources():
             if plugin_source.in_use_by == player.player_id:
                 return plugin_source
+            if player.active_source == plugin_source.id:
+                return plugin_source
         return None
 
     def _get_player_groups(
@@ -2142,7 +2146,18 @@ class PlayerController(CoreController):
     ) -> None:
         """Handle playback/select of given plugin source on player."""
         plugin_source = plugin_prov.get_source()
+        if plugin_source.in_use_by and (current_player := self.get(plugin_source.in_use_by)):
+            self.logger.debug(
+                "Plugin source %s is already in use by player %s, stopping playback there first.",
+                plugin_source.name,
+                current_player.display_name,
+            )
+            await self.cmd_stop(current_player.player_id)
         stream_url = await self.mass.streams.get_plugin_source_url(plugin_source, player.player_id)
+        plugin_source.in_use_by = player.player_id
+        # Call on_select callback if available
+        if plugin_source.on_select:
+            await plugin_source.on_select()
         await self.play_media(
             player_id=player.player_id,
             media=PlayerMedia(
