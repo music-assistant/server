@@ -198,19 +198,19 @@ class AirPlayReceiverProvider(PluginProvider):
                 cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name,
                 "--output",
                 "pipe",
-                "--audio-backend-buffer-desired-length",
-                "0.2",
-                "--audio-backend-latency-offset",
-                "0",
-                # Output audio to pipe
-                "--output-device",
-                self.audio_pipe,
+                # Use port 7000 to avoid conflict with macOS AirPlay Receiver on port 5000
+                "--port",
+                "7000",
                 # Enable metadata
                 "--metadata-enable",
                 "--metadata-pipename",
                 self.metadata_pipe,
                 # Get cover art
                 "--get-coverart",
+                # Output audio to pipe
+                "--output",
+                "pipe",
+                self.audio_pipe,
             ]
 
             self._shairport_proc = shairport = AsyncProcess(
@@ -226,6 +226,11 @@ class AirPlayReceiverProvider(PluginProvider):
 
             # Keep reading logging from stderr until exit
             async for line in shairport.iter_stderr():
+                # Check for fatal errors
+                if "fatal error:" in line.lower() or "unknown option" in line.lower():
+                    self.logger.error("Fatal error from shairport-sync: %s", line)
+                    self.unload_with_error(f"shairport-sync fatal error: {line}")
+                    break
                 if not self._shairport_started.is_set() and "Play begins" in line:
                     self._shairport_started.set()
                 if "Connection from" in line:
@@ -242,7 +247,7 @@ class AirPlayReceiverProvider(PluginProvider):
                 self.logger.debug(line)
 
         finally:
-            await shairport.close(True)
+            await shairport.close()
             self.logger.info("AirPlay Receiver background daemon stopped for %s", self.name)
 
             # Stop metadata reader
