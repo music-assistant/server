@@ -311,7 +311,7 @@ class StreamsController(CoreController):
             bind_port = 8097
         await self._server.setup(
             bind_ip=bind_ip,
-            bind_port=bind_port,
+            bind_port=bind_port,  # Use validated bind_port, not self.publish_port
             base_url=f"http://{self.publish_ip}:{self.publish_port}",
             static_routes=[
                 (
@@ -1234,6 +1234,7 @@ class StreamsController(CoreController):
         plugin_prov = cast("PluginProvider", self.mass.get_provider(plugin_source_id))
         if not plugin_prov:
             raise ProviderUnavailableError(f"Unknown PluginSource: {plugin_source_id}")
+
         plugin_source = plugin_prov.get_source()
         self.logger.debug(
             "Start streaming PluginSource %s to %s using output format %s",
@@ -1243,6 +1244,15 @@ class StreamsController(CoreController):
         )
         # this should already be set by the player controller, but just to be sure
         plugin_source.in_use_by = player_id
+
+        # Determine audio input and validate it's not None
+        audio_input = (
+            plugin_prov.get_audio_stream(player_id)
+            if plugin_source.stream_type == StreamType.CUSTOM
+            else plugin_source.path
+        )
+        if audio_input is None:
+            raise InvalidDataError(f"No audio input for plugin source {plugin_source_id}")
 
         try:
             async for chunk in get_ffmpeg_stream(
