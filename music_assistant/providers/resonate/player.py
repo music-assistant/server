@@ -307,7 +307,11 @@ class ResonatePlayer(Player):
                     )
 
             # Setup the main channel subscription
-            main_channel_gen, main_position = await self.timed_client_stream.subscribe_raw()
+            # aioresonate only really supports 16-bit for now TODO: upgrade later to 32-bit
+            main_channel_gen, main_position = await self.timed_client_stream.get_stream(
+                output_format=pcm_format,
+                filter_params=None,  # TODO: this should probably still include the safety limiter
+            )
             assert main_position == 0.0  # first subscriber, should be zero
             media_stream = MusicAssistantMediaStream(
                 main_channel_source=main_channel_gen,
