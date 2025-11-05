@@ -121,7 +121,6 @@ class BluesoundPlayer(Player):
         if play_state == "stop":
             self._set_polling_dynamic()
         self._attr_playback_state = PlaybackState.IDLE
-        self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
 
@@ -196,7 +195,6 @@ class BluesoundPlayer(Player):
 
         # Optimistically update state
         self._attr_current_media = media
-        self._attr_active_source = media.source_id
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
@@ -229,7 +227,6 @@ class BluesoundPlayer(Player):
                 if removed_player:
                     removed_player._set_polling_dynamic()
                     removed_player._attr_current_media = None
-                    removed_player._attr_active_source = None
                     removed_player.update_state()
 
         if player_ids_to_add:

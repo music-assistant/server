@@ -858,7 +858,6 @@ class StreamsController(CoreController):
                 # need to pass player_id from the PlayerMedia object
                 # because this could have been a group
                 player_id=media.custom_data["player_id"],
-                chunk_size=get_chunksize(pcm_format, 1),  # ensure 1 second chunks
             )
         elif media.source_id and media.source_id.startswith(UGP_PREFIX):
             # special case: UGP stream
@@ -1182,23 +1181,19 @@ class StreamsController(CoreController):
         output_format: AudioFormat,
         player_id: str,
         player_filter_params: list[str] | None = None,
-        chunk_size: int | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Get the special plugin source stream."""
         plugin_prov: PluginProvider = self.mass.get_provider(plugin_source_id)
         plugin_source = plugin_prov.get_source()
-        if plugin_source.in_use_by and plugin_source.in_use_by != player_id:
-            # kick out existing player using this source
-            plugin_source.in_use_by = player_id
-            await asyncio.sleep(0.5)  # give some time to the other player to stop
-
         self.logger.debug(
             "Start streaming PluginSource %s to %s using output format %s",
             plugin_source_id,
             player_id,
             output_format,
         )
+        # this should already be set by the player controller, but just to be sure
         plugin_source.in_use_by = player_id
+
         try:
             async for chunk in get_ffmpeg_stream(
                 audio_input=(
@@ -1210,10 +1205,9 @@ class StreamsController(CoreController):
                 output_format=output_format,
                 filter_params=player_filter_params,
                 extra_input_args=["-y", "-re"],
-                chunk_size=chunk_size,
             ):
                 if plugin_source.in_use_by != player_id:
-                    self.logger.info(
+                    self.logger.debug(
                         "Aborting streaming PluginSource %s to %s "
                         "- another player took over control",
                         plugin_source_id,
@@ -1225,7 +1219,10 @@ class StreamsController(CoreController):
             self.logger.debug(
                 "Finished streaming PluginSource %s to %s", plugin_source_id, player_id
             )
-            plugin_source.in_use_by = None
+            await asyncio.sleep(1)  # prevent race conditions when selecting source
+            if plugin_source.in_use_by == player_id:
+                # release control
+                plugin_source.in_use_by = None
 
     async def get_queue_item_stream(
         self,

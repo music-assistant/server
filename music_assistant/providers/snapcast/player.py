@@ -96,7 +96,6 @@ class SnapCastPlayer(Player):
         # finishes the player.state should be IDLE.
         self._attr_playback_state = PlaybackState.IDLE
         self._attr_current_media = None
-        self._attr_active_source = None
         self._set_childs_state()
 
         self.update_state()
@@ -179,7 +178,6 @@ class SnapCastPlayer(Player):
             await snap_group.set_stream(stream.identifier)
 
         self._attr_current_media = media
-        self._attr_active_source = media.source_id
 
         # select audio source
         audio_source = self.mass.streams.get_stream(media, DEFAULT_SNAPCAST_FORMAT)

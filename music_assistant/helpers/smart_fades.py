@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import warnings
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -164,11 +165,19 @@ class SmartFadesAnalyzer:
     ) -> SmartFadesAnalysis | None:
         """Perform beat analysis using librosa."""
         try:
-            tempo, beats_array = librosa.beat.beat_track(
-                y=audio_array,
-                sr=sample_rate,
-                units="time",
-            )
+            # Suppress librosa UserWarnings about empty mel filters
+            # These warnings are harmless and occur with certain audio characteristics
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Empty filters detected in mel frequency basis",
+                    category=UserWarning,
+                )
+                tempo, beats_array = librosa.beat.beat_track(
+                    y=audio_array,
+                    sr=sample_rate,
+                    units="time",
+                )
             # librosa returns np.float64 arrays when units="time"
 
             if len(beats_array) < 2:

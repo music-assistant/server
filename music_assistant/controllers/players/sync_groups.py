@@ -91,7 +91,6 @@ class SyncGroupPlayer(GroupPlayer):
         self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_powered = False  # group players are always powered off by default
-        self._attr_active_source = None
         self._attr_device_info = DeviceInfo(model="Sync Group", manufacturer=provider.name)
         self._attr_supported_features = {
             PlayerFeature.POWER,
@@ -263,7 +262,6 @@ class SyncGroupPlayer(GroupPlayer):
         if not powered and self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             await self.stop()
             self._attr_current_media = None
-            self._attr_active_source = None
 
         # optimistically set the group state
 
@@ -305,7 +303,6 @@ class SyncGroupPlayer(GroupPlayer):
             # Reset to unfiltered static members list when powered off
             # (the frontend will hide unavailable members)
             self._attr_group_members = self._attr_static_group_members.copy()
-            self._attr_active_source = None
             # and clear the sync leader
             self.sync_leader = None
         self.update_state()
@@ -322,7 +319,6 @@ class SyncGroupPlayer(GroupPlayer):
         if sync_leader := self.sync_leader:
             await sync_leader.play_media(media)
             self._attr_current_media = deepcopy(media)
-            self._attr_active_source = media.source_id
             self.update_state()
         else:
             raise RuntimeError("an empty group cannot play media, consider adding members first")
@@ -342,7 +338,6 @@ class SyncGroupPlayer(GroupPlayer):
         """
         if sync_leader := self.sync_leader:
             await sync_leader.select_source(source)
-            self._attr_active_source = source
             self.update_state()
 
     async def set_members(

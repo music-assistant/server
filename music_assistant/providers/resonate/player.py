@@ -182,7 +182,6 @@ class ResonatePlayer(Player):
         await self.api.group.stop()
         # Clear the playback task reference (group.stop() handles stopping the stream)
         self._playback_task = None
-        self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
 
@@ -196,7 +195,6 @@ class ResonatePlayer(Player):
         self._attr_current_media = media
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
-        self._attr_active_source = media.source_id
         # playback_state will be set by the group state change event
 
         # Stop previous stream in case we were already playing something
