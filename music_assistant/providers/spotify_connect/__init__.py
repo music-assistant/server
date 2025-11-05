@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     EventType,
+    PlaybackState,
     ProviderFeature,
     ProviderType,
     StreamType,
@@ -142,7 +143,7 @@ class SpotifyConnectProvider(PluginProvider):
             name=self.name,
             # we set passive to true because we
             # dont allow this source to be selected directly
-            passive=True,
+            passive=False,
             # Playback control capabilities will be enabled when Spotify Web API is available
             can_play_pause=False,
             can_seek=False,
@@ -166,6 +167,7 @@ class SpotifyConnectProvider(PluginProvider):
         self._spotify_provider: SpotifyProvider | None = None
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
+        self._spotify_device_id: str | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -244,6 +246,7 @@ class SpotifyConnectProvider(PluginProvider):
         self._source_details.can_play_pause = has_web_api
         self._source_details.can_seek = has_web_api
         self._source_details.can_next_previous = has_web_api
+        self._source_details.passive = not has_web_api
 
         # Register or unregister callbacks based on availability
         if has_web_api:
@@ -252,24 +255,43 @@ class SpotifyConnectProvider(PluginProvider):
             self._source_details.on_next = self._on_next
             self._source_details.on_previous = self._on_previous
             self._source_details.on_seek = self._on_seek
+            self._source_details.on_select = self._on_select
         else:
             self._source_details.on_play = None
             self._source_details.on_pause = None
             self._source_details.on_next = None
             self._source_details.on_previous = None
             self._source_details.on_seek = None
+            self._source_details.on_select = None
 
         # Trigger player update to reflect capability changes
         if self._source_details.in_use_by:
             self.mass.players.trigger_player_update(self._source_details.in_use_by)
 
+    async def _on_select(self) -> None:
+        """Handle source selection - transfer Spotify playback to this device."""
+        if not self._spotify_provider:
+            return
+        try:
+            # Transfer playback to this device when it's selected
+            await self._ensure_active_device()
+            await self._spotify_provider._put_data("me/player/play")
+        except Exception as err:
+            self.logger.debug("Failed to transfer playback on source selection: %s", err)
+
     async def _on_play(self) -> None:
         """Handle play command via Spotify Web API."""
+        attached_player = self.mass.players.get(self.mass_player_id)
+        if attached_player and attached_player.playback_state == PlaybackState.IDLE:
+            # edge case: player is not paused, so we need to select this source first
+            await self.mass.players.select_source(self.mass_player_id, self.instance_id)
         if not self._spotify_provider:
             raise UnsupportedFeaturedException(
                 "Playback control requires a matching Spotify music provider"
             )
         try:
+            # First try to transfer playback to this device if needed
+            await self._ensure_active_device()
             await self._spotify_provider._put_data("me/player/play")
         except Exception as err:
             self.logger.warning("Failed to send play command via Spotify Web API: %s", err)
@@ -324,6 +346,81 @@ class SpotifyConnectProvider(PluginProvider):
         except Exception as err:
             self.logger.warning("Failed to send seek command via Spotify Web API: %s", err)
             raise
+
+    async def _get_spotify_device_id(self) -> str | None:
+        """Get the Spotify Connect device ID for this instance.
+
+        :return: Device ID if found, None otherwise.
+        """
+        if not self._spotify_provider:
+            return None
+
+        try:
+            # Get list of available devices from Spotify Web API
+            devices_data = await self._spotify_provider._get_data("me/player/devices")
+            devices = devices_data.get("devices", [])
+
+            # Look for our device by name
+            connect_name = cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or self.name
+            for device in devices:
+                if device.get("name") == connect_name and device.get("type") == "Speaker":
+                    device_id: str | None = device.get("id")
+                    self.logger.debug("Found Spotify Connect device ID: %s", device_id)
+                    return device_id
+
+            self.logger.debug(
+                "Could not find Spotify Connect device '%s' in available devices", connect_name
+            )
+            return None
+        except Exception as err:
+            self.logger.debug("Failed to get Spotify devices: %s", err)
+            return None
+
+    async def _ensure_active_device(self) -> None:
+        """
+        Ensure this Spotify Connect device is the active player on Spotify.
+
+        Transfers playback to this device if it's not already active.
+        """
+        if not self._spotify_provider:
+            return
+
+        try:
+            # Get current playback state
+            try:
+                playback_data = await self._spotify_provider._get_data("me/player")
+                current_device = playback_data.get("device", {}) if playback_data else {}
+                current_device_id = current_device.get("id")
+            except Exception as err:
+                if getattr(err, "status", None) == 204:
+                    # No active device
+                    current_device_id = None
+                else:
+                    raise
+
+            # Get our device ID if we don't have it cached
+            if not self._spotify_device_id:
+                self._spotify_device_id = await self._get_spotify_device_id()
+
+            # If we couldn't find our device ID, we can't transfer
+            if not self._spotify_device_id:
+                self.logger.debug("Cannot transfer playback - device ID not found")
+                return
+
+            # Check if we're already the active device
+            if current_device_id == self._spotify_device_id:
+                self.logger.debug("Already the active Spotify device")
+                return
+
+            # Transfer playback to this device
+            self.logger.info("Transferring Spotify playback to this device")
+            await self._spotify_provider._put_data(
+                "me/player",
+                data={"device_ids": [self._spotify_device_id], "play": False},
+            )
+        except Exception as err:
+            self.logger.debug("Failed to ensure active device: %s", err)
+            # Don't raise - this is a best-effort operation
 
     def _on_provider_event(self, event: MassEvent) -> None:
         """Handle provider added/removed events to check for Spotify provider."""
@@ -484,6 +581,10 @@ class SpotifyConnectProvider(PluginProvider):
             if not self._connected_spotify_username or not self._spotify_provider:
                 await self._check_spotify_provider_match()
 
+            # Make this device the active Spotify player via Web API
+            if self._spotify_provider:
+                self.mass.create_task(self._ensure_active_device())
+
             # initiate playback by selecting this source on the default player
             self.mass.create_task(
                 self.mass.players.select_source(self.mass_player_id, self.instance_id)
@@ -497,16 +598,16 @@ class SpotifyConnectProvider(PluginProvider):
             image_url = images[0] if (images := common_meta.get("covers")) else None
             if self._source_details.metadata is None:
                 self._source_details.metadata = StreamMetadata(uri=uri, title=title)
-                self._source_details.metadata.uri = uri
-                self._source_details.metadata.title = title
-                self._source_details.metadata.artist = None
-                self._source_details.metadata.album = None
-                self._source_details.metadata.image_url = image_url
-                self._source_details.metadata.description = None
-                duration_ms = common_meta.get("duration_ms", 0)
-                self._source_details.metadata.duration = (
-                    int(duration_ms) // 1000 if duration_ms is not None else None
-                )
+            self._source_details.metadata.uri = uri
+            self._source_details.metadata.title = title
+            self._source_details.metadata.artist = None
+            self._source_details.metadata.album = None
+            self._source_details.metadata.image_url = image_url
+            self._source_details.metadata.description = None
+            duration_ms = common_meta.get("duration_ms", 0)
+            self._source_details.metadata.duration = (
+                int(duration_ms) // 1000 if duration_ms is not None else None
+            )
 
         if track_meta := json_data.get("track_metadata_fields", {}):
             if artists := track_meta.get("artists"):

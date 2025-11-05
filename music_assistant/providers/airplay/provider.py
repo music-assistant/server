@@ -20,10 +20,12 @@ from music_assistant.helpers.util import (
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    AIRPLAY_DISCOVERY_TYPE,
     CACHE_CATEGORY_PREV_VOLUME,
     CONF_IGNORE_VOLUME,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
+    RAOP_DISCOVERY_TYPE,
 )
 from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
@@ -116,24 +118,31 @@ class AirPlayProvider(PlayerProvider):
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        if discovery_info.type == "_raop._tcp.local.":
+        raop_discovery_info: AsyncServiceInfo | None = None
+        airplay_discovery_info: AsyncServiceInfo | None = None
+        if discovery_info.type == RAOP_DISCOVERY_TYPE:
             # RAOP service discovered
+            raop_discovery_info = discovery_info
             self.logger.debug("Discovered RAOP service for %s", display_name)
             # always prefer airplay mdns info as it has more details
             # fallback to raop info if airplay info is not available,
             # (old device only announcing raop)
-            airplay_info = AsyncServiceInfo(
-                "_airplay._tcp.local.",
+            airplay_discovery_info = AsyncServiceInfo(
+                AIRPLAY_DISCOVERY_TYPE,
                 discovery_info.name.split("@")[-1].replace("_raop", "_airplay"),
             )
+            await airplay_discovery_info.async_request(self.mass.aiozc.zeroconf, 3000)
         else:
             # AirPlay service discovered
             self.logger.debug("Discovered AirPlay service for %s", display_name)
-            airplay_info = discovery_info
-        if await airplay_info.async_request(self.mass.aiozc.zeroconf, 3000):
-            manufacturer, model = get_model_info(airplay_info)
+            airplay_discovery_info = discovery_info
+
+        if airplay_discovery_info:
+            manufacturer, model = get_model_info(airplay_discovery_info)
+        elif raop_discovery_info:
+            manufacturer, model = get_model_info(raop_discovery_info)
         else:
-            manufacturer, model = get_model_info(discovery_info)
+            manufacturer, model = "Unknown", "Unknown"
 
         if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
@@ -162,6 +171,14 @@ class AirPlayProvider(PlayerProvider):
         if not is_apple and "airplay" not in display_name.lower():
             display_name += " (AirPlay)"
 
+        # Final check before registration to handle race conditions
+        # (multiple MDNS events processed in parallel for same device)
+        if self.mass.players.get(player_id):
+            self.logger.debug(
+                "Player %s already registered during setup, skipping registration", player_id
+            )
+            return
+
         self.logger.debug(
             "Setting up player %s: manufacturer=%s, model=%s",
             display_name,
@@ -174,22 +191,14 @@ class AirPlayProvider(PlayerProvider):
         player = AirPlayPlayer(
             provider=self,
             player_id=player_id,
-            discovery_info=discovery_info,
+            raop_discovery_info=raop_discovery_info,
+            airplay_discovery_info=airplay_discovery_info,
             address=address,
             display_name=display_name,
             manufacturer=manufacturer,
             model=model,
             initial_volume=volume,
         )
-
-        # Final check before registration to handle race conditions
-        # (multiple MDNS events processed in parallel for same device)
-        if self.mass.players.get(player_id):
-            self.logger.debug(
-                "Player %s already registered during setup, skipping registration", player_id
-            )
-            return
-
         await self.mass.players.register(player)
 
     async def _handle_dacp_request(  # noqa: PLR0915

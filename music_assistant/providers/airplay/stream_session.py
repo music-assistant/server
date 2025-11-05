@@ -383,10 +383,6 @@ class AirPlayStreamSession:
         # start the stream
         assert airplay_player.stream  # for type checker
         await airplay_player.stream.start(start_ntp)
-        # repeat sending the volume level to the player because some players seem
-        # to ignore it the first time
-        # https://github.com/music-assistant/support/issues/3330
-        await airplay_player.stream.send_cli_command(f"VOLUME={airplay_player.volume_level}\n")
 
     async def _start_client_ffmpeg(self, airplay_player: AirPlayPlayer) -> None:
         """Start or restart the player's ffmpeg stream."""

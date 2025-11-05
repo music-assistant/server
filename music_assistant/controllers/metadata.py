@@ -86,7 +86,7 @@ LOCALES = {
     "it_IT": "Italian",
     "lt_LT": "Lithuanian",
     "lv_LV": "Latvian",
-    "jp_JP": "Japanese",
+    "ja_JP": "Japanese",
     "ko_KR": "Korean",
     "nl_NL": "Dutch",
     "nb_NO": "Norwegian Bokmål",

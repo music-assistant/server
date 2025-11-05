@@ -139,7 +139,6 @@ class BuiltinPlayer(Player):
             self.player_id,
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.STOP),
         )
-        self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
 
@@ -182,7 +181,6 @@ class BuiltinPlayer(Player):
         url = f"builtin_player/flow/{self.player_id}.mp3"
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_active_source = media.source_id
         self.update_state()
         self.mass.signal_event(
             EventType.BUILTIN_PLAYER,

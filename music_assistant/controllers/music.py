@@ -517,6 +517,40 @@ class MusicController(CoreController):
             )
         return result
 
+    async def get_playlog_provider_item_ids(
+        self, provider_instance_id: str, limit: int = 0
+    ) -> list[tuple[MediaType, str]]:
+        """Return a list of MediaType and provider_item_id of items in playlog of provider."""
+        query = (
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} "
+            "WHERE media_type in ('audiobook', 'podcast_episode') "
+            f"AND provider in ('library','{provider_instance_id}')"
+        )
+        assert self.mass.music.database is not None  # for type checking
+        db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+
+        result: list[tuple[MediaType, str]] = []
+        for db_row in db_rows:
+            if db_row["provider"] == "library":
+                # If the provider is library, we need to make sure that the item
+                # is part of the passed provider_instance_id.
+                # A podcast_episode cannot be in the provider_mappings
+                # so these entries must be audiobooks.
+                subquery = (
+                    f"SELECT * FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                    f"WHERE media_type = 'audiobook' AND item_id = {db_row['item_id']} "
+                    f"AND provider_instance = '{provider_instance_id}'"
+                )
+                subrow = await self.mass.music.database.get_rows_from_query(subquery)
+                if len(subrow) != 1:
+                    continue
+                result.append((MediaType.AUDIOBOOK, subrow[0]["provider_item_id"]))
+                continue
+            # non library - item id is provider_item_id
+            result.append((MediaType(db_row["media_type"]), db_row["item_id"]))
+
+        return result
+
     @api_command("music/item_by_uri")
     async def get_item_by_uri(self, uri: str) -> MediaItemType | BrowseFolder:
         """Fetch MediaItem by uri."""

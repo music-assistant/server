@@ -334,9 +334,10 @@ async def get_stream_details(
         raise MediaNotFoundError(
             f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
         )
+    buffer: AudioBuffer | None = None
     if queue_item.streamdetails and (
         (utc() - queue_item.streamdetails.created_at).seconds < STREAMDETAILS_EXPIRATION
-        or queue_item.streamdetails.buffer
+        or ((buffer := queue_item.streamdetails.buffer) and buffer.is_valid(seek_position))
     ):
         # already got a fresh/unused (or cached) streamdetails
         # we assume that the streamdetails are valid for max STREAMDETAILS_EXPIRATION seconds

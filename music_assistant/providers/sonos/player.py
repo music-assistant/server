@@ -59,11 +59,8 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     PlayerFeature.PAUSE,
-    PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.ENQUEUE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
@@ -148,6 +145,8 @@ class SonosPlayer(Player):
             _supported_features.add(PlayerFeature.VOLUME_MUTE)
         if not self.get_linked_airplay_player(False):
             _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if not self.get_linked_airplay_player(True):
+            _supported_features.add(PlayerFeature.ENQUEUE)
         self._attr_supported_features = _supported_features
 
         self._attr_name = (
