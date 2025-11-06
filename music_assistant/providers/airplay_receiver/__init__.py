@@ -112,6 +112,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self._stop_called: bool = False
         self._runner_task: asyncio.Task[None] | None = None
         self._shairport_proc: AsyncProcess | None = None
+        self._dbus_proc: AsyncProcess | None = None  # Local D-Bus daemon process
         self._shairport_started = asyncio.Event()
         self._dbus_available: bool | None = None  # Track if dbus-send is available
         # Initialize named pipe helpers
@@ -199,10 +200,9 @@ class AirPlayReceiverProvider(PluginProvider):
             self._source_details.can_seek = False
         else:
             self.logger.info(
-                "D-Bus not available - remote control features (play/pause/next/previous) "
-                "will not work. Playback can still be controlled from the AirPlay source device. "
-                "To enable remote control in Docker, mount the host D-Bus socket: "
-                "-v /run/dbus:/run/dbus:ro"
+                "dbus-send command not available - remote control features "
+                "(play/pause/next/previous) will not work. "
+                "Playback can still be controlled from the AirPlay source device."
             )
 
         self.player = self.mass.players.get(self.mass_player_id)
@@ -333,6 +333,28 @@ class AirPlayReceiverProvider(PluginProvider):
         await self._setup_pipes_and_config()
 
         try:
+            # Start local D-Bus daemon if dbus-daemon is available
+            # This provides D-Bus interface for remote control without requiring host D-Bus
+            try:
+                await check_output("which", "dbus-daemon")
+                self._dbus_proc = AsyncProcess(
+                    ["dbus-daemon", "--system", "--nofork"],
+                    name=f"dbus-daemon[{self.name}]",
+                )
+                await self._dbus_proc.start()
+                # Give D-Bus time to start
+                await asyncio.sleep(0.2)
+                self.logger.debug(
+                    "Started local D-Bus daemon (PID: %s)",
+                    self._dbus_proc.proc.pid if self._dbus_proc.proc else "unknown",
+                )
+            except Exception as err:
+                self.logger.debug(
+                    "Could not start local D-Bus daemon: %s - "
+                    "D-Bus remote control will not be available",
+                    err,
+                )
+
             args: list[str] = [
                 self._shairport_bin,
                 "--configfile",
@@ -378,6 +400,12 @@ class AirPlayReceiverProvider(PluginProvider):
             # Stop metadata reader
             if self._metadata_reader:
                 await self._metadata_reader.stop()
+
+            # Stop local D-Bus daemon if running
+            if self._dbus_proc:
+                await self._dbus_proc.close()
+                self.logger.debug("Stopped local D-Bus daemon")
+                self._dbus_proc = None
 
             # Clean up pipes and config
             await self._cleanup_pipes_and_config()
