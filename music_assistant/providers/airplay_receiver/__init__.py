@@ -418,7 +418,7 @@ class AirPlayReceiverProvider(PluginProvider):
             ):
                 await asyncio.sleep(0.5)  # Give shairport time to register
                 try:
-                    service_name = f"org.gnome.ShairportSync.i{shairport.proc.pid}"
+                    service_name = "org.gnome.ShairportSync"
                     _, output = await check_output(
                         "dbus-send",
                         "--system",
@@ -604,9 +604,8 @@ class AirPlayReceiverProvider(PluginProvider):
 
         try:
             # Use native shairport-sync D-Bus interface
-            # Service name includes process ID for multi-instance support
-            # shairport-sync registers as org.gnome.ShairportSync.i<PID>
-            service_name = f"org.gnome.ShairportSync.i{self._shairport_proc.proc.pid}"
+            # Service name is just org.gnome.ShairportSync (no instance suffix in our config)
+            service_name = "org.gnome.ShairportSync"
 
             # Use the same D-Bus system bus as shairport-sync
             dbus_env = None
