@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import re
 import struct
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
@@ -23,7 +24,12 @@ class MetadataReader:
         logger: Logger,
         on_metadata: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
-        """Initialize metadata reader."""
+        """Initialize metadata reader.
+
+        :param metadata_pipe: Path to the metadata pipe.
+        :param logger: Logger instance.
+        :param on_metadata: Callback function for metadata updates.
+        """
         self.metadata_pipe = metadata_pipe
         self.logger = logger
         self.on_metadata = on_metadata
@@ -31,7 +37,7 @@ class MetadataReader:
         self._stop = False
         self._current_metadata: dict[str, Any] = {}
         self._fd: int | None = None
-        self._buffer = bytearray()
+        self._buffer = ""
 
     async def start(self) -> None:
         """Start reading metadata from the pipe."""
@@ -76,7 +82,8 @@ class MetadataReader:
                     try:
                         chunk = os.read(self._fd, 4096)
                         if chunk:
-                            self._buffer.extend(chunk)
+                            # Decode as text and add to buffer
+                            self._buffer += chunk.decode("utf-8", errors="ignore")
                             # Process all complete metadata items in the buffer
                             self._process_buffer()
                     except BlockingIOError:
@@ -99,86 +106,182 @@ class MetadataReader:
                 self._fd = None
 
     def _process_buffer(self) -> None:
-        """Process all complete metadata items in the buffer."""
-        while len(self._buffer) >= 12:  # Minimum header size (type + code + length)
+        """Process all complete metadata items in the buffer (XML format)."""
+        # Look for complete <item>...</item> blocks
+        while "<item>" in self._buffer and "</item>" in self._buffer:
             try:
-                # Read header (12 bytes: 4 for type, 4 for code, 4 for length)
-                type_bytes = bytes(self._buffer[0:4])
-                code_bytes = bytes(self._buffer[4:8])
-                length_bytes = bytes(self._buffer[8:12])
+                # Find the boundaries of the next item
+                start_idx = self._buffer.index("<item>")
+                end_idx = self._buffer.index("</item>") + len("</item>")
 
-                # Unpack length
-                length = struct.unpack(">I", length_bytes)[0]
-
-                # Check if we have the complete item (header + data)
-                total_size = 12 + length
-                if len(self._buffer) < total_size:
-                    # Not enough data yet, wait for more
-                    break
-
-                # Extract data if present
-                data: str | None = None
-                if length > 0:
-                    data_bytes = bytes(self._buffer[12:total_size])
-                    # Data is base64 encoded
-                    try:
-                        data = base64.b64decode(data_bytes).decode("utf-8")
-                    except Exception:
-                        # If decoding fails, store raw bytes as string representation
-                        data = str(data_bytes)
-
-                # Convert type and code to strings
-                type_str = type_bytes.decode("latin-1")
-                code_str = code_bytes.decode("latin-1")
+                # Extract the item
+                item_xml = self._buffer[start_idx:end_idx]
 
                 # Remove processed item from buffer
-                del self._buffer[:total_size]
+                self._buffer = self._buffer[end_idx:]
 
-                # Process the metadata item (schedule as task to avoid blocking)
-                asyncio.create_task(self._process_metadata_item(type_str, code_str, data))
+                # Parse the item
+                self._parse_xml_item(item_xml)
 
-            except Exception as err:
+            except (ValueError, IndexError) as err:
                 self.logger.debug("Error processing buffer: %s", err)
-                # Clear the buffer on error to avoid getting stuck
-                self._buffer.clear()
+                # Clear malformed data
+                if "</item>" in self._buffer:
+                    # Skip to after the next </item>
+                    self._buffer = self._buffer[self._buffer.index("</item>") + len("</item>") :]
+                else:
+                    # Wait for more data
+                    break
+            except Exception as err:
+                self.logger.error("Unexpected error processing buffer: %s", err)
+                # Clear the buffer on unexpected error
+                self._buffer = ""
                 break
 
+    def _parse_xml_item(self, item_xml: str) -> None:
+        """Parse a single XML metadata item.
+
+        :param item_xml: XML string containing a metadata item.
+        """
+        try:
+            # Extract type (hex format)
+            type_match = re.search(r"<type>([0-9a-fA-F]{8})</type>", item_xml)
+            code_match = re.search(r"<code>([0-9a-fA-F]{8})</code>", item_xml)
+            length_match = re.search(r"<length>(\d+)</length>", item_xml)
+
+            if not type_match or not code_match or not length_match:
+                return
+
+            # Convert hex type and code to ASCII strings
+            type_hex = int(type_match.group(1), 16)
+            code_hex = int(code_match.group(1), 16)
+            length = int(length_match.group(1))
+
+            # Convert hex to 4-character ASCII codes
+            type_str = type_hex.to_bytes(4, "big").decode("ascii", errors="ignore")
+            code_str = code_hex.to_bytes(4, "big").decode("ascii", errors="ignore")
+
+            # Extract data if present
+            data: str | None = None
+            if length > 0:
+                data_match = re.search(r"<data encoding=\"base64\">([^<]+)</data>", item_xml)
+                if data_match:
+                    try:
+                        # Decode base64 data
+                        data_b64 = data_match.group(1).strip()
+                        data = base64.b64decode(data_b64).decode("utf-8", errors="ignore")
+                    except Exception as err:
+                        self.logger.debug("Error decoding base64 data: %s", err)
+
+            # Process the metadata item
+            asyncio.create_task(self._process_metadata_item(type_str, code_str, data))
+
+        except Exception as err:
+            self.logger.debug("Error parsing XML item: %s", err)
+
     async def _process_metadata_item(self, item_type: str, code: str, data: str | None) -> None:
-        """Process a metadata item and update current metadata."""
-        self.logger.debug("Metadata: type=%s, code=%s, data=%s", item_type, code, data)
+        """Process a metadata item and update current metadata.
+
+        :param item_type: Type of metadata (e.g., 'core' or 'ssnc').
+        :param code: Metadata code identifier.
+        :param data: Optional metadata data.
+        """
+        # Don't log binary data (like cover art)
+        if code == "PICT":
+            self.logger.debug(
+                "Metadata: type=%s, code=%s, data=<binary image data>", item_type, code
+            )
+        else:
+            self.logger.debug("Metadata: type=%s, code=%s, data=%s", item_type, code, data)
 
         # Handle metadata start/end markers
         if item_type == "ssnc" and code == "mdst":
-            # Metadata sequence start
             self._current_metadata = {}
             return
 
         if item_type == "ssnc" and code == "mden":
-            # Metadata sequence end - trigger callback
             if self.on_metadata and self._current_metadata:
                 self.on_metadata(dict(self._current_metadata))
             return
 
         # Parse core metadata (from iTunes/iOS)
         if item_type == "core" and data:
-            if code == "asar":  # Artist
-                self._current_metadata["artist"] = data
-            elif code == "asal":  # Album
-                self._current_metadata["album"] = data
-            elif code == "minm":  # Title
-                self._current_metadata["title"] = data
-            elif code == "PICT":  # Cover art
-                self._current_metadata["cover_art"] = data
+            self._parse_core_metadata(code, data)
 
         # Parse shairport-sync metadata
         if item_type == "ssnc" and data:
-            if code == "pvol":  # Volume
-                # Format: "airplay_volume,volume,lowest_volume,highest_volume"
-                self._current_metadata["volume_info"] = data
-            elif code == "prgr":  # Progress
-                # RTP timestamps for start, current, end
-                self._current_metadata["progress"] = data
-            elif code == "paus":  # Paused
-                self._current_metadata["paused"] = True
-            elif code == "prsm":  # Playing/resumed
-                self._current_metadata["paused"] = False
+            self._parse_ssnc_metadata(code, data)
+
+    def _parse_core_metadata(self, code: str, data: str) -> None:
+        """Parse core metadata from iTunes/iOS.
+
+        :param code: Metadata code identifier.
+        :param data: Metadata data.
+        """
+        if code == "asar":  # Artist
+            self._current_metadata["artist"] = data
+        elif code == "asal":  # Album
+            self._current_metadata["album"] = data
+        elif code == "minm":  # Title
+            self._current_metadata["title"] = data
+        elif code == "PICT":  # Cover art (base64 encoded image data)
+            # Keep the raw base64 data for creating a data URL
+            self._current_metadata["cover_art_b64"] = data
+        elif code == "astm":  # Track duration in milliseconds (stored as 32-bit big-endian int)
+            try:
+                # Duration is sent as 4-byte big-endian integer, not decimal string
+                duration_bytes = data.encode("latin-1") if isinstance(data, str) else data
+                if len(duration_bytes) >= 4:
+                    duration_ms = struct.unpack(">I", duration_bytes[:4])[0]
+                    self._current_metadata["duration"] = duration_ms // 1000
+            except (ValueError, TypeError, struct.error) as err:
+                self.logger.debug("Error parsing duration: %s", err)
+
+    def _parse_ssnc_metadata(self, code: str, data: str) -> None:
+        """Parse shairport-sync metadata.
+
+        :param code: Metadata code identifier.
+        :param data: Metadata data.
+        """
+        if code == "pvol":  # Volume
+            self._parse_volume(data)
+        elif code == "prgr":  # Progress
+            self._parse_progress(data)
+        elif code == "paus":  # Paused
+            self._current_metadata["paused"] = True
+        elif code == "prsm":  # Playing/resumed
+            self._current_metadata["paused"] = False
+
+    def _parse_volume(self, data: str) -> None:
+        """Parse volume metadata.
+
+        :param data: Volume data string.
+        """
+        try:
+            parts = data.split(",")
+            if len(parts) >= 1:
+                airplay_volume = float(parts[0])
+                if airplay_volume <= -144.0:
+                    volume_percent = 0
+                else:
+                    volume_percent = int(((airplay_volume + 30.0) / 30.0) * 100)
+                    volume_percent = max(0, min(100, volume_percent))
+                self._current_metadata["volume"] = volume_percent
+        except (ValueError, IndexError) as err:
+            self.logger.debug("Error parsing volume: %s", err)
+
+    def _parse_progress(self, data: str) -> None:
+        """Parse progress metadata.
+
+        :param data: Progress data string.
+        """
+        try:
+            parts = data.split("/")
+            if len(parts) >= 3:
+                start_rtp = int(parts[0])
+                current_rtp = int(parts[1])
+                elapsed_frames = current_rtp - start_rtp
+                elapsed_seconds = elapsed_frames / 44100
+                self._current_metadata["elapsed_time"] = int(elapsed_seconds)
+        except (ValueError, IndexError) as err:
+            self.logger.debug("Error parsing progress: %s", err)

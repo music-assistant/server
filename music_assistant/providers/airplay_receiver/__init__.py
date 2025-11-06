@@ -12,7 +12,9 @@ can be configured with different names.
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
@@ -25,10 +27,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
+from music_assistant_models.errors import UnsupportedFeaturedException
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamMetadata
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
+from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.models.plugin import PluginProvider, PluginSource
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
@@ -111,6 +114,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self._shairport_started = asyncio.Event()
         self.audio_pipe = f"/tmp/ma_airplay_audio_{self.instance_id}"  # noqa: S108
         self.metadata_pipe = f"/tmp/ma_airplay_metadata_{self.instance_id}"  # noqa: S108
+        self.config_file = f"/tmp/ma_shairport_sync_{self.instance_id}.conf"  # noqa: S108
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
         self._source_details = PluginSource(
             id=self.instance_id,
@@ -118,9 +122,9 @@ class AirPlayReceiverProvider(PluginProvider):
             # Set passive to true because we don't allow this source to be selected directly
             # It will be automatically selected when AirPlay playback starts
             passive=True,
-            can_play_pause=False,
-            can_seek=False,
-            can_next_previous=False,
+            can_play_pause=True,
+            can_seek=True,
+            can_next_previous=True,
             audio_format=AudioFormat(
                 content_type=ContentType.PCM_S16LE,
                 codec_type=ContentType.PCM_S16LE,
@@ -133,6 +137,11 @@ class AirPlayReceiverProvider(PluginProvider):
             ),
             stream_type=StreamType.NAMED_PIPE,
             path=self.audio_pipe,
+            on_play=self._on_play,
+            on_pause=self._on_pause,
+            on_next=self._on_next,
+            on_previous=self._on_previous,
+            on_seek=self._on_seek,
         )
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
@@ -176,14 +185,48 @@ class AirPlayReceiverProvider(PluginProvider):
         """Get (audio)source details for this plugin."""
         return self._source_details
 
+    async def _create_config_file(self) -> None:
+        """Create shairport-sync configuration file from template."""
+        # Read template
+        template_path = os.path.join(os.path.dirname(__file__), "bin", "shairport-sync.conf")
+
+        def _read_template() -> str:
+            with open(template_path, encoding="utf-8") as f:
+                return f.read()
+
+        template = await asyncio.to_thread(_read_template)
+
+        # Replace placeholders
+        airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
+        config_content = template.replace("{AIRPLAY_NAME}", airplay_name)
+        config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe)
+        config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe)
+
+        # Set default volume based on player's current volume
+        # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
+        player_volume = 100  # Default to 100%
+        if self.player and self.player.volume_level is not None:
+            player_volume = self.player.volume_level
+        # Map 0-100 to -30.0...0.0
+        airplay_volume = (player_volume / 100.0) * 30.0 - 30.0
+        config_content = config_content.replace("{DEFAULT_VOLUME}", f"{airplay_volume:.1f}")
+
+        # Write config file
+        def _write_config() -> None:
+            with open(self.config_file, "w", encoding="utf-8") as f:
+                f.write(config_content)
+
+        await asyncio.to_thread(_write_config)
+
     async def _shairport_runner(self) -> None:
         """Run the shairport-sync daemon in a background task."""
         assert self._shairport_bin
         self.logger.info("Starting AirPlay Receiver background daemon")
 
-        # Clean up any existing pipes
+        # Clean up any existing pipes and config
         await check_output("rm", "-f", self.audio_pipe)
         await check_output("rm", "-f", self.metadata_pipe)
+        await check_output("rm", "-f", self.config_file)
         await asyncio.sleep(0.1)
 
         # Create named pipes for audio and metadata
@@ -191,26 +234,15 @@ class AirPlayReceiverProvider(PluginProvider):
         await check_output("mkfifo", self.metadata_pipe)
         await asyncio.sleep(0.1)
 
+        # Create configuration file
+        await self._create_config_file()
+
         try:
             args: list[str] = [
                 self._shairport_bin,
-                "--name",
-                cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name,
-                "--output",
-                "pipe",
-                # Use port 7000 to avoid conflict with macOS AirPlay Receiver on port 5000
-                "--port",
-                "7000",
-                # Enable metadata
-                "--metadata-enable",
-                "--metadata-pipename",
-                self.metadata_pipe,
-                # Get cover art
-                "--get-coverart",
-                # Output audio to pipe
-                "--output",
-                "pipe",
-                self.audio_pipe,
+                "--configfile",
+                self.config_file,
+                "-vv",
             ]
 
             self._shairport_proc = shairport = AsyncProcess(
@@ -231,20 +263,21 @@ class AirPlayReceiverProvider(PluginProvider):
                     self.logger.error("Fatal error from shairport-sync: %s", line)
                     self.unload_with_error(f"shairport-sync fatal error: {line}")
                     break
-                if not self._shairport_started.is_set() and "Play begins" in line:
-                    self._shairport_started.set()
-                if "Connection from" in line:
+                if "connection from" in line:
                     self.logger.info("AirPlay client connected: %s", line)
-                if "Play begins" in line:
+                if "Play begin" in line:
                     # Initiate playback by selecting this source on the default player
                     if not self._source_details.in_use_by:
                         self.mass.create_task(
                             self.mass.players.select_source(self.mass_player_id, self.instance_id)
                         )
                         self._source_details.in_use_by = self.mass_player_id
-                if "Play stopped" in line:
+                if "player stop" in line:
                     self.logger.info("AirPlay playback stopped")
-                self.logger.debug(line)
+                    self._source_details.in_use_by = None
+                self.logger.log(VERBOSE_LOG_LEVEL, line)
+                if not self._shairport_started.is_set():
+                    self._shairport_started.set()
 
         finally:
             await shairport.close()
@@ -254,9 +287,10 @@ class AirPlayReceiverProvider(PluginProvider):
             if self._metadata_reader:
                 await self._metadata_reader.stop()
 
-            # Clean up pipes
+            # Clean up pipes and config
             await check_output("rm", "-f", self.audio_pipe)
             await check_output("rm", "-f", self.metadata_pipe)
+            await check_output("rm", "-f", self.config_file)
 
             if not self._shairport_started.is_set():
                 self.unload_with_error("Unable to initialize shairport-sync daemon.")
@@ -285,8 +319,23 @@ class AirPlayReceiverProvider(PluginProvider):
             return
 
     def _on_metadata_update(self, metadata: dict[str, Any]) -> None:
-        """Handle metadata updates from shairport-sync."""
+        """Handle metadata updates from shairport-sync.
+
+        :param metadata: Dictionary containing metadata updates.
+        """
         self.logger.debug("Received metadata update: %s", metadata)
+
+        # Handle volume changes
+        if "volume" in metadata and self._source_details.in_use_by:
+            volume = metadata["volume"]
+            try:
+                self.mass.create_task(
+                    self.mass.players.cmd_volume_set(self._source_details.in_use_by, volume)
+                )
+            except UnsupportedFeaturedException:
+                self.logger.debug(
+                    "Player %s does not support volume control", self._source_details.in_use_by
+                )
 
         # Update source metadata
         if self._source_details.metadata is None:
@@ -302,11 +351,103 @@ class AirPlayReceiverProvider(PluginProvider):
         if "album" in metadata:
             self._source_details.metadata.album = metadata["album"]
 
-        if "cover_art" in metadata:
-            # Cover art is base64 encoded image data
-            # We could save it to a file and provide a URL, but for now we'll skip it
-            pass
+        if "duration" in metadata:
+            self._source_details.metadata.duration = metadata["duration"]
+
+        if "elapsed_time" in metadata:
+            self._source_details.metadata.elapsed_time = metadata["elapsed_time"]
+            # Always set elapsed_time_last_updated to current time when we receive elapsed_time
+            self._source_details.metadata.elapsed_time_last_updated = time.time()
+
+        if "cover_art_b64" in metadata:
+            # Convert base64 encoded image to data URL
+            # Most cover art from AirPlay is JPEG or PNG
+            cover_art_b64 = metadata["cover_art_b64"]
+            # Try to detect image type from first bytes, default to JPEG
+            try:
+                img_bytes = base64.b64decode(cover_art_b64)
+                mime_type = "image/png" if img_bytes.startswith(b"\x89PNG") else "image/jpeg"
+                # Create data URL
+                self._source_details.metadata.image_url = f"data:{mime_type};base64,{cover_art_b64}"
+            except Exception as err:
+                self.logger.debug("Error creating cover art data URL: %s", err)
 
         # Signal update to connected player
         if self._source_details.in_use_by:
             self.mass.players.trigger_player_update(self._source_details.in_use_by)
+
+    async def _send_dbus_command(self, method: str) -> None:
+        """Send a D-Bus command to shairport-sync MPRIS interface.
+
+        :param method: The MPRIS method to call (e.g., 'Play', 'Pause', 'Next', 'Previous').
+        """
+        try:
+            airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
+            # The D-Bus service name includes the AirPlay name
+            service_name = f"org.mpris.MediaPlayer2.ShairportSync.{airplay_name}"
+            await check_output(
+                "dbus-send",
+                "--session",
+                "--print-reply",
+                "--type=method_call",
+                f"--dest={service_name}",
+                "/org/mpris/MediaPlayer2",
+                f"org.mpris.MediaPlayer2.Player.{method}",
+            )
+            self.logger.debug("Sent D-Bus command: %s", method)
+        except Exception as err:
+            self.logger.warning("Failed to send D-Bus command %s: %s", method, err)
+
+    async def _on_play(self) -> None:
+        """Handle play command from player controller."""
+        await self._send_dbus_command("Play")
+
+    async def _on_pause(self) -> None:
+        """Handle pause command from player controller."""
+        await self._send_dbus_command("Pause")
+
+    async def _on_next(self) -> None:
+        """Handle next track command from player controller."""
+        await self._send_dbus_command("Next")
+
+    async def _on_previous(self) -> None:
+        """Handle previous track command from player controller."""
+        await self._send_dbus_command("Previous")
+
+    async def _on_seek(self, position: int) -> None:
+        """Handle seek command from player controller.
+
+        :param position: Position in seconds to seek to.
+        """
+        try:
+            airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
+            service_name = f"org.mpris.MediaPlayer2.ShairportSync.{airplay_name}"
+
+            # Get current position first to calculate relative offset
+            # MPRIS Seek uses relative offset in microseconds
+            current_elapsed = 0
+            if (
+                self._source_details.metadata
+                and self._source_details.metadata.elapsed_time is not None
+            ):
+                current_elapsed = int(self._source_details.metadata.elapsed_time)
+
+            # Calculate offset in microseconds (position is in seconds)
+            offset_seconds = position - current_elapsed
+            offset_microseconds = int(offset_seconds * 1_000_000)
+
+            await check_output(
+                "dbus-send",
+                "--session",
+                "--print-reply",
+                "--type=method_call",
+                f"--dest={service_name}",
+                "/org/mpris/MediaPlayer2",
+                "org.mpris.MediaPlayer2.Player.Seek",
+                f"int64:{offset_microseconds}",
+            )
+            self.logger.debug(
+                "Sent seek command: %d seconds (offset: %d µs)", position, offset_microseconds
+            )
+        except Exception as err:
+            self.logger.warning("Failed to send seek command: %s", err)

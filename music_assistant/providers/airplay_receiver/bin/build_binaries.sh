@@ -30,13 +30,13 @@ build_linux() {
                 autoconf \
                 automake \
                 libtool \
-                alsa-lib-dev \
                 libconfig-dev \
                 popt-dev \
                 openssl-dev \
                 avahi-dev \
-                libsndfile-dev \
-                pkgconfig
+                pkgconfig \
+                dbus-dev \
+                glib-dev
 
             # Clone and checkout specific version
             cd /tmp
@@ -51,6 +51,8 @@ build_linux() {
                 --with-avahi \
                 --with-ssl=openssl \
                 --with-stdout \
+                --with-dbus-interface \
+                --with-mpris-interface \
                 --sysconfdir=/etc
 
             make -j\$(nproc)
@@ -104,8 +106,10 @@ build_macos() {
     cd shairport-sync
 
     autoreconf -fi
-    # On macOS, librt is not needed and doesn't exist
-    # We override the configure check by setting the cache variable
+
+    # On macOS, librt is not needed and doesn't exist - patch configure to skip the check
+    sed -i.bak 's/as_fn_error $? "librt needed" "$LINENO" 5/echo "librt check skipped on macOS"/' configure
+
     ./configure \
         --with-pipe \
         --with-metadata \
@@ -114,7 +118,6 @@ build_macos() {
         --without-avahi \
         --with-dns_sd \
         --with-libdaemon \
-        --cache-file=/dev/null \
         PKG_CONFIG_PATH="$(brew --prefix openssl)/lib/pkgconfig:$(brew --prefix libconfig)/lib/pkgconfig" \
         LDFLAGS="-L$(brew --prefix)/lib" \
         CFLAGS="-I$(brew --prefix)/include" \
