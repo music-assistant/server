@@ -282,9 +282,21 @@ class AirPlayReceiverProvider(PluginProvider):
         try:
             # Copy policy file to system location (requires root/sudo)
             await check_output("cp", policy_source, policy_dest)
-            # Reload D-Bus configuration
-            await check_output("systemctl", "reload", "dbus")
             self.logger.debug("Installed D-Bus policy file for shairport-sync")
+
+            # Try to reload D-Bus configuration (not critical if it fails)
+            try:
+                # Try systemctl first (systemd systems)
+                await check_output("systemctl", "reload", "dbus")
+            except Exception:
+                # Fallback: try sending HUP signal to dbus-daemon
+                try:
+                    await check_output("killall", "-HUP", "dbus-daemon")
+                except Exception:
+                    # If both fail, just log - D-Bus will pick up the policy on next restart
+                    self.logger.debug(
+                        "Could not reload D-Bus config - policy will be active after D-Bus restart"
+                    )
         except Exception as err:
             self.logger.warning(
                 "Failed to install D-Bus policy file "
