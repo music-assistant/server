@@ -107,7 +107,6 @@ class AirPlayReceiverProvider(PluginProvider):
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self.mass_player_id = cast("str", self.config.get_value(CONF_MASS_PLAYER_ID))
-        self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
         self._shairport_bin: str | None = None
         self._stop_called: bool = False
         self._runner_task: asyncio.Task[None] | None = None
@@ -117,7 +116,7 @@ class AirPlayReceiverProvider(PluginProvider):
         audio_pipe_path = f"/tmp/ma_airplay_audio_{self.instance_id}"  # noqa: S108
         metadata_pipe_path = f"/tmp/ma_airplay_metadata_{self.instance_id}"  # noqa: S108
         self.audio_pipe = AsyncNamedPipeWriter(audio_pipe_path, self.logger)
-        self.metadata_pipe_writer = AsyncNamedPipeWriter(metadata_pipe_path, self.logger)
+        self.metadata_pipe = AsyncNamedPipeWriter(metadata_pipe_path, self.logger)
         self.config_file = f"/tmp/ma_shairport_sync_{self.instance_id}.conf"  # noqa: S108
         # Use port 7000+ for AirPlay 2 compatibility
         # Each instance gets a unique port: 7000, 7001, 7002, etc.
@@ -165,19 +164,33 @@ class AirPlayReceiverProvider(PluginProvider):
             )
         )
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle close/cleanup of the provider."""
-        self._stop_called = True
+    async def _stop_shairport_daemon(self) -> None:
+        """Stop the shairport-sync daemon without unloading the provider.
 
+        This allows the provider to restart shairport-sync later when needed.
+        """
         # Stop metadata reader
         if self._metadata_reader:
             await self._metadata_reader.stop()
+            self._metadata_reader = None
 
         # Stop shairport-sync process
         if self._runner_task and not self._runner_task.done():
             self._runner_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._runner_task
+            self._runner_task = None
+
+        # Reset the shairport process reference
+        self._shairport_proc = None
+        self._shairport_started.clear()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle close/cleanup of the provider."""
+        self._stop_called = True
+
+        # Stop shairport-sync daemon
+        await self._stop_shairport_daemon()
 
         # Cleanup callbacks
         for callback in self._on_unload_callbacks:
@@ -201,7 +214,7 @@ class AirPlayReceiverProvider(PluginProvider):
         # Replace placeholders
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
         config_content = template.replace("{AIRPLAY_NAME}", airplay_name)
-        config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe_writer.path)
+        config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe.path)
         config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe.path)
         config_content = config_content.replace("{PORT}", str(self.airplay_port))
 
@@ -227,13 +240,11 @@ class AirPlayReceiverProvider(PluginProvider):
         :raises: OSError if pipe or config file creation fails.
         """
         # Remove any existing pipes and config
-        await self.audio_pipe.remove()
-        await self.metadata_pipe_writer.remove()
-        await check_output("rm", "-f", self.config_file)
+        await self._cleanup_pipes_and_config()
 
         # Create named pipes for audio and metadata
         await self.audio_pipe.create()
-        await self.metadata_pipe_writer.create()
+        await self.metadata_pipe.create()
 
         # Create configuration file
         await self._create_config_file()
@@ -241,7 +252,7 @@ class AirPlayReceiverProvider(PluginProvider):
     async def _cleanup_pipes_and_config(self) -> None:
         """Clean up named pipes and configuration file."""
         await self.audio_pipe.remove()
-        await self.metadata_pipe_writer.remove()
+        await self.metadata_pipe.remove()
         await check_output("rm", "-f", self.config_file)
 
     def _process_shairport_log_line(self, line: str) -> bool:
@@ -276,7 +287,6 @@ class AirPlayReceiverProvider(PluginProvider):
         """Run the shairport-sync daemon in a background task."""
         assert self._shairport_bin
         self.logger.info("Starting AirPlay Receiver background daemon")
-
         await self._setup_pipes_and_config()
 
         try:
@@ -286,7 +296,6 @@ class AirPlayReceiverProvider(PluginProvider):
                 self.config_file,
                 "-vv",
             ]
-
             self._shairport_proc = shairport = AsyncProcess(
                 args, stderr=True, name=f"shairport-sync[{self.name}]"
             )
@@ -302,7 +311,7 @@ class AirPlayReceiverProvider(PluginProvider):
 
             # Start metadata reader
             self._metadata_reader = MetadataReader(
-                self.metadata_pipe_writer.path, self.logger, self._on_metadata_update
+                self.metadata_pipe.path, self.logger, self._on_metadata_update
             )
             await self._metadata_reader.start()
 
@@ -347,10 +356,12 @@ class AirPlayReceiverProvider(PluginProvider):
         if event.object_id != self.mass_player_id:
             return
         if event.event == EventType.PLAYER_REMOVED:
-            self._stop_called = True
-            self.mass.create_task(self.unload())
+            # Stop shairport-sync but keep the provider loaded
+            # so it can restart when the player comes back
+            self.mass.create_task(self._stop_shairport_daemon())
             return
         if event.event == EventType.PLAYER_ADDED:
+            # Restart shairport-sync when the player is added back
             self._setup_shairport_daemon()
             return
 
