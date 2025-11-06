@@ -19,24 +19,25 @@ build_linux() {
     docker run --rm \
         --platform "${platform}" \
         -v "${SCRIPT_DIR}:/output" \
-        alpine:latest \
-        /bin/sh -c "
+        debian:bookworm-slim \
+        /bin/bash -c "
             set -e
 
             # Install build dependencies
-            apk add --no-cache \
-                build-base \
+            apt-get update && apt-get install -y --no-install-recommends \
+                build-essential \
                 git \
                 autoconf \
                 automake \
                 libtool \
+                pkg-config \
                 libconfig-dev \
-                popt-dev \
-                openssl-dev \
-                avahi-dev \
-                pkgconfig \
-                dbus-dev \
-                glib-dev
+                libpopt-dev \
+                libssl-dev \
+                libavahi-client-dev \
+                libdbus-1-dev \
+                libglib2.0-dev \
+                ca-certificates
 
             # Clone and checkout specific version
             cd /tmp

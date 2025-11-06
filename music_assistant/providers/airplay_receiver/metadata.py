@@ -162,14 +162,26 @@ class MetadataReader:
             code_str = code_hex.to_bytes(4, "big").decode("ascii", errors="ignore")
 
             # Extract data if present
-            data: str | None = None
+            data: str | bytes | None = None
             if length > 0:
                 data_match = re.search(r"<data encoding=\"base64\">([^<]+)</data>", item_xml)
                 if data_match:
                     try:
                         # Decode base64 data
                         data_b64 = data_match.group(1).strip()
-                        data = base64.b64decode(data_b64).decode("utf-8", errors="ignore")
+                        decoded_data = base64.b64decode(data_b64)
+
+                        # For binary fields (PICT, astm), keep the base64 string or raw bytes
+                        # For text fields, decode to UTF-8
+                        if code_str in ("PICT",):
+                            # Cover art: keep as base64 string for later use
+                            data = data_b64
+                        elif code_str in ("astm",):
+                            # Duration: keep as raw bytes for struct unpacking
+                            data = decoded_data
+                        else:
+                            # Text metadata: decode to UTF-8
+                            data = decoded_data.decode("utf-8", errors="ignore")
                     except Exception as err:
                         self.logger.debug("Error decoding base64 data: %s", err)
 
@@ -179,12 +191,14 @@ class MetadataReader:
         except Exception as err:
             self.logger.debug("Error parsing XML item: %s", err)
 
-    async def _process_metadata_item(self, item_type: str, code: str, data: str | None) -> None:
+    async def _process_metadata_item(
+        self, item_type: str, code: str, data: str | bytes | None
+    ) -> None:
         """Process a metadata item and update current metadata.
 
         :param item_type: Type of metadata (e.g., 'core' or 'ssnc').
         :param code: Metadata code identifier.
-        :param data: Optional metadata data.
+        :param data: Optional metadata data (string, bytes, or None).
         """
         # Don't log binary data (like cover art)
         if code == "PICT":
@@ -205,65 +219,84 @@ class MetadataReader:
             return
 
         # Parse core metadata (from iTunes/iOS)
-        if item_type == "core" and data:
+        if item_type == "core" and data is not None:
             self._parse_core_metadata(code, data)
 
         # Parse shairport-sync metadata
-        if item_type == "ssnc" and data:
+        if item_type == "ssnc" and data is not None:
             self._parse_ssnc_metadata(code, data)
 
-    def _parse_core_metadata(self, code: str, data: str) -> None:
+    def _parse_core_metadata(self, code: str, data: str | bytes) -> None:
         """Parse core metadata from iTunes/iOS.
 
         :param code: Metadata code identifier.
         :param data: Metadata data.
         """
-        if code == "asar":  # Artist
-            self._current_metadata["artist"] = data
-        elif code == "asal":  # Album
-            self._current_metadata["album"] = data
-        elif code == "minm":  # Title
-            self._current_metadata["title"] = data
-        elif code == "PICT":  # Cover art (base64 encoded image data)
-            # Keep the raw base64 data for creating a data URL
-            self._current_metadata["cover_art_b64"] = data
-        elif code == "astm":  # Track duration in milliseconds (stored as 32-bit big-endian int)
+        # Text metadata fields - expect string data
+        if isinstance(data, str):
+            if code == "asar":  # Artist
+                self._current_metadata["artist"] = data
+            elif code == "asal":  # Album
+                self._current_metadata["album"] = data
+            elif code == "minm":  # Title
+                self._current_metadata["title"] = data
+            elif code == "PICT":  # Cover art (base64 encoded image data)
+                # Keep the raw base64 data for creating a data URL
+                self._current_metadata["cover_art_b64"] = data
+
+        # Binary metadata fields - expect bytes data
+        if code == "astm":  # Track duration in milliseconds (stored as 32-bit big-endian int)
             try:
-                # Duration is sent as 4-byte big-endian integer, not decimal string
-                duration_bytes = data.encode("latin-1") if isinstance(data, str) else data
-                if len(duration_bytes) >= 4:
-                    duration_ms = struct.unpack(">I", duration_bytes[:4])[0]
+                # Duration is sent as 4-byte big-endian integer
+                if isinstance(data, bytes) and len(data) >= 4:
+                    duration_ms = struct.unpack(">I", data[:4])[0]
                     self._current_metadata["duration"] = duration_ms // 1000
             except (ValueError, TypeError, struct.error) as err:
                 self.logger.debug("Error parsing duration: %s", err)
 
-    def _parse_ssnc_metadata(self, code: str, data: str) -> None:
+    def _parse_ssnc_metadata(self, code: str, data: str | bytes) -> None:
         """Parse shairport-sync metadata.
 
         :param code: Metadata code identifier.
         :param data: Metadata data.
         """
+        # Only process string data for ssnc metadata (volume/progress are text-based)
+        if not isinstance(data, str):
+            return
+
         if code == "pvol":  # Volume
             self._parse_volume(data)
+            # Send volume updates immediately (not batched with mden)
+            if self.on_metadata and "volume" in self._current_metadata:
+                self.on_metadata({"volume": self._current_metadata["volume"]})
         elif code == "prgr":  # Progress
             self._parse_progress(data)
+            # Send progress updates immediately (not batched with mden)
+            if self.on_metadata and "elapsed_time" in self._current_metadata:
+                self.on_metadata({"elapsed_time": self._current_metadata["elapsed_time"]})
         elif code == "paus":  # Paused
             self._current_metadata["paused"] = True
         elif code == "prsm":  # Playing/resumed
             self._current_metadata["paused"] = False
 
     def _parse_volume(self, data: str) -> None:
-        """Parse volume metadata.
+        """Parse volume metadata from shairport-sync.
 
-        :param data: Volume data string.
+        Format: airplay_volume,min_volume,max_volume,mute
+        AirPlay volume is in dB, typically ranging from -30.0 (silent) to 0.0 (max).
+        Special value -144.0 means muted.
+
+        :param data: Volume data string (e.g., "-21.88,0.00,0.00,0.00").
         """
         try:
             parts = data.split(",")
             if len(parts) >= 1:
                 airplay_volume = float(parts[0])
+                # -144.0 means muted
                 if airplay_volume <= -144.0:
                     volume_percent = 0
                 else:
+                    # Convert dB to percentage: -30dB = 0%, 0dB = 100%
                     volume_percent = int(((airplay_volume + 30.0) / 30.0) * 100)
                     volume_percent = max(0, min(100, volume_percent))
                 self._current_metadata["volume"] = volume_percent
