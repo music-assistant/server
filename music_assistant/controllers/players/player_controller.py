@@ -2148,13 +2148,14 @@ class PlayerController(CoreController):
     ) -> None:
         """Handle playback/select of given plugin source on player."""
         plugin_source = plugin_prov.get_source()
-        if plugin_source.in_use_by and (current_player := self.get(plugin_source.in_use_by)):
+        if plugin_source.in_use_by and plugin_source.in_use_by != player.player_id:
             self.logger.debug(
                 "Plugin source %s is already in use by player %s, stopping playback there first.",
                 plugin_source.name,
-                current_player.display_name,
+                plugin_source.in_use_by,
             )
-            await self.cmd_stop(current_player.player_id)
+            with suppress(PlayerCommandFailed):
+                await self.cmd_stop(plugin_source.in_use_by)
         stream_url = await self.mass.streams.get_plugin_source_url(plugin_source, player.player_id)
         plugin_source.in_use_by = player.player_id
         # Call on_select callback if available
