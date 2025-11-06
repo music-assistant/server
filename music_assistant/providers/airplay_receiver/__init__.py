@@ -350,12 +350,15 @@ class AirPlayReceiverProvider(PluginProvider):
                     )
                     if dbus_address:
                         # Set DBUS_SESSION_BUS_ADDRESS for shairport-sync to use
-                        os.environ["DBUS_SESSION_BUS_ADDRESS"] = dbus_address.decode().strip()
-                        self.logger.debug(
-                            "Started local D-Bus session daemon (PID: %s, address: %s)",
+                        dbus_addr_str = dbus_address.decode().strip()
+                        os.environ["DBUS_SESSION_BUS_ADDRESS"] = dbus_addr_str
+                        self.logger.info(
+                            "Started local D-Bus session daemon - PID: %s, address: %s",
                             self._dbus_proc.proc.pid,
-                            dbus_address.decode().strip(),
+                            dbus_addr_str,
                         )
+                    else:
+                        self.logger.warning("D-Bus daemon started but no address received")
             except Exception as err:
                 self.logger.debug(
                     "Could not start local D-Bus daemon: %s - "
