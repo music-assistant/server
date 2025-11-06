@@ -122,8 +122,10 @@ class AirPlayReceiverProvider(PluginProvider):
         self.audio_pipe = AsyncNamedPipeWriter(audio_pipe_path, self.logger)
         self.metadata_pipe_writer = AsyncNamedPipeWriter(metadata_pipe_path, self.logger)
         self.config_file = f"/tmp/ma_shairport_sync_{self.instance_id}.conf"  # noqa: S108
-        # Use a unique port for each instance (base port 7000 + hash of instance_id)
-        self.airplay_port = 7000 + (hash(self.instance_id) % 1000)
+        # Use AirPlay 1 port range (5000+) for better DACP remote control compatibility
+        # AirPlay 2 uses port 7000 but has different control mechanisms
+        # Each instance gets a unique port: 5000, 5001, 5002, etc.
+        self.airplay_port = 5000 + (hash(self.instance_id) % 1000)
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
         # Note: Control capabilities will be updated after checking dbus-send availability
         self._source_details = PluginSource(
@@ -188,18 +190,21 @@ class AirPlayReceiverProvider(PluginProvider):
         self._shairport_bin = await get_shairport_sync_binary()
 
         # Check if dbus-send is available for remote control
+        # Note: D-Bus commands control the AirPlay SOURCE device (phone/tablet) via DACP,
+        # not the Music Assistant player. This allows controlling playback on the source.
         self._dbus_available = await self._check_dbus_availability()
         if self._dbus_available:
-            self.logger.debug("D-Bus available - enabling remote control features")
+            self.logger.debug(
+                "D-Bus available - enabling source device control via DACP "
+                "(controls the AirPlay source device, not the Music Assistant player)"
+            )
             self._source_details.can_play_pause = True
             self._source_details.can_next_previous = True
-            # Note: Seeking is not supported by shairport-sync D-Bus interface
+            # Note: Seeking is not supported by shairport-sync D-Bus/DACP interface
             self._source_details.can_seek = False
         else:
-            self.logger.info(
-                "dbus-send command not available - remote control features "
-                "(play/pause/next/previous) will not work. "
-                "Playback can still be controlled from the AirPlay source device."
+            self.logger.debug(
+                "dbus-send command not available - DACP remote control will not be available"
             )
 
         self.player = self.mass.players.get(self.mass_player_id)
