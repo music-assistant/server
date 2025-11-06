@@ -1880,6 +1880,8 @@
       'artist': 'ゲスト',
       'description': None,
       'duration': None,
+      'elapsed_time': None,
+      'elapsed_time_last_updated': None,
       'image_url': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006',
       'title': 'APIテスト用',
       'uri': None,
