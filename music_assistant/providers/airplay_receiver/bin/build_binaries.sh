@@ -46,8 +46,6 @@ build_linux() {
 
             # Configure and build
             # Build with tinysvcmdns (lightweight embedded mDNS, no external daemon needed)
-            # IMPORTANT: Explicitly disable AirPlay 2 to ensure DACP remote control works
-            # (see https://github.com/mikebrady/shairport-sync/issues/1822)
             autoreconf -fi
             ./configure \
                 --with-pipe \
@@ -57,9 +55,6 @@ build_linux() {
                 --with-tinysvcmdns \
                 --with-ssl=openssl \
                 --with-stdout \
-                --with-dbus-interface \
-                --with-mpris-interface \
-                --without-airplay-2 \
                 --sysconfdir=/etc
 
             make -j\$(nproc)
@@ -120,8 +115,6 @@ build_macos() {
     # Build with tinysvcmdns (lightweight embedded mDNS) for macOS
     # Note: We still register via Music Assistant's Zeroconf, but shairport-sync
     # needs some mDNS backend present to function properly
-    # IMPORTANT: Explicitly disable AirPlay 2 to ensure DACP remote control works
-    # (see https://github.com/mikebrady/shairport-sync/issues/1822)
     ./configure \
         --with-pipe \
         --with-metadata \
@@ -131,7 +124,6 @@ build_macos() {
         --without-dns-sd \
         --with-tinysvcmdns \
         --with-libdaemon \
-        --without-airplay-2 \
         PKG_CONFIG_PATH="$(brew --prefix openssl)/lib/pkgconfig:$(brew --prefix libconfig)/lib/pkgconfig" \
         LDFLAGS="-L$(brew --prefix)/lib" \
         CFLAGS="-I$(brew --prefix)/include" \

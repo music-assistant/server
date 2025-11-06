@@ -167,11 +167,8 @@ RUN set -x \
         libavahi-client3 \
         libavahi-common3 \
         # AirPlay receiver dependencies (shairport-sync)
-        dbus \
         libconfig9 \
         libpopt0 \
-        libdbus-1-3 \
-        libglib2.0-0 \
         # pkg-config needed for PyAV (for aioresonate) to find system FFmpeg
         pkg-config \
     && apt-get clean \

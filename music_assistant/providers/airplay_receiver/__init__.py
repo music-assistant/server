@@ -112,31 +112,26 @@ class AirPlayReceiverProvider(PluginProvider):
         self._stop_called: bool = False
         self._runner_task: asyncio.Task[None] | None = None
         self._shairport_proc: AsyncProcess | None = None
-        self._dbus_proc: AsyncProcess | None = None  # Local D-Bus daemon process
-        self._dbus_session_address: str | None = None  # D-Bus session bus address
         self._shairport_started = asyncio.Event()
-        self._dbus_available: bool | None = None  # Track if dbus-send is available
         # Initialize named pipe helpers
         audio_pipe_path = f"/tmp/ma_airplay_audio_{self.instance_id}"  # noqa: S108
         metadata_pipe_path = f"/tmp/ma_airplay_metadata_{self.instance_id}"  # noqa: S108
         self.audio_pipe = AsyncNamedPipeWriter(audio_pipe_path, self.logger)
         self.metadata_pipe_writer = AsyncNamedPipeWriter(metadata_pipe_path, self.logger)
         self.config_file = f"/tmp/ma_shairport_sync_{self.instance_id}.conf"  # noqa: S108
-        # Use AirPlay 1 port range (5000+) for better DACP remote control compatibility
-        # AirPlay 2 uses port 7000 but has different control mechanisms
-        # Each instance gets a unique port: 5000, 5001, 5002, etc.
-        self.airplay_port = 5000 + (hash(self.instance_id) % 1000)
+        # Use port 7000+ for AirPlay 2 compatibility
+        # Each instance gets a unique port: 7000, 7001, 7002, etc.
+        self.airplay_port = 7000 + (hash(self.instance_id) % 1000)
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
-        # Note: Control capabilities will be updated after checking dbus-send availability
         self._source_details = PluginSource(
             id=self.instance_id,
             name=self.name,
             # Set passive to true because we don't allow this source to be selected directly
             # It will be automatically selected when AirPlay playback starts
             passive=True,
-            can_play_pause=False,  # Will be set based on dbus availability
-            can_seek=False,  # Will be set based on dbus availability
-            can_next_previous=False,  # Will be set based on dbus availability
+            can_play_pause=False,
+            can_seek=False,
+            can_next_previous=False,
             audio_format=AudioFormat(
                 content_type=ContentType.PCM_S16LE,
                 codec_type=ContentType.PCM_S16LE,
@@ -149,64 +144,14 @@ class AirPlayReceiverProvider(PluginProvider):
             ),
             stream_type=StreamType.NAMED_PIPE,
             path=self.audio_pipe.path,
-            on_play=self._on_play,
-            on_pause=self._on_pause,
-            on_next=self._on_next,
-            on_previous=self._on_previous,
-            on_seek=self._on_seek,
         )
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
         self._metadata_reader: MetadataReader | None = None
 
-    async def _check_dbus_availability(self) -> bool:
-        """Check if D-Bus is available and accessible.
-
-        Checks both that dbus-send is installed and that the D-Bus system bus
-        is accessible (e.g., /run/dbus socket is mounted in containers).
-
-        :return: True if D-Bus is fully available, False otherwise.
-        """
-        # Check if dbus-send command is available
-        try:
-            await check_output("which", "dbus-send")
-        except Exception:
-            self.logger.debug("dbus-send command not found")
-            return False
-
-        # Check if D-Bus session bus is accessible by trying to ping it
-        # Note: This check happens before we start our own dbus-daemon,
-        # so it checks if dbus-send command works in general
-        try:
-            # Just verify dbus-send can be executed
-            # We'll start our own session bus later
-            return True
-        except Exception as err:
-            self.logger.debug("D-Bus check failed: %s", err)
-            return False
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._shairport_bin = await get_shairport_sync_binary()
-
-        # Check if dbus-send is available for remote control
-        # Note: D-Bus commands control the AirPlay SOURCE device (phone/tablet) via DACP,
-        # not the Music Assistant player. This allows controlling playback on the source.
-        self._dbus_available = await self._check_dbus_availability()
-        if self._dbus_available:
-            self.logger.debug(
-                "D-Bus available - enabling source device control via DACP "
-                "(controls the AirPlay source device, not the Music Assistant player)"
-            )
-            self._source_details.can_play_pause = True
-            self._source_details.can_next_previous = True
-            # Note: Seeking is not supported by shairport-sync D-Bus/DACP interface
-            self._source_details.can_seek = False
-        else:
-            self.logger.debug(
-                "dbus-send command not available - DACP remote control will not be available"
-            )
-
         self.player = self.mass.players.get(self.mass_player_id)
         if self.player:
             self._setup_shairport_daemon()
@@ -327,53 +272,6 @@ class AirPlayReceiverProvider(PluginProvider):
             self._shairport_started.set()
         return True
 
-    async def _start_dbus_daemon(self, env: dict[str, str]) -> None:
-        """Start local D-Bus daemon and update environment.
-
-        Note: shairport-sync is hardcoded to register on the system bus, so we set
-        DBUS_SYSTEM_BUS_ADDRESS to point to our local session bus. This tricks
-        shairport-sync into using our bus while thinking it's the system bus.
-
-        :param env: Environment dictionary to update with DBUS_SYSTEM_BUS_ADDRESS.
-        """
-        try:
-            await check_output("which", "dbus-daemon")
-            # Start a session bus but expose it as the "system" bus
-            # Session bus doesn't need config files, making it simpler
-            self._dbus_proc = AsyncProcess(
-                ["dbus-daemon", "--session", "--nofork", "--print-address"],
-                name=f"dbus-daemon[{self.name}]",
-                stdout=True,
-            )
-            await self._dbus_proc.start()
-            # Give D-Bus time to start and read the bus address
-            await asyncio.sleep(0.2)
-
-            # Get the D-Bus address from stdout
-            if self._dbus_proc.proc and self._dbus_proc.proc.stdout:
-                dbus_address = await asyncio.wait_for(
-                    self._dbus_proc.proc.stdout.readline(), timeout=1.0
-                )
-                if dbus_address:
-                    dbus_addr_str = dbus_address.decode().strip()
-                    self._dbus_session_address = dbus_addr_str
-                    # Set as system bus address so shairport-sync finds it
-                    # This is the key trick: we tell shairport the "system bus" is our session bus
-                    env["DBUS_SYSTEM_BUS_ADDRESS"] = dbus_addr_str
-                    self.logger.info(
-                        "Started local D-Bus daemon - PID: %s, address: %s (exposed as system bus)",
-                        self._dbus_proc.proc.pid,
-                        dbus_addr_str,
-                    )
-                else:
-                    self.logger.warning("D-Bus daemon started but no address received")
-        except Exception as err:
-            self.logger.debug(
-                "Could not start local D-Bus daemon: %s - "
-                "D-Bus remote control will not be available",
-                err,
-            )
-
     async def _shairport_runner(self) -> None:
         """Run the shairport-sync daemon in a background task."""
         assert self._shairport_bin
@@ -382,13 +280,6 @@ class AirPlayReceiverProvider(PluginProvider):
         await self._setup_pipes_and_config()
 
         try:
-            # Prepare environment for shairport-sync
-            shairport_env = os.environ.copy()
-
-            # Start local D-Bus daemon if available
-            # This provides D-Bus interface for remote control without requiring host D-Bus
-            await self._start_dbus_daemon(shairport_env)
-
             args: list[str] = [
                 self._shairport_bin,
                 "--configfile",
@@ -396,14 +287,8 @@ class AirPlayReceiverProvider(PluginProvider):
                 "-vv",
             ]
 
-            # Start shairport-sync with explicit environment including D-Bus address
-            if "DBUS_SYSTEM_BUS_ADDRESS" in shairport_env:
-                self.logger.debug(
-                    "Starting shairport-sync with D-Bus system address: %s",
-                    shairport_env["DBUS_SYSTEM_BUS_ADDRESS"],
-                )
             self._shairport_proc = shairport = AsyncProcess(
-                args, stderr=True, name=f"shairport-sync[{self.name}]", env=shairport_env
+                args, stderr=True, name=f"shairport-sync[{self.name}]"
             )
             await shairport.start()
 
@@ -414,38 +299,6 @@ class AirPlayReceiverProvider(PluginProvider):
                     "shairport-sync exited immediately with code %s", shairport.returncode
                 )
                 return
-
-            # Verify D-Bus registration if D-Bus is available
-            if (
-                self._dbus_available
-                and "DBUS_SYSTEM_BUS_ADDRESS" in shairport_env
-                and shairport.proc
-            ):
-                await asyncio.sleep(0.5)  # Give shairport time to register
-                try:
-                    service_name = "org.gnome.ShairportSync"
-                    _, output = await check_output(
-                        "dbus-send",
-                        "--system",
-                        "--print-reply",
-                        "--dest=org.freedesktop.DBus",
-                        "/org/freedesktop/DBus",
-                        "org.freedesktop.DBus.ListNames",
-                        env=shairport_env,
-                    )
-                    if service_name in output.decode():
-                        self.logger.info(
-                            "D-Bus registration confirmed - service '%s' registered on system bus",
-                            service_name,
-                        )
-                    else:
-                        self.logger.warning(
-                            "D-Bus service '%s' not found on system bus - "
-                            "remote control may not work",
-                            service_name,
-                        )
-                except Exception as err:
-                    self.logger.debug("Could not verify D-Bus registration: %s", err)
 
             # Start metadata reader
             self._metadata_reader = MetadataReader(
@@ -471,12 +324,6 @@ class AirPlayReceiverProvider(PluginProvider):
             # Stop metadata reader
             if self._metadata_reader:
                 await self._metadata_reader.stop()
-
-            # Stop local D-Bus daemon if running
-            if self._dbus_proc:
-                await self._dbus_proc.close()
-                self.logger.debug("Stopped local D-Bus daemon")
-                self._dbus_proc = None
 
             # Clean up pipes and config
             await self._cleanup_pipes_and_config()
@@ -588,80 +435,6 @@ class AirPlayReceiverProvider(PluginProvider):
         # Signal update to connected player
         if self._source_details.in_use_by:
             self.mass.players.trigger_player_update(self._source_details.in_use_by)
-
-    async def _send_dbus_command(self, method: str) -> None:
-        """Send a D-Bus command to shairport-sync native D-Bus interface.
-
-        Uses the native shairport-sync RemoteControl interface which is more reliable
-        than MPRIS for controlling playback.
-
-        :param method: The RemoteControl method to call (e.g., 'Play', 'Pause', 'Next', 'Previous').
-        """
-        if not self._dbus_available:
-            self.logger.debug(
-                "Skipping D-Bus command %s - D-Bus not available on this system", method
-            )
-            return
-
-        if not self._shairport_proc or not self._shairport_proc.proc:
-            self.logger.debug("Shairport-sync process not running, cannot send D-Bus command")
-            return
-
-        try:
-            # Use native shairport-sync D-Bus interface
-            # Service name is just org.gnome.ShairportSync (no instance suffix in our config)
-            service_name = "org.gnome.ShairportSync"
-
-            # Use the same D-Bus system bus as shairport-sync
-            dbus_env = None
-            if self._dbus_session_address:
-                dbus_env = os.environ.copy()
-                dbus_env["DBUS_SYSTEM_BUS_ADDRESS"] = self._dbus_session_address
-
-            await check_output(
-                "dbus-send",
-                "--system",  # Use system bus (shairport-sync registers on system bus)
-                "--print-reply",
-                "--type=method_call",
-                f"--dest={service_name}",
-                "/org/gnome/ShairportSync",
-                f"org.gnome.ShairportSync.RemoteControl.{method}",
-                env=dbus_env,
-            )
-            self.logger.debug("Sent D-Bus command %s to %s", method, service_name)
-        except Exception as err:
-            self.logger.warning("Failed to send D-Bus command %s: %s", method, err)
-
-    async def _on_play(self) -> None:
-        """Handle play command from player controller."""
-        await self._send_dbus_command("Play")
-
-    async def _on_pause(self) -> None:
-        """Handle pause command from player controller."""
-        await self._send_dbus_command("Pause")
-
-    async def _on_next(self) -> None:
-        """Handle next track command from player controller."""
-        await self._send_dbus_command("Next")
-
-    async def _on_previous(self) -> None:
-        """Handle previous track command from player controller."""
-        await self._send_dbus_command("Previous")
-
-    async def _on_seek(self, position: int) -> None:
-        """Handle seek command from player controller.
-
-        Note: Seeking is not supported by the shairport-sync D-Bus interface.
-        The native RemoteControl interface only supports FastForward and Rewind,
-        not absolute seeking to a specific position.
-
-        :param position: Position in seconds to seek to.
-        """
-        self.logger.debug(
-            "Seek command not supported - shairport-sync D-Bus interface does not support "
-            "absolute seeking (requested position: %d seconds)",
-            position,
-        )
 
     async def resolve_image(self, path: str) -> bytes:
         """Resolve an image from an image path.
