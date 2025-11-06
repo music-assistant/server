@@ -113,6 +113,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self._runner_task: asyncio.Task[None] | None = None
         self._shairport_proc: AsyncProcess | None = None
         self._dbus_proc: AsyncProcess | None = None  # Local D-Bus daemon process
+        self._dbus_session_address: str | None = None  # D-Bus session bus address
         self._shairport_started = asyncio.Event()
         self._dbus_available: bool | None = None  # Track if dbus-send is available
         # Initialize named pipe helpers
@@ -322,12 +323,18 @@ class AirPlayReceiverProvider(PluginProvider):
         return True
 
     async def _start_dbus_daemon(self, env: dict[str, str]) -> None:
-        """Start local D-Bus session daemon and update environment.
+        """Start local D-Bus daemon and update environment.
 
-        :param env: Environment dictionary to update with DBUS_SESSION_BUS_ADDRESS.
+        Note: shairport-sync is hardcoded to register on the system bus, so we set
+        DBUS_SYSTEM_BUS_ADDRESS to point to our local session bus. This tricks
+        shairport-sync into using our bus while thinking it's the system bus.
+
+        :param env: Environment dictionary to update with DBUS_SYSTEM_BUS_ADDRESS.
         """
         try:
             await check_output("which", "dbus-daemon")
+            # Start a session bus but expose it as the "system" bus
+            # Session bus doesn't need config files, making it simpler
             self._dbus_proc = AsyncProcess(
                 ["dbus-daemon", "--session", "--nofork", "--print-address"],
                 name=f"dbus-daemon[{self.name}]",
@@ -344,9 +351,12 @@ class AirPlayReceiverProvider(PluginProvider):
                 )
                 if dbus_address:
                     dbus_addr_str = dbus_address.decode().strip()
-                    env["DBUS_SESSION_BUS_ADDRESS"] = dbus_addr_str
+                    self._dbus_session_address = dbus_addr_str
+                    # Set as system bus address so shairport-sync finds it
+                    # This is the key trick: we tell shairport the "system bus" is our session bus
+                    env["DBUS_SYSTEM_BUS_ADDRESS"] = dbus_addr_str
                     self.logger.info(
-                        "Started local D-Bus session daemon - PID: %s, address: %s",
+                        "Started local D-Bus daemon - PID: %s, address: %s (exposed as system bus)",
                         self._dbus_proc.proc.pid,
                         dbus_addr_str,
                     )
@@ -382,10 +392,10 @@ class AirPlayReceiverProvider(PluginProvider):
             ]
 
             # Start shairport-sync with explicit environment including D-Bus address
-            if "DBUS_SESSION_BUS_ADDRESS" in shairport_env:
+            if "DBUS_SYSTEM_BUS_ADDRESS" in shairport_env:
                 self.logger.debug(
-                    "Starting shairport-sync with D-Bus session address: %s",
-                    shairport_env["DBUS_SESSION_BUS_ADDRESS"],
+                    "Starting shairport-sync with D-Bus system address: %s",
+                    shairport_env["DBUS_SYSTEM_BUS_ADDRESS"],
                 )
             self._shairport_proc = shairport = AsyncProcess(
                 args, stderr=True, name=f"shairport-sync[{self.name}]", env=shairport_env
@@ -403,7 +413,7 @@ class AirPlayReceiverProvider(PluginProvider):
             # Verify D-Bus registration if D-Bus is available
             if (
                 self._dbus_available
-                and "DBUS_SESSION_BUS_ADDRESS" in shairport_env
+                and "DBUS_SYSTEM_BUS_ADDRESS" in shairport_env
                 and shairport.proc
             ):
                 await asyncio.sleep(0.5)  # Give shairport time to register
@@ -411,7 +421,7 @@ class AirPlayReceiverProvider(PluginProvider):
                     service_name = f"org.gnome.ShairportSync.i{shairport.proc.pid}"
                     _, output = await check_output(
                         "dbus-send",
-                        "--session",
+                        "--system",
                         "--print-reply",
                         "--dest=org.freedesktop.DBus",
                         "/org/freedesktop/DBus",
@@ -420,12 +430,12 @@ class AirPlayReceiverProvider(PluginProvider):
                     )
                     if service_name in output.decode():
                         self.logger.info(
-                            "D-Bus registration confirmed - service '%s' registered on session bus",
+                            "D-Bus registration confirmed - service '%s' registered on system bus",
                             service_name,
                         )
                     else:
                         self.logger.warning(
-                            "D-Bus service '%s' not found on session bus - "
+                            "D-Bus service '%s' not found on system bus - "
                             "remote control may not work",
                             service_name,
                         )
@@ -598,12 +608,15 @@ class AirPlayReceiverProvider(PluginProvider):
             # shairport-sync registers as org.gnome.ShairportSync.i<PID>
             service_name = f"org.gnome.ShairportSync.i{self._shairport_proc.proc.pid}"
 
-            # Use the same environment as shairport-sync to access the local D-Bus session
-            dbus_env = os.environ.copy()
+            # Use the same D-Bus system bus as shairport-sync
+            dbus_env = None
+            if self._dbus_session_address:
+                dbus_env = os.environ.copy()
+                dbus_env["DBUS_SYSTEM_BUS_ADDRESS"] = self._dbus_session_address
 
             await check_output(
                 "dbus-send",
-                "--session",  # Use session bus (configured in shairport-sync.conf)
+                "--system",  # Use system bus (shairport-sync registers on system bus)
                 "--print-reply",
                 "--type=method_call",
                 f"--dest={service_name}",
