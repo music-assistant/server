@@ -171,19 +171,15 @@ class AirPlayReceiverProvider(PluginProvider):
             self.logger.debug("dbus-send command not found")
             return False
 
-        # Check if D-Bus system bus is accessible by trying to ping it
+        # Check if D-Bus session bus is accessible by trying to ping it
+        # Note: This check happens before we start our own dbus-daemon,
+        # so it checks if dbus-send command works in general
         try:
-            await check_output(
-                "dbus-send",
-                "--system",
-                "--print-reply",
-                "--dest=org.freedesktop.DBus",
-                "/org/freedesktop/DBus",
-                "org.freedesktop.DBus.Peer.Ping",
-            )
+            # Just verify dbus-send can be executed
+            # We'll start our own session bus later
             return True
         except Exception as err:
-            self.logger.debug("D-Bus system bus not accessible: %s", err)
+            self.logger.debug("D-Bus check failed: %s", err)
             return False
 
     async def handle_async_init(self) -> None:
@@ -335,19 +331,31 @@ class AirPlayReceiverProvider(PluginProvider):
         try:
             # Start local D-Bus daemon if dbus-daemon is available
             # This provides D-Bus interface for remote control without requiring host D-Bus
+            # Use session bus which doesn't require special configuration
             try:
                 await check_output("which", "dbus-daemon")
                 self._dbus_proc = AsyncProcess(
-                    ["dbus-daemon", "--system", "--nofork"],
+                    ["dbus-daemon", "--session", "--nofork", "--print-address"],
                     name=f"dbus-daemon[{self.name}]",
+                    stdout=True,
                 )
                 await self._dbus_proc.start()
-                # Give D-Bus time to start
+                # Give D-Bus time to start and read the bus address
                 await asyncio.sleep(0.2)
-                self.logger.debug(
-                    "Started local D-Bus daemon (PID: %s)",
-                    self._dbus_proc.proc.pid if self._dbus_proc.proc else "unknown",
-                )
+
+                # Get the D-Bus address from stdout
+                if self._dbus_proc.proc and self._dbus_proc.proc.stdout:
+                    dbus_address = await asyncio.wait_for(
+                        self._dbus_proc.proc.stdout.readline(), timeout=1.0
+                    )
+                    if dbus_address:
+                        # Set DBUS_SESSION_BUS_ADDRESS for shairport-sync to use
+                        os.environ["DBUS_SESSION_BUS_ADDRESS"] = dbus_address.decode().strip()
+                        self.logger.debug(
+                            "Started local D-Bus session daemon (PID: %s, address: %s)",
+                            self._dbus_proc.proc.pid,
+                            dbus_address.decode().strip(),
+                        )
             except Exception as err:
                 self.logger.debug(
                     "Could not start local D-Bus daemon: %s - "
@@ -543,7 +551,7 @@ class AirPlayReceiverProvider(PluginProvider):
             service_name = f"org.gnome.ShairportSync.i{self._shairport_proc.proc.pid}"
             await check_output(
                 "dbus-send",
-                "--system",  # Use system bus (configured in shairport-sync.conf)
+                "--session",  # Use session bus (configured in shairport-sync.conf)
                 "--print-reply",
                 "--type=method_call",
                 f"--dest={service_name}",
