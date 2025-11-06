@@ -210,13 +210,20 @@ class MetadataReader:
         # Handle metadata start/end markers
         if item_type == "ssnc" and code == "mdst":
             self._current_metadata = {}
-            # Signal that new metadata is starting (clear old cover art)
+            # Note: We don't clear cover_art_bytes here because:
+            # 1. Cover art may arrive before mdst (at playback start)
+            # 2. New cover art will overwrite old bytes when it arrives
+            # 3. Cache-busting timestamp ensures browser gets correct image
             if self.on_metadata:
                 self.on_metadata({"metadata_start": True})
             return
 
         if item_type == "ssnc" and code == "mden":
             if self.on_metadata and self._current_metadata:
+                self.logger.debug(
+                    "Metadata end - sending metadata update with keys: %s",
+                    list(self._current_metadata.keys()),
+                )
                 self.on_metadata(dict(self._current_metadata))
             return
 
@@ -250,7 +257,11 @@ class MetadataReader:
                 self.cover_art_bytes = data
                 self.logger.debug("Stored cover art: %d bytes", len(data))
                 # Signal that cover art is available with timestamp for cache-busting
-                self._current_metadata["cover_art_timestamp"] = str(int(time.time() * 1000))
+                timestamp = str(int(time.time() * 1000))
+                self._current_metadata["cover_art_timestamp"] = timestamp
+                # Send cover art update immediately (cover art often arrives in separate block)
+                if self.on_metadata:
+                    self.on_metadata({"cover_art_timestamp": timestamp})
             elif code == "astm":  # Track duration in milliseconds (stored as 32-bit big-endian int)
                 try:
                     # Duration is sent as 4-byte big-endian integer
@@ -273,7 +284,11 @@ class MetadataReader:
                 self.cover_art_bytes = data
                 self.logger.debug("Stored cover art: %d bytes", len(data))
                 # Signal that cover art is available with timestamp for cache-busting
-                self._current_metadata["cover_art_timestamp"] = str(int(time.time() * 1000))
+                timestamp = str(int(time.time() * 1000))
+                self._current_metadata["cover_art_timestamp"] = timestamp
+                # Send cover art update immediately (cover art often arrives in separate block)
+                if self.on_metadata:
+                    self.on_metadata({"cover_art_timestamp": timestamp})
             return
 
         # Process string data for ssnc metadata (volume/progress are text-based)

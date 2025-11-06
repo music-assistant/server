@@ -366,10 +366,10 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         self.logger.debug("Received metadata update: %s", metadata)
 
-        # Handle metadata start (new track starting - clear old cover art)
+        # Handle metadata start (new track starting)
+        # Note: We don't clear the image_url here to avoid flashing between tracks
+        # The old image will display until new cover art arrives with a new timestamp
         if "metadata_start" in metadata:
-            if self._source_details.metadata:
-                self._source_details.metadata.image_url = None
             return
 
         # Handle volume changes
@@ -441,6 +441,11 @@ class AirPlayReceiverProvider(PluginProvider):
 
         # Signal update to connected player
         if self._source_details.in_use_by:
+            self.logger.debug(
+                "Triggering player update for %s (has image: %s)",
+                self._source_details.in_use_by,
+                bool(self._source_details.metadata.image_url),
+            )
             self.mass.players.trigger_player_update(self._source_details.in_use_by)
 
     async def _send_dbus_command(self, method: str) -> None:
