@@ -400,27 +400,38 @@ class AirPlayReceiverProvider(PluginProvider):
             # Always set elapsed_time_last_updated to current time when we receive elapsed_time
             self._source_details.metadata.elapsed_time_last_updated = time.time()
 
-        if "has_cover_art" in metadata:
+        # Handle cover art
+        if "cover_art_timestamp" in metadata:
+            # Use timestamp as query parameter to create a unique URL for each cover art update
+            # This prevents browser caching issues when switching between tracks
+            timestamp = metadata["cover_art_timestamp"]
+            self.logger.debug("Cover art available (timestamp: %s), building image URL", timestamp)
             # Build image proxy URL for the cover art
             # The actual image bytes are stored in the metadata reader
             image = MediaItemImage(
                 type=ImageType.THUMB,
-                path="cover_art",  # Virtual path that will be resolved via resolve_image
+                path="cover_art",
                 provider=self.instance_id,
                 remotely_accessible=False,
             )
-            self._source_details.metadata.image_url = self.mass.metadata.get_image_url(image)
+            base_url = self.mass.metadata.get_image_url(image)
+            # Append timestamp as query parameter for cache-busting
+            self._source_details.metadata.image_url = f"{base_url}&t={timestamp}"
+            self.logger.debug("Set image_url to: %s", self._source_details.metadata.image_url)
         elif self._metadata_reader and self._metadata_reader.cover_art_bytes:
             # Maintain image URL if we have cover art but didn't receive it in this update
             # This ensures the image URL persists across metadata updates
             if not self._source_details.metadata.image_url:
+                # Generate timestamp for cache-busting even in fallback case
+                timestamp = str(int(time.time() * 1000))
                 image = MediaItemImage(
                     type=ImageType.THUMB,
                     path="cover_art",
                     provider=self.instance_id,
                     remotely_accessible=False,
                 )
-                self._source_details.metadata.image_url = self.mass.metadata.get_image_url(image)
+                base_url = self.mass.metadata.get_image_url(image)
+                self._source_details.metadata.image_url = f"{base_url}&t={timestamp}"
 
         # Signal update to connected player
         if self._source_details.in_use_by:

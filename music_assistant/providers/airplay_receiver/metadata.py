@@ -7,6 +7,7 @@ import base64
 import os
 import re
 import struct
+import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
@@ -244,8 +245,9 @@ class MetadataReader:
             if code == "PICT":  # Cover art (raw bytes)
                 # Store raw bytes for later retrieval via resolve_image
                 self.cover_art_bytes = data
-                # Signal that cover art is available
-                self._current_metadata["has_cover_art"] = True
+                self.logger.debug("Stored cover art: %d bytes", len(data))
+                # Signal that cover art is available with timestamp for cache-busting
+                self._current_metadata["cover_art_timestamp"] = str(int(time.time() * 1000))
             elif code == "astm":  # Track duration in milliseconds (stored as 32-bit big-endian int)
                 try:
                     # Duration is sent as 4-byte big-endian integer
@@ -261,10 +263,17 @@ class MetadataReader:
         :param code: Metadata code identifier.
         :param data: Metadata data.
         """
-        # Only process string data for ssnc metadata (volume/progress are text-based)
-        if not isinstance(data, str):
+        # Handle binary data (cover art can come as ssnc type)
+        if isinstance(data, bytes):
+            if code == "PICT":  # Cover art (raw bytes)
+                # Store raw bytes for later retrieval via resolve_image
+                self.cover_art_bytes = data
+                self.logger.debug("Stored cover art: %d bytes", len(data))
+                # Signal that cover art is available with timestamp for cache-busting
+                self._current_metadata["cover_art_timestamp"] = str(int(time.time() * 1000))
             return
 
+        # Process string data for ssnc metadata (volume/progress are text-based)
         if code == "pvol":  # Volume
             self._parse_volume(data)
             # Send volume updates immediately (not batched with mden)

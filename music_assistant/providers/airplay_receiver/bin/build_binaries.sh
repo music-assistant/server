@@ -24,6 +24,7 @@ build_linux() {
             set -e
 
             # Install build dependencies
+            # NOTE: Do NOT install libavahi-client-dev - we want tinysvcmdns instead
             apt-get update && apt-get install -y --no-install-recommends \
                 build-essential \
                 git \
@@ -34,7 +35,6 @@ build_linux() {
                 libconfig-dev \
                 libpopt-dev \
                 libssl-dev \
-                libavahi-client-dev \
                 libdbus-1-dev \
                 libglib2.0-dev \
                 ca-certificates
