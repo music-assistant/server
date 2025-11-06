@@ -113,6 +113,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self._runner_task: asyncio.Task[None] | None = None
         self._shairport_proc: AsyncProcess | None = None
         self._shairport_started = asyncio.Event()
+        self._dbus_available: bool | None = None  # Track if dbus-send is available
         # Initialize named pipe helpers
         audio_pipe_path = f"/tmp/ma_airplay_audio_{self.instance_id}"  # noqa: S108
         metadata_pipe_path = f"/tmp/ma_airplay_metadata_{self.instance_id}"  # noqa: S108
@@ -122,15 +123,16 @@ class AirPlayReceiverProvider(PluginProvider):
         # Use a unique port for each instance (base port 7000 + hash of instance_id)
         self.airplay_port = 7000 + (hash(self.instance_id) % 1000)
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
+        # Note: Control capabilities will be updated after checking dbus-send availability
         self._source_details = PluginSource(
             id=self.instance_id,
             name=self.name,
             # Set passive to true because we don't allow this source to be selected directly
             # It will be automatically selected when AirPlay playback starts
             passive=True,
-            can_play_pause=True,
-            can_seek=True,
-            can_next_previous=True,
+            can_play_pause=False,  # Will be set based on dbus availability
+            can_seek=False,  # Will be set based on dbus availability
+            can_next_previous=False,  # Will be set based on dbus availability
             audio_format=AudioFormat(
                 content_type=ContentType.PCM_S16LE,
                 codec_type=ContentType.PCM_S16LE,
@@ -153,9 +155,56 @@ class AirPlayReceiverProvider(PluginProvider):
         self._runner_error_count = 0
         self._metadata_reader: MetadataReader | None = None
 
+    async def _check_dbus_availability(self) -> bool:
+        """Check if D-Bus is available and accessible.
+
+        Checks both that dbus-send is installed and that the D-Bus system bus
+        is accessible (e.g., /run/dbus socket is mounted in containers).
+
+        :return: True if D-Bus is fully available, False otherwise.
+        """
+        # Check if dbus-send command is available
+        try:
+            await check_output("which", "dbus-send")
+        except Exception:
+            self.logger.debug("dbus-send command not found")
+            return False
+
+        # Check if D-Bus system bus is accessible by trying to ping it
+        try:
+            await check_output(
+                "dbus-send",
+                "--system",
+                "--print-reply",
+                "--dest=org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus.Peer.Ping",
+            )
+            return True
+        except Exception as err:
+            self.logger.debug("D-Bus system bus not accessible: %s", err)
+            return False
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._shairport_bin = await get_shairport_sync_binary()
+
+        # Check if dbus-send is available for remote control
+        self._dbus_available = await self._check_dbus_availability()
+        if self._dbus_available:
+            self.logger.debug("D-Bus available - enabling remote control features")
+            self._source_details.can_play_pause = True
+            self._source_details.can_next_previous = True
+            # Note: Seeking is not supported by shairport-sync D-Bus interface
+            self._source_details.can_seek = False
+        else:
+            self.logger.info(
+                "D-Bus not available - remote control features (play/pause/next/previous) "
+                "will not work. Playback can still be controlled from the AirPlay source device. "
+                "To enable remote control in Docker, mount the host D-Bus socket: "
+                "-v /run/dbus:/run/dbus:ro"
+            )
+
         self.player = self.mass.players.get(self.mass_player_id)
         if self.player:
             self._setup_shairport_daemon()
@@ -411,7 +460,6 @@ class AirPlayReceiverProvider(PluginProvider):
             # Use timestamp as query parameter to create a unique URL for each cover art update
             # This prevents browser caching issues when switching between tracks
             timestamp = metadata["cover_art_timestamp"]
-            self.logger.debug("Cover art available (timestamp: %s), building image URL", timestamp)
             # Build image proxy URL for the cover art
             # The actual image bytes are stored in the metadata reader
             image = MediaItemImage(
@@ -423,7 +471,6 @@ class AirPlayReceiverProvider(PluginProvider):
             base_url = self.mass.metadata.get_image_url(image)
             # Append timestamp as query parameter for cache-busting
             self._source_details.metadata.image_url = f"{base_url}&t={timestamp}"
-            self.logger.debug("Set image_url to: %s", self._source_details.metadata.image_url)
         elif self._metadata_reader and self._metadata_reader.cover_art_bytes:
             # Maintain image URL if we have cover art but didn't receive it in this update
             # This ensures the image URL persists across metadata updates
@@ -441,32 +488,41 @@ class AirPlayReceiverProvider(PluginProvider):
 
         # Signal update to connected player
         if self._source_details.in_use_by:
-            self.logger.debug(
-                "Triggering player update for %s (has image: %s)",
-                self._source_details.in_use_by,
-                bool(self._source_details.metadata.image_url),
-            )
             self.mass.players.trigger_player_update(self._source_details.in_use_by)
 
     async def _send_dbus_command(self, method: str) -> None:
-        """Send a D-Bus command to shairport-sync MPRIS interface.
+        """Send a D-Bus command to shairport-sync native D-Bus interface.
 
-        :param method: The MPRIS method to call (e.g., 'Play', 'Pause', 'Next', 'Previous').
+        Uses the native shairport-sync RemoteControl interface which is more reliable
+        than MPRIS for controlling playback.
+
+        :param method: The RemoteControl method to call (e.g., 'Play', 'Pause', 'Next', 'Previous').
         """
+        if not self._dbus_available:
+            self.logger.debug(
+                "Skipping D-Bus command %s - D-Bus not available on this system", method
+            )
+            return
+
+        if not self._shairport_proc or not self._shairport_proc.proc:
+            self.logger.debug("Shairport-sync process not running, cannot send D-Bus command")
+            return
+
         try:
-            airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
-            # The D-Bus service name includes the AirPlay name
-            service_name = f"org.mpris.MediaPlayer2.ShairportSync.{airplay_name}"
+            # Use native shairport-sync D-Bus interface
+            # Service name includes process ID for multi-instance support
+            # shairport-sync registers as org.gnome.ShairportSync.i<PID>
+            service_name = f"org.gnome.ShairportSync.i{self._shairport_proc.proc.pid}"
             await check_output(
                 "dbus-send",
-                "--session",
+                "--system",  # Use system bus (configured in shairport-sync.conf)
                 "--print-reply",
                 "--type=method_call",
                 f"--dest={service_name}",
-                "/org/mpris/MediaPlayer2",
-                f"org.mpris.MediaPlayer2.Player.{method}",
+                "/org/gnome/ShairportSync",
+                f"org.gnome.ShairportSync.RemoteControl.{method}",
             )
-            self.logger.debug("Sent D-Bus command: %s", method)
+            self.logger.debug("Sent D-Bus command %s to %s", method, service_name)
         except Exception as err:
             self.logger.warning("Failed to send D-Bus command %s: %s", method, err)
 
@@ -489,40 +545,17 @@ class AirPlayReceiverProvider(PluginProvider):
     async def _on_seek(self, position: int) -> None:
         """Handle seek command from player controller.
 
+        Note: Seeking is not supported by the shairport-sync D-Bus interface.
+        The native RemoteControl interface only supports FastForward and Rewind,
+        not absolute seeking to a specific position.
+
         :param position: Position in seconds to seek to.
         """
-        try:
-            airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
-            service_name = f"org.mpris.MediaPlayer2.ShairportSync.{airplay_name}"
-
-            # Get current position first to calculate relative offset
-            # MPRIS Seek uses relative offset in microseconds
-            current_elapsed = 0
-            if (
-                self._source_details.metadata
-                and self._source_details.metadata.elapsed_time is not None
-            ):
-                current_elapsed = int(self._source_details.metadata.elapsed_time)
-
-            # Calculate offset in microseconds (position is in seconds)
-            offset_seconds = position - current_elapsed
-            offset_microseconds = int(offset_seconds * 1_000_000)
-
-            await check_output(
-                "dbus-send",
-                "--session",
-                "--print-reply",
-                "--type=method_call",
-                f"--dest={service_name}",
-                "/org/mpris/MediaPlayer2",
-                "org.mpris.MediaPlayer2.Player.Seek",
-                f"int64:{offset_microseconds}",
-            )
-            self.logger.debug(
-                "Sent seek command: %d seconds (offset: %d µs)", position, offset_microseconds
-            )
-        except Exception as err:
-            self.logger.warning("Failed to send seek command: %s", err)
+        self.logger.debug(
+            "Seek command not supported - shairport-sync D-Bus interface does not support "
+            "absolute seeking (requested position: %d seconds)",
+            position,
+        )
 
     async def resolve_image(self, path: str) -> bytes:
         """Resolve an image from an image path.

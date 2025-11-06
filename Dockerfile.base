@@ -167,6 +167,7 @@ RUN set -x \
         libavahi-client3 \
         libavahi-common3 \
         # AirPlay receiver dependencies (shairport-sync)
+        dbus \
         libconfig9 \
         libpopt0 \
         libdbus-1-3 \

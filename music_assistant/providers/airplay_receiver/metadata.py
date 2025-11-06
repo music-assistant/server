@@ -220,10 +220,6 @@ class MetadataReader:
 
         if item_type == "ssnc" and code == "mden":
             if self.on_metadata and self._current_metadata:
-                self.logger.debug(
-                    "Metadata end - sending metadata update with keys: %s",
-                    list(self._current_metadata.keys()),
-                )
                 self.on_metadata(dict(self._current_metadata))
             return
 
