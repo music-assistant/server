@@ -210,6 +210,9 @@ class MetadataReader:
         # Handle metadata start/end markers
         if item_type == "ssnc" and code == "mdst":
             self._current_metadata = {}
+            # Signal that new metadata is starting (clear old cover art)
+            if self.on_metadata:
+                self.on_metadata({"metadata_start": True})
             return
 
         if item_type == "ssnc" and code == "mden":
