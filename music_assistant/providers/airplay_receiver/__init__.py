@@ -147,6 +147,7 @@ class AirPlayReceiverProvider(PluginProvider):
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
         self._metadata_reader: MetadataReader | None = None
+        self._first_volume_event_received = False  # Track if we've received the first volume event
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -255,33 +256,39 @@ class AirPlayReceiverProvider(PluginProvider):
         await self.metadata_pipe.remove()
         await check_output("rm", "-f", self.config_file)
 
-    def _process_shairport_log_line(self, line: str) -> bool:
+    async def _write_silence_to_unblock_stream(self) -> None:
+        """Write silence to the audio pipe to unblock ffmpeg.
+
+        When shairport-sync stops writing but ffmpeg is still reading,
+        writing silence will cause ffmpeg to output a chunk, which will
+        then check in_use_by and break out of the loop.
+
+        We write enough silence to ensure ffmpeg outputs at least one chunk.
+        PCM_S16LE format: 2 bytes per sample, 2 channels, 44100 Hz
+        Writing 1 second of silence = 44100 * 2 * 2 = 176400 bytes
+        """
+        self.logger.debug("Writing silence to audio pipe to unblock stream")
+        silence = b"\x00" * 176400  # 1 second of silence in PCM_S16LE stereo 44.1kHz
+        await self.audio_pipe.write(silence, log_slow_writes=False)
+
+    def _process_shairport_log_line(self, line: str) -> None:
         """Process a log line from shairport-sync stderr.
 
         :param line: The log line to process.
-        :return: True if processing should continue, False if it should stop.
         """
-        # Check for fatal errors
+        # Check for fatal errors (log them, but process will exit on its own)
         if "fatal error:" in line.lower() or "unknown option" in line.lower():
             self.logger.error("Fatal error from shairport-sync: %s", line)
-            self.unload_with_error(f"shairport-sync fatal error: {line}")
-            return False
+            return
+        # Log connection messages at INFO level, everything else at DEBUG
         if "connection from" in line:
             self.logger.info("AirPlay client connected: %s", line)
-        if "Play begin" in line:
-            # Initiate playback by selecting this source on the default player
-            if not self._source_details.in_use_by:
-                self.mass.create_task(
-                    self.mass.players.select_source(self.mass_player_id, self.instance_id)
-                )
-                self._source_details.in_use_by = self.mass_player_id
-        if "player stop" in line:
-            self.logger.info("AirPlay playback stopped")
-            self._source_details.in_use_by = None
-        self.logger.log(VERBOSE_LOG_LEVEL, line)
+        else:
+            # Note: Play begin/stop events are now handled via sessioncontrol hooks
+            # through the metadata pipe, so we don't need to parse stderr logs
+            self.logger.debug(line)
         if not self._shairport_started.is_set():
             self._shairport_started.set()
-        return True
 
     async def _shairport_runner(self) -> None:
         """Run the shairport-sync daemon in a background task."""
@@ -294,7 +301,6 @@ class AirPlayReceiverProvider(PluginProvider):
                 self._shairport_bin,
                 "--configfile",
                 self.config_file,
-                "-vv",
             ]
             self._shairport_proc = shairport = AsyncProcess(
                 args, stderr=True, name=f"shairport-sync[{self.name}]"
@@ -319,8 +325,7 @@ class AirPlayReceiverProvider(PluginProvider):
             self.logger.debug("Starting to read shairport-sync stderr")
             async for stderr_line in shairport.iter_stderr():
                 line = stderr_line.strip()
-                if not self._process_shairport_log_line(line):
-                    break
+                self._process_shairport_log_line(line)
 
         finally:
             await shairport.close()
@@ -370,31 +375,102 @@ class AirPlayReceiverProvider(PluginProvider):
 
         :param metadata: Dictionary containing metadata updates.
         """
-        self.logger.debug("Received metadata update: %s", metadata)
+        self.logger.log(VERBOSE_LOG_LEVEL, "Received metadata update: %s", metadata)
+
+        # Handle play state changes from sessioncontrol hooks
+        if "play_state" in metadata:
+            self._handle_play_state_change(metadata["play_state"])
+            return
 
         # Handle metadata start (new track starting)
-        # Note: We don't clear the image_url here to avoid flashing between tracks
-        # The old image will display until new cover art arrives with a new timestamp
         if "metadata_start" in metadata:
             return
 
-        # Handle volume changes
+        # Handle volume changes from AirPlay client
         if "volume" in metadata and self._source_details.in_use_by:
-            volume = metadata["volume"]
-            try:
-                self.mass.create_task(
-                    self.mass.players.cmd_volume_set(self._source_details.in_use_by, volume)
-                )
-            except UnsupportedFeaturedException:
-                self.logger.debug(
-                    "Player %s does not support volume control", self._source_details.in_use_by
-                )
+            self._handle_volume_change(metadata["volume"])
 
-        # Update source metadata
+        # Update source metadata fields
+        self._update_source_metadata(metadata)
+
+        # Handle cover art updates
+        self._update_cover_art(metadata)
+
+        # Signal update to connected player
+        if self._source_details.in_use_by:
+            self.mass.players.trigger_player_update(self._source_details.in_use_by)
+
+    def _handle_play_state_change(self, play_state: str) -> None:
+        """Handle play state changes from sessioncontrol hooks.
+
+        :param play_state: The new play state ("playing" or "stopped").
+        """
+        if play_state == "playing":
+            # Reset volume event flag for new playback session
+            self._first_volume_event_received = False
+            # Initiate playback by selecting this source on the default player
+            if not self._source_details.in_use_by:
+                self.mass.create_task(
+                    self.mass.players.select_source(self.mass_player_id, self.instance_id)
+                )
+                self._source_details.in_use_by = self.mass_player_id
+        elif play_state == "stopped":
+            self.logger.info("AirPlay playback stopped")
+            # Reset volume event flag for next session
+            self._first_volume_event_received = False
+            # Setting in_use_by to None will signal the stream to stop
+            self._source_details.in_use_by = None
+            # Write silence to the pipe to unblock ffmpeg
+            # This will cause ffmpeg to output a chunk, which will then check in_use_by
+            # and break out of the loop when it sees it's None
+            self.mass.create_task(self._write_silence_to_unblock_stream())
+            # Deselect source from player
+            self.mass.create_task(self.mass.players.select_source(self.mass_player_id, None))
+
+    def _handle_volume_change(self, volume: int) -> None:
+        """Handle volume changes from AirPlay client (iOS/macOS device).
+
+        ignore_volume_control = "yes" means shairport-sync doesn't do software volume control,
+        but we still receive volume level changes from the client to apply to the player.
+
+        :param volume: The new volume level (0-100).
+        """
+        # Skip the first volume event as it's the initial sync from default_airplay_volume
+        # We don't want to override the player's current volume on startup
+        if not self._first_volume_event_received:
+            self._first_volume_event_received = True
+            self.logger.debug(
+                "Received initial AirPlay volume (%s%%), skipping to preserve player volume",
+                volume,
+            )
+            return
+
+        # Type check: ensure we have a valid player ID
+        player_id = self._source_details.in_use_by
+        if not player_id:
+            return
+
+        self.logger.debug(
+            "AirPlay client volume changed to %s%%, applying to player %s",
+            volume,
+            player_id,
+        )
+        try:
+            self.mass.create_task(self.mass.players.cmd_volume_set(player_id, volume))
+        except UnsupportedFeaturedException:
+            self.logger.debug("Player %s does not support volume control", player_id)
+
+    def _update_source_metadata(self, metadata: dict[str, Any]) -> None:
+        """Update source metadata fields from AirPlay metadata.
+
+        :param metadata: Dictionary containing metadata updates.
+        """
+        # Initialize metadata if needed
         if self._source_details.metadata is None:
             airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
             self._source_details.metadata = StreamMetadata(title=f"AirPlay | {airplay_name}")
 
+        # Update individual metadata fields
         if "title" in metadata:
             self._source_details.metadata.title = metadata["title"]
 
@@ -412,7 +488,15 @@ class AirPlayReceiverProvider(PluginProvider):
             # Always set elapsed_time_last_updated to current time when we receive elapsed_time
             self._source_details.metadata.elapsed_time_last_updated = time.time()
 
-        # Handle cover art
+    def _update_cover_art(self, metadata: dict[str, Any]) -> None:
+        """Update cover art image URL from AirPlay metadata.
+
+        :param metadata: Dictionary containing metadata updates.
+        """
+        # Ensure metadata is initialized
+        if self._source_details.metadata is None:
+            return
+
         if "cover_art_timestamp" in metadata:
             # Use timestamp as query parameter to create a unique URL for each cover art update
             # This prevents browser caching issues when switching between tracks
@@ -442,10 +526,6 @@ class AirPlayReceiverProvider(PluginProvider):
                 )
                 base_url = self.mass.metadata.get_image_url(image)
                 self._source_details.metadata.image_url = f"{base_url}&t={timestamp}"
-
-        # Signal update to connected player
-        if self._source_details.in_use_by:
-            self.mass.players.trigger_player_update(self._source_details.in_use_by)
 
     async def resolve_image(self, path: str) -> bytes:
         """Resolve an image from an image path.

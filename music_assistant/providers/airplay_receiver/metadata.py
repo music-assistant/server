@@ -11,6 +11,8 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
+
 if TYPE_CHECKING:
     from collections.abc import Callable
     from logging import Logger
@@ -108,7 +110,30 @@ class MetadataReader:
                 self._fd = None
 
     def _process_buffer(self) -> None:
-        """Process all complete metadata items in the buffer (XML format)."""
+        """Process all complete metadata items in the buffer (XML format or plain text markers)."""
+        # First, check for plain text markers from sessioncontrol hooks
+        while "\n" in self._buffer:
+            # Check if we have a complete line before any XML
+            line_end = self._buffer.index("\n")
+            if "<item>" not in self._buffer or self._buffer.index("<item>") > line_end:
+                # We have a plain text line before any XML
+                line = self._buffer[:line_end].strip()
+                self._buffer = self._buffer[line_end + 1 :]
+
+                # Handle our custom markers
+                if line == "MA_PLAY_BEGIN":
+                    self.logger.info("Playback started (via sessioncontrol hook)")
+                    if self.on_metadata:
+                        self.on_metadata({"play_state": "playing"})
+                elif line == "MA_PLAY_END":
+                    self.logger.info("Playback ended (via sessioncontrol hook)")
+                    if self.on_metadata:
+                        self.on_metadata({"play_state": "stopped"})
+                # Ignore other plain text lines
+            else:
+                # XML item comes first, stop looking for lines
+                break
+
         # Look for complete <item>...</item> blocks
         while "<item>" in self._buffer and "</item>" in self._buffer:
             try:
@@ -201,11 +226,16 @@ class MetadataReader:
         """
         # Don't log binary data (like cover art)
         if code == "PICT":
-            self.logger.debug(
-                "Metadata: type=%s, code=%s, data=<binary image data>", item_type, code
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Metadata: type=%s, code=%s, data=<binary image data>",
+                item_type,
+                code,
             )
         else:
-            self.logger.debug("Metadata: type=%s, code=%s, data=%s", item_type, code, data)
+            self.logger.log(
+                VERBOSE_LOG_LEVEL, "Metadata: type=%s, code=%s, data=%s", item_type, code, data
+            )
 
         # Handle metadata start/end markers
         if item_type == "ssnc" and code == "mdst":
