@@ -15,8 +15,8 @@ async def get_shairport_sync_binary() -> str:
     async def check_shairport_sync(shairport_path: str) -> str | None:
         """Check if shairport-sync binary is valid."""
         try:
-            returncode, output = await check_output(shairport_path, "--version")
-            if returncode == 0 and (b"shairport-sync" in output or b"Shairport Sync" in output):
+            returncode, _ = await check_output(shairport_path, "--version")
+            if returncode == 0:
                 return shairport_path
             return None
         except OSError:
