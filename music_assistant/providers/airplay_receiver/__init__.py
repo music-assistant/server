@@ -12,7 +12,6 @@ can be configured with different names.
 from __future__ import annotations
 
 import asyncio
-import base64
 import os
 import time
 from collections.abc import Callable
@@ -24,14 +23,16 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     EventType,
+    ImageType,
     ProviderFeature,
     StreamType,
 )
 from music_assistant_models.errors import UnsupportedFeaturedException
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.media_items import AudioFormat, MediaItemImage
 from music_assistant_models.streamdetails import StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.models.plugin import PluginProvider, PluginSource
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
@@ -112,9 +113,14 @@ class AirPlayReceiverProvider(PluginProvider):
         self._runner_task: asyncio.Task[None] | None = None
         self._shairport_proc: AsyncProcess | None = None
         self._shairport_started = asyncio.Event()
-        self.audio_pipe = f"/tmp/ma_airplay_audio_{self.instance_id}"  # noqa: S108
-        self.metadata_pipe = f"/tmp/ma_airplay_metadata_{self.instance_id}"  # noqa: S108
+        # Initialize named pipe helpers
+        audio_pipe_path = f"/tmp/ma_airplay_audio_{self.instance_id}"  # noqa: S108
+        metadata_pipe_path = f"/tmp/ma_airplay_metadata_{self.instance_id}"  # noqa: S108
+        self.audio_pipe = AsyncNamedPipeWriter(audio_pipe_path, self.logger)
+        self.metadata_pipe_writer = AsyncNamedPipeWriter(metadata_pipe_path, self.logger)
         self.config_file = f"/tmp/ma_shairport_sync_{self.instance_id}.conf"  # noqa: S108
+        # Use a unique port for each instance (base port 7000 + hash of instance_id)
+        self.airplay_port = 7000 + (hash(self.instance_id) % 1000)
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
         self._source_details = PluginSource(
             id=self.instance_id,
@@ -136,7 +142,7 @@ class AirPlayReceiverProvider(PluginProvider):
                 title=f"AirPlay | {airplay_name}",
             ),
             stream_type=StreamType.NAMED_PIPE,
-            path=self.audio_pipe,
+            path=self.audio_pipe.path,
             on_play=self._on_play,
             on_pause=self._on_pause,
             on_next=self._on_next,
@@ -199,8 +205,9 @@ class AirPlayReceiverProvider(PluginProvider):
         # Replace placeholders
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
         config_content = template.replace("{AIRPLAY_NAME}", airplay_name)
-        config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe)
-        config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe)
+        config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe_writer.path)
+        config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe.path)
+        config_content = config_content.replace("{PORT}", str(self.airplay_port))
 
         # Set default volume based on player's current volume
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
@@ -218,24 +225,63 @@ class AirPlayReceiverProvider(PluginProvider):
 
         await asyncio.to_thread(_write_config)
 
+    async def _setup_pipes_and_config(self) -> None:
+        """Set up named pipes and configuration file for shairport-sync.
+
+        :raises: OSError if pipe or config file creation fails.
+        """
+        # Remove any existing pipes and config
+        await self.audio_pipe.remove()
+        await self.metadata_pipe_writer.remove()
+        await check_output("rm", "-f", self.config_file)
+
+        # Create named pipes for audio and metadata
+        await self.audio_pipe.create()
+        await self.metadata_pipe_writer.create()
+
+        # Create configuration file
+        await self._create_config_file()
+
+    async def _cleanup_pipes_and_config(self) -> None:
+        """Clean up named pipes and configuration file."""
+        await self.audio_pipe.remove()
+        await self.metadata_pipe_writer.remove()
+        await check_output("rm", "-f", self.config_file)
+
+    def _process_shairport_log_line(self, line: str) -> bool:
+        """Process a log line from shairport-sync stderr.
+
+        :param line: The log line to process.
+        :return: True if processing should continue, False if it should stop.
+        """
+        # Check for fatal errors
+        if "fatal error:" in line.lower() or "unknown option" in line.lower():
+            self.logger.error("Fatal error from shairport-sync: %s", line)
+            self.unload_with_error(f"shairport-sync fatal error: {line}")
+            return False
+        if "connection from" in line:
+            self.logger.info("AirPlay client connected: %s", line)
+        if "Play begin" in line:
+            # Initiate playback by selecting this source on the default player
+            if not self._source_details.in_use_by:
+                self.mass.create_task(
+                    self.mass.players.select_source(self.mass_player_id, self.instance_id)
+                )
+                self._source_details.in_use_by = self.mass_player_id
+        if "player stop" in line:
+            self.logger.info("AirPlay playback stopped")
+            self._source_details.in_use_by = None
+        self.logger.log(VERBOSE_LOG_LEVEL, line)
+        if not self._shairport_started.is_set():
+            self._shairport_started.set()
+        return True
+
     async def _shairport_runner(self) -> None:
         """Run the shairport-sync daemon in a background task."""
         assert self._shairport_bin
         self.logger.info("Starting AirPlay Receiver background daemon")
 
-        # Clean up any existing pipes and config
-        await check_output("rm", "-f", self.audio_pipe)
-        await check_output("rm", "-f", self.metadata_pipe)
-        await check_output("rm", "-f", self.config_file)
-        await asyncio.sleep(0.1)
-
-        # Create named pipes for audio and metadata
-        await check_output("mkfifo", self.audio_pipe)
-        await check_output("mkfifo", self.metadata_pipe)
-        await asyncio.sleep(0.1)
-
-        # Create configuration file
-        await self._create_config_file()
+        await self._setup_pipes_and_config()
 
         try:
             args: list[str] = [
@@ -245,52 +291,47 @@ class AirPlayReceiverProvider(PluginProvider):
                 "-vv",
             ]
 
+            # Start shairport-sync (includes tinysvcmdns for mDNS advertisement)
             self._shairport_proc = shairport = AsyncProcess(
-                args, stdout=False, stderr=True, name=f"shairport-sync[{self.name}]"
+                args, stderr=True, name=f"shairport-sync[{self.name}]"
             )
             await shairport.start()
 
+            # Check if process started successfully
+            await asyncio.sleep(0.1)
+            if shairport.returncode is not None:
+                self.logger.error(
+                    "shairport-sync exited immediately with code %s", shairport.returncode
+                )
+                return
+
             # Start metadata reader
             self._metadata_reader = MetadataReader(
-                self.metadata_pipe, self.logger, self._on_metadata_update
+                self.metadata_pipe_writer.path, self.logger, self._on_metadata_update
             )
             await self._metadata_reader.start()
 
             # Keep reading logging from stderr until exit
-            async for line in shairport.iter_stderr():
-                # Check for fatal errors
-                if "fatal error:" in line.lower() or "unknown option" in line.lower():
-                    self.logger.error("Fatal error from shairport-sync: %s", line)
-                    self.unload_with_error(f"shairport-sync fatal error: {line}")
+            self.logger.debug("Starting to read shairport-sync stderr")
+            async for stderr_line in shairport.iter_stderr():
+                line = stderr_line.strip()
+                if not self._process_shairport_log_line(line):
                     break
-                if "connection from" in line:
-                    self.logger.info("AirPlay client connected: %s", line)
-                if "Play begin" in line:
-                    # Initiate playback by selecting this source on the default player
-                    if not self._source_details.in_use_by:
-                        self.mass.create_task(
-                            self.mass.players.select_source(self.mass_player_id, self.instance_id)
-                        )
-                        self._source_details.in_use_by = self.mass_player_id
-                if "player stop" in line:
-                    self.logger.info("AirPlay playback stopped")
-                    self._source_details.in_use_by = None
-                self.logger.log(VERBOSE_LOG_LEVEL, line)
-                if not self._shairport_started.is_set():
-                    self._shairport_started.set()
 
         finally:
             await shairport.close()
-            self.logger.info("AirPlay Receiver background daemon stopped for %s", self.name)
+            self.logger.info(
+                "AirPlay Receiver background daemon stopped for %s (exit code: %s)",
+                self.name,
+                shairport.returncode,
+            )
 
             # Stop metadata reader
             if self._metadata_reader:
                 await self._metadata_reader.stop()
 
             # Clean up pipes and config
-            await check_output("rm", "-f", self.audio_pipe)
-            await check_output("rm", "-f", self.metadata_pipe)
-            await check_output("rm", "-f", self.config_file)
+            await self._cleanup_pipes_and_config()
 
             if not self._shairport_started.is_set():
                 self.unload_with_error("Unable to initialize shairport-sync daemon.")
@@ -359,18 +400,27 @@ class AirPlayReceiverProvider(PluginProvider):
             # Always set elapsed_time_last_updated to current time when we receive elapsed_time
             self._source_details.metadata.elapsed_time_last_updated = time.time()
 
-        if "cover_art_b64" in metadata:
-            # Convert base64 encoded image to data URL
-            # Most cover art from AirPlay is JPEG or PNG
-            cover_art_b64 = metadata["cover_art_b64"]
-            # Try to detect image type from first bytes, default to JPEG
-            try:
-                img_bytes = base64.b64decode(cover_art_b64)
-                mime_type = "image/png" if img_bytes.startswith(b"\x89PNG") else "image/jpeg"
-                # Create data URL
-                self._source_details.metadata.image_url = f"data:{mime_type};base64,{cover_art_b64}"
-            except Exception as err:
-                self.logger.debug("Error creating cover art data URL: %s", err)
+        if "has_cover_art" in metadata:
+            # Build image proxy URL for the cover art
+            # The actual image bytes are stored in the metadata reader
+            image = MediaItemImage(
+                type=ImageType.THUMB,
+                path="cover_art",  # Virtual path that will be resolved via resolve_image
+                provider=self.instance_id,
+                remotely_accessible=False,
+            )
+            self._source_details.metadata.image_url = self.mass.metadata.get_image_url(image)
+        elif self._metadata_reader and self._metadata_reader.cover_art_bytes:
+            # Maintain image URL if we have cover art but didn't receive it in this update
+            # This ensures the image URL persists across metadata updates
+            if not self._source_details.metadata.image_url:
+                image = MediaItemImage(
+                    type=ImageType.THUMB,
+                    path="cover_art",
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
+                self._source_details.metadata.image_url = self.mass.metadata.get_image_url(image)
 
         # Signal update to connected player
         if self._source_details.in_use_by:
@@ -451,3 +501,15 @@ class AirPlayReceiverProvider(PluginProvider):
             )
         except Exception as err:
             self.logger.warning("Failed to send seek command: %s", err)
+
+    async def resolve_image(self, path: str) -> bytes:
+        """Resolve an image from an image path.
+
+        This returns raw bytes of the cover art image received from AirPlay metadata.
+
+        :param path: The image path (should be "cover_art" for AirPlay cover art).
+        """
+        if path == "cover_art" and self._metadata_reader and self._metadata_reader.cover_art_bytes:
+            return self._metadata_reader.cover_art_bytes
+        # Return empty bytes if no cover art is available
+        return b""

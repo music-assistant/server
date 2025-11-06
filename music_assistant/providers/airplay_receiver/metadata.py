@@ -38,6 +38,7 @@ class MetadataReader:
         self._current_metadata: dict[str, Any] = {}
         self._fd: int | None = None
         self._buffer = ""
+        self.cover_art_bytes: bytes | None = None
 
     async def start(self) -> None:
         """Start reading metadata from the pipe."""
@@ -171,13 +172,10 @@ class MetadataReader:
                         data_b64 = data_match.group(1).strip()
                         decoded_data = base64.b64decode(data_b64)
 
-                        # For binary fields (PICT, astm), keep the base64 string or raw bytes
+                        # For binary fields (PICT, astm), keep as raw bytes
                         # For text fields, decode to UTF-8
-                        if code_str in ("PICT",):
-                            # Cover art: keep as base64 string for later use
-                            data = data_b64
-                        elif code_str in ("astm",):
-                            # Duration: keep as raw bytes for struct unpacking
+                        if code_str in ("PICT", "astm"):
+                            # Cover art and duration: keep as raw bytes
                             data = decoded_data
                         else:
                             # Text metadata: decode to UTF-8
@@ -240,19 +238,22 @@ class MetadataReader:
                 self._current_metadata["album"] = data
             elif code == "minm":  # Title
                 self._current_metadata["title"] = data
-            elif code == "PICT":  # Cover art (base64 encoded image data)
-                # Keep the raw base64 data for creating a data URL
-                self._current_metadata["cover_art_b64"] = data
 
         # Binary metadata fields - expect bytes data
-        if code == "astm":  # Track duration in milliseconds (stored as 32-bit big-endian int)
-            try:
-                # Duration is sent as 4-byte big-endian integer
-                if isinstance(data, bytes) and len(data) >= 4:
-                    duration_ms = struct.unpack(">I", data[:4])[0]
-                    self._current_metadata["duration"] = duration_ms // 1000
-            except (ValueError, TypeError, struct.error) as err:
-                self.logger.debug("Error parsing duration: %s", err)
+        elif isinstance(data, bytes):
+            if code == "PICT":  # Cover art (raw bytes)
+                # Store raw bytes for later retrieval via resolve_image
+                self.cover_art_bytes = data
+                # Signal that cover art is available
+                self._current_metadata["has_cover_art"] = True
+            elif code == "astm":  # Track duration in milliseconds (stored as 32-bit big-endian int)
+                try:
+                    # Duration is sent as 4-byte big-endian integer
+                    if len(data) >= 4:
+                        duration_ms = struct.unpack(">I", data[:4])[0]
+                        self._current_metadata["duration"] = duration_ms // 1000
+                except (ValueError, TypeError, struct.error) as err:
+                    self.logger.debug("Error parsing duration: %s", err)
 
     def _parse_ssnc_metadata(self, code: str, data: str | bytes) -> None:
         """Parse shairport-sync metadata.

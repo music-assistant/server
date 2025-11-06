@@ -45,11 +45,14 @@ build_linux() {
             cd shairport-sync
 
             # Configure and build
+            # Build with tinysvcmdns (lightweight embedded mDNS, no external daemon needed)
             autoreconf -fi
             ./configure \
                 --with-pipe \
                 --with-metadata \
-                --with-avahi \
+                --without-avahi \
+                --without-dns-sd \
+                --with-tinysvcmdns \
                 --with-ssl=openssl \
                 --with-stdout \
                 --with-dbus-interface \
@@ -111,13 +114,17 @@ build_macos() {
     # On macOS, librt is not needed and doesn't exist - patch configure to skip the check
     sed -i.bak 's/as_fn_error $? "librt needed" "$LINENO" 5/echo "librt check skipped on macOS"/' configure
 
+    # Build with tinysvcmdns (lightweight embedded mDNS) for macOS
+    # Note: We still register via Music Assistant's Zeroconf, but shairport-sync
+    # needs some mDNS backend present to function properly
     ./configure \
         --with-pipe \
         --with-metadata \
         --with-ssl=openssl \
         --with-stdout \
         --without-avahi \
-        --with-dns_sd \
+        --without-dns-sd \
+        --with-tinysvcmdns \
         --with-libdaemon \
         PKG_CONFIG_PATH="$(brew --prefix openssl)/lib/pkgconfig:$(brew --prefix libconfig)/lib/pkgconfig" \
         LDFLAGS="-L$(brew --prefix)/lib" \
