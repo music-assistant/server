@@ -321,6 +321,44 @@ class AirPlayReceiverProvider(PluginProvider):
             self._shairport_started.set()
         return True
 
+    async def _start_dbus_daemon(self, env: dict[str, str]) -> None:
+        """Start local D-Bus session daemon and update environment.
+
+        :param env: Environment dictionary to update with DBUS_SESSION_BUS_ADDRESS.
+        """
+        try:
+            await check_output("which", "dbus-daemon")
+            self._dbus_proc = AsyncProcess(
+                ["dbus-daemon", "--session", "--nofork", "--print-address"],
+                name=f"dbus-daemon[{self.name}]",
+                stdout=True,
+            )
+            await self._dbus_proc.start()
+            # Give D-Bus time to start and read the bus address
+            await asyncio.sleep(0.2)
+
+            # Get the D-Bus address from stdout
+            if self._dbus_proc.proc and self._dbus_proc.proc.stdout:
+                dbus_address = await asyncio.wait_for(
+                    self._dbus_proc.proc.stdout.readline(), timeout=1.0
+                )
+                if dbus_address:
+                    dbus_addr_str = dbus_address.decode().strip()
+                    env["DBUS_SESSION_BUS_ADDRESS"] = dbus_addr_str
+                    self.logger.info(
+                        "Started local D-Bus session daemon - PID: %s, address: %s",
+                        self._dbus_proc.proc.pid,
+                        dbus_addr_str,
+                    )
+                else:
+                    self.logger.warning("D-Bus daemon started but no address received")
+        except Exception as err:
+            self.logger.debug(
+                "Could not start local D-Bus daemon: %s - "
+                "D-Bus remote control will not be available",
+                err,
+            )
+
     async def _shairport_runner(self) -> None:
         """Run the shairport-sync daemon in a background task."""
         assert self._shairport_bin
@@ -329,42 +367,12 @@ class AirPlayReceiverProvider(PluginProvider):
         await self._setup_pipes_and_config()
 
         try:
-            # Start local D-Bus daemon if dbus-daemon is available
-            # This provides D-Bus interface for remote control without requiring host D-Bus
-            # Use session bus which doesn't require special configuration
-            try:
-                await check_output("which", "dbus-daemon")
-                self._dbus_proc = AsyncProcess(
-                    ["dbus-daemon", "--session", "--nofork", "--print-address"],
-                    name=f"dbus-daemon[{self.name}]",
-                    stdout=True,
-                )
-                await self._dbus_proc.start()
-                # Give D-Bus time to start and read the bus address
-                await asyncio.sleep(0.2)
+            # Prepare environment for shairport-sync
+            shairport_env = os.environ.copy()
 
-                # Get the D-Bus address from stdout
-                if self._dbus_proc.proc and self._dbus_proc.proc.stdout:
-                    dbus_address = await asyncio.wait_for(
-                        self._dbus_proc.proc.stdout.readline(), timeout=1.0
-                    )
-                    if dbus_address:
-                        # Set DBUS_SESSION_BUS_ADDRESS for shairport-sync to use
-                        dbus_addr_str = dbus_address.decode().strip()
-                        os.environ["DBUS_SESSION_BUS_ADDRESS"] = dbus_addr_str
-                        self.logger.info(
-                            "Started local D-Bus session daemon - PID: %s, address: %s",
-                            self._dbus_proc.proc.pid,
-                            dbus_addr_str,
-                        )
-                    else:
-                        self.logger.warning("D-Bus daemon started but no address received")
-            except Exception as err:
-                self.logger.debug(
-                    "Could not start local D-Bus daemon: %s - "
-                    "D-Bus remote control will not be available",
-                    err,
-                )
+            # Start local D-Bus daemon if available
+            # This provides D-Bus interface for remote control without requiring host D-Bus
+            await self._start_dbus_daemon(shairport_env)
 
             args: list[str] = [
                 self._shairport_bin,
@@ -373,9 +381,9 @@ class AirPlayReceiverProvider(PluginProvider):
                 "-vv",
             ]
 
-            # Start shairport-sync (includes tinysvcmdns for mDNS advertisement)
+            # Start shairport-sync with explicit environment including D-Bus address
             self._shairport_proc = shairport = AsyncProcess(
-                args, stderr=True, name=f"shairport-sync[{self.name}]"
+                args, stderr=True, name=f"shairport-sync[{self.name}]", env=shairport_env
             )
             await shairport.start()
 
@@ -552,6 +560,10 @@ class AirPlayReceiverProvider(PluginProvider):
             # Service name includes process ID for multi-instance support
             # shairport-sync registers as org.gnome.ShairportSync.i<PID>
             service_name = f"org.gnome.ShairportSync.i{self._shairport_proc.proc.pid}"
+
+            # Use the same environment as shairport-sync to access the local D-Bus session
+            dbus_env = os.environ.copy()
+
             await check_output(
                 "dbus-send",
                 "--session",  # Use session bus (configured in shairport-sync.conf)
@@ -560,6 +572,7 @@ class AirPlayReceiverProvider(PluginProvider):
                 f"--dest={service_name}",
                 "/org/gnome/ShairportSync",
                 f"org.gnome.ShairportSync.RemoteControl.{method}",
+                env=dbus_env,
             )
             self.logger.debug("Sent D-Bus command %s to %s", method, service_name)
         except Exception as err:
