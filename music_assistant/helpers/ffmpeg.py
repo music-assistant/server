@@ -59,8 +59,8 @@ class FFMpeg(AsyncProcess):
         self.input_format = input_format
         self.collect_log_history = collect_log_history
         self.log_history: deque[str] = deque(maxlen=100)
-        self._stdin_task: asyncio.Task[None] | None = None
-        self._logger_task: asyncio.Task[None] | None = None
+        self._stdin_feeder_task: asyncio.Task[None] | None = None
+        self._stderr_reader_task: asyncio.Task[None] | None = None
         self._input_codec_parsed = False
         stdin: bool | int
         if audio_input == "-" or isinstance(audio_input, AsyncGenerator):
@@ -93,9 +93,9 @@ class FFMpeg(AsyncProcess):
                 clean_args.append(arg)
         args_str = " ".join(clean_args)
         self.logger.log(VERBOSE_LOG_LEVEL, "started with args: %s", args_str)
-        self._logger_task = asyncio.create_task(self._log_reader_task())
+        self._stderr_reader_task = asyncio.create_task(self._log_reader_task())
         if isinstance(self.audio_input, AsyncGenerator):
-            self._stdin_task = asyncio.create_task(self._feed_stdin())
+            self._stdin_feeder_task = asyncio.create_task(self._feed_stdin())
 
     async def communicate(
         self,
@@ -103,37 +103,21 @@ class FFMpeg(AsyncProcess):
         timeout: float | None = None,
     ) -> tuple[bytes, bytes]:
         """Override communicate to avoid blocking."""
-        if self._stdin_task:
-            if not self._stdin_task.done():
-                self._stdin_task.cancel()
+        if self._stdin_feeder_task:
+            if not self._stdin_feeder_task.done():
+                self._stdin_feeder_task.cancel()
             # Always await the task to consume any exception and prevent
             # "Task exception was never retrieved" errors.
             # Suppress CancelledError (from cancel) and any other exception
             # since exceptions have already been propagated through the generator chain.
             with suppress(asyncio.CancelledError, Exception):
-                await self._stdin_task
-        if self._logger_task and not self._logger_task.done():
-            self._logger_task.cancel()
+                await self._stdin_feeder_task
+        if self._stderr_reader_task:
+            if not self._stderr_reader_task.done():
+                self._stderr_reader_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self._stderr_reader_task
         return await super().communicate(input, timeout)
-
-    async def close(self, send_signal: bool = True) -> None:
-        """Close/terminate the process and wait for exit."""
-        if self.closed:
-            return
-        if self._stdin_task:
-            if not self._stdin_task.done():
-                self._stdin_task.cancel()
-            # Always await the task to consume any exception and prevent
-            # "Task exception was never retrieved" errors.
-            # Suppress CancelledError (from cancel) and any other exception
-            # since exceptions have already been propagated through the generator chain.
-            with suppress(asyncio.CancelledError, Exception):
-                await self._stdin_task
-        await super().close(send_signal)
-        if self._logger_task and not self._logger_task.done():
-            self._logger_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._logger_task
 
     async def _log_reader_task(self) -> None:
         """Read ffmpeg log from stderr."""
@@ -152,7 +136,6 @@ class FFMpeg(AsyncProcess):
                 decode_errors += 1
             if decode_errors >= 50:
                 self.logger.error(line)
-                await super().close(True)
 
             # if streamdetails contenttype is unknown, try parse it from the ffmpeg log
             if line.startswith("Stream #") and ": Audio: " in line:
@@ -219,7 +202,6 @@ async def get_ffmpeg_stream(
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
     extra_output_args: list[str] | None = None,
-    raise_ffmpeg_exception: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the ffmpeg audio stream as async generator.
@@ -242,12 +224,9 @@ async def get_ffmpeg_stream(
         async for chunk in iterator:
             yield chunk
         if ffmpeg_proc.returncode not in (None, 0):
+            # unclean exit of ffmpeg - raise error with log tail
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
-            if not raise_ffmpeg_exception:
-                # dump the last 5 lines of the log in case of an unclean exit
-                ffmpeg_proc.logger.error(log_tail)
-            else:
-                raise AudioError(log_tail)
+            raise AudioError(log_tail)
 
 
 def get_ffmpeg_args(  # noqa: PLR0915
@@ -297,17 +276,17 @@ def get_ffmpeg_args(  # noqa: PLR0915
                 "1",
                 # Set the maximum delay in seconds after which to give up reconnecting.
                 "-reconnect_delay_max",
-                "30",
+                "10",
                 # If set then even streamed/non seekable streams will be reconnected on errors.
                 "-reconnect_streamed",
                 "1",
                 # Reconnect automatically in case of TCP/TLS errors during connect.
                 "-reconnect_on_network_error",
-                "1",
+                "0",
                 # A comma separated list of HTTP status codes to reconnect on.
                 # The list can include specific status codes (e.g. 503) or the strings 4xx / 5xx.
                 "-reconnect_on_http_error",
-                "5xx,4xx",
+                "5xx,429",
             ]
         if input_format.content_type.is_pcm():
             input_args += [

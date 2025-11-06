@@ -81,6 +81,7 @@ if TYPE_CHECKING:
         UniqueList,
     )
 
+    from music_assistant import MusicAssistant
     from music_assistant.models.player import Player
 
 
@@ -127,9 +128,9 @@ class PlayerQueuesController(CoreController):
 
     domain: str = "player_queues"
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize core controller."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self._queues: dict[str, PlayerQueue] = {}
         self._queue_items: dict[str, list[QueueItem]] = {}
         self._prev_states: dict[str, CompareState] = {}
@@ -364,17 +365,18 @@ class PlayerQueuesController(CoreController):
     async def play_media(
         self,
         queue_id: str,
-        media: MediaItemType | ItemMapping | list[MediaItemType | ItemMapping] | str | list[str],
+        media: MediaItemType | ItemMapping | str | list[MediaItemType | ItemMapping | str],
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
     ) -> None:
         """Play media item(s) on the given queue.
 
-        - media: Media that should be played (MediaItem(s) or uri's).
-        - queue_opt: Which enqueue mode to use.
-        - radio_mode: Enable radio mode for the given item(s).
-        - start_item: Optional item to start the playlist or album from.
+        :param queue_id: The queue_id of the queue to play media on.
+        :param media: Media that should be played (MediaItem(s) and/or uri's).
+        :param option: Which enqueue mode to use.
+        :param radio_mode: Enable radio mode for the given item(s).
+        :param start_item: Optional item to start the playlist or album from.
         """
         # ruff: noqa: PLR0915
         # we use a contextvar to bypass the throttler for this asyncio task/context
@@ -813,6 +815,8 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = index
         queue.flow_mode_stream_log = []
         prefer_flow_mode = await self.mass.config.get_player_config_value(queue_id, CONF_FLOW_MODE)
+        target_player = self.mass.players.get(queue_id)
+        enqueue_supported = PlayerFeature.ENQUEUE in target_player.supported_features
         queue.next_item_id_enqueued = None
         # always update session id when we start a new playback session
         queue.session_id = shortuuid.random(length=8)
@@ -858,7 +862,9 @@ class PlayerQueuesController(CoreController):
                 # all attempts to find a playable item failed
                 raise MediaNotFoundError("No playable item found to start playback")
 
-            flow_mode = prefer_flow_mode and queue_item.media_type not in (
+            flow_mode = (
+                prefer_flow_mode or not enqueue_supported
+            ) and queue_item.media_type not in (
                 # don't use flow mode for duration-less streams
                 MediaType.RADIO,
                 MediaType.PLUGIN_SOURCE,
@@ -1669,6 +1675,7 @@ class PlayerQueuesController(CoreController):
     ) -> list[Track]:
         """Call the registered music providers for dynamic tracks."""
         queue = self._queues[queue_id]
+        queue_track_items = [q.media_item for q in self._queue_items[queue_id] if q.media_item]
         if not queue.radio_source:
             # this may happen during race conditions as this method is called delayed
             return None
@@ -1679,27 +1686,37 @@ class PlayerQueuesController(CoreController):
         )
         available_base_tracks: list[Track] = []
         base_track_sample_size = 5
-        # Grab all the available base tracks based on the selected source items.
-        # shuffle the source items, just in case
-        for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
-            ctrl = self.mass.music.get_controller(radio_item.media_type)
-            try:
-                available_base_tracks += [
-                    track
-                    for track in await ctrl.radio_mode_base_tracks(
-                        radio_item.item_id, radio_item.provider
+        # Some providers have very deterministic similar track algorithms when providing
+        # a single track item. When we have a radio mode based on 1 track and we have to
+        # refill the queue (ie not initial radio mode), we use the play history as base tracks
+        if (
+            len(queue.radio_source) == 1
+            and queue.radio_source[0].media_type == MediaType.TRACK
+            and not is_initial_radio_mode
+        ):
+            available_base_tracks = queue_track_items
+        else:
+            # Grab all the available base tracks based on the selected source items.
+            # shuffle the source items, just in case
+            for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
+                ctrl = self.mass.music.get_controller(radio_item.media_type)
+                try:
+                    available_base_tracks += [
+                        track
+                        for track in await ctrl.radio_mode_base_tracks(
+                            radio_item.item_id, radio_item.provider
+                        )
+                        # Avoid duplicate base tracks
+                        if track not in available_base_tracks
+                    ]
+                except UnsupportedFeaturedException as err:
+                    self.logger.debug(
+                        "Skip loading radio items for %s: %s ",
+                        radio_item.uri,
+                        str(err),
                     )
-                    # Avoid duplicate base tracks
-                    if track not in available_base_tracks
-                ]
-            except UnsupportedFeaturedException as err:
-                self.logger.debug(
-                    "Skip loading radio items for %s: %s ",
-                    radio_item.uri,
-                    str(err),
-                )
-        if not available_base_tracks:
-            raise UnsupportedFeaturedException("Radio mode not available for source items")
+            if not available_base_tracks:
+                raise UnsupportedFeaturedException("Radio mode not available for source items")
 
         # Sample tracks from the base tracks, which will be used to calculate the dynamic ones
         base_tracks = random.sample(
@@ -1713,17 +1730,27 @@ class PlayerQueuesController(CoreController):
             if dynamic_tracks:
                 break
             for base_track in base_tracks:
-                [
-                    dynamic_tracks.add(track)
-                    for track in await self.mass.music.tracks.similar_tracks(
+                try:
+                    _similar_tracks = await self.mass.music.tracks.similar_tracks(
                         base_track.item_id,
                         base_track.provider,
                         allow_lookup=allow_lookup,
                     )
-                    if track not in base_tracks
-                    # Ignore tracks that are too long for radio mode, e.g. mixes
-                    and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
-                ]
+                except MediaNotFoundError:
+                    # Some providers don't have similar tracks for all items. For example,
+                    # Tidal can sometimes return a 404 when the 'similar_tracks' endpoint is called.
+                    # in that case, just skip the track.
+                    self.logger.debug("No similar tracks not found for track %s", base_track.name)
+                    continue
+                for track in _similar_tracks:
+                    if (
+                        track not in base_tracks
+                        # Exclude tracks we have already played / queued
+                        and track not in queue_track_items
+                        # Ignore tracks that are too long for radio mode, e.g. mixes
+                        and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
+                    ):
+                        dynamic_tracks.add(track)
                 if len(dynamic_tracks) >= 50:
                     break
         queue_tracks: list[Track] = []

@@ -25,7 +25,7 @@ class MultiClientStream:
         """Initialize MultiClientStream."""
         self.audio_source = audio_source
         self.audio_format = audio_format
-        self.subscribers: list[asyncio.Queue] = []
+        self.subscribers: list[asyncio.Queue[bytes]] = []
         self.expected_clients = expected_clients
         self.task = asyncio.create_task(self._runner())
 
@@ -60,8 +60,8 @@ class MultiClientStream:
 
     async def subscribe_raw(self) -> AsyncGenerator[bytes, None]:
         """Subscribe to the raw/unaltered audio stream."""
+        queue: asyncio.Queue[bytes] = asyncio.Queue(2)
         try:
-            queue = asyncio.Queue(2)
             self.subscribers.append(queue)
             while True:
                 chunk = await queue.get()

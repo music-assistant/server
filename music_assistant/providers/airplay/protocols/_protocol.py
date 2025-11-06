@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from abc import ABC, abstractmethod
 from random import randint
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ContentType, PlaybackState
-from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
+from music_assistant.providers.airplay.constants import AIRPLAY_PCM_FORMAT
 
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
@@ -33,9 +32,7 @@ class AirPlayProtocol(ABC):
     session: AirPlayStreamSession | None = None  # reference to the active stream session (if any)
 
     # the pcm audio format used for streaming to this protocol
-    pcm_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=2
-    )
+    pcm_format = AIRPLAY_PCM_FORMAT
     supports_pairing = False  # whether this protocol supports pairing
     is_pairing: bool = False  # whether this protocol instance is in pairing mode
 
@@ -65,7 +62,6 @@ class AirPlayProtocol(ABC):
             self.logger,
         )
         # State tracking
-        self._started = asyncio.Event()
         self._stopped = False
         self._total_bytes_sent = 0
         self._stream_bytes_sent = 0
@@ -73,12 +69,7 @@ class AirPlayProtocol(ABC):
     @property
     def running(self) -> bool:
         """Return boolean if this stream is running."""
-        return (
-            not self._stopped
-            and self._started.is_set()
-            and self._cli_proc is not None
-            and not self._cli_proc.closed
-        )
+        return not self._stopped and self._cli_proc is not None and not self._cli_proc.closed
 
     @abstractmethod
     async def start(self, start_ntp: int) -> None:
@@ -96,7 +87,7 @@ class AirPlayProtocol(ABC):
 
         # Close the CLI process (wait for it to terminate)
         if self._cli_proc and not self._cli_proc.closed:
-            await self._cli_proc.close(True)
+            await self._cli_proc.close()
 
         self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
@@ -118,11 +109,6 @@ class AirPlayProtocol(ABC):
             return
         if not self.commands_pipe:
             return
-
-        if not self.commands_pipe.is_open:
-            await self.commands_pipe.open()
-
-        await self._started.wait()
 
         self.player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
         self.player.last_command_sent = time.time()

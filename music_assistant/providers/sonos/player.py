@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -34,7 +33,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
@@ -60,11 +59,8 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     PlayerFeature.PAUSE,
-    PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.ENQUEUE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
@@ -75,46 +71,8 @@ SUPPORTED_FEATURES = {
 class SonosQueue:
     """Simple representation of a Sonos (cloud) Queue."""
 
-    _items: deque[PlayerMedia] = field(default_factory=lambda: deque(maxlen=5))
+    items: list[PlayerMedia] = field(default_factory=list)
     last_updated: float = time.time()
-
-    @property
-    def items(self) -> list[PlayerMedia]:
-        """Return the current sonos queue items."""
-        return list(self._items)
-
-    def set_items(self, new_items: list[PlayerMedia]) -> None:
-        """Set the sonos queue items."""
-        self._items = deque(new_items, maxlen=5)
-        self.last_updated = time.time()
-
-    def enqueue_next(self, current_item_id: str | None, next_item: PlayerMedia) -> None:
-        """Enqueue the next item in the sonos queue."""
-        current_index = next(
-            (i for i, item in enumerate(self._items) if item.queue_item_id == current_item_id),
-            None,
-        )
-        if current_index is None:
-            self._items.append(next_item)
-        else:
-            prev_items = self.items[: current_index + 1]
-            # because the next item could potentially have been overwritten,
-            # we rebuild the deque here
-            self._items = deque([*prev_items, next_item], maxlen=5)
-        self.last_updated = time.time()
-
-    def get_queue_from_item(self, item_id: str) -> list[PlayerMedia]:
-        """Return the sonos queue starting from the given item id."""
-        current_index = next(
-            (i for i, item in enumerate(self._items) if item.queue_item_id == item_id), None
-        )
-        if current_index is None:
-            raise IndexError("Current item id not found in sonos queue.")
-        return self.items[current_index:]
-
-    def is_item_in_queue(self, item_id: str) -> bool:
-        """Check if the given item id is in the sonos queue."""
-        return any(item.queue_item_id == item_id for item in self._items)
 
 
 class SonosPlayer(Player):
@@ -187,6 +145,8 @@ class SonosPlayer(Player):
             _supported_features.add(PlayerFeature.VOLUME_MUTE)
         if not self.get_linked_airplay_player(False):
             _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if not self.get_linked_airplay_player(True):
+            _supported_features.add(PlayerFeature.ENQUEUE)
         self._attr_supported_features = _supported_features
 
         self._attr_name = (
@@ -235,7 +195,7 @@ class SonosPlayer(Player):
         base_entries = [
             *await super().get_config_entries(action=action, values=values),
             CONF_ENTRY_OUTPUT_CODEC,
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
             create_sample_rates_config_entry(
                 # set safe max bit depth to 16 bits because the older Sonos players
                 # do not support 24 bit playback (e.g. Play:1)
@@ -408,8 +368,6 @@ class SonosPlayer(Player):
 
         :param media: Details of the item that needs to be played on the player.
         """
-        self.sonos_queue.set_items([media])
-
         if self.client.player.is_passive:
             # this should be already handled by the player manager, but just in case...
             msg = (
@@ -424,6 +382,8 @@ class SonosPlayer(Player):
             self.logger.debug("Redirecting PLAY_MEDIA command to linked airplay player.")
             await self._play_media_airplay(airplay_player, media)
             return
+        if media.source_id:
+            await self._set_sonos_queue_from_mass_queue(media.source_id)
 
         if (media.source_id and media.queue_item_id) or media.media_type == MediaType.PLUGIN_SOURCE:
             # Regular Queue item playback
@@ -489,10 +449,14 @@ class SonosPlayer(Player):
 
          :param media: Details of the item that needs to be enqueued on the player.
         """
-        current_item_id = self.current_media.queue_item_id if self.current_media else None
-        self.sonos_queue.enqueue_next(current_item_id, media)
+        if media.source_id:
+            await self._set_sonos_queue_from_mass_queue(media.source_id)
         if session_id := self.client.player.group.active_session_id:
             await self.client.api.playback_session.refresh_cloud_queue(session_id)
+            # repeat the command after a while because sonos seems to miss it sometimes ?!
+            self.mass.call_later(
+                30, self.client.api.playback_session.refresh_cloud_queue(session_id)
+            )
 
     async def set_members(
         self,
@@ -918,3 +882,25 @@ class SonosPlayer(Player):
                 raise PlayerCommandFailed(
                     f"Failed to send command to Sonos player: {resp.status} {resp.reason}"
                 )
+
+    async def _set_sonos_queue_from_mass_queue(self, queue_id: str) -> None:
+        """Set the SonosQueue items from the given MA PlayerQueue."""
+        items = []
+        queue = self.mass.player_queues.get(queue_id)
+        if not queue:
+            self.sonos_queue.items.clear()
+            return
+        current_index = queue.current_index or 0
+        offset = max(0, current_index - 4)
+        queue_items = self.mass.player_queues.items(queue_id=queue_id, offset=offset, limit=10)
+        for item in queue_items:
+            if not item.available:
+                continue
+            media = await self.mass.player_queues.player_media_from_queue_item(item, False)
+            items.append(media)
+        self.sonos_queue.items = items
+        self.logger.debug(
+            "Set Sonos queue items from MA queue %s: %s",
+            queue_id,
+            [x.title for x in self.sonos_queue.items],
+        )
