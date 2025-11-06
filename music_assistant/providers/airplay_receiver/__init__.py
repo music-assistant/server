@@ -382,6 +382,11 @@ class AirPlayReceiverProvider(PluginProvider):
             ]
 
             # Start shairport-sync with explicit environment including D-Bus address
+            if "DBUS_SESSION_BUS_ADDRESS" in shairport_env:
+                self.logger.debug(
+                    "Starting shairport-sync with D-Bus session address: %s",
+                    shairport_env["DBUS_SESSION_BUS_ADDRESS"],
+                )
             self._shairport_proc = shairport = AsyncProcess(
                 args, stderr=True, name=f"shairport-sync[{self.name}]", env=shairport_env
             )
@@ -394,6 +399,38 @@ class AirPlayReceiverProvider(PluginProvider):
                     "shairport-sync exited immediately with code %s", shairport.returncode
                 )
                 return
+
+            # Verify D-Bus registration if D-Bus is available
+            if (
+                self._dbus_available
+                and "DBUS_SESSION_BUS_ADDRESS" in shairport_env
+                and shairport.proc
+            ):
+                await asyncio.sleep(0.5)  # Give shairport time to register
+                try:
+                    service_name = f"org.gnome.ShairportSync.i{shairport.proc.pid}"
+                    _, output = await check_output(
+                        "dbus-send",
+                        "--session",
+                        "--print-reply",
+                        "--dest=org.freedesktop.DBus",
+                        "/org/freedesktop/DBus",
+                        "org.freedesktop.DBus.ListNames",
+                        env=shairport_env,
+                    )
+                    if service_name in output.decode():
+                        self.logger.info(
+                            "D-Bus registration confirmed - service '%s' registered on session bus",
+                            service_name,
+                        )
+                    else:
+                        self.logger.warning(
+                            "D-Bus service '%s' not found on session bus - "
+                            "remote control may not work",
+                            service_name,
+                        )
+                except Exception as err:
+                    self.logger.debug("Could not verify D-Bus registration: %s", err)
 
             # Start metadata reader
             self._metadata_reader = MetadataReader(
