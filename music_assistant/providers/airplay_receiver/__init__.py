@@ -274,6 +274,24 @@ class AirPlayReceiverProvider(PluginProvider):
 
         await asyncio.to_thread(_write_config)
 
+    async def _install_dbus_policy(self) -> None:
+        """Install D-Bus policy file to allow shairport-sync to register on system bus."""
+        policy_source = os.path.join(os.path.dirname(__file__), "bin", "shairport-sync-dbus.conf")
+        policy_dest = "/etc/dbus-1/system.d/shairport-sync.conf"
+
+        try:
+            # Copy policy file to system location (requires root/sudo)
+            await check_output("cp", policy_source, policy_dest)
+            # Reload D-Bus configuration
+            await check_output("systemctl", "reload", "dbus")
+            self.logger.debug("Installed D-Bus policy file for shairport-sync")
+        except Exception as err:
+            self.logger.warning(
+                "Failed to install D-Bus policy file "
+                "(this may cause D-Bus registration to fail): %s",
+                err,
+            )
+
     async def _setup_pipes_and_config(self) -> None:
         """Set up named pipes and configuration file for shairport-sync.
 
@@ -290,6 +308,10 @@ class AirPlayReceiverProvider(PluginProvider):
 
         # Create configuration file
         await self._create_config_file()
+
+        # Install D-Bus policy file if D-Bus is available
+        if self._dbus_available:
+            await self._install_dbus_policy()
 
     async def _cleanup_pipes_and_config(self) -> None:
         """Clean up named pipes and configuration file."""
