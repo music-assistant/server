@@ -23,7 +23,7 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
-    AIRPLAY_PCM_FORMAT,
+    AIRPLAY_FLOW_PCM_FORMAT,
     CACHE_CATEGORY_PREV_VOLUME,
     CONF_ACTION_FINISH_PAIRING,
     CONF_ACTION_START_PAIRING,
@@ -67,7 +67,8 @@ class AirPlayPlayer(Player):
         self,
         provider: AirPlayProvider,
         player_id: str,
-        discovery_info: AsyncServiceInfo | None,
+        raop_discovery_info: AsyncServiceInfo | None,
+        airplay_discovery_info: AsyncServiceInfo | None,
         address: str,
         display_name: str,
         manufacturer: str,
@@ -76,7 +77,8 @@ class AirPlayPlayer(Player):
     ) -> None:
         """Initialize AirPlayPlayer."""
         super().__init__(provider, player_id)
-        self.discovery_info = discovery_info
+        self.raop_discovery_info = raop_discovery_info
+        self.airplay_discovery_info = airplay_discovery_info
         self.address = address
         self.stream: RaopStream | AirPlay2Stream | None = None
         self.last_command_sent = 0.0
@@ -398,7 +400,6 @@ class AirPlayPlayer(Player):
         if self.stream and self.stream.session:
             # forward stop to the entire stream session
             await self.stream.session.stop()
-        self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
 
@@ -426,14 +427,10 @@ class AirPlayPlayer(Player):
         if self.synced_to:
             # this should not happen, but guard anyways
             raise RuntimeError("Player is synced")
-
-        # set the active source for the player to the media queue
-        # this accounts for syncgroups and linked players (e.g. sonos)
-        self._attr_active_source = media.source_id
         self._attr_current_media = media
 
         # select audio source
-        audio_source = self.mass.streams.get_stream(media, AIRPLAY_PCM_FORMAT)
+        audio_source = self.mass.streams.get_stream(media, AIRPLAY_FLOW_PCM_FORMAT)
 
         # if an existing stream session is running, we could replace it with the new stream
         if self.stream and self.stream.running:
@@ -448,10 +445,8 @@ class AirPlayPlayer(Player):
         # setup StreamSession for player (and its sync childs if any)
         sync_clients = self._get_sync_clients()
         provider = cast("AirPlayProvider", self.provider)
-        stream_session = AirPlayStreamSession(
-            provider, sync_clients, AIRPLAY_PCM_FORMAT, audio_source
-        )
-        await stream_session.start()
+        stream_session = AirPlayStreamSession(provider, sync_clients, AIRPLAY_FLOW_PCM_FORMAT)
+        await stream_session.start(audio_source)
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""

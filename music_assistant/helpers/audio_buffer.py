@@ -86,7 +86,7 @@ class AudioBuffer:
         """Return number of seconds of audio currently available in the buffer."""
         return len(self._chunks)
 
-    def is_valid(self, checksum: str, seek_position: int = 0) -> bool:
+    def is_valid(self, checksum: str | None = None, seek_position: int = 0) -> bool:
         """
         Validate the buffer's checksum and check if seek position is available.
 
@@ -100,7 +100,7 @@ class AudioBuffer:
         if self.cancelled:
             return False
 
-        if self.checksum != checksum:
+        if checksum is not None and self.checksum != checksum:
             return False
 
         # Check if buffer is close to inactivity timeout (within 30 seconds)
@@ -183,6 +183,10 @@ class AudioBuffer:
         self._last_access_time = time.time()
 
         async with self._data_available:
+            # Check if producer had an error - raise immediately
+            if self._producer_error:
+                raise self._producer_error
+
             # Check if the chunk was already discarded
             if chunk_number < self._discarded_chunks:
                 msg = (
@@ -194,10 +198,10 @@ class AudioBuffer:
             # Wait until the requested chunk is available or EOF
             buffer_index = chunk_number - self._discarded_chunks
             while buffer_index >= len(self._chunks):
+                # Check if producer had an error - raise immediately
+                if self._producer_error:
+                    raise self._producer_error
                 if self._eof_received:
-                    # Check if producer had an error before raising EOF
-                    if self._producer_error:
-                        raise self._producer_error
                     raise AudioBufferEOF
                 await self._data_available.wait()
                 buffer_index = chunk_number - self._discarded_chunks
@@ -307,6 +311,15 @@ class AudioBuffer:
         # if we reach here, we have broken out of the loop due to inactivity
         await self.clear(cancel_inactivity_task=False)
 
+    async def _notify_on_producer_error(self) -> None:
+        """Notify waiting consumers that producer has failed.
+
+        This is called from the producer task done callback and properly
+        acquires the lock before calling notify_all.
+        """
+        async with self._lock:
+            self._data_available.notify_all()
+
     def attach_producer_task(self, task: asyncio.Task[Any]) -> None:
         """Attach a background task that fills the buffer."""
         self._producer_task = task
@@ -324,8 +337,9 @@ class AudioBuffer:
                 # This prevents reuse of a buffer in error state
                 self._cancelled = True
                 # Wake up any waiting consumers so they can see the error
+                # We need to acquire the lock before calling notify_all
                 loop = asyncio.get_running_loop()
-                loop.call_soon_threadsafe(self._data_available.notify_all)
+                loop.create_task(self._notify_on_producer_error())
 
         task.add_done_callback(_on_producer_done)
 

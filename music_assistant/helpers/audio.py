@@ -235,9 +235,10 @@ async def get_stream_details(
         raise MediaNotFoundError(
             f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
         )
+    buffer: AudioBuffer | None = None
     if queue_item.streamdetails and (
         (utc() - queue_item.streamdetails.created_at).seconds < STREAMDETAILS_EXPIRATION
-        or queue_item.streamdetails.buffer
+        or ((buffer := queue_item.streamdetails.buffer) and buffer.is_valid(seek_position))
     ):
         # already got a fresh/unused (or cached) streamdetails
         # we assume that the streamdetails are valid for max STREAMDETAILS_EXPIRATION seconds
@@ -358,6 +359,8 @@ async def get_buffered_media_stream(
             ):
                 chunk_count += 1
                 await audio_buffer.put(chunk)
+            # Only set EOF if we completed successfully
+            await audio_buffer.set_eof()
         except asyncio.CancelledError:
             status = "cancelled"
             raise
@@ -365,7 +368,6 @@ async def get_buffered_media_stream(
             status = "aborted with error"
             raise
         finally:
-            await audio_buffer.set_eof()
             LOGGER.log(
                 VERBOSE_LOG_LEVEL,
                 "fill_buffer_task: %s (%s chunks) for %s",
@@ -563,22 +565,21 @@ async def get_media_stream(
         logger.log(VERBOSE_LOG_LEVEL, "End of stream reached.")
         # wait until stderr also completed reading
         await ffmpeg_proc.wait_with_timeout(5)
+        if ffmpeg_proc.returncode not in (0, None):
+            log_trail = "\n".join(list(ffmpeg_proc.log_history)[-5:])
+            raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")
         if bytes_sent == 0:
-            # edge case: no audio data was sent
+            # edge case: no audio data was received at all
             raise AudioError("No audio was received")
-        elif ffmpeg_proc.returncode not in (0, None):
-            raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}")
         finished = True
     except (Exception, GeneratorExit, asyncio.CancelledError) as err:
         if isinstance(err, asyncio.CancelledError | GeneratorExit):
             # we were cancelled, just raise
             cancelled = True
             raise
-        logger.error("Error while streaming %s: %s", streamdetails.uri, err)
         # dump the last 10 lines of the log in case of an unclean exit
         logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
-        streamdetails.stream_error = True
-        raise
+        raise AudioError(f"Error while streaming: {err}") from err
     finally:
         # always ensure close is called which also handles all cleanup
         await ffmpeg_proc.close()
@@ -998,7 +999,6 @@ async def get_multi_file_stream(
     mass: MusicAssistant,  # noqa: ARG001
     streamdetails: StreamDetails,
     seek_position: int = 0,
-    raise_ffmpeg_exception: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """Return audio stream for a concatenation of multiple files.
 
@@ -1036,7 +1036,6 @@ async def get_multi_file_stream(
                 "-ss",
                 str(seek_position),
             ],
-            raise_ffmpeg_exception=raise_ffmpeg_exception,
         ):
             yield chunk
     finally:

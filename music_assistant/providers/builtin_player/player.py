@@ -139,7 +139,6 @@ class BuiltinPlayer(Player):
             self.player_id,
             BuiltinPlayerEvent(type=BuiltinPlayerEventType.STOP),
         )
-        self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
 
@@ -182,7 +181,6 @@ class BuiltinPlayer(Player):
         url = f"builtin_player/flow/{self.player_id}.mp3"
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
-        self._attr_active_source = media.source_id
         self.update_state()
         self.mass.signal_event(
             EventType.BUILTIN_PLAYER,
@@ -293,7 +291,7 @@ class BuiltinPlayer(Player):
             # Apple ignores "Accept-Ranges=none" on iOS and iPadOS for some reason,
             # so we need to slowly feed the music to avoid the Browser stopping and later
             # restarting the audio stream (from a wrong position!) by keeping the buffer short.
-            extra_input_args=["-readrate", "1.05", "-readrate_initial_burst", "8"],
+            extra_input_args=["-readrate", "1.02", "-readrate_initial_burst", "6"],
             filter_params=get_player_filter_params(self.mass, player_id, pcm_format, stream_format),
         ):
             try:

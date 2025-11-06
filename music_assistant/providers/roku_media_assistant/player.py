@@ -90,7 +90,6 @@ class MediaAssistantPlayer(Player):
             # There's no real way to "Power" on the app since device wake up / app start
             # is handled by The roku once it receives the Play Media request
             if not powered:
-                self._attr_active_source = None
                 if app_running:
                     await self.roku.remote("home")
                     await self.roku.remote("power")
@@ -150,7 +149,6 @@ class MediaAssistantPlayer(Player):
             logger = self.provider.logger.getChild(self.player_id)
             logger.info("Received STOP command on player %s", self.display_name)
             self._attr_playback_state = PlaybackState.IDLE
-            self._attr_active_source = None
             self._attr_current_media = None
             self.update_state()
         except Exception:
@@ -217,7 +215,6 @@ class MediaAssistantPlayer(Player):
             )
             self._attr_powered = True
             self._attr_current_media = media
-            self._attr_active_source = self.player_id
             self.update_state()
         except Exception:
             self.logger.error("Failed to Play Media on: %s", self.name)
@@ -270,10 +267,6 @@ class MediaAssistantPlayer(Player):
 
         if device_info.app is not None:
             app_running = device_info.app.app_id == self.provider.config.get_value(CONF_ROKU_APP_ID)
-
-        # Update Device State
-        if not app_running:
-            self._attr_active_source = None
 
         self._attr_powered = app_running
 

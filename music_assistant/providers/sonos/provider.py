@@ -126,6 +126,9 @@ class SonosPlayerProvider(PlayerProvider):
             # edge case: we switched from airplay mode to sonos mode (or vice versa)
             # we need to make sure that playback gets stopped on the airplay player
             await airplay_player.stop()
+            # We also need to run setup again on the Sonos player to ensure the supported
+            # features are updated.
+            await sonos_player.setup()
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
