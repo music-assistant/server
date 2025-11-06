@@ -177,6 +177,10 @@ RUN set -x \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy D-Bus policy file for shairport-sync (allows AirPlay receiver remote control)
+COPY music_assistant/providers/airplay_receiver/bin/shairport-sync-dbus.conf \
+     /etc/dbus-1/system.d/shairport-sync.conf
+
 # Install Snapcast 0.34.0 from GitHub releases (requires at least 0.27)
 ARG SNAPCAST_VERSION=0.34.0
 ARG TARGETARCH
