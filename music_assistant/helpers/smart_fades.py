@@ -19,7 +19,11 @@ import numpy.typing as npt
 import shortuuid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.helpers.audio import crossfade_pcm_parts, strip_silence
+from music_assistant.helpers.audio import (
+    align_audio_to_frame_boundary,
+    crossfade_pcm_parts,
+    strip_silence,
+)
 from music_assistant.helpers.process import communicate
 from music_assistant.helpers.util import remove_file
 from music_assistant.models.smart_fades import (
@@ -38,20 +42,6 @@ SMART_CROSSFADE_DURATION = 45
 ANALYSIS_FPS = 100
 # Only apply time stretching if BPM difference is < this %
 TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD = 5.0
-
-
-def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
-    """Align audio data to frame boundaries by truncating incomplete frames."""
-    bytes_per_sample = pcm_format.bit_depth // 8
-    frame_size = bytes_per_sample * pcm_format.channels
-    valid_bytes = (len(audio_data) // frame_size) * frame_size
-    if valid_bytes != len(audio_data):
-        logging.getLogger(__name__).debug(
-            "Truncating %d bytes from audio buffer to align to frame boundary",
-            len(audio_data) - valid_bytes,
-        )
-        return audio_data[:valid_bytes]
-    return audio_data
 
 
 class SmartFadesAnalyzer:

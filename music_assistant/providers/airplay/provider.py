@@ -144,13 +144,22 @@ class AirPlayProvider(PlayerProvider):
         else:
             manufacturer, model = "Unknown", "Unknown"
 
-        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
-            self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
-            return
-
         address = get_primary_ip_address_from_zeroconf(discovery_info)
         if not address:
             return  # should not happen, but guard just in case
+
+        # Filter out shairport-sync instances running on THIS Music Assistant server
+        # These are managed by the AirPlay Receiver provider, not the AirPlay provider
+        # We check both model name AND that it's a local address to avoid filtering
+        # shairport-sync instances running on other machines
+        if model == "ShairportSync":
+            # Check if this is a local address (127.x.x.x or matches our server's IP)
+            if address.startswith("127.") or address == self.mass.streams.publish_ip:
+                return
+
+        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
+            self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
+            return
         if not discovery_info:
             return  # should not happen, but guard just in case
 

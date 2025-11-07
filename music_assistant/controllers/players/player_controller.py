@@ -43,7 +43,6 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     PlayerUnavailableError,
     ProviderUnavailableError,
-    QueueEmpty,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
@@ -352,6 +351,7 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
+        player.mark_stop_called()
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.stop(active_queue.queue_id)
@@ -1004,13 +1004,15 @@ class PlayerController(CoreController):
         await player.play_media(media)
 
     @api_command("players/cmd/select_source")
-    async def select_source(self, player_id: str, source: str) -> None:
+    async def select_source(self, player_id: str, source: str | None) -> None:
         """
         Handle SELECT SOURCE command on given player.
 
         - player_id: player_id of the player to handle the command.
         - source: The ID of the source that needs to be activated/selected.
         """
+        if source is None:
+            source = player_id  # default to MA queue source
         player = self.get(player_id, True)
         assert player is not None  # for type checking
         if player.synced_to or player.active_group:
@@ -1031,15 +1033,8 @@ class PlayerController(CoreController):
             return
         # check if source is a mass queue
         # this can be used to restore the queue after a source switch
-        if mass_queue := self.mass.player_queues.get(source):
-            try:
-                player.set_active_mass_source(mass_queue.queue_id)
-                await self.mass.player_queues.play(mass_queue.queue_id)
-            except QueueEmpty:
-                # queue is empty: we just set the active source optimistically
-                # this does not cover all edge cases, but is better than failing completely
-                player._attr_active_source = mass_queue.queue_id
-                player.update_state()
+        if self.mass.player_queues.get(source):
+            player.set_active_mass_source(source)
             return
         # basic check if player supports source selection
         if PlayerFeature.SELECT_SOURCE not in player.supported_features:
@@ -2141,6 +2136,8 @@ class PlayerController(CoreController):
                         str(err),
                         exc_info=err if self.logger.isEnabledFor(10) else None,
                     )
+                # Yield to event loop to prevent blocking
+                await asyncio.sleep(0)
             await asyncio.sleep(1)
 
     async def _handle_select_plugin_source(
