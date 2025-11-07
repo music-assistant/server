@@ -105,6 +105,62 @@ These demo/example implementations have a lot of docstrings and comments to help
 - Docker-based deployment (not standalone pip package)
 - VS Code launch configurations provided for debugging
 
+## Code Style Guidelines
+
+### Docstring Format
+
+Music Assistant uses **Sphinx-style docstrings** with `:param:` syntax for documenting function parameters. This is the standard format used throughout the codebase.
+
+**Correct format:**
+```python
+def my_function(param1: str, param2: int, param3: bool = False) -> str:
+    """Brief one-line description of the function.
+
+    Optional longer description providing more context about what the function does,
+    why it exists, and any important implementation details.
+
+    :param param1: Description of what param1 is used for.
+    :param param2: Description of what param2 is used for.
+    :param param3: Description of what param3 is used for.
+    """
+```
+
+**Key points:**
+- Use `:param param_name: description` format for all parameters
+- Brief summary on first line, followed by blank line
+- Optional detailed description before parameters section
+- No need to document types in docstring (use type hints instead)
+- No need to document return types in docstring (use type hints instead)
+
+**Incorrect formats to avoid:**
+```python
+# ❌ Bullet-style (being phased out)
+"""Function description.
+
+- param1: Description
+- param2: Description
+"""
+
+# ❌ Google-style
+"""Function description.
+
+Args:
+    param1: Description
+    param2: Description
+"""
+```
+
+**For simple functions**, a single-line docstring is acceptable:
+```python
+def get_item(self, item_id: str) -> Item:
+    """Get an item by its ID."""
+```
+
+**Enforcement:**
+- Ruff with pydocstyle rules enforces basic docstring structure
+- Pre-commit hooks check docstring format
+- The API documentation generator parses Sphinx-style docstrings for the web interface
+
 ## Branching Strategy
 
 ### Branch Structure

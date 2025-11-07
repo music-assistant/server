@@ -26,7 +26,7 @@ dependencies = [
   "get-mac==0.9.2",
   "mashumaro==3.16",
   "music-assistant-frontend==2.17.7",
-  "music-assistant-models==1.1.67",
+  "music-assistant-models==1.1.68",
   "mutagen==1.47.0",
   "orjson==3.11.4",
   "pillow==11.3.0",
@@ -61,7 +61,7 @@ test = [
   "pytest-cov==7.0.0",
   "syrupy==5.0.0",
   "tomli==2.3.0",
-  "ruff==0.13.2",
+  "ruff==0.14.3",
 ]
 
 [project.scripts]
@@ -91,7 +91,8 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint.pydocstyle]
-# Use Google-style docstrings.
+# Use Sphinx-style docstrings with :param: syntax
+# pep257 is the base convention, we enforce Sphinx-style parameters separately
 convention = "pep257"
 
 [tool.ruff.lint.pylint]
@@ -131,18 +132,21 @@ enable_error_code = [
 ]
 exclude = [
   '^music_assistant/controllers/cache.py$',
-  '^music_assistant/controllers/config.py$',
-  '^music_assistant/controllers/media/.*$',
+  '^music_assistant/controllers/media/albums.py*$',
+  '^music_assistant/controllers/media/artists.py*$',
+  '^music_assistant/controllers/media/audiobooks.py*$',
+  '^music_assistant/controllers/media/base.py*$',
+  '^music_assistant/controllers/media/playlists.py*$',
+  '^music_assistant/controllers/media/podcasts.py*$',
+  '^music_assistant/controllers/media/tracks.py*$',
   '^music_assistant/controllers/music.py$',
   '^music_assistant/controllers/player_queues.py$',
   '^music_assistant/controllers/streams.py$',
-  '^music_assistant/controllers/webserver.py',
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',
   '^music_assistant/providers/chromecast/.*$',
   '^music_assistant/providers/siriusxm/.*$',
-  '^music_assistant/providers/squeezelite/.*$',
   '^music_assistant/providers/sonos/.*$',
   '^music_assistant/providers/snapcast/.*$',
   '^music_assistant/providers/ytmusic/.*$',

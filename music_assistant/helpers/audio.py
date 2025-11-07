@@ -80,103 +80,22 @@ CACHE_PROVIDER: Final[str] = "audio"
 STREAMDETAILS_EXPIRATION: Final[int] = 60 * 15  # 15 minutes
 
 
-async def crossfade_pcm_parts(
-    fade_in_part: bytes,
-    fade_out_part: bytes,
-    pcm_format: AudioFormat,
-    fade_out_pcm_format: AudioFormat | None = None,
-) -> bytes:
-    """Crossfade two chunks of pcm/raw audio using ffmpeg."""
-    if fade_out_pcm_format is None:
-        fade_out_pcm_format = pcm_format
+def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
+    """Align audio data to frame boundaries by truncating incomplete frames.
 
-    # calculate the fade_length from the smallest chunk
-    fade_length = min(
-        len(fade_in_part) / pcm_format.pcm_sample_size,
-        len(fade_out_part) / fade_out_pcm_format.pcm_sample_size,
-    )
-    # write the fade_out_part to a temporary file
-    fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
-    async with aiofiles.open(fadeout_filename, "wb") as outfile:
-        await outfile.write(fade_out_part)
-
-    args = [
-        # generic args
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "quiet",
-        # fadeout part (as file)
-        "-acodec",
-        fade_out_pcm_format.content_type.name.lower(),
-        "-ac",
-        str(fade_out_pcm_format.channels),
-        "-ar",
-        str(fade_out_pcm_format.sample_rate),
-        "-channel_layout",
-        "mono" if fade_out_pcm_format.channels == 1 else "stereo",
-        "-f",
-        fade_out_pcm_format.content_type.value,
-        "-i",
-        fadeout_filename,
-        # fade_in part (stdin)
-        "-acodec",
-        pcm_format.content_type.name.lower(),
-        "-ac",
-        str(pcm_format.channels),
-        "-channel_layout",
-        "mono" if pcm_format.channels == 1 else "stereo",
-        "-ar",
-        str(pcm_format.sample_rate),
-        "-f",
-        pcm_format.content_type.value,
-        "-i",
-        "-",
-        # filter args
-        "-filter_complex",
-        f"[0][1]acrossfade=d={fade_length}",
-        # output args
-        "-acodec",
-        pcm_format.content_type.name.lower(),
-        "-ac",
-        str(pcm_format.channels),
-        "-channel_layout",
-        "mono" if pcm_format.channels == 1 else "stereo",
-        "-ar",
-        str(pcm_format.sample_rate),
-        "-f",
-        pcm_format.content_type.value,
-        "-",
-    ]
-    _, crossfaded_audio, _ = await communicate(args, fade_in_part)
-    await remove_file(fadeout_filename)
-    if crossfaded_audio:
-        LOGGER.log(
-            VERBOSE_LOG_LEVEL,
-            "crossfaded 2 pcm chunks. fade_in_part: %s - "
-            "fade_out_part: %s - fade_length: %s seconds",
-            len(fade_in_part),
-            len(fade_out_part),
-            fade_length,
+    :param audio_data: Raw PCM audio data to align.
+    :param pcm_format: AudioFormat of the audio data.
+    """
+    bytes_per_sample = pcm_format.bit_depth // 8
+    frame_size = bytes_per_sample * pcm_format.channels
+    valid_bytes = (len(audio_data) // frame_size) * frame_size
+    if valid_bytes != len(audio_data):
+        LOGGER.debug(
+            "Truncating %d bytes from audio buffer to align to frame boundary",
+            len(audio_data) - valid_bytes,
         )
-        return crossfaded_audio
-    # no crossfade_data, return original data instead
-    LOGGER.debug(
-        "crossfade of pcm chunks failed: not enough data? - fade_in_part: %s - fade_out_part: %s",
-        len(fade_in_part),
-        len(fade_out_part),
-    )
-    if fade_out_pcm_format.sample_rate != pcm_format.sample_rate:
-        # Edge case: the sample rates are different,
-        # we need to resample the fade_out part to the same sample rate as the fade_in part
-        async with FFMpeg(
-            audio_input="-",
-            input_format=fade_out_pcm_format,
-            output_format=pcm_format,
-        ) as ffmpeg:
-            res = await ffmpeg.communicate(fade_out_part)
-            return res[0] + fade_in_part
-    return fade_out_part + fade_in_part
+        return audio_data[:valid_bytes]
+    return audio_data
 
 
 async def strip_silence(
@@ -334,9 +253,10 @@ async def get_stream_details(
         raise MediaNotFoundError(
             f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
         )
+    buffer: AudioBuffer | None = None
     if queue_item.streamdetails and (
         (utc() - queue_item.streamdetails.created_at).seconds < STREAMDETAILS_EXPIRATION
-        or queue_item.streamdetails.buffer
+        or ((buffer := queue_item.streamdetails.buffer) and buffer.is_valid(seek_position))
     ):
         # already got a fresh/unused (or cached) streamdetails
         # we assume that the streamdetails are valid for max STREAMDETAILS_EXPIRATION seconds
@@ -457,6 +377,10 @@ async def get_buffered_media_stream(
             ):
                 chunk_count += 1
                 await audio_buffer.put(chunk)
+                # Yield to event loop to prevent blocking warnings
+                await asyncio.sleep(0)
+            # Only set EOF if we completed successfully
+            await audio_buffer.set_eof()
         except asyncio.CancelledError:
             status = "cancelled"
             raise
@@ -464,7 +388,6 @@ async def get_buffered_media_stream(
             status = "aborted with error"
             raise
         finally:
-            await audio_buffer.set_eof()
             LOGGER.log(
                 VERBOSE_LOG_LEVEL,
                 "fill_buffer_task: %s (%s chunks) for %s",
@@ -662,21 +585,21 @@ async def get_media_stream(
         logger.log(VERBOSE_LOG_LEVEL, "End of stream reached.")
         # wait until stderr also completed reading
         await ffmpeg_proc.wait_with_timeout(5)
+        if ffmpeg_proc.returncode not in (0, None):
+            log_trail = "\n".join(list(ffmpeg_proc.log_history)[-5:])
+            raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}: {log_trail}")
         if bytes_sent == 0:
-            # edge case: no audio data was sent
+            # edge case: no audio data was received at all
             raise AudioError("No audio was received")
-        elif ffmpeg_proc.returncode not in (0, None):
-            raise AudioError(f"FFMpeg exited with code {ffmpeg_proc.returncode}")
         finished = True
-    except (Exception, GeneratorExit) as err:
+    except (Exception, GeneratorExit, asyncio.CancelledError) as err:
         if isinstance(err, asyncio.CancelledError | GeneratorExit):
             # we were cancelled, just raise
             cancelled = True
             raise
-        logger.error("Error while streaming %s: %s", streamdetails.uri, err)
         # dump the last 10 lines of the log in case of an unclean exit
         logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
-        streamdetails.stream_error = True
+        raise AudioError(f"Error while streaming: {err}") from err
     finally:
         # always ensure close is called which also handles all cleanup
         await ffmpeg_proc.close()
@@ -701,7 +624,7 @@ async def get_media_stream(
             and streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
             and (finished or (seconds_received >= 300))
         ):
-            # if dynamic volume normalization is enabled and the entire track is streamed
+            # if dynamic volume normalization is enabled
             # the loudnorm filter will output the measurement in the log,
             # so we can use that directly instead of analyzing the audio
             logger.log(VERBOSE_LOG_LEVEL, "Collecting loudness measurement...")
@@ -719,20 +642,6 @@ async def get_media_stream(
                         media_type=streamdetails.media_type,
                     )
                 )
-        # schedule loudness analysis if needed
-        if (
-            streamdetails.loudness is None
-            and streamdetails.volume_normalization_mode
-            not in (
-                VolumeNormalizationMode.DISABLED,
-                VolumeNormalizationMode.FIXED_GAIN,
-            )
-            and (finished or (seconds_received >= 300))
-        ):
-            # dynamic mode not allowed and no measurement known, we need to analyze the audio
-            # add background task to start analyzing the audio
-            task_id = f"analyze_loudness_{streamdetails.uri}"
-            mass.call_later(5, analyze_loudness, mass, streamdetails, task_id=task_id)
 
 
 def create_wave_header(
@@ -1110,7 +1019,6 @@ async def get_multi_file_stream(
     mass: MusicAssistant,  # noqa: ARG001
     streamdetails: StreamDetails,
     seek_position: int = 0,
-    raise_ffmpeg_exception: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """Return audio stream for a concatenation of multiple files.
 
@@ -1148,7 +1056,6 @@ async def get_multi_file_stream(
                 "-ss",
                 str(seek_position),
             ],
-            raise_ffmpeg_exception=raise_ffmpeg_exception,
         ):
             yield chunk
     finally:
@@ -1233,15 +1140,41 @@ async def resample_pcm_audio(
     input_format: AudioFormat,
     output_format: AudioFormat,
 ) -> bytes:
-    """Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg."""
+    """
+    Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg.
+
+    :param input_audio: Raw PCM audio data to resample.
+    :param input_format: AudioFormat of the input audio.
+    :param output_format: Desired AudioFormat for the output audio.
+
+    :return: Resampled audio data, frame-aligned. Returns empty bytes if resampling fails.
+    """
     if input_format == output_format:
         return input_audio
     LOGGER.log(VERBOSE_LOG_LEVEL, f"Resampling audio from {input_format} to {output_format}")
-    ffmpeg_args = get_ffmpeg_args(
-        input_format=input_format, output_format=output_format, filter_params=[]
-    )
-    _, stdout, _ = await communicate(ffmpeg_args, input_audio)
-    return stdout
+    try:
+        ffmpeg_args = get_ffmpeg_args(
+            input_format=input_format, output_format=output_format, filter_params=[]
+        )
+        _, stdout, stderr = await communicate(ffmpeg_args, input_audio)
+        if not stdout:
+            LOGGER.error(
+                "Resampling failed: no output from ffmpeg. Input: %s, Output: %s, stderr: %s",
+                input_format,
+                output_format,
+                stderr.decode() if stderr else "(no stderr)",
+            )
+            return b""
+        # Ensure frame alignment after resampling
+        return align_audio_to_frame_boundary(stdout, output_format)
+    except Exception as err:
+        LOGGER.exception(
+            "Failed to resample audio from %s to %s: %s",
+            input_format,
+            output_format,
+            err,
+        )
+        return b""
 
 
 def get_chunksize(

@@ -219,14 +219,12 @@ class DLNAPlayer(Player):
         _device_uri = self.device.current_track_uri or ""
         self.set_current_media(uri=_device_uri, clear_all=True)
 
-        if self.player_id in _device_uri:
-            self._attr_active_source = self.player_id
-        elif "spotify" in _device_uri:
+        if "spotify" in _device_uri:
             self._attr_active_source = "spotify"
         elif _device_uri.startswith("http"):
             self._attr_active_source = "http"
         else:
-            # TODO: handle other possible sources here
+            # TODO: extend this list with other possible sources
             self._attr_active_source = None
         if self.device.media_position:
             # only update elapsed_time if the device actually reports it
