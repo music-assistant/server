@@ -80,6 +80,24 @@ CACHE_PROVIDER: Final[str] = "audio"
 STREAMDETAILS_EXPIRATION: Final[int] = 60 * 15  # 15 minutes
 
 
+def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
+    """Align audio data to frame boundaries by truncating incomplete frames.
+
+    :param audio_data: Raw PCM audio data to align.
+    :param pcm_format: AudioFormat of the audio data.
+    """
+    bytes_per_sample = pcm_format.bit_depth // 8
+    frame_size = bytes_per_sample * pcm_format.channels
+    valid_bytes = (len(audio_data) // frame_size) * frame_size
+    if valid_bytes != len(audio_data):
+        LOGGER.debug(
+            "Truncating %d bytes from audio buffer to align to frame boundary",
+            len(audio_data) - valid_bytes,
+        )
+        return audio_data[:valid_bytes]
+    return audio_data
+
+
 async def strip_silence(
     mass: MusicAssistant,  # noqa: ARG001
     audio_data: bytes,
@@ -359,6 +377,8 @@ async def get_buffered_media_stream(
             ):
                 chunk_count += 1
                 await audio_buffer.put(chunk)
+                # Yield to event loop to prevent blocking warnings
+                await asyncio.sleep(0)
             # Only set EOF if we completed successfully
             await audio_buffer.set_eof()
         except asyncio.CancelledError:
@@ -1146,11 +1166,6 @@ async def resample_pcm_audio(
             )
             return b""
         # Ensure frame alignment after resampling
-        # Import inline to avoid circular dependency at module level
-        from music_assistant.helpers.smart_fades import (  # noqa: PLC0415
-            align_audio_to_frame_boundary,
-        )
-
         return align_audio_to_frame_boundary(stdout, output_format)
     except Exception as err:
         LOGGER.exception(

@@ -143,7 +143,6 @@ exclude = [
   '^music_assistant/controllers/music.py$',
   '^music_assistant/controllers/player_queues.py$',
   '^music_assistant/controllers/streams.py$',
-  '^music_assistant/controllers/webserver.py',
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
   '^music_assistant/providers/bluesound/.*$',

@@ -124,7 +124,8 @@ class CrossfadeData:
 
     data: bytes
     fade_in_size: int
-    pcm_format: AudioFormat
+    pcm_format: AudioFormat  # Format of the 'data' bytes (current/previous track's format)
+    fade_in_pcm_format: AudioFormat  # Format for 'fade_in_size' (next track's format)
     queue_item_id: str
 
 
@@ -497,19 +498,18 @@ class StreamsController(CoreController):
         if queue_item.media_type == MediaType.RADIO:
             # keep very short buffer for radio streams
             # to keep them (more or less) realtime and prevent time outs
-            read_rate_input_args = ["-readrate", "1.01", "-readrate_initial_burst", "2"]
+            read_rate_input_args = ["-readrate", "1.0", "-readrate_initial_burst", "2"]
         elif "Network_Module" in user_agent or "transferMode.dlna.org" in request.headers:
             # and ofcourse we have an exception of the exception. Where most players actually NEED
             # the readrate filter to avoid disconnecting, some other players (DLNA/MusicCast)
             # actually fail when the filter is used. So we disable it completely for those players.
             read_rate_input_args = None  # disable readrate for DLNA players
         else:
-            # allow buffer ahead of 8 seconds and read slightly faster than realtime
-            read_rate_input_args = ["-readrate", "1.2", "-readrate_initial_burst", "10"]
+            # allow buffer ahead of 10 seconds and read 1.5x faster than realtime
+            read_rate_input_args = ["-readrate", "1.5", "-readrate_initial_burst", "10"]
 
         first_chunk_received = False
         bytes_sent = 0
-        premature_disconnect = False
         async for chunk in get_ffmpeg_stream(
             audio_input=audio_input,
             input_format=pcm_format,
@@ -533,29 +533,22 @@ class StreamsController(CoreController):
                         queue_item.queue_id, queue_item.queue_item_id
                     )
             except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
-                premature_disconnect = True
-                self.logger.warning(
-                    "Player %s disconnected prematurely from stream for %s (%s) - "
-                    "sent %d bytes, error: %s",
-                    queue.display_name,
-                    queue_item.name,
-                    queue_item.uri,
-                    bytes_sent,
-                    err.__class__.__name__,
-                )
+                if first_chunk_received and not queue_player.stop_called:
+                    # Player disconnected (unexpected) after receiving at least some data
+                    # This could indicate buffering issues, network problems,
+                    # or player-specific issues
+                    bytes_expected = get_chunksize(output_format, queue_item.duration or 3600)
+                    self.logger.warning(
+                        "Player %s disconnected prematurely from stream for %s (%s) - "
+                        "error: %s, sent %d bytes, expected (approx) bytes=%d",
+                        queue.display_name,
+                        queue_item.name,
+                        queue_item.uri,
+                        err.__class__.__name__,
+                        bytes_sent,
+                        bytes_expected,
+                    )
                 break
-        if premature_disconnect and first_chunk_received:
-            # Player disconnected after receiving at least some data
-            # This could indicate buffering issues, network problems, or player-specific issues
-            seconds_sent = bytes_sent / output_format.pcm_sample_size if output_format else 0
-            self.logger.info(
-                "Stream statistics for %s: bytes sent=%d, approx seconds=%.1f, "
-                "expected duration=%.1f",
-                queue_item.name,
-                bytes_sent,
-                seconds_sent,
-                queue_item.duration or 0,
-            )
         if queue_item.streamdetails.stream_error:
             self.logger.error(
                 "Error streaming QueueItem %s (%s) to %s - will try to skip to next item",
@@ -1461,8 +1454,9 @@ class StreamsController(CoreController):
 
         if crossfade_data:
             # Calculate discard amount in seconds (format-independent)
+            # Use fade_in_pcm_format because fade_in_size is in the next track's original format
             fade_in_duration_seconds = (
-                crossfade_data.fade_in_size / crossfade_data.pcm_format.pcm_sample_size
+                crossfade_data.fade_in_size / crossfade_data.fade_in_pcm_format.pcm_sample_size
             )
             discard_seconds = int(fade_in_duration_seconds) - 1
             # Calculate discard amounts in CURRENT track's format
@@ -1628,7 +1622,7 @@ class StreamsController(CoreController):
                     # edge case: pcm format mismatch, we need to resample the next track's
                     # beginning part before crossfading
                     self.logger.debug(
-                        "Resampling next track from %s to %s for queue %s",
+                        "Resampling next track's crossfade from %s to %s for queue %s",
                         next_queue_item_pcm_format.sample_rate,
                         pcm_format.sample_rate,
                         queue.display_name,
@@ -1670,15 +1664,17 @@ class StreamsController(CoreController):
                     for _chunk in divide_chunks(crossfade_first, pcm_format.pcm_sample_size):
                         yield _chunk
                     # store the other half for the next track
-                    # IMPORTANT: Use original buffer size (in next track's format) for fade_in_size
-                    # because the next track will stream in its native format and needs to know
-                    # how many bytes to discard in that format.
-                    # However, crossfade_second data is in current track's format (pcm_format)
+                    # IMPORTANT: crossfade_second data is in CURRENT track's format (pcm_format)
                     # because it was created from the resampled buffer used for mixing.
+                    # BUT fade_in_size represents bytes in NEXT track's original format
+                    # (next_queue_item_pcm_format) because that's how much of the next track
+                    # was consumed during the crossfade. We need both formats to correctly
+                    # handle the crossfade data when the next track starts.
                     self._crossfade_data[queue_item.queue_id] = CrossfadeData(
                         data=crossfade_second,
                         fade_in_size=original_buffer_size,
-                        pcm_format=pcm_format,
+                        pcm_format=pcm_format,  # Format of the data (current track)
+                        fade_in_pcm_format=next_queue_item_pcm_format,  # Format for fade_in_size
                         queue_item_id=next_queue_item.queue_item_id,
                     )
                 except Exception as err:

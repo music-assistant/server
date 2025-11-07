@@ -351,6 +351,7 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player = self._get_player_with_redirect(player_id)
+        player.mark_stop_called()
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
             await self.mass.player_queues.stop(active_queue.queue_id)
@@ -2135,6 +2136,8 @@ class PlayerController(CoreController):
                         str(err),
                         exc_info=err if self.logger.isEnabledFor(10) else None,
                     )
+                # Yield to event loop to prevent blocking
+                await asyncio.sleep(0)
             await asyncio.sleep(1)
 
     async def _handle_select_plugin_source(
