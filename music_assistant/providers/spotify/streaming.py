@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -32,11 +33,6 @@ class LibrespotStreamer:
         # Regular track/episode streaming - audiobooks are handled in the provider
         media_type = "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
         spotify_uri = f"spotify://{media_type}:{streamdetails.item_id}"
-
-        self.provider.logger.log(
-            VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot"
-        )
-
         async for chunk in self.stream_spotify_uri(spotify_uri, seek_position):
             yield chunk
 
@@ -51,6 +47,9 @@ class LibrespotStreamer:
             spotify_uri: The Spotify URI to stream
             seek_position: Position in seconds to start from
         """
+        self.provider.logger.log(
+            VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot"
+        )
         # Validate that librespot binary is available
         if not self.provider._librespot_bin:
             raise AudioError("Librespot binary not available")
@@ -108,5 +107,17 @@ class LibrespotStreamer:
                 async for chunk in librespot_proc.iter_chunked():
                     yield chunk
 
-                # if we reach this point, streaming succeeded and we can break the loop
-                break
+                if librespot_proc.returncode != 0:
+                    raise AudioError(
+                        f"Librespot exited with code {librespot_proc.returncode} for {spotify_uri}"
+                    )
+
+            except Exception as ex:
+                log_lines_str = "\n".join(log_history)
+                logger.error(
+                    "Librespot streaming error for %s: %s\n%s",
+                    spotify_uri,
+                    ex,
+                    log_lines_str,
+                )
+                raise AudioError(f"Error streaming from librespot for {spotify_uri}: {ex}") from ex

@@ -1219,15 +1219,46 @@ async def resample_pcm_audio(
     input_format: AudioFormat,
     output_format: AudioFormat,
 ) -> bytes:
-    """Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg."""
+    """
+    Resample (a chunk of) PCM audio from input_format to output_format using ffmpeg.
+
+    :param input_audio: Raw PCM audio data to resample.
+    :param input_format: AudioFormat of the input audio.
+    :param output_format: Desired AudioFormat for the output audio.
+
+    :return: Resampled audio data, frame-aligned. Returns empty bytes if resampling fails.
+    """
     if input_format == output_format:
         return input_audio
     LOGGER.log(VERBOSE_LOG_LEVEL, f"Resampling audio from {input_format} to {output_format}")
-    ffmpeg_args = get_ffmpeg_args(
-        input_format=input_format, output_format=output_format, filter_params=[]
-    )
-    _, stdout, _ = await communicate(ffmpeg_args, input_audio)
-    return stdout
+    try:
+        ffmpeg_args = get_ffmpeg_args(
+            input_format=input_format, output_format=output_format, filter_params=[]
+        )
+        _, stdout, stderr = await communicate(ffmpeg_args, input_audio)
+        if not stdout:
+            LOGGER.error(
+                "Resampling failed: no output from ffmpeg. Input: %s, Output: %s, stderr: %s",
+                input_format,
+                output_format,
+                stderr.decode() if stderr else "(no stderr)",
+            )
+            return b""
+        # Ensure frame alignment after resampling
+        # Import inline to avoid circular dependency at module level
+        from music_assistant.helpers.smart_fades import (  # noqa: PLC0415
+            align_audio_to_frame_boundary,
+        )
+
+        return align_audio_to_frame_boundary(stdout, output_format)
+    except Exception as err:
+        LOGGER.exception(
+            "Failed to resample audio from %s to %s: %s",
+            input_format,
+            output_format,
+            err,
+        )
+        return b""
 
 
 def get_chunksize(
