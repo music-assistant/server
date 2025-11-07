@@ -1786,7 +1786,11 @@ class PlayerQueuesController(CoreController):
     ) -> list[Track]:
         """Call the registered music providers for dynamic tracks."""
         queue = self._queues[queue_id]
-        queue_track_items = [q.media_item for q in self._queue_items[queue_id] if q.media_item]
+        queue_track_items: list[Track] = [
+            q.media_item
+            for q in self._queue_items[queue_id]
+            if q.media_item and isinstance(q.media_item, Track)
+        ]
         if not queue.radio_source:
             # this may happen during race conditions as this method is called delayed
             return []
