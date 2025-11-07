@@ -134,7 +134,8 @@ class CrossfadeData:
 
     data: bytes
     fade_in_size: int
-    pcm_format: AudioFormat
+    pcm_format: AudioFormat  # Format of the 'data' bytes (current/previous track's format)
+    fade_in_pcm_format: AudioFormat  # Format for 'fade_in_size' (next track's format)
     queue_item_id: str
 
 
@@ -1040,7 +1041,7 @@ class StreamsController(CoreController):
             # calculate crossfade buffer size
             crossfade_buffer_duration = (
                 SMART_CROSSFADE_DURATION
-                if smart_fades_mode == SmartFadesMode.SMART_FADES
+                if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE
                 else standard_crossfade_duration
             )
             crossfade_buffer_duration = min(
@@ -1462,7 +1463,7 @@ class StreamsController(CoreController):
         self,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
-        smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_FADES,
+        smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_CROSSFADE,
         standard_crossfade_duration: int = 10,
     ) -> AsyncGenerator[bytes, None]:
         """Get the audio stream for a single queue item with (smart) crossfade to the next item."""
@@ -1500,7 +1501,7 @@ class StreamsController(CoreController):
         # calculate crossfade buffer size
         crossfade_buffer_duration = (
             SMART_CROSSFADE_DURATION
-            if smart_fades_mode == SmartFadesMode.SMART_FADES
+            if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE
             else standard_crossfade_duration
         )
         crossfade_buffer_duration = min(
@@ -1520,8 +1521,9 @@ class StreamsController(CoreController):
 
         if crossfade_data:
             # Calculate discard amount in seconds (format-independent)
+            # Use fade_in_pcm_format because fade_in_size is in the next track's original format
             fade_in_duration_seconds = (
-                crossfade_data.fade_in_size / crossfade_data.pcm_format.pcm_sample_size
+                crossfade_data.fade_in_size / crossfade_data.fade_in_pcm_format.pcm_sample_size
             )
             discard_seconds = int(fade_in_duration_seconds) - 1
             # Calculate discard amounts in CURRENT track's format
@@ -1691,7 +1693,7 @@ class StreamsController(CoreController):
                     # edge case: pcm format mismatch, we need to resample the next track's
                     # beginning part before crossfading
                     self.logger.debug(
-                        "Resampling next track from %s to %s for queue %s",
+                        "Resampling next track's crossfade from %s to %s for queue %s",
                         next_queue_item_pcm_format.sample_rate,
                         pcm_format.sample_rate,
                         queue.display_name,
@@ -1733,15 +1735,17 @@ class StreamsController(CoreController):
                     for _chunk in divide_chunks(crossfade_first, pcm_format.pcm_sample_size):
                         yield _chunk
                     # store the other half for the next track
-                    # IMPORTANT: Use original buffer size (in next track's format) for fade_in_size
-                    # because the next track will stream in its native format and needs to know
-                    # how many bytes to discard in that format.
-                    # However, crossfade_second data is in current track's format (pcm_format)
+                    # IMPORTANT: crossfade_second data is in CURRENT track's format (pcm_format)
                     # because it was created from the resampled buffer used for mixing.
+                    # BUT fade_in_size represents bytes in NEXT track's original format
+                    # (next_queue_item_pcm_format) because that's how much of the next track
+                    # was consumed during the crossfade. We need both formats to correctly
+                    # handle the crossfade data when the next track starts.
                     self._crossfade_data[queue_item.queue_id] = CrossfadeData(
                         data=crossfade_second,
                         fade_in_size=original_buffer_size,
-                        pcm_format=pcm_format,
+                        pcm_format=pcm_format,  # Format of the data (current track)
+                        fade_in_pcm_format=next_queue_item_pcm_format,  # Format for fade_in_size
                         queue_item_id=next_queue_item.queue_item_id,
                     )
                 except Exception as err:
