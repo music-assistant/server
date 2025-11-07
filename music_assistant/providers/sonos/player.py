@@ -59,11 +59,8 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     PlayerFeature.PAUSE,
-    PlayerFeature.NEXT_PREVIOUS,
     PlayerFeature.SEEK,
     PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.SELECT_SOURCE,
-    PlayerFeature.ENQUEUE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.GAPLESS_PLAYBACK,
     PlayerFeature.GAPLESS_DIFFERENT_SAMPLERATE,
@@ -148,6 +145,8 @@ class SonosPlayer(Player):
             _supported_features.add(PlayerFeature.VOLUME_MUTE)
         if not self.get_linked_airplay_player(False):
             _supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if not self.get_linked_airplay_player(True):
+            _supported_features.add(PlayerFeature.ENQUEUE)
         self._attr_supported_features = _supported_features
 
         self._attr_name = (
@@ -454,10 +453,6 @@ class SonosPlayer(Player):
             await self._set_sonos_queue_from_mass_queue(media.source_id)
         if session_id := self.client.player.group.active_session_id:
             await self.client.api.playback_session.refresh_cloud_queue(session_id)
-            # repeat the command after a while because sonos seems to miss it sometimes ?!
-            self.mass.call_later(
-                30, self.client.api.playback_session.refresh_cloud_queue(session_id)
-            )
 
     async def set_members(
         self,

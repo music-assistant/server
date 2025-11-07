@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     CONF_ALAC_ENCODE,
@@ -39,7 +40,7 @@ class RaopStream(AirPlayProtocol):
 
     async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
-        assert self.player.discovery_info is not None  # for type checker
+        assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
         extra_args: list[str] = []
         player_id = self.player.player_id
@@ -49,10 +50,8 @@ class RaopStream(AirPlayProtocol):
         if self.player.config.get_value(CONF_ALAC_ENCODE, True):
             extra_args += ["-alac"]
         for prop in ("et", "md", "am", "pk", "pw"):
-            if prop_value := self.player.discovery_info.decoded_properties.get(prop):
+            if prop_value := self.player.raop_discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
-        sync_adjust = self.player.config.get_value(CONF_SYNC_ADJUST, 0)
-        assert isinstance(sync_adjust, int)
         if device_password := self.mass.config.get_raw_player_config_value(
             player_id, CONF_PASSWORD, None
         ):
@@ -79,7 +78,7 @@ class RaopStream(AirPlayProtocol):
             "-ntpstart",
             str(start_ntp),
             "-port",
-            str(self.player.discovery_info.port),
+            str(self.player.raop_discovery_info.port),
             "-latency",
             str(read_ahead),
             "-volume",
@@ -92,7 +91,7 @@ class RaopStream(AirPlayProtocol):
             "-cmdpipe",
             self.commands_pipe.path,
             "-udn",
-            self.player.discovery_info.name,
+            self.player.raop_discovery_info.name,
             self.player.address,
             self.audio_pipe.path,
         ]
@@ -116,10 +115,14 @@ class RaopStream(AirPlayProtocol):
 
         # start reading the stderr of the cliraop process from another task
         self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
+        # repeat sending the volume level to the player because some players seem
+        # to ignore it the first time
+        # https://github.com/music-assistant/support/issues/3330
+        self.mass.call_later(1, self.send_cli_command(f"VOLUME={self.player.volume_level}\n"))
 
     async def start_pairing(self) -> None:
         """Start pairing process for this protocol (if supported)."""
-        assert self.player.discovery_info is not None  # for type checker
+        assert self.player.raop_discovery_info is not None  # for type checker
         cli_binary = await get_cli_binary(self.player.protocol)
 
         cliraop_args = [
@@ -128,9 +131,9 @@ class RaopStream(AirPlayProtocol):
             "-if",
             self.mass.streams.bind_ip,
             "-port",
-            str(self.player.discovery_info.port),
+            str(self.player.raop_discovery_info.port),
             "-udn",
-            self.player.discovery_info.name,
+            self.player.raop_discovery_info.name,
             self.player.address,
         ]
         self.player.logger.debug(
@@ -194,6 +197,7 @@ class RaopStream(AirPlayProtocol):
                 logger.debug("End of stream reached")
                 break
             logger.log(VERBOSE_LOG_LEVEL, line)
+            await asyncio.sleep(0)  # Yield to event loop
 
         # ensure we're cleaned up afterwards (this also logs the returncode)
         logger.debug("CLIRaop stderr reader ended")

@@ -152,7 +152,6 @@ class SonosPlayer(Player):
             return
         await asyncio.to_thread(self.soco.stop)
         self.mass.call_later(2, self.poll)
-        self._attr_active_source = None
         self.update_state()
 
     async def play(self) -> None:
