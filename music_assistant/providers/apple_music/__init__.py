@@ -90,6 +90,13 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.LIBRARY_ALBUMS_EDIT,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.FAVORITE_ALBUMS_EDIT,
+    ProviderFeature.FAVORITE_TRACKS_EDIT,
+    ProviderFeature.FAVORITE_PLAYLISTS_EDIT,
 }
 
 MUSIC_APP_TOKEN = app_var(8)
@@ -359,11 +366,6 @@ class AppleMusicProvider(MusicProvider):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
                 # Track is library-only (private/uploaded), use library ID instead
-                self.logger.debug(
-                    "Found library-only track (no catalog version): %s - %s",
-                    item["attributes"].get("artistName", ""),
-                    item["attributes"].get("name", ""),
-                )
                 library_only_tracks.append(item)
             else:
                 song_catalog_ids.append(catalog_id)
@@ -375,8 +377,12 @@ class AppleMusicProvider(MusicProvider):
             response = await self._get_data(
                 catalog_endpoint, ids=",".join(catalog_ids), include="artists,albums"
             )
+            # Fetch ratings for this batch
+            rating_response = await self._get_ratings(catalog_ids, MediaType.TRACK)
             for item in response["data"]:
-                yield self._parse_track(item)
+                is_favourite = rating_response.get(item["id"])
+                track = self._parse_track(item, is_favourite)
+                yield track
         # Yield library-only tracks using their library metadata
         for item in library_only_tracks:
             yield self._parse_track(item)
@@ -410,7 +416,9 @@ class AppleMusicProvider(MusicProvider):
         """Get full track details by id."""
         endpoint = f"catalog/{self._storefront}/songs/{prov_track_id}"
         response = await self._get_data(endpoint, include="artists,albums")
-        return self._parse_track(response["data"][0])
+        rating_response = await self._get_ratings([prov_track_id], MediaType.TRACK)
+        is_favourite = rating_response.get(prov_track_id)
+        return self._parse_track(response["data"][0], is_favourite)
 
     @use_cache()
     async def get_playlist(self, prov_playlist_id) -> Playlist:
@@ -430,11 +438,13 @@ class AppleMusicProvider(MusicProvider):
         response = await self._get_data(endpoint, include="artists")
         # Including albums results in a 504 error, so we need to fetch the album separately
         album = await self.get_album(prov_album_id)
+        track_ids = [track_obj["id"] for track_obj in response["data"] if "id" in track_obj]
+        rating_response = await self._get_ratings(track_ids, MediaType.TRACK)
         tracks = []
         for track_obj in response["data"]:
             if "id" not in track_obj:
                 continue
-            track = self._parse_track(track_obj)
+            track = self._parse_track(track_obj, rating_response.get(track_obj["id"]))
             track.album = album
             tracks.append(track)
         return tracks
@@ -485,13 +495,20 @@ class AppleMusicProvider(MusicProvider):
             return []
         return [self._parse_track(track) for track in response["data"] if track["id"]]
 
-    async def library_add(self, item: MediaItemType):
+    async def library_add(self, item: MediaItemType) -> None:
         """Add item to library."""
-        raise NotImplementedError("Not implemented!")
+        item_type = self._translate_media_type_to_apple_type(item.media_type)
+        kwargs = {
+            f"ids[{item_type}]": item.item_id,
+        }
+        await self._post_data("me/library/", **kwargs)
 
-    async def library_remove(self, prov_item_id, media_type: MediaType):
+    async def library_remove(self, prov_item_id, media_type: MediaType) -> None:
         """Remove item from library."""
-        raise NotImplementedError("Not implemented!")
+        self.logger.warning(
+            "Deleting items from your library is not yet supported by the Apple Music API. "
+            f"Skipping deletion of {media_type} - {prov_item_id}."
+        )
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add track(s) to playlist."""
@@ -559,6 +576,21 @@ class AppleMusicProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    async def set_favorite(self, prov_item_id: str, media_type: MediaType, favorite: bool) -> None:
+        """Set the favorite status of an item."""
+        data = {
+            "type": "ratings",
+            "attributes": {
+                "value": 1 if favorite else -1,
+            },
+        }
+        item_type = self._translate_media_type_to_apple_type(media_type)
+        if self._is_catalog_id(prov_item_id):
+            endpoint = f"me/ratings/{item_type}/{prov_item_id}"
+        else:
+            endpoint = f"me/ratings/library-{item_type}/{prov_item_id}"
+        await self._put_data(endpoint, data=data)
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse artist object to generic layout."""
@@ -708,6 +740,7 @@ class AppleMusicProvider(MusicProvider):
     def _parse_track(
         self,
         track_obj: dict[str, Any],
+        is_favourite: bool | None = None,
     ) -> Track:
         """Parse track object to generic layout."""
         relationships = track_obj.get("relationships", {})
@@ -778,6 +811,7 @@ class AppleMusicProvider(MusicProvider):
             track.metadata.performers = set(composers.split(", "))
         if isrc := attributes.get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))
+        track.favorite = is_favourite or False
         return track
 
     def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
@@ -869,13 +903,48 @@ class AppleMusicProvider(MusicProvider):
             return await response.json(loads=json_loads)
 
     @throttle_with_retries
-    async def _delete_data(self, endpoint, data=None, **kwargs) -> str:
+    async def _delete_data(self, endpoint, data=None, **kwargs) -> None:
         """Delete data from api."""
-        raise NotImplementedError("Not implemented!")
+        url = f"https://api.music.apple.com/v1/{endpoint}"
+        headers = {"Authorization": f"Bearer {self._music_app_token}"}
+        headers["Music-User-Token"] = self._music_user_token
+        async with (
+            self.mass.http_session.delete(
+                url, headers=headers, params=kwargs, json=data, ssl=True, timeout=120
+            ) as response,
+        ):
+            # Convert HTTP errors to exceptions
+            if response.status == 404:
+                raise MediaNotFoundError(f"{endpoint} not found")
+            if response.status == 429:
+                # Debug this for now to see if the response headers give us info about the
+                # backoff time. There is no documentation on this.
+                self.logger.debug("Apple Music Rate Limiter. Headers: %s", response.headers)
+                raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
+            response.raise_for_status()
 
     async def _put_data(self, endpoint, data=None, **kwargs) -> str:
         """Put data on api."""
-        raise NotImplementedError("Not implemented!")
+        url = f"https://api.music.apple.com/v1/{endpoint}"
+        headers = {"Authorization": f"Bearer {self._music_app_token}"}
+        headers["Music-User-Token"] = self._music_user_token
+        async with (
+            self.mass.http_session.put(
+                url, headers=headers, params=kwargs, json=data, ssl=True, timeout=120
+            ) as response,
+        ):
+            # Convert HTTP errors to exceptions
+            if response.status == 404:
+                raise MediaNotFoundError(f"{endpoint} not found")
+            if response.status == 429:
+                # Debug this for now to see if the response headers give us info about the
+                # backoff time. There is no documentation on this.
+                self.logger.debug("Apple Music Rate Limiter. Headers: %s", response.headers)
+                raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
+            response.raise_for_status()
+            if response.content_length:
+                return await response.json(loads=json_loads)
+            return {}
 
     @throttle_with_retries
     async def _post_data(self, endpoint, data=None, **kwargs) -> str:
@@ -905,6 +974,43 @@ class AppleMusicProvider(MusicProvider):
         language = locale.split("-")[0]
         result = await self._get_data("me/storefront", l=language)
         return result["data"][0]["id"]
+
+    async def _get_ratings(self, item_ids: list[str], media_type: MediaType) -> dict[str, bool]:
+        """Get ratings (aka favorites) for a list of item ids."""
+        if media_type == MediaType.ARTIST:
+            raise NotImplementedError(
+                "Ratings are not available for artist in the Apple Music API."
+            )
+        endpoint = self._translate_media_type_to_apple_type(media_type)
+        # Apple Music limits to 200 ids per request
+        max_ids_per_request = 200
+        results = {}
+        for i in range(0, len(item_ids), max_ids_per_request):
+            batch_ids = item_ids[i : i + max_ids_per_request]
+            response = await self._get_data(
+                f"me/ratings/{endpoint}",
+                ids=",".join(batch_ids),
+            )
+            results.update(
+                {
+                    item["id"]: bool(item["attributes"].get("value", False) == 1)
+                    for item in response.get("data", [])
+                }
+            )
+        return results
+
+    def _translate_media_type_to_apple_type(self, media_type: MediaType) -> str:
+        """Translate MediaType to Apple Music endpoint string."""
+        match media_type:
+            case MediaType.ARTIST:
+                return "artists"
+            case MediaType.ALBUM:
+                return "albums"
+            case MediaType.TRACK:
+                return "songs"
+            case MediaType.PLAYLIST:
+                return "playlists"
+        raise MusicAssistantError(f"Unsupported media type: {media_type}")
 
     def is_library_id(self, library_id) -> bool:
         """Check a library ID matches known format."""
