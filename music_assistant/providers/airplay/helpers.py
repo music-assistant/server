@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import time
@@ -14,6 +15,8 @@ from music_assistant.providers.airplay.constants import BROKEN_RAOP_MODELS, Stre
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
+
+_LOGGER = logging.getLogger(__name__)
 
 # NTP epoch delta: difference between Unix epoch (1970) and NTP epoch (1900)
 NTP_EPOCH_DELTA = 0x83AA7E80  # 2208988800 seconds
@@ -146,6 +149,7 @@ async def get_cli_binary(protocol: StreamingProtocol) -> str:
                 ]
 
             returncode, output = await check_output(*args)
+            _LOGGER.debug("%s returned %d with output: %s", cli_path, int(returncode), str(output))
             if (
                 protocol == StreamingProtocol.RAOP
                 and returncode == 0

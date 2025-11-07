@@ -400,7 +400,6 @@ class AirPlayPlayer(Player):
         if self.stream and self.stream.session:
             # forward stop to the entire stream session
             await self.stream.session.stop()
-        self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
 
@@ -428,10 +427,6 @@ class AirPlayPlayer(Player):
         if self.synced_to:
             # this should not happen, but guard anyways
             raise RuntimeError("Player is synced")
-
-        # set the active source for the player to the media queue
-        # this accounts for syncgroups and linked players (e.g. sonos)
-        self._attr_active_source = media.source_id
         self._attr_current_media = media
 
         # select audio source
@@ -520,6 +515,12 @@ class AirPlayPlayer(Player):
             if child_player_to_add := cast(
                 "AirPlayPlayer | None", self.mass.players.get(player_id)
             ):
+                if (
+                    child_player_to_add.playback_state == PlaybackState.PAUSED
+                    and child_player_to_add.stream
+                ):
+                    # Stop the paused stream to avoid a deadlock situation
+                    await child_player_to_add.stream.stop()
                 if (
                     child_player_to_add.stream
                     and child_player_to_add.stream.running

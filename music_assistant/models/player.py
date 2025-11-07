@@ -173,6 +173,7 @@ class Player(ABC):
         self._extra_data: dict[str, Any] = {}
         self._extra_attributes: dict[str, Any] = {}
         self._on_unload_callbacks: list[Callable[[], None]] = []
+        self.__active_mass_source = player_id
         # The PlayerState is the (snapshotted) final state of the player
         # after applying any config overrides and other transformations,
         # such as the display name and player controls.
@@ -365,6 +366,8 @@ class Player(ABC):
     def _active_source(self) -> str | None:
         """
         Return the (id of) the active source of the player.
+
+        Only required if the player supports PlayerFeature.SELECT_SOURCE.
 
         Set to None if the player is not currently playing a source or
         the player_id if the player is currently playing a MA queue.
@@ -837,12 +840,19 @@ class Player(ABC):
         # if the player is grouped/synced, use the active source of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                return parent_player._active_source
+                return parent_player.active_source
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
                 return plugin_source.id
-        # in case player's source is None, return the player_id (to indicate MA is active source)
-        return self._active_source or self.player_id
+        if (
+            self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            and self._active_source
+        ):
+            # active source as reported by the player itself
+            # but only if playing/paused, otherwise we always prefer the MA source
+            return self._active_source
+        # return the (last) known MA source
+        return self.__active_mass_source
 
     @cached_property
     @final
@@ -1244,6 +1254,18 @@ class Player(ABC):
         ):
             self._state.group_members.set([self.player_id, *self._state.group_members])
 
+        # track stop called state
+        if (
+            prev_state.playback_state == PlaybackState.IDLE
+            and self._state.playback_state != PlaybackState.IDLE
+        ):
+            self.__stop_called = False
+        elif (
+            prev_state.playback_state != PlaybackState.IDLE
+            and self._state.playback_state == PlaybackState.IDLE
+        ):
+            self.__stop_called = True
+
         # Auto correct player state if player is synced (or group child)
         # This is because some players/providers do not accurately update this info
         # for the sync child's.
@@ -1412,6 +1434,38 @@ class Player(ABC):
             else:
                 sources.append(plugin_source)
         return sources
+
+    # The id of the (last) active mass source.
+    # This is to keep track of the last active MA source for the player,
+    # so we can restore it when needed (e.g. after switching to a plugin source).
+    __active_mass_source: str = ""
+
+    def set_active_mass_source(self, value: str) -> None:
+        """
+        Set the id of the (last) active mass source.
+
+        This is to keep track of the last active MA source for the player,
+        so we can restore it when needed (e.g. after switching to a plugin source).
+        """
+        self.__active_mass_source = value
+        self.update_state()
+
+    __stop_called: bool = False
+
+    def mark_stop_called(self) -> None:
+        """Mark that the STOP command was called on the player."""
+        self.__stop_called = True
+
+    @property
+    def stop_called(self) -> bool:
+        """
+        Return True if the STOP command was called on the player.
+
+        This is used to differentiate between a user-initiated stop
+        and a natural end of playback (e.g. end of track/queue).
+        mainly for debugging/logging purposes by the streams controller.
+        """
+        return self.__stop_called
 
     def __hash__(self) -> int:
         """Return a hash of the Player."""

@@ -118,6 +118,14 @@ class PluginSource(PlayerSource):
         repr=False,
     )
 
+    # Callback for when this source is selected: async def callback() -> None
+    on_select: Callable[[], Awaitable[None]] | None = field(
+        default=None,
+        compare=False,
+        metadata=field_options(serialize="omit", deserialize=pass_through),
+        repr=False,
+    )
+
     def as_player_source(self) -> PlayerSource:
         """Return a basic PlayerSource representation without unpicklable callbacks."""
         return PlayerSource(
@@ -158,3 +166,12 @@ class PluginProvider(Provider):
         """
         yield b""
         raise NotImplementedError
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
+        """
+        return path

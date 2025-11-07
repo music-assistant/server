@@ -88,7 +88,6 @@ class FullyKioskPlayer(Player):
         """Send STOP command to given player."""
         await self.fully_kiosk.stopSound()
         self._attr_playback_state = PlaybackState.IDLE
-        self._attr_active_source = None
         self._attr_current_media = None
         self.update_state()
 
