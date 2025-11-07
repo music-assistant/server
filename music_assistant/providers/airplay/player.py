@@ -516,6 +516,12 @@ class AirPlayPlayer(Player):
                 "AirPlayPlayer | None", self.mass.players.get(player_id)
             ):
                 if (
+                    child_player_to_add.playback_state == PlaybackState.PAUSED
+                    and child_player_to_add.stream
+                ):
+                    # Stop the paused stream to avoid a deadlock situation
+                    await child_player_to_add.stream.stop()
+                if (
                     child_player_to_add.stream
                     and child_player_to_add.stream.running
                     and child_player_to_add.stream.session
