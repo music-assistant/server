@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -73,6 +72,7 @@ class LibrespotStreamer:
         if seek_position:
             args += ["--start-position", str(int(seek_position))]
 
+        # Hardcoded values retained as requested (quick_fail logic removed)
         base_timeout = 5
         max_attempts = 2
 
@@ -107,17 +107,11 @@ class LibrespotStreamer:
                 async for chunk in librespot_proc.iter_chunked():
                     yield chunk
 
+                # Check return code after streaming finishes
                 if librespot_proc.returncode != 0:
                     raise AudioError(
                         f"Librespot exited with code {librespot_proc.returncode} for {spotify_uri}"
                     )
 
-            except Exception as ex:
-                log_lines_str = "\n".join(log_history)
-                logger.error(
-                    "Librespot streaming error for %s: %s\n%s",
-                    spotify_uri,
-                    ex,
-                    log_lines_str,
-                )
-                raise AudioError(f"Error streaming from librespot for {spotify_uri}: {ex}") from ex
+                # if we reach this point, streaming succeeded and we can break the loop
+                break
