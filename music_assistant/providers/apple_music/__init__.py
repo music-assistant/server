@@ -512,13 +512,26 @@ class AppleMusicProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add track(s) to playlist."""
-        raise NotImplementedError("Not implemented!")
+        endpoint = f"me/library/playlists/{prov_playlist_id}/tracks"
+        data = {
+            "data": [
+                {
+                    "id": track_id,
+                    "type": "library-songs" if self.is_library_id(track_id) else "songs",
+                }
+                for track_id in prov_track_ids
+            ]
+        }
+        await self._post_data(endpoint, data=data)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        raise NotImplementedError("Not implemented!")
+        self.logger.warning(
+            "Removing tracks from playlists is not supported by the Apple Music "
+            "API. Make sure to delete them using the Apple Music app."
+        )
 
     @use_cache(3600 * 24)  # cache for 24 hours
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
