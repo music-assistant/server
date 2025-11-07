@@ -1719,7 +1719,7 @@ class StreamsController(CoreController):
                         fade_in_part=buffer,
                         fade_out_part=fade_out_data,
                         fade_in_streamdetails=next_queue_item.streamdetails,
-                        fade_out_streamdetails=queue_item.streamdetails,
+                        fade_out_streamdetails=streamdetails,
                         pcm_format=pcm_format,
                         standard_crossfade_duration=standard_crossfade_duration,
                         mode=smart_fades_mode,
