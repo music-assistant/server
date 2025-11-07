@@ -1436,6 +1436,7 @@ class Player(ABC):
         so we can restore it when needed (e.g. after switching to a plugin source).
         """
         self.__active_mass_source = value
+        self.update_state()
 
     def __hash__(self) -> int:
         """Return a hash of the Player."""

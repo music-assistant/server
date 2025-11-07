@@ -119,9 +119,20 @@ RUN set -x \
         # cifs utils and libnfs are needed for smb and nfs support (file provider)
         cifs-utils \
         libnfs13 \
-        # openssl is needed for airplay
+        # airplay libraries
         openssl \
         libssl-dev \
+        libuuid1 \
+        libcurl4 \
+        libsodium23 \
+        libconfuse2 \
+        libunistring2 \
+        libxml2 \
+        libevent-dev \
+        libjson-c5 \
+        libplist3 \
+        libgcrypt20 \
+        libavfilter8 \
         # libsndfile needed for librosa audio file support (smartfades)
         libsndfile1 \
         # Audio codec runtime libraries (needed for FFmpeg)
@@ -155,6 +166,9 @@ RUN set -x \
         libflac12 \
         libavahi-client3 \
         libavahi-common3 \
+        # AirPlay receiver dependencies (shairport-sync)
+        libconfig9 \
+        libpopt0 \
         # pkg-config needed for PyAV (for aioresonate) to find system FFmpeg
         pkg-config \
     && apt-get clean \
