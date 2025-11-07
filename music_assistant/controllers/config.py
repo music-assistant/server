@@ -369,11 +369,7 @@ class ConfigController:
         if instance_id is not None:
             config = await self._update_provider_config(instance_id, values)
         else:
-            result = await self._add_provider_config(provider_domain, values)
-            if isinstance(result, list):
-                msg = "Unexpected return type from _add_provider_config"
-                raise TypeError(msg)
-            config = result
+            config = await self._add_provider_config(provider_domain, values)
         # mark onboard done whenever the (first) provider is added
         # this will be replaced later by a more sophisticated onboarding process
         self.set(CONF_ONBOARD_DONE, True)
