@@ -355,7 +355,7 @@ class AppleMusicProvider(MusicProvider):
         endpoint = "me/library/songs"
         song_catalog_ids = []
         library_only_tracks = []
-        for item in await self._get_all_items(endpoint, extend="extendedAssetUrls"):
+        for item in await self._get_all_items(endpoint):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
                 # Track is library-only (private/uploaded), use library ID instead
@@ -525,9 +525,25 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        # Use webPlayback API for all tracks (works with both catalog and library IDs)
-        # Library tracks have IDs starting with "i." and work with webPlayback
         stream_metadata = await self._fetch_song_stream_metadata(item_id)
+        if self.is_library_id(item_id):
+            # Library items are not encrypted and do not need decryption keys
+            try:
+                stream_url = stream_metadata["assets"][0]["URL"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise MediaNotFoundError(
+                    f"Failed to extract stream URL for library track {item_id}: {exc}"
+                ) from exc
+            return StreamDetails(
+                item_id=item_id,
+                provider=self.lookup_key,
+                path=stream_url,
+                stream_type=StreamType.HTTP,
+                audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                can_seek=True,
+                allow_seek=True,
+            )
+        # Continue to obtain decryption keys for catalog items
         license_url = stream_metadata["hls-key-server-url"]
         stream_url, uri = await self._parse_stream_url_and_uri(stream_metadata["assets"])
         if not stream_url or not uri:
@@ -890,6 +906,13 @@ class AppleMusicProvider(MusicProvider):
         result = await self._get_data("me/storefront", l=language)
         return result["data"][0]["id"]
 
+    def is_library_id(self, library_id) -> bool:
+        """Check a library ID matches known format."""
+        if not isinstance(library_id, str):
+            return False
+        valid = re.findall(r"^(?:[a|i|l|p]{1}\.|pl\.u\-)[a-zA-Z0-9]+$", library_id)
+        return bool(valid)
+
     def _is_catalog_id(self, catalog_id: str) -> bool:
         """Check if input is a catalog id, or a library id."""
         return catalog_id.isnumeric() or catalog_id.startswith("pl.")
@@ -897,9 +920,13 @@ class AppleMusicProvider(MusicProvider):
     async def _fetch_song_stream_metadata(self, song_id: str) -> str:
         """Get the stream URL for a song from Apple Music."""
         playback_url = "https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback"
-        data = {
-            "salableAdamId": song_id,
-        }
+        data = {}
+        self.logger.debug("_fetch_song_stream_metadata: Check if Library ID: %s", song_id)
+        if self.is_library_id(song_id):
+            data["universalLibraryId"] = song_id
+            data["isLibrary"] = True
+        else:
+            data["salableAdamId"] = song_id
         for retry in (True, False):
             try:
                 async with self.mass.http_session.post(
