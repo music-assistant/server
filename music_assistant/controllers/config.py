@@ -1067,6 +1067,13 @@ class ConfigController:
                 values[CONF_SMART_FADES_MODE] = "smart_crossfade"
                 changed = True
 
+        # Migrate smart_fades mode value to smart_crossfade
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            if player_config.get(CONF_SMART_FADES_MODE) == "smart_fades":
+                # Update old 'smart_fades' value to new 'smart_crossfade' value
+                player_config[CONF_SMART_FADES_MODE] = "smart_crossfade"
+                changed = True
+
         # migrate player configs: always use lookup key for provider
         prov_configs = self._data.get(CONF_PROVIDERS, {})
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
