@@ -1048,12 +1048,23 @@ class ConfigController:
 
         # Migrate the crossfade setting into Smart Fade Mode = 'crossfade'
         for player_config in self._data.get(CONF_PLAYERS, {}).values():
-            if (crossfade := player_config.pop(CONF_DEPRECATED_CROSSFADE, None)) is None:
+            if not (values := player_config.get("values")):
+                continue
+            if (crossfade := values.pop(CONF_DEPRECATED_CROSSFADE, None)) is None:
                 continue
             # Check if player has old crossfade enabled but no smart fades mode set
-            if crossfade is True and CONF_SMART_FADES_MODE not in player_config:
+            if crossfade is True and CONF_SMART_FADES_MODE not in values:
                 # Set smart fades mode to standard_crossfade
-                player_config[CONF_SMART_FADES_MODE] = "standard_crossfade"
+                values[CONF_SMART_FADES_MODE] = "standard_crossfade"
+                changed = True
+
+        # Migrate smart_fades mode value to smart_crossfade
+        for player_config in self._data.get(CONF_PLAYERS, {}).values():
+            if not (values := player_config.get("values")):
+                continue
+            if values.get(CONF_SMART_FADES_MODE) == "smart_fades":
+                # Update old 'smart_fades' value to new 'smart_crossfade' value
+                values[CONF_SMART_FADES_MODE] = "smart_crossfade"
                 changed = True
 
         # migrate player configs: always use lookup key for provider
