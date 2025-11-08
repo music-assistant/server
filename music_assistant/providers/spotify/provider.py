@@ -665,13 +665,20 @@ class SpotifyProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return content details for the given track/episode/audiobook when it will be streamed."""
         if media_type == MediaType.AUDIOBOOK and self.audiobooks_supported:
-            # Don't fetch chapters here - do it lazily during streaming
-            # Just get basic info for duration estimate
-            try:
-                audiobook_obj = await self._get_data(f"audiobooks/{item_id}")
-                duration_seconds = audiobook_obj.get("duration_ms", 0) // 1000
-            except Exception:
-                duration_seconds = 0
+            chapters_data = await self._get_audiobook_chapters_data(item_id)
+            if not chapters_data:
+                raise MediaNotFoundError(f"No chapters found for audiobook {item_id}")
+
+            # Calculate total duration and convert to seconds for StreamDetails
+            total_duration_ms = sum(chapter.get("duration_ms", 0) for chapter in chapters_data)
+            duration_seconds = total_duration_ms // 1000
+
+            # Create chapter URIs for streaming
+            chapter_uris = []
+            for chapter in chapters_data:
+                chapter_id = chapter["id"]
+                chapter_uri = f"spotify://episode:{chapter_id}"
+                chapter_uris.append(chapter_uri)
 
             return StreamDetails(
                 item_id=item_id,
@@ -682,7 +689,7 @@ class SpotifyProvider(MusicProvider):
                 allow_seek=True,
                 can_seek=True,
                 duration=duration_seconds,
-                data={"fetch_chapters_on_stream": True},  # Flag to fetch during streaming
+                data={"chapters": chapter_uris, "chapters_data": chapters_data},
             )
 
         # For all other media types (tracks, podcast episodes)
@@ -701,13 +708,8 @@ class SpotifyProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Get audio stream from Spotify via librespot."""
         if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
-            # Fetch chapters NOW if not already provided (lazy loading optimization)
-            if streamdetails.data.get("fetch_chapters_on_stream"):
-                chapters_data = await self._get_audiobook_chapters_data(streamdetails.item_id)
-                chapter_uris = [f"spotify://episode:{ch['id']}" for ch in chapters_data]
-            else:
-                chapter_uris = streamdetails.data.get("chapters", [])
-                chapters_data = streamdetails.data.get("chapters_data", [])
+            chapter_uris = streamdetails.data.get("chapters", [])
+            chapters_data = streamdetails.data.get("chapters_data", [])
 
             # Calculate which chapter to start from based on seek_position
             seek_position_ms = seek_position * 1000

@@ -72,7 +72,6 @@ class LibrespotStreamer:
         if seek_position:
             args += ["--start-position", str(int(seek_position))]
 
-        # Hardcoded values retained as requested (quick_fail logic removed)
         base_timeout = 5
         max_attempts = 2
 
