@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import timedelta
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
@@ -127,50 +127,6 @@ async def get_config_entries(
             default_value=False,
         ),
         ConfigEntry(
-            key=_Constants.CONF_NOW_PLAYING,
-            category="advanced",
-            type=ConfigEntryType.BOOLEAN,
-            label="Show 'now playing' details?",
-            description=(
-                "Show details of the currently playing track instead of the station details"
-            ),
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=_Constants.CONF_UPDATE_INTERVAL,
-            category="advanced",
-            type=ConfigEntryType.INTEGER,
-            label="Player update interval (seconds)",
-            description="How often to check for now playing updates",
-            default_value=5,
-            range=(1, 60),
-            depends_on="now_playing",
-            depends_on_value=True,
-        ),
-        ConfigEntry(
-            key=_Constants.CONF_RECOMMENDATIONS,
-            category="advanced",
-            label="Show recommendations?",
-            description="BBC Sounds has several recommendation categories, configure if "
-            "and where these are shown",
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption(
-                    "Show recommendations on the home page",
-                    _Constants.CONF_RECOMMENDATIONS_HOMEPAGE,
-                ),
-                ConfigValueOption(
-                    "Show recommendations in folders on the browse page",
-                    _Constants.CONF_RECOMMENDATIONS_BROWSE,
-                ),
-                ConfigValueOption(
-                    "Disable recommendations", _Constants.CONF_RECOMMENDATIONS_DISABLE
-                ),
-            ],
-            default_value=_Constants.CONF_RECOMMENDATIONS_HOMEPAGE,
-            required=True,
-        ),
-        ConfigEntry(
             key=_Constants.CONF_STREAM_FORMAT,
             category="advanced",
             label="Preferred stream format",
@@ -186,7 +142,6 @@ async def get_config_entries(
                 ),
             ],
             default_value=_Constants.CONF_STREAM_FORMAT_HLS,
-            required=True,
         ),
     )
 
@@ -196,6 +151,7 @@ class _Constants:
     BLANK_IMAGE_NAME: str = "p0bqcdzf"
     DEFAULT_IMAGE_SIZE = 1280
     TRACK_DURATION_THRESHOLD: int = 300  # 5 minutes
+    NOW_PLAYING_REFRESH_TIME: int = 5
     HLS: Literal["hls"] = "hls"
     DASH: Literal["dash"] = "dash"
     CONF_UPDATE_INTERVAL: str = "update_interval"
@@ -227,12 +183,6 @@ class BBCSoundsProvider(MusicProvider):
             timezone=LOCAL_TIMEZONE,
         )
 
-        self.use_now_playing: bool = cast(
-            "bool", self.config.get_value(_Constants.CONF_NOW_PLAYING, False)
-        )
-        self.now_playing_poll_time: int = cast(
-            "int", self.config.get_value(_Constants.CONF_UPDATE_INTERVAL, 5)
-        )
         self.show_local_stations: bool = bool(
             self.config.get_value(_Constants.CONF_SHOW_LOCAL, False)
         )
@@ -329,7 +279,7 @@ class BBCSoundsProvider(MusicProvider):
                 raise self._stream_error(item_id, media_type)
 
             # Hide behind a feature flag until it can be better tested
-            if self.use_now_playing and episode_info and FEATURES["catchup_segments"]:
+            if episode_info and FEATURES["catchup_segments"]:
                 # .item_id is the VPID
                 self.current_task = self.mass.create_task(
                     self._check_for_segments(item_id, stream_details)
@@ -342,10 +292,9 @@ class BBCSoundsProvider(MusicProvider):
             stream_details = await self.adaptor.new_streamable_object(track)
             if not stream_details:
                 raise self._stream_error(item_id, media_type)
-            if self.use_now_playing:
-                self.current_task = self.mass.create_task(
-                    self._check_for_segments(item_id, stream_details)
-                )
+            self.current_task = self.mass.create_task(
+                self._check_for_segments(item_id, stream_details)
+            )
             return stream_details
         else:
             self.logger.debug(f"Getting stream details for station {item_id}")
@@ -365,10 +314,7 @@ class BBCSoundsProvider(MusicProvider):
                 raise self._stream_error(item_id, media_type)
 
             # Start a background task to keep these details updated
-            if self.use_now_playing:
-                self.current_task = self.mass.create_task(
-                    self._watch_stream_details(stream_details)
-                )
+            self.current_task = self.mass.create_task(self._watch_stream_details(stream_details))
             return stream_details
 
     async def _check_for_segments(self, vpid: str, stream_details: StreamDetails) -> None:
@@ -410,17 +356,19 @@ class BBCSoundsProvider(MusicProvider):
         station_id = stream_details.data["station"]
 
         while True:
+            if not stream_details.stream_metadata:
+                await asyncio.sleep(_Constants.NOW_PLAYING_REFRESH_TIME)
+                continue
+
             now_playing = await self.client.schedules.currently_playing_song(
                 station_id, image_size=_Constants.DEFAULT_IMAGE_SIZE
             )
 
-            if not stream_details.stream_metadata:
-                await asyncio.sleep(self.now_playing_poll_time)
-                continue
-
             if now_playing and stream_details.stream_metadata:
                 self.logger.debug(f"Now playing for {station_id}: {now_playing}")
-
+                self.logger.info(
+                    f"Seconds streamed for {station_id}: {stream_details.seconds_streamed}"
+                )
                 # removed check temporarily as images not working
                 if not FEATURES["check_blank_image"] or (
                     now_playing.image_url
@@ -440,7 +388,7 @@ class BBCSoundsProvider(MusicProvider):
                         stream_details.stream_metadata.title = display
                         stream_details.stream_metadata.artist = None
                         stream_details.stream_metadata.image_url = station.image_url
-            await asyncio.sleep(float(self.now_playing_poll_time))
+            await asyncio.sleep(_Constants.NOW_PLAYING_REFRESH_TIME)
 
     def _station_programme_display(self, station: LiveStation) -> str | None:
         if station and station.titles:
