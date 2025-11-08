@@ -453,12 +453,6 @@ class QobuzProvider(MusicProvider):
             playlist_track_ids=",".join(playlist_track_ids),
         )
 
-        await self._get_data(
-            "playlist/deleteTracks",
-            playlist_id=prov_playlist_id,
-            playlist_track_ids=",".join(playlist_track_ids),
-        )
-
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         streamdata: dict[str, Any] | None = None
