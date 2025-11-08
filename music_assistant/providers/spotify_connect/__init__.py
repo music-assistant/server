@@ -143,7 +143,7 @@ class SpotifyConnectProvider(PluginProvider):
             name=self.name,
             # we set passive to true because we
             # dont allow this source to be selected directly
-            passive=False,
+            passive=True,
             # Playback control capabilities will be enabled when Spotify Web API is available
             can_play_pause=False,
             can_seek=False,
@@ -246,7 +246,6 @@ class SpotifyConnectProvider(PluginProvider):
         self._source_details.can_play_pause = has_web_api
         self._source_details.can_seek = has_web_api
         self._source_details.can_next_previous = has_web_api
-        self._source_details.passive = not has_web_api
 
         # Register or unregister callbacks based on availability
         if has_web_api:
@@ -255,29 +254,16 @@ class SpotifyConnectProvider(PluginProvider):
             self._source_details.on_next = self._on_next
             self._source_details.on_previous = self._on_previous
             self._source_details.on_seek = self._on_seek
-            self._source_details.on_select = self._on_select
         else:
             self._source_details.on_play = None
             self._source_details.on_pause = None
             self._source_details.on_next = None
             self._source_details.on_previous = None
             self._source_details.on_seek = None
-            self._source_details.on_select = None
 
         # Trigger player update to reflect capability changes
         if self._source_details.in_use_by:
             self.mass.players.trigger_player_update(self._source_details.in_use_by)
-
-    async def _on_select(self) -> None:
-        """Handle source selection - transfer Spotify playback to this device."""
-        if not self._spotify_provider:
-            return
-        try:
-            # Transfer playback to this device when it's selected
-            await self._ensure_active_device()
-            await self._spotify_provider._put_data("me/player/play")
-        except Exception as err:
-            self.logger.debug("Failed to transfer playback on source selection: %s", err)
 
     async def _on_play(self) -> None:
         """Handle play command via Spotify Web API."""

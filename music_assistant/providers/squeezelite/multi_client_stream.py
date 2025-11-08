@@ -7,7 +7,7 @@ from contextlib import suppress
 
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.helpers.audio import get_ffmpeg_stream
+from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
 
 LOGGER = logging.getLogger(__name__)

@@ -310,12 +310,12 @@ CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     label="Enable Smart Fades",
     options=[
         ConfigValueOption("Disabled", "disabled"),
-        ConfigValueOption("Smart Fades", "smart_fades"),
+        ConfigValueOption("Smart Crossfade", "smart_crossfade"),
         ConfigValueOption("Standard Crossfade", "standard_crossfade"),
     ],
     default_value="disabled",
     description="Select the crossfade mode to use when transitioning between tracks.\n\n"
-    "- 'Smart Fades': Uses beat matching and DJ-like EQ filters to create smooth transitions"
+    "- 'Smart Crossfade': Uses beat matching and EQ filters to create smooth transitions"
     " between tracks.\n"
     "- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a "
     "track.",

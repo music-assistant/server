@@ -1448,9 +1448,10 @@ for more details.
             # timestamp, we do not update again.
             if not self.progress_guard.guard_ok_abs(progress):
                 continue
-            if progress.current_time is not None and not progress.current_time >= 30:
-                # same as mass default, only > 30s
-                continue
+            if progress.current_time is not None:
+                if int(progress.current_time) != 0 and progress.current_time >= 30:
+                    # same as mass default, only > 30s
+                    continue
             if progress.library_item_id not in known_ids:
                 continue
             __updated_items += 1
@@ -1499,11 +1500,14 @@ for more details.
         )
         if mass_audiobook is None:
             return
-        await self.mass.music.mark_item_played(
-            mass_audiobook,
-            fully_played=progress.is_finished,
-            seconds_played=int(progress.current_time),
-        )
+        if int(progress.current_time) == 0:
+            await self.mass.music.mark_item_unplayed(mass_audiobook)
+        else:
+            await self.mass.music.mark_item_played(
+                mass_audiobook,
+                fully_played=progress.is_finished,
+                seconds_played=int(progress.current_time),
+            )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
         # helper progress also ensures no useless progress updates,
@@ -1517,11 +1521,14 @@ for more details.
             mass_episode = await self.get_podcast_episode(_episode_id, add_progress=False)
         except MediaNotFoundError:
             return
-        await self.mass.music.mark_item_played(
-            mass_episode,
-            fully_played=progress.is_finished,
-            seconds_played=int(progress.current_time),
-        )
+        if int(progress.current_time) == 0:
+            await self.mass.music.mark_item_unplayed(mass_episode)
+        else:
+            await self.mass.music.mark_item_played(
+                mass_episode,
+                fully_played=progress.is_finished,
+                seconds_played=int(progress.current_time),
+            )
 
     async def _cache_set_helper_libraries(self) -> None:
         await self.mass.cache.set(

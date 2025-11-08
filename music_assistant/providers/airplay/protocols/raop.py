@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, cast
 
@@ -196,6 +197,7 @@ class RaopStream(AirPlayProtocol):
                 logger.debug("End of stream reached")
                 break
             logger.log(VERBOSE_LOG_LEVEL, line)
+            await asyncio.sleep(0)  # Yield to event loop
 
         # ensure we're cleaned up afterwards (this also logs the returncode)
         logger.debug("CLIRaop stderr reader ended")
