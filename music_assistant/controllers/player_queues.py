@@ -1216,14 +1216,15 @@ class PlayerQueuesController(CoreController):
             # Type narrowing with proper error handling
             if not isinstance(queue_item.media_item, Track):
                 self.logger.error(
-                    "Data inconsistency: media_item has media_type=TRACK but class is %s for item %s",
+                    "Data inconsistency: media_item has media_type=TRACK "
+                    "but class is %s for item %s",
                     type(queue_item.media_item).__name__,
                     queue_item.uri
                 )
                 raise InvalidDataError(
                     f"Expected Track instance but got {type(queue_item.media_item).__name__}"
                 )
-    
+
             album = queue_item.media_item.album
             # prefer the full library media item so we have all metadata and provider(quality) info
             # always request the full library item as there might be other qualities available
@@ -1238,7 +1239,7 @@ class PlayerQueuesController(CoreController):
                         type(library_item).__name__,
                         queue_item.uri
                     )
-                    # Continue with original item rather than crashing
+                # Continue with original item rather than crashing
                 else:
                     queue_item.media_item = library_item
             elif not queue_item.media_item.image or queue_item.media_item.provider.startswith(
