@@ -1219,7 +1219,7 @@ class PlayerQueuesController(CoreController):
                     "Data inconsistency: media_item has media_type=TRACK "
                     "but class is %s for item %s",
                     type(queue_item.media_item).__name__,
-                    queue_item.uri
+                    queue_item.uri,
                 )
                 raise InvalidDataError(
                     f"Expected Track instance but got {type(queue_item.media_item).__name__}"
@@ -1237,7 +1237,7 @@ class PlayerQueuesController(CoreController):
                     self.logger.error(
                         "Library returned wrong type: expected Track but got %s for item %s",
                         type(library_item).__name__,
-                        queue_item.uri
+                        queue_item.uri,
                     )
                 # Continue with original item rather than crashing
                 else:
@@ -1252,7 +1252,7 @@ class PlayerQueuesController(CoreController):
                     self.logger.error(
                         "Fetched item has wrong type: expected Track but got %s for URI %s",
                         type(fetched_item).__name__,
-                        queue_item.uri
+                        queue_item.uri,
                     )
                     # Continue with original item
                 else:
@@ -1269,7 +1269,7 @@ class PlayerQueuesController(CoreController):
                 if not isinstance(library_album, Album):
                     self.logger.error(
                         "Library returned wrong album type: expected Album but got %s",
-                        type(library_album).__name__
+                        type(library_album).__name__,
                     )
                     # Keep original album
                 else:
