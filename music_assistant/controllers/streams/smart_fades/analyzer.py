@@ -48,8 +48,11 @@ class SmartFadesAnalyzer:
         """Analyze a track's beats for BPM matching smart fade."""
         stream_details_name = f"{provider_instance_id_or_domain}://{item_id}"
         start_time = time.perf_counter()
-        self.logger.debug(
-            "Starting %s beat analysis for track : %s", fragment.name, stream_details_name
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Starting %s beat analysis for track : %s",
+            fragment.name,
+            stream_details_name,
         )
 
         # Validate input audio data is frame-aligned
@@ -105,8 +108,9 @@ class SmartFadesAnalyzer:
                 )
                 return None
             self.logger.debug(
-                "Smart fades analysis completed for %s: BPM=%.1f, %d beats, "
+                "Smart fades %s analysis completed for %s: BPM=%.1f, %d beats, "
                 "%d downbeats, confidence=%.2f (took %.2fs)",
+                fragment.name,
                 stream_details_name,
                 analysis.bpm,
                 len(analysis.beats),
@@ -227,7 +231,8 @@ class SmartFadesAnalyzer:
         # Use the best offset to generate final downbeats
         downbeats = beats_array[best_offset::4]
 
-        self.logger.debug(
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
             "Downbeat estimation: offset=%d, consistency=%.2f, %d downbeats from %d beats",
             best_offset,
             best_consistency,

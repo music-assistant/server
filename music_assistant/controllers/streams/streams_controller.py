@@ -149,7 +149,7 @@ class StreamsController(CoreController):
         self.announcements: dict[str, AnnounceData] = {}
         self._crossfade_data: dict[str, CrossfadeData] = {}
         self._bind_ip: str = "0.0.0.0"
-        self.smart_fades_mixer = SmartFadesMixer(self.mass)
+        self._smart_fades_mixer = SmartFadesMixer(self.mass)
 
     @property
     def base_url(self) -> str:
@@ -160,6 +160,11 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
+
+    @property
+    def smart_fades_mixer(self) -> SmartFadesMixer:
+        """Return the SmartFadesMixer instance."""
+        return self._smart_fades_mixer
 
     async def get_config_entries(
         self,
@@ -1061,7 +1066,7 @@ class StreamsController(CoreController):
                     fadein_part = buffer[:crossfade_buffer_size]
                     remaining_bytes = buffer[crossfade_buffer_size:]
                     # Use the mixer to handle all crossfade logic
-                    crossfade_part = await self.smart_fades_mixer.mix(
+                    crossfade_part = await self._smart_fades_mixer.mix(
                         fade_in_part=fadein_part,
                         fade_out_part=last_fadeout_part,
                         fade_in_streamdetails=queue_track.streamdetails,
@@ -1646,7 +1651,7 @@ class StreamsController(CoreController):
                         bytes_written += len(fade_out_data)
                         raise AudioError("Failed to resample next track for crossfade")
                 try:
-                    crossfade_bytes = await self.smart_fades_mixer.mix(
+                    crossfade_bytes = await self._smart_fades_mixer.mix(
                         fade_in_part=buffer,
                         fade_out_part=fade_out_data,
                         fade_in_streamdetails=next_queue_item.streamdetails,
