@@ -55,9 +55,7 @@ class AsyncNamedPipeWriter:
         start_time = time.time()
 
         def _write() -> None:
-            # use mode r+b to open read/write, which prevents writes from blocking
-            # in the absence of a reader at the time of write
-            with open(self._pipe_path, "r+b") as pipe_file:
+            with open(self._pipe_path, "wb") as pipe_file:
                 pipe_file.write(data)
 
         # Run blocking write in thread pool
