@@ -92,7 +92,7 @@ class CacheController(CoreController):
         key: str,
         provider: str = "default",
         category: int = 0,
-        checksum: str | None = None,
+        checksum: str | int | None = None,
         default: Any = None,
         allow_bypass: bool = True,
     ) -> Any:
@@ -110,6 +110,8 @@ class CacheController(CoreController):
         if allow_bypass and BYPASS_CACHE.get():
             return default
         cur_time = int(time.time())
+        if checksum is not None and not isinstance(checksum, str):
+            checksum = str(checksum)
         # try memory cache first
         memory_key = f"{provider}/{category}/{key}"
         cache_data = self._mem_cache.get(memory_key)
@@ -147,7 +149,7 @@ class CacheController(CoreController):
         expiration: int = DEFAULT_CACHE_EXPIRATION,
         provider: str = "default",
         category: int = 0,
-        checksum: str | None = None,
+        checksum: str | int | None = None,
         persistent: bool = False,
     ) -> None:
         """
