@@ -56,6 +56,10 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.players.player_controller import AnnounceData
+from music_assistant.controllers.streams.smart_fades import (
+    SmartFadesMixer,
+)
+from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
     get_buffered_media_stream,
@@ -68,11 +72,6 @@ from music_assistant.helpers.audio import (
 from music_assistant.helpers.buffered_generator import buffered, use_buffer
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
-from music_assistant.helpers.smart_fades import (
-    SMART_CROSSFADE_DURATION,
-    SmartFadesMixer,
-    SmartFadesMode,
-)
 from music_assistant.helpers.util import (
     divide_chunks,
     get_ip_addresses,
@@ -83,6 +82,7 @@ from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider, PluginSource
+from music_assistant.models.smart_fades import SmartFadesMode
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
@@ -149,7 +149,7 @@ class StreamsController(CoreController):
         self.announcements: dict[str, AnnounceData] = {}
         self._crossfade_data: dict[str, CrossfadeData] = {}
         self._bind_ip: str = "0.0.0.0"
-        self._smart_fades_mixer = SmartFadesMixer(self.mass)
+        self.smart_fades_mixer = SmartFadesMixer(self.mass)
 
     @property
     def base_url(self) -> str:
@@ -1061,7 +1061,7 @@ class StreamsController(CoreController):
                     fadein_part = buffer[:crossfade_buffer_size]
                     remaining_bytes = buffer[crossfade_buffer_size:]
                     # Use the mixer to handle all crossfade logic
-                    crossfade_part = await self._smart_fades_mixer.mix(
+                    crossfade_part = await self.smart_fades_mixer.mix(
                         fade_in_part=fadein_part,
                         fade_out_part=last_fadeout_part,
                         fade_in_streamdetails=queue_track.streamdetails,
@@ -1646,7 +1646,7 @@ class StreamsController(CoreController):
                         bytes_written += len(fade_out_data)
                         raise AudioError("Failed to resample next track for crossfade")
                 try:
-                    crossfade_bytes = await self._smart_fades_mixer.mix(
+                    crossfade_bytes = await self.smart_fades_mixer.mix(
                         fade_in_part=buffer,
                         fade_out_part=fade_out_data,
                         fade_in_streamdetails=next_queue_item.streamdetails,
