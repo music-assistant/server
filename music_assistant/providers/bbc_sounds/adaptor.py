@@ -242,7 +242,6 @@ class StationConverter(BaseConverter):
         if station and source_obj.stream:
             stream_metadata = StreamMetadata(
                 title=programme_name,
-                duration=station.duration,
             )
             if station.image is not None:
                 stream_metadata.image_url = station.image.path
@@ -259,25 +258,11 @@ class StationConverter(BaseConverter):
                 audio_format=AudioFormat(
                     content_type=ContentType.try_parse(str(source_obj.stream))
                 ),
-                can_seek=True,
                 data={
                     "provider": self.context.provider_domain,
                     "station": station.item_id,
                 },
             )
-            if isinstance(source_obj, LiveStation):
-                stream_details.duration = (
-                    source_obj.duration.get("value") if source_obj.duration else 0
-                )
-                if source_obj.progress:
-                    try:
-                        seek_position = int(source_obj.progress.get("value"))  # pyright: ignore[reportArgumentType]
-                        stream_details.seek_position = int(seek_position) if source_obj else 0
-                    except (TypeError, ValueError):
-                        pass
-                stream_details.seconds_streamed = (
-                    source_obj.progress.get("value") if source_obj.progress else None
-                )
         return stream_details
 
     async def convert(self, source_obj: ConvertableTypes) -> Radio:
