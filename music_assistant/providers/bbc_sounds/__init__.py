@@ -154,15 +154,8 @@ class _Constants:
     NOW_PLAYING_REFRESH_TIME: int = 5
     HLS: Literal["hls"] = "hls"
     DASH: Literal["dash"] = "dash"
-    CONF_UPDATE_INTERVAL: str = "update_interval"
-    CONF_NOW_PLAYING: str = "now_playing"
     CONF_SHOW_LOCAL: str = "show_local"
     CONF_INTRO: str = "intro"
-    CONF_ENABLE_UK_CONTENT: str = "uk_content"
-    CONF_RECOMMENDATIONS: str = "recommendations"
-    CONF_RECOMMENDATIONS_HOMEPAGE: str = "homepage"
-    CONF_RECOMMENDATIONS_BROWSE: str = "browse"
-    CONF_RECOMMENDATIONS_DISABLE: str = "disable"
     CONF_STREAM_FORMAT: str = "stream_format"
     CONF_STREAM_FORMAT_HLS: str = HLS
     CONF_STREAM_FORMAT_DASH: str = DASH
@@ -186,7 +179,6 @@ class BBCSoundsProvider(MusicProvider):
         self.show_local_stations: bool = bool(
             self.config.get_value(_Constants.CONF_SHOW_LOCAL, False)
         )
-        self.recommendation_location = self.config.get_value(_Constants.CONF_RECOMMENDATIONS)
         self.stream_format: _StreamTypes = (
             _Constants.DASH
             if self.config.get_value(_Constants.CONF_STREAM_FORMAT) == _Constants.DASH
@@ -229,13 +221,9 @@ class BBCSoundsProvider(MusicProvider):
 
     async def _fetch_menu(self) -> None:
         self.logger.debug("No cached menu, fetching from API")
-
-        # Include recommendation folders in the menu if set in settings
-        recommendations = MenuRecommendationOptions.EXCLUDE
-        if self.recommendation_location == "browse":
-            recommendations = MenuRecommendationOptions.INCLUDE
-
-        self.menu = await self.client.personal.get_experience_menu(recommendations=recommendations)
+        self.menu = await self.client.personal.get_experience_menu(
+            recommendations=MenuRecommendationOptions.EXCLUDE
+        )
 
     def _stream_error(self, item_id: str, media_type: MediaType) -> MusicAssistantError:
         return MusicAssistantError(f"Couldn't get stream details for {item_id} ({media_type})")
@@ -747,19 +735,18 @@ class BBCSoundsProvider(MusicProvider):
         folders = []
 
         if self.client.auth.is_logged_in:
-            if self.recommendation_location == "homepage":
-                recommendations = await self.client.personal.get_experience_menu(
-                    recommendations=MenuRecommendationOptions.ONLY
-                )
-                self.logger.debug("Getting recommendations from API")
-                if recommendations.sub_items:
-                    for recommendation in recommendations.sub_items:
-                        # recommendation is a RecommendedMenuItem
-                        folder = await self.adaptor.new_object(
-                            recommendation, force_type=RecommendationFolder
-                        )
-                        if isinstance(folder, RecommendationFolder):
-                            folders.append(folder)
+            recommendations = await self.client.personal.get_experience_menu(
+                recommendations=MenuRecommendationOptions.ONLY
+            )
+            self.logger.debug("Getting recommendations from API")
+            if recommendations.sub_items:
+                for recommendation in recommendations.sub_items:
+                    # recommendation is a RecommendedMenuItem
+                    folder = await self.adaptor.new_object(
+                        recommendation, force_type=RecommendationFolder
+                    )
+                    if isinstance(folder, RecommendationFolder):
+                        folders.append(folder)
             return folders
         return []
 
