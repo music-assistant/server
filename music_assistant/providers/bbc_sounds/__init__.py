@@ -159,6 +159,8 @@ class _Constants:
     CONF_STREAM_FORMAT: str = "stream_format"
     CONF_STREAM_FORMAT_HLS: str = HLS
     CONF_STREAM_FORMAT_DASH: str = DASH
+    DEFAULT_EXPIRATION = 60 * 60 * 24 * 7  # 7 days
+    SHORT_EXPIRATION = 60 * 60  # 1 hour
 
 
 class BBCSoundsProvider(MusicProvider):
@@ -233,6 +235,7 @@ class BBCSoundsProvider(MusicProvider):
         """Return True as the provider is a streaming provider."""
         return True
 
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         episode_info = await self.client.streaming.get_by_pid(
@@ -243,6 +246,7 @@ class BBCSoundsProvider(MusicProvider):
             raise MusicAssistantError(f"Incorrect track returned for {prov_track_id}")
         return track
 
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
         # If we are requesting a previously-aired radio show, we lose access to the
         # schedule time. The best we can find out from the API is original release
@@ -714,7 +718,8 @@ class BBCSoundsProvider(MusicProvider):
             return ma_podcast
         raise MusicAssistantError("Incorrect format for podcast")
 
-    async def get_podcast_episodes(
+    @use_cache(expiration=_Constants.SHORT_EXPIRATION)  # type: ignore[arg-type]
+    async def get_podcast_episodes(  # type: ignore[override]
         self,
         prov_podcast_id: str,
     ) -> AsyncGenerator[PodcastEpisode, None]:
@@ -729,7 +734,7 @@ class BBCSoundsProvider(MusicProvider):
                 if this_episode and isinstance(this_episode, PodcastEpisode):
                     yield this_episode
 
-    @use_cache(3600)
+    @use_cache(expiration=_Constants.SHORT_EXPIRATION)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get available recommendations."""
         folders = []
