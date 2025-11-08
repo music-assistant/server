@@ -1886,7 +1886,7 @@ class PlayerQueuesController(CoreController):
                     # Some providers don't have similar tracks for all items. For example,
                     # Tidal can sometimes return a 404 when the 'similar_tracks' endpoint is called.
                     # in that case, just skip the track.
-                    self.logger.debug("No similar tracks not found for track %s", base_track.name)
+                    self.logger.debug("Similar tracks not found for track %s", base_track.name)
                     continue
                 for track in _similar_tracks:
                     if (
