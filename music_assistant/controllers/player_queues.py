@@ -421,18 +421,12 @@ class PlayerQueuesController(CoreController):
                     # item is MediaItemType | ItemMapping at this point
                     media_item = item
 
-                # Resolve ItemMapping early
-                if isinstance(media_item, ItemMapping):
-                    # uri is always set in __post_init__, type hint should be str
-                    assert media_item.uri is not None
-                    media_item = await self.mass.music.get_item_by_uri(media_item.uri)
-
-                # Skip BrowseFolder items
-                if isinstance(media_item, BrowseFolder):
-                    continue
                 # Save requested media item to play on the queue so we can use it as a source
                 # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
-                if media_item.media_type in (
+                # Skip ItemMapping and BrowseFolder - they don't have media_type yet
+                if not isinstance(
+                    media_item, (ItemMapping, BrowseFolder)
+                ) and media_item.media_type in (
                     MediaType.TRACK,
                     MediaType.ALBUM,
                     MediaType.PLAYLIST,
@@ -441,18 +435,24 @@ class PlayerQueuesController(CoreController):
                     queue.enqueued_media_items.append(media_item)
                     if len(queue.enqueued_media_items) > 10:
                         queue.enqueued_media_items.pop(0)
+
                 # handle default enqueue option if needed
                 if option is None:
-                    config_value = await self.mass.config.get_core_config_value(
-                        self.domain,
-                        f"default_enqueue_option_{media_item.media_type.value}",
-                    )
-                    option = QueueOption(str(config_value))
-                    if option == QueueOption.REPLACE:
-                        self.clear(queue_id, skip_stop=True)
+                    # Only MediaItemType has media_type attribute
+                    if not isinstance(media_item, (ItemMapping, BrowseFolder)):
+                        config_value = await self.mass.config.get_core_config_value(
+                            self.domain,
+                            f"default_enqueue_option_{media_item.media_type.value}",
+                        )
+                        option = QueueOption(str(config_value))
+                        if option == QueueOption.REPLACE:
+                            self.clear(queue_id, skip_stop=True)
+
                 # collect media_items to play
                 if radio_mode:
-                    radio_source.append(media_item)
+                    # Only add MediaItemType to radio_source
+                    if not isinstance(media_item, (ItemMapping, BrowseFolder)):
+                        radio_source.append(media_item)
                 else:
                     # Convert start_item to string URI if needed
                     start_item_uri: str | None = None
@@ -1775,10 +1775,19 @@ class PlayerQueuesController(CoreController):
         )
 
     async def _resolve_media_items(
-        self, media_item: MediaItemType | BrowseFolder, start_item: str | None = None
+        self, media_item: MediaItemType | ItemMapping | BrowseFolder, start_item: str | None = None
     ) -> list[MediaItemType]:
         """Resolve/unwrap media items to enqueue."""
-        # ItemMapping is already resolved in play_media before calling this function
+        # resolve Itemmapping to full media item
+        if isinstance(media_item, ItemMapping):
+            if media_item.uri is None:
+                raise InvalidDataError("ItemMapping has no URI")
+            media_item = await self.mass.music.get_item_by_uri(media_item.uri)
+
+        # Skip BrowseFolder items
+        if isinstance(media_item, BrowseFolder):
+            return []
+
         if media_item.media_type == MediaType.PLAYLIST:
             assert isinstance(media_item, Playlist)
             self.mass.create_task(self.mass.music.mark_item_played(media_item))
@@ -1809,7 +1818,6 @@ class PlayerQueuesController(CoreController):
             assert isinstance(media_item, BrowseFolder)
             return list(await self._get_folder_tracks(media_item))
         # all other: single track or radio item
-        assert not isinstance(media_item, BrowseFolder)
         return [media_item]
 
     async def _get_radio_tracks(
