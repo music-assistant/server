@@ -501,9 +501,7 @@ class QobuzProvider(MusicProvider):
         # https://www.qobuz.com/api.json/0.2/purchase/getUserPurchasesIds?limit=5000&user_id=xxxxxxx
         # {"albums":{"total":0,"items":[]},
         # "tracks":{"total":0,"items":[]},"user":{"id":xxxx,"login":"xxxxx"}}
-        if self._user_auth_info is None:
-            msg = "User auth info not available"
-            raise LoginFailed(msg)
+        assert self._user_auth_info is not None  # for type checking
         device_id = self._user_auth_info["user"]["device"]["id"]
         credential_id = self._user_auth_info["user"]["credential"]["id"]
         user_id = self._user_auth_info["user"]["id"]
