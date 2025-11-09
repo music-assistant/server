@@ -36,7 +36,6 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     SearchResults,
     Track,
-    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -564,15 +563,13 @@ class QobuzProvider(MusicProvider):
             artist.mbid = VARIOUS_ARTISTS_MBID
             artist.name = VARIOUS_ARTISTS_NAME
         if img := self.__get_image(artist_obj):
-            artist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=img,
-                        provider=self.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
+            artist.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img,
+                    provider=self.lookup_key,
+                    remotely_accessible=True,
+                )
             )
         if artist_obj.get("biography"):
             artist.metadata.description = artist_obj["biography"].get("content")
@@ -725,15 +722,13 @@ class QobuzProvider(MusicProvider):
         if track_obj.get("parental_warning"):
             track.metadata.explicit = True
         if img := self.__get_image(track_obj):
-            track.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=img,
-                        provider=self.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
+            track.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img,
+                    provider=self.lookup_key,
+                    remotely_accessible=True,
+                )
             )
         return track
 
@@ -763,15 +758,13 @@ class QobuzProvider(MusicProvider):
             is_editable=is_editable,
         )
         if img := self.__get_image(playlist_obj):
-            playlist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=img,
-                        provider=self.lookup_key,
-                        remotely_accessible=True,
-                    )
-                ]
+            playlist.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img,
+                    provider=self.lookup_key,
+                    remotely_accessible=True,
+                )
             )
         return playlist
 
