@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
-from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.controllers.streams.smart_fades.fades import (
     SmartCrossFade,
     SmartFade,
@@ -21,6 +19,8 @@ from music_assistant.models.smart_fades import (
     SmartFadesMode,
 )
 
+from . import LOGGER
+
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
@@ -34,8 +34,6 @@ class SmartFadesMixer:
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize smart fades mixer."""
         self.mass = mass
-        self.logger = logging.getLogger(__name__)
-        self.analyzer = SmartFadesAnalyzer(mass)
 
     async def mix(
         self,
@@ -91,7 +89,7 @@ class SmartFadesMixer:
         ):
             fade_out_analysis = stored_analysis
         else:
-            fade_out_analysis = await self.analyzer.analyze(
+            fade_out_analysis = await self.mass.streams.smart_fades_analyzer.analyze(
                 fade_out_streamdetails.item_id,
                 fade_out_streamdetails.provider,
                 SmartFadesAnalysisFragment.OUTRO,
@@ -107,7 +105,7 @@ class SmartFadesMixer:
         ):
             fade_in_analysis = stored_analysis
         else:
-            fade_in_analysis = await self.analyzer.analyze(
+            fade_in_analysis = await self.mass.streams.smart_fades_analyzer.analyze(
                 fade_in_streamdetails.item_id,
                 fade_in_streamdetails.provider,
                 SmartFadesAnalysisFragment.INTRO,
@@ -129,9 +127,7 @@ class SmartFadesMixer:
                     pcm_format,
                 )
             except Exception as e:
-                self.logger.warning(
-                    "Smart crossfade failed: %s, falling back to standard crossfade", e
-                )
+                LOGGER.warning("Smart crossfade failed: %s, falling back to standard crossfade", e)
 
         # Always fallback to Standard Crossfade in case something goes wrong
         smart_fade = StandardCrossFade(crossfade_duration=standard_crossfade_duration)

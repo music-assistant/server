@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
@@ -25,6 +24,8 @@ from music_assistant.models.smart_fades import (
     SmartFadesAnalysis,
 )
 
+from . import LOGGER
+
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
@@ -38,7 +39,6 @@ class SmartFade(ABC):
 
     def __init__(self) -> None:
         """Initialize SmartFade base class."""
-        self.logger = logging.getLogger(__name__)
         self.filters = []
 
     @abstractmethod
@@ -108,7 +108,7 @@ class SmartFade(ABC):
             "-",
         ]
         smart_fade_filters = self._get_ffmpeg_filters()
-        self.logger.debug(
+        LOGGER.debug(
             "Applying smartfade: %s",
             self,
         )
@@ -130,7 +130,7 @@ class SmartFade(ABC):
                 "-",
             ]
         )
-        self.logger.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
+        LOGGER.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
 
         # Execute the enhanced smart fade with full buffer
         _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
@@ -210,7 +210,7 @@ class SmartCrossFade(SmartFade):
         if fadein_start_pos and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION:
             self.filters.append(TrimFilter(fadein_start_pos=fadein_start_pos))
         else:
-            self.logger.log(
+            LOGGER.log(
                 VERBOSE_LOG_LEVEL,
                 "Skipping beat alignment: not enough audio after trim (%.1fs + %.1fs > %.1fs)",
                 fadein_start_pos,
@@ -291,7 +291,7 @@ class SmartCrossFade(SmartFade):
 
         # Log if we had to constrain the duration
         if musical_duration > SMART_CROSSFADE_DURATION:
-            self.logger.log(
+            LOGGER.log(
                 VERBOSE_LOG_LEVEL,
                 "Constraining crossfade duration from %.1fs to %.1fs (buffer limit)",
                 musical_duration,
@@ -325,7 +325,7 @@ class SmartCrossFade(SmartFade):
             fadein_buffer = SMART_CROSSFADE_DURATION - fadein_start_pos
             if test_duration <= fadein_buffer:
                 if bars < ideal_bars:
-                    self.logger.log(
+                    LOGGER.log(
                         VERBOSE_LOG_LEVEL,
                         "Reduced crossfade from %d to %d bars (fadein buffer=%.1fs, needed=%.1fs)",
                         ideal_bars,
@@ -370,7 +370,7 @@ class SmartCrossFade(SmartFade):
             return beat_positions
 
         # Fallback: No beat alignment possible
-        self.logger.log(VERBOSE_LOG_LEVEL, "No beat alignment possible (insufficient beats)")
+        LOGGER.log(VERBOSE_LOG_LEVEL, "No beat alignment possible (insufficient beats)")
         return None
 
     def _adjust_crossfade_to_downbeats(
@@ -387,7 +387,7 @@ class SmartCrossFade(SmartFade):
         ideal_start_pos = SMART_CROSSFADE_DURATION - crossfade_duration
 
         # Debug logging
-        self.logger.log(
+        LOGGER.log(
             VERBOSE_LOG_LEVEL,
             "Downbeat adjustment - ideal_start=%.2fs (buffer=%.1fs - crossfade=%.2fs), "
             "fadein_start=%.2fs",
@@ -413,7 +413,7 @@ class SmartCrossFade(SmartFade):
             adjusted_duration = float(SMART_CROSSFADE_DURATION - earlier_downbeat)
             if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
                 if abs(adjusted_duration - crossfade_duration) > 0.1:
-                    self.logger.log(
+                    LOGGER.log(
                         VERBOSE_LOG_LEVEL,
                         "Adjusted crossfade duration from %.2fs to %.2fs to align with "
                         "downbeat at %.2fs (earlier)",
@@ -428,7 +428,7 @@ class SmartCrossFade(SmartFade):
             adjusted_duration = float(SMART_CROSSFADE_DURATION - later_downbeat)
             if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
                 if abs(adjusted_duration - crossfade_duration) > 0.1:
-                    self.logger.log(
+                    LOGGER.log(
                         VERBOSE_LOG_LEVEL,
                         "Adjusted crossfade duration from %.2fs to %.2fs to align with "
                         "downbeat at %.2fs (later)",
@@ -439,7 +439,7 @@ class SmartCrossFade(SmartFade):
                 return adjusted_duration
 
         # If no suitable downbeat found, return original duration
-        self.logger.log(
+        LOGGER.log(
             VERBOSE_LOG_LEVEL,
             "Could not adjust crossfade duration to downbeats, using original %.2fs",
             crossfade_duration,

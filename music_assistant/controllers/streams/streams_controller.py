@@ -9,6 +9,7 @@ the upnp callbacks and json rpc api for slimproto clients.
 from __future__ import annotations
 
 import asyncio
+import copy
 import gc
 import logging
 import os
@@ -38,6 +39,7 @@ from music_assistant.constants import (
     CONF_BIND_PORT,
     CONF_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
+    CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CHANNELS,
@@ -56,9 +58,11 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.players.player_controller import AnnounceData
+from music_assistant.controllers.streams.smart_fades import LOGGER as SMART_FADES_LOGGER
 from music_assistant.controllers.streams.smart_fades import (
     SmartFadesMixer,
 )
+from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.controllers.streams.smart_fades.fades import SMART_CROSSFADE_DURATION
 from music_assistant.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.helpers.audio import (
@@ -101,6 +105,7 @@ isfile = wrap(os.path.isfile)
 
 CONF_ALLOW_BUFFER: Final[str] = "allow_buffering"
 CONF_ALLOW_CROSSFADE_SAME_ALBUM: Final[str] = "allow_crossfade_same_album"
+CONF_SMART_FADES_LOG_LEVEL: Final[str] = "smart_fades_log_level"
 
 # Calculate total system memory once at module load time
 TOTAL_SYSTEM_MEMORY_GB: Final[float] = get_total_system_memory()
@@ -150,6 +155,7 @@ class StreamsController(CoreController):
         self._crossfade_data: dict[str, CrossfadeData] = {}
         self._bind_ip: str = "0.0.0.0"
         self._smart_fades_mixer = SmartFadesMixer(self.mass)
+        self._smart_fades_analyzer = SmartFadesAnalyzer(self.mass)
 
     @property
     def base_url(self) -> str:
@@ -166,6 +172,11 @@ class StreamsController(CoreController):
         """Return the SmartFadesMixer instance."""
         return self._smart_fades_mixer
 
+    @property
+    def smart_fades_analyzer(self) -> SmartFadesAnalyzer:
+        """Return the SmartFadesAnalyzer instance."""
+        return self._smart_fades_analyzer
+
     async def get_config_entries(
         self,
         action: str | None = None,
@@ -174,6 +185,8 @@ class StreamsController(CoreController):
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses()
         default_port = await select_free_port(8097, 9200)
+        smart_fades_log_level_confentry = copy.deepcopy(CONF_ENTRY_LOG_LEVEL)
+        smart_fades_log_level_confentry.key = CONF_SMART_FADES_LOG_LEVEL
         return (
             ConfigEntry(
                 key=CONF_PUBLISH_IP,
@@ -271,6 +284,15 @@ class StreamsController(CoreController):
                 category="advanced",
                 required=False,
             ),
+            ConfigEntry(
+                key=CONF_SMART_FADES_LOG_LEVEL,
+                type=ConfigEntryType.STRING,
+                label="Smart Fades Log level",
+                description="Log level for the Smart Fades mixer and analyzer.",
+                options=CONF_ENTRY_LOG_LEVEL.options,
+                default_value="GLOBAL",
+                category="advanced",
+            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -330,6 +352,11 @@ class StreamsController(CoreController):
                 ),
             ],
         )
+        _smart_fades_log_level = config.get_value(CONF_SMART_FADES_LOG_LEVEL)
+        if _smart_fades_log_level == "GLOBAL":
+            _smart_fades_log_level = self.logger.level
+        # Set log level on smart fades package logger (shared by mixer, analyzer, fades)
+        SMART_FADES_LOGGER.setLevel(_smart_fades_log_level)
         # Start periodic garbage collection task
         # This ensures memory from audio buffers and streams is cleaned up regularly
         self.mass.call_later(900, self._periodic_garbage_collection)  # 15 minutes

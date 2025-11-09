@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from .analyzer import SmartFadesAnalyzer
-from .mixer import SmartFadesMixer
+import logging
 
-__all__ = ["SmartFadesAnalyzer", "SmartFadesMixer"]
+# Define LOGGER first to avoid circular import issues
+LOGGER = logging.getLogger(__name__)
+
+from .analyzer import SmartFadesAnalyzer  # noqa: E402
+from .mixer import SmartFadesMixer  # noqa: E402
+
+__all__ = ["LOGGER", "SmartFadesAnalyzer", "SmartFadesMixer"]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 import warnings
 from typing import TYPE_CHECKING
@@ -21,6 +20,8 @@ from music_assistant.models.smart_fades import (
     SmartFadesAnalysisFragment,
 )
 
+from . import LOGGER
+
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
@@ -35,7 +36,6 @@ class SmartFadesAnalyzer:
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize smart fades analyzer."""
         self.mass = mass
-        self.logger = logging.getLogger(__name__)
 
     async def analyze(
         self,
@@ -48,7 +48,7 @@ class SmartFadesAnalyzer:
         """Analyze a track's beats for BPM matching smart fade."""
         stream_details_name = f"{provider_instance_id_or_domain}://{item_id}"
         start_time = time.perf_counter()
-        self.logger.log(
+        LOGGER.log(
             VERBOSE_LOG_LEVEL,
             "Starting %s beat analysis for track : %s",
             fragment.name,
@@ -60,7 +60,7 @@ class SmartFadesAnalyzer:
 
         fragment_duration = len(audio_data) / (pcm_format.pcm_sample_size)
         try:
-            self.logger.log(
+            LOGGER.log(
                 VERBOSE_LOG_LEVEL,
                 "Audio data: %.2fs, %d bytes",
                 fragment_duration,
@@ -73,7 +73,7 @@ class SmartFadesAnalyzer:
                 samples_per_channel = len(audio_array) // pcm_format.channels
                 valid_samples = samples_per_channel * pcm_format.channels
                 if valid_samples != len(audio_array):
-                    self.logger.warning(
+                    LOGGER.warning(
                         "Audio buffer size (%d) not divisible by channels (%d), "
                         "truncating %d samples",
                         len(audio_array),
@@ -91,7 +91,7 @@ class SmartFadesAnalyzer:
 
             # Validate that the audio is finite (no NaN or Inf values)
             if not np.all(np.isfinite(mono_audio)):
-                self.logger.error(
+                LOGGER.error(
                     "Audio buffer contains non-finite values (NaN/Inf) for %s, cannot analyze",
                     stream_details_name,
                 )
@@ -101,13 +101,13 @@ class SmartFadesAnalyzer:
 
             total_time = time.perf_counter() - start_time
             if not analysis:
-                self.logger.debug(
+                LOGGER.debug(
                     "No analysis results found after analyzing audio for: %s (took %.2fs).",
                     stream_details_name,
                     total_time,
                 )
                 return None
-            self.logger.debug(
+            LOGGER.debug(
                 "Smart fades %s analysis completed for %s: BPM=%.1f, %d beats, "
                 "%d downbeats, confidence=%.2f (took %.2fs)",
                 fragment.name,
@@ -126,7 +126,7 @@ class SmartFadesAnalyzer:
             return analysis
         except Exception as e:
             total_time = time.perf_counter() - start_time
-            self.logger.exception(
+            LOGGER.exception(
                 "Beat analysis error for %s: %s (took %.2fs)",
                 stream_details_name,
                 e,
@@ -158,7 +158,7 @@ class SmartFadesAnalyzer:
             # librosa returns np.float64 arrays when units="time"
 
             if len(beats_array) < 2:
-                self.logger.warning("Insufficient beats detected: %d", len(beats_array))
+                LOGGER.warning("Insufficient beats detected: %d", len(beats_array))
                 return None
 
             bpm = float(tempo.item()) if hasattr(tempo, "item") else float(tempo)
@@ -189,7 +189,7 @@ class SmartFadesAnalyzer:
             )
 
         except Exception as e:
-            self.logger.exception("Librosa beat analysis failed: %s", e)
+            LOGGER.exception("Librosa beat analysis failed: %s", e)
             return None
 
     def _estimate_musical_downbeats(
@@ -231,7 +231,7 @@ class SmartFadesAnalyzer:
         # Use the best offset to generate final downbeats
         downbeats = beats_array[best_offset::4]
 
-        self.logger.log(
+        LOGGER.log(
             VERBOSE_LOG_LEVEL,
             "Downbeat estimation: offset=%d, consistency=%.2f, %d downbeats from %d beats",
             best_offset,
@@ -254,5 +254,5 @@ class SmartFadesAnalyzer:
                 self._librosa_beat_analysis, audio_data, fragment, sample_rate
             )
         except Exception as e:
-            self.logger.exception("Beat tracking analysis failed: %s", e)
+            LOGGER.exception("Beat tracking analysis failed: %s", e)
             return None
