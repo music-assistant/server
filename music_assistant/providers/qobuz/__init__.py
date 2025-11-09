@@ -173,42 +173,29 @@ class QobuzProvider(MusicProvider):
             if media_types[0] == MediaType.PLAYLIST:
                 params["type"] = "playlists"
         if searchresult := await self._get_data("catalog/search", **params):
-            searchresult = cast("dict[str, Any]", searchresult)
             if "artists" in searchresult and MediaType.ARTIST in media_types:
                 result.artists = [
-                    *result.artists,
-                    *[
-                        self._parse_artist(item)
-                        for item in searchresult["artists"]["items"]
-                        if (item and item["id"])
-                    ],
+                    self._parse_artist(item)
+                    for item in searchresult["artists"]["items"]
+                    if (item and item["id"])
                 ]
             if "albums" in searchresult and MediaType.ALBUM in media_types:
                 result.albums = [
-                    *result.albums,
-                    *[
-                        await self._parse_album(item)
-                        for item in searchresult["albums"]["items"]
-                        if (item and item["id"])
-                    ],
+                    await self._parse_album(item)
+                    for item in searchresult["albums"]["items"]
+                    if (item and item["id"])
                 ]
             if "tracks" in searchresult and MediaType.TRACK in media_types:
                 result.tracks = [
-                    *result.tracks,
-                    *[
-                        await self._parse_track(item)
-                        for item in searchresult["tracks"]["items"]
-                        if (item and item["id"])
-                    ],
+                    await self._parse_track(item)
+                    for item in searchresult["tracks"]["items"]
+                    if (item and item["id"])
                 ]
             if "playlists" in searchresult and MediaType.PLAYLIST in media_types:
                 result.playlists = [
-                    *result.playlists,
-                    *[
-                        self._parse_playlist(item)
-                        for item in searchresult["playlists"]["items"]
-                        if (item and item["id"])
-                    ],
+                    self._parse_playlist(item)
+                    for item in searchresult["playlists"]["items"]
+                    if (item and item["id"])
                 ]
         return result
 
@@ -245,7 +232,7 @@ class QobuzProvider(MusicProvider):
         """Get full artist details by id."""
         params: dict[str, Any] = {"artist_id": prov_artist_id}
         artist_obj = await self._get_data("artist/get", **params)
-        if artist_obj and isinstance(artist_obj, dict) and artist_obj.get("id"):
+        if artist_obj and artist_obj.get("id"):
             return self._parse_artist(artist_obj)
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
@@ -255,7 +242,7 @@ class QobuzProvider(MusicProvider):
         """Get full album details by id."""
         params: dict[str, Any] = {"album_id": prov_album_id}
         album_obj = await self._get_data("album/get", **params)
-        if album_obj and isinstance(album_obj, dict) and album_obj.get("id"):
+        if album_obj and album_obj.get("id"):
             return await self._parse_album(album_obj)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
@@ -265,7 +252,7 @@ class QobuzProvider(MusicProvider):
         """Get full track details by id."""
         params: dict[str, Any] = {"track_id": prov_track_id}
         track_obj = await self._get_data("track/get", **params)
-        if track_obj and isinstance(track_obj, dict) and track_obj.get("id"):
+        if track_obj and track_obj.get("id"):
             return await self._parse_track(track_obj)
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
@@ -275,7 +262,7 @@ class QobuzProvider(MusicProvider):
         """Get full playlist details by id."""
         params: dict[str, Any] = {"playlist_id": prov_playlist_id}
         playlist_obj = await self._get_data("playlist/get", **params)
-        if playlist_obj and isinstance(playlist_obj, dict) and playlist_obj.get("id"):
+        if playlist_obj and playlist_obj.get("id"):
             return self._parse_playlist(playlist_obj)
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
@@ -289,7 +276,7 @@ class QobuzProvider(MusicProvider):
             is_public=0,
             is_collaborative=0,
         )
-        if not playlist_obj or not isinstance(playlist_obj, dict) or not playlist_obj.get("id"):
+        if not playlist_obj or not playlist_obj.get("id"):
             msg = f"Failed to create playlist: {name}"
             raise InvalidDataError(msg)
         return self._parse_playlist(playlist_obj)
@@ -318,7 +305,7 @@ class QobuzProvider(MusicProvider):
             offset=offset,
             limit=page_size,
         )
-        if not qobuz_result or not isinstance(qobuz_result, dict):
+        if not qobuz_result:
             return result
 
         for index, track_obj in enumerate(qobuz_result["tracks"]["items"], 1):
@@ -339,9 +326,8 @@ class QobuzProvider(MusicProvider):
             offset=0,
             limit=100,
         )
-        if not result or not isinstance(result, dict):
+        if not result:
             return []
-
         return [
             await self._parse_album(item)
             for item in result["albums"]["items"]
@@ -358,7 +344,7 @@ class QobuzProvider(MusicProvider):
             offset=0,
             limit=25,
         )
-        if result and isinstance(result, dict) and result.get("playlists"):
+        if result and result.get("playlists"):
             return [
                 await self._parse_track(item)
                 for item in result["playlists"][0]["tracks"]["items"]
@@ -369,7 +355,7 @@ class QobuzProvider(MusicProvider):
         searchresult = await self._get_data(
             "catalog/search", query=artist.name, limit=25, type="tracks"
         )
-        if not searchresult or not isinstance(searchresult, dict):
+        if not searchresult:
             return []
 
         return [
@@ -441,7 +427,7 @@ class QobuzProvider(MusicProvider):
                 offset=idx,
                 limit=1,
             )
-            if not qobuz_result or not isinstance(qobuz_result, dict):
+            if not qobuz_result:
                 continue
             playlist_track_id = qobuz_result["tracks"]["items"][0]["playlist_track_id"]
             playlist_track_ids.add(str(playlist_track_id))
@@ -465,7 +451,7 @@ class QobuzProvider(MusicProvider):
                 track_id=item_id,
                 intent="stream",
             )
-            if result and isinstance(result, dict) and result.get("url"):
+            if result and result.get("url"):
                 streamdata = result
                 break
         if not streamdata:
@@ -778,7 +764,6 @@ class QobuzProvider(MusicProvider):
         }
         details = await self._get_data("user/login", **params)
         if details and "user" in details:
-            details = cast("dict[str, Any]", details)
             self._user_auth_info = details
             self.logger.info(
                 "Successfully logged in to Qobuz as %s", details["user"]["display_name"]
@@ -801,8 +786,6 @@ class QobuzProvider(MusicProvider):
             offset += limit
             if not result:
                 break
-            if not isinstance(result, dict):
-                break
             if not result.get(key) or not result[key].get("items"):
                 break
             for item in result[key]["items"]:
@@ -814,7 +797,7 @@ class QobuzProvider(MusicProvider):
     @throttle_with_retries
     async def _get_data(
         self, endpoint: str, sign_request: bool = False, **kwargs: Any
-    ) -> dict[str, Any] | list[Any] | None:
+    ) -> dict[str, Any] | None:
         """Get data from api."""
         self.logger.debug("Handling GET request to %s", endpoint)
         url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
@@ -856,7 +839,7 @@ class QobuzProvider(MusicProvider):
                 raise MediaNotFoundError(f"{endpoint} not found")
             response.raise_for_status()
             try:
-                return cast("dict[str, Any] | list[Any]", await response.json(loads=json_loads))
+                return cast("dict[str, Any]", await response.json(loads=json_loads))
             except client_exceptions.ContentTypeError as err:
                 text = err.message or await response.text() or err.status
                 msg = f"Error while handling {endpoint}: {text}"
