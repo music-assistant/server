@@ -300,6 +300,10 @@ class StreamsController(CoreController):
         # copy log level to audio/ffmpeg loggers
         AUDIO_LOGGER.setLevel(self.logger.level)
         FFMPEG_LOGGER.setLevel(self.logger.level)
+        _smart_fades_log_level = config.get_value(CONF_SMART_FADES_LOG_LEVEL)
+        if _smart_fades_log_level == "GLOBAL":
+            _smart_fades_log_level = self.logger.level
+        SMART_FADES_LOGGER.setLevel(_smart_fades_log_level)
         # perform check for ffmpeg version
         await check_ffmpeg_version()
         # start the webserver
@@ -352,11 +356,6 @@ class StreamsController(CoreController):
                 ),
             ],
         )
-        _smart_fades_log_level = config.get_value(CONF_SMART_FADES_LOG_LEVEL)
-        if _smart_fades_log_level == "GLOBAL":
-            _smart_fades_log_level = self.logger.level
-        # Set log level on smart fades package logger (shared by mixer, analyzer, fades)
-        SMART_FADES_LOGGER.setLevel(_smart_fades_log_level)
         # Start periodic garbage collection task
         # This ensures memory from audio buffers and streams is cleaned up regularly
         self.mass.call_later(900, self._periodic_garbage_collection)  # 15 minutes
