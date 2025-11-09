@@ -393,8 +393,7 @@ class PlayerQueuesController(CoreController):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # always fetch the underlying player so we can raise early if its not available
         queue_player = self.mass.players.get(queue_id, True)
-        if queue_player is None:
-            raise PlayerUnavailableError(f"Player {queue_id} is not available")
+        assert queue_player is not None  # for type checking
         if queue_player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
