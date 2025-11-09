@@ -403,7 +403,13 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+    async def get_stream_details(
+        self,
+        item_id: str,
+        media_type: MediaType,
+        queue_id: str | None = None,
+        queue_item_id: str | None = None,
+    ) -> StreamDetails:
         """Get streamdetails for a track/radio/chapter/episode."""
         raise NotImplementedError
 

@@ -259,7 +259,13 @@ class PandoraProvider(MusicProvider):
             },
         )
 
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+    async def get_stream_details(
+        self,
+        item_id: str,
+        media_type: MediaType,
+        queue_id: str | None = None,
+        queue_item_id: str | None = None,
+    ) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if media_type != MediaType.RADIO:
             raise MediaNotFoundError(f"Unsupported media type: {media_type}")
@@ -269,16 +275,11 @@ class PandoraProvider(MusicProvider):
         parts = [
             MultiPartPath(
                 path=f"{self.mass.streams.base_url}/{self.instance_id}_stream?"
-                f"station_id={item_id}&track_num={i}",
+                f"station_id={item_id}&track_num={i}&queue_id={queue_id}"
+                f"&queue_item_id={queue_item_id}",
             )
             for i in range(1000)
         ]
-        # Is this what is envisaged to pass the static variables?
-        #    MultiPartPath(
-        #        path=f"{self.mass.streams.base_url}/{self.instance_id}_stream?"
-        #        f"station_id={item_id}&track_num={i}&queue_id={queue_id}"
-        #        f"&queue_item_id={queue_item_id}",
-        #    )
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
