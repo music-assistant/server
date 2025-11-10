@@ -423,7 +423,7 @@ class PlayerQueuesController(CoreController):
 
                 # Save requested media item to play on the queue so we can use it as a source
                 # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
-                # Skip ItemMapping and BrowseFolder - they don't have media_type yet
+                # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
                 if not isinstance(
                     media_item, (ItemMapping, BrowseFolder)
                 ) and media_item.media_type in (
@@ -438,7 +438,8 @@ class PlayerQueuesController(CoreController):
 
                 # handle default enqueue option if needed
                 if option is None:
-                    # Only MediaItemType has media_type attribute
+                    # Type guard to narrow type for mypy
+                    # only full MediaItemType objects have config options
                     if not isinstance(media_item, (ItemMapping, BrowseFolder)):
                         config_value = await self.mass.config.get_core_config_value(
                             self.domain,
@@ -450,7 +451,7 @@ class PlayerQueuesController(CoreController):
 
                 # collect media_items to play
                 if radio_mode:
-                    # Only add MediaItemType to radio_source
+                    # Type guard for mypy - only add full MediaItemType to radio_source
                     if not isinstance(media_item, (ItemMapping, BrowseFolder)):
                         radio_source.append(media_item)
                 else:
