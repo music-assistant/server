@@ -840,11 +840,14 @@ class Player(ABC):
         # if the player is grouped/synced, use the active source of the group/parent player
         if parent_player_id := (self.active_group or self.synced_to):
             if parent_player := self.mass.players.get(parent_player_id):
-                return parent_player._active_source
+                return parent_player.active_source
         for plugin_source in self.mass.players.get_plugin_sources():
             if plugin_source.in_use_by == self.player_id:
                 return plugin_source.id
-        if self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+        if (
+            self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            and self._active_source
+        ):
             # active source as reported by the player itself
             # but only if playing/paused, otherwise we always prefer the MA source
             return self._active_source
@@ -1251,6 +1254,18 @@ class Player(ABC):
         ):
             self._state.group_members.set([self.player_id, *self._state.group_members])
 
+        # track stop called state
+        if (
+            prev_state.playback_state == PlaybackState.IDLE
+            and self._state.playback_state != PlaybackState.IDLE
+        ):
+            self.__stop_called = False
+        elif (
+            prev_state.playback_state != PlaybackState.IDLE
+            and self._state.playback_state == PlaybackState.IDLE
+        ):
+            self.__stop_called = True
+
         # Auto correct player state if player is synced (or group child)
         # This is because some players/providers do not accurately update this info
         # for the sync child's.
@@ -1433,6 +1448,24 @@ class Player(ABC):
         so we can restore it when needed (e.g. after switching to a plugin source).
         """
         self.__active_mass_source = value
+        self.update_state()
+
+    __stop_called: bool = False
+
+    def mark_stop_called(self) -> None:
+        """Mark that the STOP command was called on the player."""
+        self.__stop_called = True
+
+    @property
+    def stop_called(self) -> bool:
+        """
+        Return True if the STOP command was called on the player.
+
+        This is used to differentiate between a user-initiated stop
+        and a natural end of playback (e.g. end of track/queue).
+        mainly for debugging/logging purposes by the streams controller.
+        """
+        return self.__stop_called
 
     def __hash__(self) -> int:
         """Return a hash of the Player."""

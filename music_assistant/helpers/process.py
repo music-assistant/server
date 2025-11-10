@@ -45,8 +45,17 @@ class AsyncProcess:
         stdout: bool | int | None = None,
         stderr: bool | int | None = False,
         name: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> None:
-        """Initialize AsyncProcess."""
+        """Initialize AsyncProcess.
+
+        :param args: Command and arguments to execute.
+        :param stdin: Stdin configuration (True for PIPE, False for None, or custom).
+        :param stdout: Stdout configuration (True for PIPE, False for None, or custom).
+        :param stderr: Stderr configuration (True for PIPE, False for DEVNULL, or custom).
+        :param name: Process name for logging.
+        :param env: Environment variables for the subprocess (None inherits parent env).
+        """
         self.proc: asyncio.subprocess.Process | None = None
         if name is None:
             name = args[0].split(os.sep)[-1]
@@ -56,6 +65,7 @@ class AsyncProcess:
         self._stdin = None if stdin is False else stdin
         self._stdout = None if stdout is False else stdout
         self._stderr = asyncio.subprocess.DEVNULL if stderr is False else stderr
+        self._env = env
         self._stderr_lock = asyncio.Lock()
         self._stdout_lock = asyncio.Lock()
         self._stdin_lock = asyncio.Lock()
@@ -102,6 +112,7 @@ class AsyncProcess:
             stdin=asyncio.subprocess.PIPE if self._stdin is True else self._stdin,
             stdout=asyncio.subprocess.PIPE if self._stdout is True else self._stdout,
             stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
+            env=self._env,
         )
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid

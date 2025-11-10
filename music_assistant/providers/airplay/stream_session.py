@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
 
+from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.helpers.audio import get_player_filter_params
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.util import TaskManager
-from music_assistant.providers.airplay.helpers import unix_time_to_ntp
+from music_assistant.providers.airplay.helpers import ntp_to_unix_time, unix_time_to_ntp
 
 from .constants import CONF_ENABLE_LATE_JOIN, ENABLE_LATE_JOIN_DEFAULT, StreamingProtocol
 from .protocols.airplay2 import AirPlay2Stream
@@ -176,7 +177,7 @@ class AirPlayStreamSession:
             if airplay_player not in self.sync_clients:
                 self.sync_clients.append(airplay_player)
 
-        await self._start_client(airplay_player, start_ntp)
+            await self._start_client(airplay_player, start_ntp)
 
     async def replace_stream(self, audio_source: AsyncGenerator[bytes, None]) -> None:
         """Replace the audio source of the stream."""
@@ -380,6 +381,12 @@ class AirPlayStreamSession:
 
     async def _start_client(self, airplay_player: AirPlayPlayer, start_ntp: int) -> None:
         """Start stream for a single client."""
+        sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
+        assert isinstance(sync_adjust, int)
+        if sync_adjust != 0:
+            # apply sync adjustment
+            start_ntp += sync_adjust * 1000  # sync_adjust is in seconds, NTP in milliseconds
+            start_ntp = unix_time_to_ntp(ntp_to_unix_time(start_ntp) + (sync_adjust / 1000))
         # start the stream
         assert airplay_player.stream  # for type checker
         await airplay_player.stream.start(start_ntp)
@@ -407,7 +414,7 @@ class AirPlayStreamSession:
             output_format=airplay_player.stream.pcm_format,
             filter_params=filter_params,
             audio_output=airplay_player.stream.audio_pipe.path,
-            extra_input_args=["-y", "-readrate", "1.0", "-readrate_initial_burst", "1.2"],
+            extra_input_args=["-y", "-re"],
         )
         await ffmpeg.start()
         self._player_ffmpeg[airplay_player.player_id] = ffmpeg

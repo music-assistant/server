@@ -52,7 +52,7 @@ class AsyncNamedPipeWriter:
         start_time = time.time()
 
         def _write() -> None:
-            with open(self._pipe_path, "wb", buffering=0) as pipe_file:
+            with open(self._pipe_path, "wb") as pipe_file:
                 pipe_file.write(data)
 
         # Run blocking write in thread pool
