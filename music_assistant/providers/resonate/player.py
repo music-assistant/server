@@ -331,6 +331,8 @@ class ResonatePlayer(Player):
         except Exception:
             self.logger.exception("Error during playback for player %s", self.display_name)
             raise
+        finally:
+            self.timed_client_stream = None
 
     async def set_members(
         self,
