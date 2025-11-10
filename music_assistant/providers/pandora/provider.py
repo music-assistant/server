@@ -296,7 +296,7 @@ class PandoraProvider(MusicProvider):
             ),
         )
 
-    @use_cache(300)  # Cache fragments for 5 minutes
+    # @use_cache(300)  # Cache fragments for 5 minutes
     async def _get_fragment_data(self, station_id: str, fragment_index: int) -> dict[str, Any]:
         """Fetch fragment data from Pandora API (cached per station + fragment index)."""
         self.logger.debug(
@@ -394,7 +394,6 @@ class PandoraProvider(MusicProvider):
                             (art["url"] for art in album_art if art.get("size") == 500),
                             album_art[-1]["url"] if album_art else None,
                         )
-
                     queue_item.streamdetails.stream_metadata = StreamMetadata(
                         title=track.get("songTitle", "Unknown Song"),
                         artist=track.get("artistName", "Unknown Artist"),
