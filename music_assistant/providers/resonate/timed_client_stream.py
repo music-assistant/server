@@ -55,7 +55,7 @@ class TimedClientStream:
         audio_source: AsyncGenerator[bytes, None],
         audio_format: AudioFormat,
     ) -> None:
-        """Initialize MultiClientStream."""
+        """Initialize TimedClientStream."""
         self.audio_source = audio_source
         self.audio_format = audio_format
         self.chunk_buffer = deque()
