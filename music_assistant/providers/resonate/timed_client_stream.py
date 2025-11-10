@@ -27,6 +27,8 @@ LOGGER = logging.getLogger(__name__)
 # sample rates may require testing
 # all in all, 10s buffer is a good starting point
 MIN_BUFFER_DURATION = 10.0
+# Maximum buffer duration before raising an error (safety mechanism)
+MAX_BUFFER_DURATION = MIN_BUFFER_DURATION + 5.0
 
 
 class TimedClientStream:
@@ -128,6 +130,11 @@ class TimedClientStream:
 
                 # Update current position
                 self.current_position += chunk_duration
+
+                # Safety check: ensure buffer doesn't grow unbounded
+                if self._get_buffer_duration() > MAX_BUFFER_DURATION:
+                    msg = f"Buffer exceeded maximum duration ({MAX_BUFFER_DURATION}s)"
+                    raise RuntimeError(msg)
         except StopAsyncIteration:
             # Source exhausted, add EOF marker
             async with self.buffer_lock:
