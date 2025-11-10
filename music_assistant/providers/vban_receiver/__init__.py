@@ -268,7 +268,9 @@ class VBANReceiverProvider(PluginProvider):
         )
         try:
             self._udp_socket_task = asyncio.create_task(
-                self._vban_receiver.listen(self._bind_ip, self._bind_port)
+                self._vban_receiver.listen(
+                    address=self._bind_ip, port=self._bind_port, controller=self
+                )
             )
         except OSError as err:
             raise SetupFailedError(f"Failed to start VBAN receiver plugin: {err}") from err
@@ -296,6 +298,11 @@ class VBANReceiverProvider(PluginProvider):
     def get_source(self) -> PluginSource:
         """Get (audio)source details for this plugin."""
         return self._source_details
+
+    @property
+    def active_player(self) -> bool:
+        """Report the active player status."""
+        return bool(self._source_details.in_use_by)
 
     async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Yield raw PCM chunks from the VBANIncomingStream queue."""
