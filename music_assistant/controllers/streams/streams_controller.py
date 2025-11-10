@@ -9,7 +9,6 @@ the upnp callbacks and json rpc api for slimproto clients.
 from __future__ import annotations
 
 import asyncio
-import copy
 import gc
 import logging
 import os
@@ -185,8 +184,6 @@ class StreamsController(CoreController):
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses()
         default_port = await select_free_port(8097, 9200)
-        smart_fades_log_level_confentry = copy.deepcopy(CONF_ENTRY_LOG_LEVEL)
-        smart_fades_log_level_confentry.key = CONF_SMART_FADES_LOG_LEVEL
         return (
             ConfigEntry(
                 key=CONF_PUBLISH_IP,
