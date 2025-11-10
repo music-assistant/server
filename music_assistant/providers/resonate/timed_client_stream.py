@@ -20,12 +20,11 @@ from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 
 LOGGER = logging.getLogger(__name__)
 
-# Minimum buffer retention time in seconds (10 seconds)
-# TODO: tweak this dynamically based on current condition?
-# So, we need 5s since that is the buffer size in aioresonate (query/provide to aioresonate)
-# Plus we need some headroom for ffmpeg processing, +5s seams to work well with 44.1kHz, but other
-# sample rates may require testing
-# all in all, 10s buffer is a good starting point
+# Minimum/target buffer retention time in seconds
+# This 10s buffer is currently required since:
+# - aioresonate currently uses a fixed 5s buffer to allow up to ~4s of network interruption
+# - ~2s allows for ffmpeg processing time and some margin
+# - ~3s are currently needed internally by aioresonate for initial buffering
 MIN_BUFFER_DURATION = 10.0
 # Maximum buffer duration before raising an error (safety mechanism)
 MAX_BUFFER_DURATION = MIN_BUFFER_DURATION + 5.0
