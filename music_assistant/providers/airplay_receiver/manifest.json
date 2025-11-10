@@ -1,0 +1,11 @@
+{
+  "type": "plugin",
+  "domain": "airplay_receiver",
+  "stage": "alpha",
+  "name": "AirPlay Receiver",
+  "description": "Receive AirPlay audio streams and use them as a source in Music Assistant.",
+  "codeowners": ["@music-assistant"],
+  "documentation": "https://music-assistant.io/plugins/airplay-receiver/",
+  "multi_instance": true,
+  "requirements": []
+}

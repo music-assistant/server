@@ -23,7 +23,10 @@ from music_assistant_models.enums import (
     PlayerType,
     RepeatMode,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import (
+    InvalidCommand,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -34,7 +37,6 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_SUPPORT_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_SYNC_ADJUST,
-    CONF_SAMPLE_RATES,
     INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -220,7 +222,7 @@ class SqueezelitePlayer(Player):
         """Handle PLAY MEDIA on the player."""
         if self.synced_to:
             msg = "A synced player cannot receive play commands directly"
-            raise RuntimeError(msg)
+            raise InvalidCommand(msg)
 
         if not self.group_members:
             # Simple, single-player playback
@@ -234,32 +236,14 @@ class SqueezelitePlayer(Player):
             return
 
         # this is a syncgroup, we need to handle this with a multi client stream
-        # Get the minimum supported sample rate across all group members (LCD)
-        min_sample_rate = 192000  # Start high
-        for member_id in [self.player_id, *self.group_members]:
-            supported_rates_conf = cast(
-                "list[tuple[str, str]]",
-                await self.mass.config.get_player_config_value(
-                    member_id, CONF_SAMPLE_RATES, unpack_splitted_values=True
-                ),
-            )
-            if supported_rates_conf:
-                member_max_rate = max(int(x[0]) for x in supported_rates_conf)
-                min_sample_rate = min(min_sample_rate, member_max_rate)
-
-        # For queue streams, further cap to content sample rate
-        if media.source_id and media.queue_item_id:
-            queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            min_sample_rate = min(
-                min_sample_rate, queue_item.streamdetails.audio_format.sample_rate
-            )
-
+        # Use a fixed 96kHz/24-bit format for syncgroup playback
         master_audio_format = AudioFormat(
             content_type=INTERNAL_PCM_FORMAT.content_type,
-            sample_rate=min_sample_rate,
-            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,  # 32-bit float for processing
+            sample_rate=96000,
+            bit_depth=24,
             channels=2,
         )
+
         # select audio source
         audio_source = self.mass.streams.get_stream(media, master_audio_format)
         # start the stream task
@@ -307,7 +291,7 @@ class SqueezelitePlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if self.synced_to:
             # this should not happen, but guard anyways
-            raise RuntimeError("Player is synced, cannot set members")
+            raise InvalidCommand("Player is synced, cannot set members")
         if not player_ids_to_add and not player_ids_to_remove:
             # nothing to do
             return
@@ -329,7 +313,7 @@ class SqueezelitePlayer(Player):
             if player_id == self.player_id or player_id in self.group_members:
                 # nothing to do: player is already part of the group
                 continue
-            child_player: SqueezelitePlayer | None = self.mass.players.get(player_id)
+            child_player = cast("SqueezelitePlayer | None", self.mass.players.get(player_id))
             if not child_player:
                 # should not happen, but guard against it
                 continue
@@ -421,7 +405,7 @@ class SqueezelitePlayer(Player):
             "source_id": media.source_id,
             "queue_item_id": media.queue_item_id,
         }
-        if queue := self.mass.player_queues.get(media.source_id):
+        if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
         await slimplayer.play_url(
@@ -509,6 +493,8 @@ class SqueezelitePlayer(Player):
         # TODO: fix this in the aioslimproto lib
         event_data = cast("str", event.data)
         queue = self.mass.player_queues.get_active_queue(self.player_id)
+        if not queue:
+            return
         if event_data.startswith("button preset_") and event_data.endswith(".single"):
             preset_id = event_data.split("preset_")[1].split(".")[0]
             preset_index = int(preset_id) - 1
@@ -546,7 +532,9 @@ class SqueezelitePlayer(Player):
         if not sync_master_id:
             # we only correct sync members, not the sync master itself
             return
-        if not (sync_master := self.provider.slimproto.get_player(sync_master_id)):
+        if not self._provider.slimproto or not (
+            sync_master := self._provider.slimproto.get_player(sync_master_id)
+        ):
             return  # just here as a guard as bad things can happen
 
         if sync_master.state != SlimPlayerState.PLAYING:
@@ -571,8 +559,8 @@ class SqueezelitePlayer(Player):
             sync_playpoints.clear()
 
         diff = int(
-            self.provider.get_corrected_elapsed_milliseconds(sync_master)
-            - self.provider.get_corrected_elapsed_milliseconds(self.client)
+            self._provider.get_corrected_elapsed_milliseconds(sync_master)
+            - self._provider.get_corrected_elapsed_milliseconds(self.client)
         )
 
         sync_playpoints.append(SyncPlayPoint(now, sync_master.player_id, diff))
@@ -621,7 +609,7 @@ class SqueezelitePlayer(Player):
                 self.player_id, f"preset_{preset_index}"
             ):
                 try:
-                    media_item = await self.mass.music.get_item_by_uri(preset_conf)
+                    media_item = await self.mass.music.get_item_by_uri(cast("str", preset_conf))
                     preset_items.append(
                         SlimPreset(
                             uri=media_item.uri,
