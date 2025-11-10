@@ -166,6 +166,8 @@ class CacheController(CoreController):
         assert self.database is not None
         if not key:
             return
+        if checksum is not None:
+            checksum = str(checksum)
         expires = int(time.time() + expiration)
         memory_key = f"{provider}/{category}/{key}"
         self._mem_cache[memory_key] = (data, checksum, expires)
