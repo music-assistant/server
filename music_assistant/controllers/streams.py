@@ -123,11 +123,6 @@ def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
     return (sample_rate, sample_size, channels)
 
 
-async def _bytes_to_generator(data: bytes) -> AsyncGenerator[bytes, None]:
-    """Convert bytes to async generator for ffmpeg input."""
-    yield data
-
-
 @dataclass
 class CrossfadeData:
     """Data class to hold crossfade data."""
@@ -303,16 +298,9 @@ class StreamsController(CoreController):
             self.publish_ip,
             self.publish_port,
         )
-        bind_port_value = self.publish_port
-        if isinstance(bind_port_value, int):
-            bind_port = bind_port_value
-        elif isinstance(bind_port_value, (float, str)):
-            bind_port = int(bind_port_value)
-        else:
-            bind_port = 8097
         await self._server.setup(
             bind_ip=bind_ip,
-            bind_port=bind_port,  # Use validated bind_port, not self.publish_port
+            bind_port=cast("int", self.publish_port),
             base_url=f"http://{self.publish_ip}:{self.publish_port}",
             static_routes=[
                 (
@@ -380,16 +368,10 @@ class StreamsController(CoreController):
         player_id: str,
     ) -> str:
         """Get the url for the Plugin Source stream/proxy."""
-        # Use player-specific output codec if available, fallback to flac
-        output_codec_val = await self.mass.config.get_player_config_value(
-            player_id, CONF_OUTPUT_CODEC
-        )
-        output_codec = ContentType.try_parse(str(output_codec_val) if output_codec_val else "flac")
-
-        fmt = output_codec.value
-        # handle raw pcm without exact format specifiers
-        if output_codec.is_pcm() and ";" not in fmt:
-            fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
+        if plugin_source.audio_format.content_type.is_pcm():
+            fmt = ContentType.WAV.value
+        else:
+            fmt = plugin_source.audio_format.content_type.value
         return f"{self._server.base_url}/pluginsource/{plugin_source.id}/{player_id}.{fmt}"
 
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:
@@ -467,21 +449,18 @@ class StreamsController(CoreController):
             # no crossfade on non-tracks
             smart_fades_mode = SmartFadesMode.DISABLED
         else:
-            smart_fades_mode = SmartFadesMode(
-                str(
-                    await self.mass.config.get_player_config_value(
-                        queue.queue_id, CONF_SMART_FADES_MODE
-                    )
-                    or SmartFadesMode.DISABLED
-                )
+            smart_fades_mode = cast(
+                "SmartFadesMode",
+                await self.mass.config.get_player_config_value(
+                    queue.queue_id, CONF_SMART_FADES_MODE
+                ),
             )
-            standard_crossfade_duration_val = self.mass.config.get_raw_player_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION, 10
+            standard_crossfade_duration = cast(
+                "int",
+                self.mass.config.get_raw_player_config_value(
+                    queue.queue_id, CONF_CROSSFADE_DURATION, 10
+                ),
             )
-            if isinstance(standard_crossfade_duration_val, (int, float)):
-                standard_crossfade_duration = int(standard_crossfade_duration_val)
-            else:
-                standard_crossfade_duration = 10
         if (
             smart_fades_mode != SmartFadesMode.DISABLED
             and PlayerFeature.GAPLESS_PLAYBACK not in queue_player.supported_features
@@ -1117,10 +1096,10 @@ class StreamsController(CoreController):
                     # we need to correct the bytes_written accordingly so the duration
                     # calculations at the end of the track are correct
                     crossfade_part_len = len(crossfade_part)
-                    bytes_written += crossfade_part_len // 2
+                    bytes_written += int(crossfade_part_len / 2)
                     if last_play_log_entry and last_play_log_entry.seconds_streamed is not None:
                         last_play_log_entry.seconds_streamed += (
-                            crossfade_part_len // 2
+                            crossfade_part_len / 2
                         ) / pcm_sample_size
                     # yield crossfade_part (in pcm_sample_size chunks)
                     for _chunk in divide_chunks(crossfade_part, pcm_sample_size):
@@ -1196,13 +1175,12 @@ class StreamsController(CoreController):
                 del _chunk
             # correct seconds streamed/duration
             last_part_seconds = len(last_fadeout_part) / pcm_sample_size
-            if queue_track.streamdetails:
-                if queue_track.streamdetails.seconds_streamed is not None:
-                    queue_track.streamdetails.seconds_streamed += last_part_seconds
-                if queue_track.streamdetails.duration is not None:
-                    queue_track.streamdetails.duration = int(
-                        queue_track.streamdetails.duration + last_part_seconds
-                    )
+            streamdetails = queue_track.streamdetails
+            assert streamdetails is not None
+            streamdetails.seconds_streamed = (
+                streamdetails.seconds_streamed or 0
+            ) + last_part_seconds
+            streamdetails.duration = int((streamdetails.duration or 0) + last_part_seconds)
             last_fadeout_part = b""
         total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
@@ -1271,18 +1249,14 @@ class StreamsController(CoreController):
         # this should already be set by the player controller, but just to be sure
         plugin_source.in_use_by = player_id
 
-        # Determine audio input and validate it's not None
-        audio_input = (
-            plugin_prov.get_audio_stream(player_id)
-            if plugin_source.stream_type == StreamType.CUSTOM
-            else plugin_source.path
-        )
-        if audio_input is None:
-            raise InvalidDataError(f"No audio input for plugin source {plugin_source_id}")
-
         try:
             async for chunk in get_ffmpeg_stream(
-                audio_input=audio_input,
+                audio_input=cast(
+                    "str | AsyncGenerator[bytes, None]",
+                    plugin_prov.get_audio_stream(player_id)
+                    if plugin_source.stream_type == StreamType.CUSTOM
+                    else plugin_source.path,
+                ),
                 input_format=plugin_source.audio_format,
                 output_format=output_format,
                 filter_params=player_filter_params,
@@ -1409,10 +1383,8 @@ class StreamsController(CoreController):
                     if len(fade_in_buffer) < pcm_format.pcm_sample_size * 4:
                         fade_in_buffer += chunk
                     elif fade_in_buffer:
-                        fade_data = fade_in_buffer + chunk
-
                         async for fade_chunk in get_ffmpeg_stream(
-                            audio_input=_bytes_to_generator(fade_data),
+                            audio_input=cast("AsyncGenerator[bytes, None]", fade_in_buffer + chunk),
                             input_format=pcm_format,
                             output_format=pcm_format,
                             filter_params=["afade=type=in:start_time=0:duration=3"],
