@@ -204,13 +204,13 @@ class SnapCastProvider(PlayerProvider):
         search_dict = self._ids_map.inverse
         ma_id = search_dict.get(snap_client_id)
         assert ma_id is not None  # for type checking
-        return ma_id
+        return cast("str", ma_id)
 
     def _get_snapclient_id(self, player_id: str) -> str:
         search_dict = self._ids_map
         snap_id = search_dict.get(player_id)
         assert snap_id is not None  # for type checking
-        return snap_id
+        return cast("str", snap_id)
 
     def _generate_and_register_id(self, snap_client_id: str) -> str:
         search_dict = self._ids_map.inverse
