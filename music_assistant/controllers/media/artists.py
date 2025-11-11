@@ -14,7 +14,6 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import Album, Artist, ItemMapping, Track, UniqueList
 
-from music_assistant import MusicAssistant
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ARTISTS,
@@ -27,6 +26,7 @@ from music_assistant.helpers.compare import compare_artist, compare_strings, cre
 from music_assistant.helpers.json import serialize_to_json
 
 if TYPE_CHECKING:
+    from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
 
 
