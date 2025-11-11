@@ -145,7 +145,6 @@ exclude = [
   '^music_assistant/providers/bluesound/.*$',
   '^music_assistant/providers/chromecast/.*$',
   '^music_assistant/providers/sonos/.*$',
-  '^music_assistant/providers/snapcast/.*$',
   '^music_assistant/providers/ytmusic/.*$',
   '^music_assistant/providers/airplay/protocols/airplay2.py',
 ]
