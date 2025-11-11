@@ -472,6 +472,8 @@ class MusicController(CoreController):
             f"AND provider in {available_providers_str} "
             "ORDER BY timestamp DESC"
         )
+
+        assert self.mass.music.database is not None  # for type checking
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[ItemMapping] = []
         available_providers = ("library", *get_global_cache_value("available_providers", []))
@@ -502,6 +504,7 @@ class MusicController(CoreController):
             "AND seconds_played > 0 "
             "ORDER BY timestamp DESC"
         )
+        assert self.mass.music.database is not None  # for type checking
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[ItemMapping] = []
         for db_row in db_rows:
@@ -854,6 +857,7 @@ class MusicController(CoreController):
         }
         if album_loudness not in (None, inf, -inf):
             values["loudness_album"] = album_loudness
+        assert self.database is not None  # for type checking
         await self.database.insert_or_replace(DB_TABLE_LOUDNESS_MEASUREMENTS, values)
 
     async def set_smart_fades_analysis(
@@ -885,6 +889,7 @@ class MusicController(CoreController):
             "confidence": analysis.confidence,
             "duration": analysis.duration,
         }
+        assert self.database is not None  # for type checking
         await self.database.insert_or_replace(DB_TABLE_SMART_FADES_ANALYSIS, values)
 
     async def get_smart_fades_analysis(
@@ -896,6 +901,7 @@ class MusicController(CoreController):
         """Get Smart Fades BPM analysis for a track from db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return None
+        assert self.database is not None  # for type checking
         db_row = await self.database.get_row(
             DB_TABLE_SMART_FADES_ANALYSIS,
             {
@@ -926,6 +932,7 @@ class MusicController(CoreController):
         """Get (EBU-R128) Integrated Loudness Measurement for a mediaitem in db."""
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             return None
+        assert self.database is not None  # for type checking
         db_row = await self.database.get_row(
             DB_TABLE_LOUDNESS_MEASUREMENTS,
             {
@@ -961,7 +968,7 @@ class MusicController(CoreController):
             # we deliberately skip builtin provider items as those are often
             # one-off items like TTS or some sound effect etc.
             return
-
+        assert self.database is not None  # for type checking
         # update generic playlog table (when not playing)
         if not is_playing:
             await self.database.insert(
@@ -1016,6 +1023,7 @@ class MusicController(CoreController):
     ) -> None:
         """Mark item as unplayed in playlog."""
         # update generic playlog table
+        assert self.database is not None  # for type checking
         await self.database.delete(
             DB_TABLE_PLAYLOG,
             {
@@ -1158,6 +1166,7 @@ class MusicController(CoreController):
         # Get MA's internal position from playlog
         ma_fully_played = False
         ma_position_ms = 0
+        assert self.database is not None  # for type checking
         if db_entry := await self.database.get_row(
             DB_TABLE_PLAYLOG,
             {
@@ -1248,6 +1257,7 @@ class MusicController(CoreController):
         await self.mass.cache.clear()
 
         # cleanup media items from db matched to deleted provider
+        assert self.database is not None  # for type checking
         self.logger.info(
             "Removing provider %s from library, this can take a a while...",
             provider_instance,
@@ -1295,6 +1305,7 @@ class MusicController(CoreController):
             errors += remaining_items_count
 
         # cleanup playlog table
+        assert self.mass.music.database is not None  # for type checking
         await self.mass.music.database.delete(
             DB_TABLE_PLAYLOG,
             {
@@ -1565,6 +1576,7 @@ class MusicController(CoreController):
         """Perform database cleanup/maintenance."""
         self.logger.debug("Performing database cleanup...")
         # Remove playlog entries older than 90 days
+        assert self.database is not None  # for type checking
         await self.database.delete_where_query(
             DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
         )
@@ -1593,6 +1605,7 @@ class MusicController(CoreController):
                 f"media_type = '{ctrl.media_type}' AND provider = 'library' "
                 f"AND item_id not in (select item_id from {ctrl.db_table})"
             )
+            assert self.mass.music.database is not None  # for type checking
             await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
         self.logger.debug("Database cleanup done")
 
@@ -1661,7 +1674,7 @@ class MusicController(CoreController):
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
-
+        assert self.database is not None  # for type checking
         if prev_version < 15:
             raise MusicAssistantError("Database schema version too old to migrate")
 
@@ -1783,6 +1796,7 @@ class MusicController(CoreController):
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
+        assert self.database is not None  # for type checking
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SETTINGS}(
                     [key] TEXT PRIMARY KEY,
@@ -2015,6 +2029,7 @@ class MusicController(CoreController):
 
     async def __create_database_indexes(self) -> None:
         """Create database indexes."""
+        assert self.database is not None  # for type checking
         for db_table in (
             DB_TABLE_ARTISTS,
             DB_TABLE_ALBUMS,
@@ -2125,6 +2140,7 @@ class MusicController(CoreController):
 
     async def __create_database_triggers(self) -> None:
         """Create database triggers."""
+        assert self.database is not None  # for type checking
         # triggers to auto update timestamps
         for db_table in (
             "artists",
