@@ -344,6 +344,12 @@ class PandoraProvider(MusicProvider):
 
         try:
             track_num = int(track_num_str)
+            # Log when the URL is being requested
+            import time
+
+            self.logger.info(
+                "=== TRACK URL REQUESTED === Track %d at timestamp %s", track_num, time.time()
+            )
         except ValueError:
             return web.Response(status=400, text="Invalid track_num")
 
@@ -384,6 +390,13 @@ class PandoraProvider(MusicProvider):
 
             # Update metadata if we have queue context
             if queue_id and queue_item_id:
+                self.logger.info(
+                    "=== UPDATING METADATA === Track %d (%s - %s) at timestamp %s",
+                    track_num,
+                    track.get("artistName"),
+                    track.get("songTitle"),
+                    time.time(),
+                )
                 queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
                 if queue_item and queue_item.streamdetails:
                     # Get the best quality album art
