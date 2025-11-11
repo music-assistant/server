@@ -97,7 +97,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:  # noqa: PLR0915
         """Add tracks to playlist."""
-        db_id = int(db_playlist_id)
+        db_id = int(db_playlist_id)  # ensure integer
         playlist = await self.get_library_item(db_id)
         if not playlist:
             raise MediaNotFoundError(f"Playlist with id {db_id} not found")
