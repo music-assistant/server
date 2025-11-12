@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
 
     from music_assistant import MusicAssistant
-    from music_assistant.models import MusicProvider
+    from music_assistant.models.music_provider import MusicProvider
 
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
@@ -130,20 +130,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         return library_item
 
-    async def _get_library_item_by_match(self, item: Track | ItemMapping) -> int | None:
+    async def _get_library_item_by_match(self, item: ItemCls | ItemMapping) -> int | None:
         if item.provider == "library":
             return int(item.item_id)
-        # search by provider mappings
+        # search by provider mappings if item is ItemMapping
         if isinstance(item, ItemMapping):
             if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-                return cur_item.item_id
-        elif cur_item := await self.get_library_item_by_prov_mappings(item.provider_mappings):
-            return cur_item.item_id
+                return int(cur_item.item_id)
+
+        # for all other items that are MediaItemType, check provider_mappings if it exists
+        provider_mappings = getattr(item, "provider_mappings", None)
+        if provider_mappings:
+            if cur_item := await self.get_library_item_by_prov_mappings(provider_mappings):
+                return int(cur_item.item_id)
         if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
             # Double check external IDs - if MBID exists, regards that as overriding
             if compare_media_item(item, cur_item):
-                return cur_item.item_id
+                return int(cur_item.item_id)
         # search by (exact) name match
         query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
         query_params = {"name": item.name, "sort_name": item.sort_name}
@@ -151,7 +155,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             extra_query=query, extra_query_params=query_params
         ):
             if compare_media_item(db_item, item, True):
-                return db_item.item_id
+                return int(db_item.item_id)
         return None
 
     async def update_item_in_library(
@@ -173,6 +177,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
         assert library_item, f"Item does not exist: {db_id}"
+        assert self.mass.music.database is not None
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
@@ -208,6 +213,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
     async def library_count(self, favorite_only: bool = False) -> int:
         """Return the total number of items in the library."""
+        assert self.mass.music.database is not None
         if favorite_only:
             sql_query = f"SELECT item_id FROM {self.db_table} WHERE favorite = 1"
             return await self.mass.music.database.get_count_from_query(sql_query)
@@ -278,6 +284,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         ):
             # schedule a refresh of the metadata on access of the item
             # e.g. the item is being played or opened in the UI
+            assert library_item.uri is not None
             self.mass.metadata.schedule_update_metadata(library_item.uri)
             return library_item
         # grab full details from the provider
@@ -312,19 +319,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         )
         match self.media_type:
             case MediaType.ARTIST:
-                return searchresult.artists
+                return [cast("ItemCls", x) for x in searchresult.artists]
             case MediaType.ALBUM:
-                return searchresult.albums
+                return [cast("ItemCls", x) for x in searchresult.albums]
             case MediaType.TRACK:
-                return searchresult.tracks
+                return [cast("ItemCls", x) for x in searchresult.tracks]
             case MediaType.PLAYLIST:
-                return searchresult.playlists
+                return [cast("ItemCls", x) for x in searchresult.playlists]
             case MediaType.AUDIOBOOK:
-                return searchresult.audiobooks
+                return [cast("ItemCls", x) for x in searchresult.audiobooks]
             case MediaType.PODCAST:
-                return searchresult.podcasts
+                return [cast("ItemCls", x) for x in searchresult.podcasts]
             case MediaType.RADIO:
-                return searchresult.radio
+                return [cast("ItemCls", x) for x in searchresult.radio]
             case _:
                 return []
 
@@ -338,19 +345,22 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             for prov_mapping in item.provider_mappings:
                 if not prov_mapping.available:
                     continue
-                if provider := self.mass.get_provider(
+                provider = self.mass.get_provider(
                     prov_mapping.provider_instance
                     if prefer_unique
                     else prov_mapping.provider_domain
-                ):
-                    if prefer_unique and provider.is_streaming_provider:
-                        continue
-                    return (prov_mapping.provider_instance, prov_mapping.item_id)
+                )
+                if not provider:
+                    continue
+                provider = cast("MusicProvider", provider)
+                if prefer_unique and provider.is_streaming_provider:
+                    continue
+                return (prov_mapping.provider_instance, prov_mapping.item_id)
         # last resort: return just the first entry
         for prov_mapping in item.provider_mappings:
             return (prov_mapping.provider_domain, prov_mapping.item_id)
 
-        return (None, None)
+        return ("", "")
 
     async def get_library_item(self, item_id: int | str) -> ItemCls:
         """Get single library item by id."""
@@ -491,17 +501,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if library_item.favorite == favorite:
             return
         match = {"item_id": db_id}
+        assert self.mass.music.database is not None
         await self.mass.music.database.update(self.db_table, match, {"favorite": favorite})
         library_item = await self.get_library_item(db_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
-    @guard_single_request
+    @guard_single_request  # type: ignore[type-var]  # TODO: fix typing for MediaControllerBase
     async def get_provider_item(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
-        fallback: ItemMapping | ItemCls = None,
+        fallback: ItemMapping | ItemCls | None = None,
     ) -> ItemCls:
         """Return item details for the given provider item id."""
         if provider_instance_id_or_domain == "library":
@@ -512,7 +523,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             provider = cast("MusicProvider", provider)
             with suppress(MediaNotFoundError):
                 async with self.mass.cache.handle_refresh(force_refresh):
-                    return await provider.get_item(self.media_type, item_id)
+                    return cast("ItemCls", await provider.get_item(self.media_type, item_id))
         # if we reach this point all possibilities failed and the item could not be found.
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so
@@ -527,22 +538,25 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         ):
             # fallback is a ItemMapping, try to convert to full item
             with suppress(LookupError, TypeError, ValueError):
-                return self.item_cls.from_dict(
-                    {
-                        **fallback.to_dict(),
-                        "provider_mappings": [
-                            {
-                                "item_id": fallback.item_id,
-                                "provider_domain": fallback_provider.domain,
-                                "provider_instance": fallback_provider.instance_id,
-                                "available": fallback.available,
-                            }
-                        ],
-                    }
+                return cast(
+                    "ItemCls",
+                    self.item_cls.from_dict(
+                        {
+                            **fallback.to_dict(),
+                            "provider_mappings": [
+                                {
+                                    "item_id": fallback.item_id,
+                                    "provider_domain": fallback_provider.domain,
+                                    "provider_instance": fallback_provider.instance_id,
+                                    "available": fallback.available,
+                                }
+                            ],
+                        }
+                    ),
                 )
         if fallback:
             # simply return the fallback item
-            return fallback
+            return cast("ItemCls", fallback)
         # all options exhausted, we really can not find this item
         msg = (
             f"{self.media_type.value}://{item_id} not "
@@ -578,6 +592,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if x.provider_instance != provider_instance_id and x.item_id != provider_item_id
         }
         # update provider_mappings table
+        assert self.mass.music.database is not None
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
             {
@@ -618,6 +633,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             # edge case: already deleted / race condition
             library_item = None
         # update provider_mappings table
+        assert self.mass.music.database is not None
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
             {
@@ -652,6 +668,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> None:
         """Update the provider_items table for the media item."""
         db_id = int(item_id)  # ensure integer
+        assert self.mass.music.database is not None
         if overwrite:
             # on overwrite, clear the provider_mappings table first
             # this is done for filesystem provider changing the path (and thus item_id)
@@ -737,9 +754,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
         # build and execute final query
         sql_query = self._build_final_query(query_parts, join_parts, order_by)
-
+        assert self.mass.music.database is not None
         return [
-            self.item_cls.from_dict(self._parse_db_row(db_row))
+            cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
             for db_row in await self.mass.music.database.get_rows_from_query(
                 sql_query, query_params, limit=limit, offset=offset
             )
@@ -850,7 +867,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return sql_query
 
     @staticmethod
-    def _parse_db_row(db_row: Mapping) -> dict[str, Any]:
+    def _parse_db_row(db_row: Mapping[str, Any]) -> dict[str, Any]:
         """Parse raw db Mapping into a dict."""
         db_row_dict = dict(db_row)
         db_row_dict["provider"] = "library"
