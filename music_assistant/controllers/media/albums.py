@@ -7,8 +7,15 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
-from music_assistant_models.media_items import Album, Artist, ItemMapping, Track, UniqueList
+from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    MediaItemImage,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
 from music_assistant.controllers.media.base import MediaControllerBase
@@ -20,9 +27,10 @@ from music_assistant.helpers.compare import (
     loose_compare_strings,
 )
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant import MusicAssistant
 
 
 class AlbumsController(MediaControllerBase[Album]):
@@ -32,9 +40,9 @@ class AlbumsController(MediaControllerBase[Album]):
     media_type = MediaType.ALBUM
     item_cls = Album
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
-        super().__init__(*args, **kwargs)
+        super().__init__(mass)
         self.base_query = """
         SELECT
             albums.*,
@@ -78,7 +86,7 @@ class AlbumsController(MediaControllerBase[Album]):
             return album
 
         # append artist details to full album item (resolve ItemMappings)
-        album_artists = UniqueList()
+        album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
         for artist in album.artists:
             if not isinstance(artist, ItemMapping):
                 album_artists.append(artist)
@@ -106,7 +114,7 @@ class AlbumsController(MediaControllerBase[Album]):
         album_types: list[AlbumType] | None = None,
     ) -> list[Album]:
         """Get in-database albums."""
-        extra_query_params: dict[str, Any] = extra_query_params or {}
+        extra_query_params = extra_query_params or {}
         extra_query_parts: list[str] = [extra_query] if extra_query else []
         extra_join_parts: list[str] = []
         artist_table_joined = False
@@ -199,6 +207,7 @@ class AlbumsController(MediaControllerBase[Album]):
             query_params["album_types"] = [x.value for x in album_types]
         if query_parts:
             sql_query += f" WHERE {' AND '.join(query_parts)}"
+        assert self.mass.music.database is not None
         return await self.mass.music.database.get_count_from_query(sql_query, query_params)
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
@@ -211,6 +220,7 @@ class AlbumsController(MediaControllerBase[Album]):
             with contextlib.suppress(MediaNotFoundError):
                 await self.mass.music.tracks.remove_item_from_library(db_track.item_id)
         # delete entry(s) from albumtracks table
+        assert self.mass.music.database is not None
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"album_id": db_id})
         # delete entry(s) from album artists table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_ARTISTS, {"album_id": db_id})
@@ -230,12 +240,14 @@ class AlbumsController(MediaControllerBase[Album]):
             item_id, provider_instance_id_or_domain
         )
         if not library_album:
-            return await self._get_provider_album_tracks(item_id, provider_instance_id_or_domain)
+            return UniqueList(
+                await self._get_provider_album_tracks(item_id, provider_instance_id_or_domain)
+            )
         db_items = await self.get_library_album_tracks(library_album.item_id)
         result: UniqueList[Track] = UniqueList(db_items)
         if in_library_only:
             # return in-library items only
-            return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
+            return UniqueList(sorted(db_items, key=lambda x: (x.disc_number, x.track_number)))
 
         # return all (unique) items from all providers
         # because we are returning the items from all providers combined,
@@ -243,7 +255,7 @@ class AlbumsController(MediaControllerBase[Album]):
         unique_ids: set[str] = {f"{x.disc_number}.{x.track_number}" for x in db_items}
         unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
         for db_item in db_items:
-            unique_ids.add(x.item_id for x in db_item.provider_mappings)
+            unique_ids.update(x.item_id for x in db_item.provider_mappings)
         for provider_mapping in library_album.provider_mappings:
             provider_tracks = await self._get_provider_album_tracks(
                 provider_mapping.item_id, provider_mapping.provider_instance
@@ -267,8 +279,8 @@ class AlbumsController(MediaControllerBase[Album]):
                     and db_track.track_number != provider_track.track_number
                 ):
                     await self._set_album_track(
-                        db_id=library_album.item_id,
-                        db_track_id=db_track.item_id,
+                        db_id=int(library_album.item_id),
+                        db_track_id=int(db_track.item_id),
                         track=provider_track,
                     )
                 if provider_track.item_id in unique_ids:
@@ -283,12 +295,12 @@ class AlbumsController(MediaControllerBase[Album]):
                 provider_track.album = library_album
                 # always prefer album image
                 album_images = [library_album.image] if library_album.image else []
-                track_images = provider_track.metadata.images or []
-                provider_track.metadata.images = album_images + track_images
+                track_images: list[MediaItemImage] = provider_track.metadata.images or []
+                provider_track.metadata.images = UniqueList(album_images + track_images)
                 result.append(provider_track)
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
-        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
+        return UniqueList(sorted(result, key=lambda x: (x.disc_number, x.track_number)))
 
     async def versions(
         self,
@@ -301,7 +313,7 @@ class AlbumsController(MediaControllerBase[Album]):
         result: UniqueList[Album] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)
-            if not provider:
+            if not provider or not isinstance(provider, MusicProvider):
                 continue
             if not provider.library_supported(MediaType.ALBUM):
                 continue
@@ -334,11 +346,9 @@ class AlbumsController(MediaControllerBase[Album]):
         album = self.album_from_item_mapping(item)
         return await self.add_item_to_library(album)
 
-    async def _add_library_item(self, item: Album) -> int:
+    async def _add_library_item(self, item: Album, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
-        if not isinstance(item, Album):
-            msg = "Not a valid Album object (ItemMapping can not be added to db)"
-            raise InvalidDataError(msg)
+        assert self.mass.music.database is not None
         db_id = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -351,7 +361,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 "metadata": serialize_to_json(item.metadata),
                 "external_ids": serialize_to_json(item.external_ids),
                 "search_name": create_safe_string(item.name, True, True),
-                "search_sort_name": create_safe_string(item.sort_name, True, True),
+                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
             },
         )
         # update/set provider_mappings table
@@ -375,6 +385,7 @@ class AlbumsController(MediaControllerBase[Album]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        assert self.mass.music.database is not None
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -389,7 +400,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
                 "search_name": create_safe_string(name, True, True),
-                "search_sort_name": create_safe_string(sort_name, True, True),
+                "search_sort_name": create_safe_string(sort_name or "", True, True),
             },
         )
         # update/set provider_mappings table
@@ -417,7 +428,7 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ):
+    ) -> UniqueList[Track]:
         """Get the list of base tracks from the controller used to calculate the dynamic radio."""
         return await self.tracks(item_id, provider_instance_id_or_domain, in_library_only=False)
 
@@ -430,6 +441,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """Store Album Artists."""
         if overwrite:
             # on overwrite, clear the album_artists table first
+            assert self.mass.music.database is not None
             await self.mass.music.database.delete(
                 DB_TABLE_ALBUM_ARTISTS,
                 {
@@ -443,19 +455,21 @@ class AlbumsController(MediaControllerBase[Album]):
         self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
     ) -> ItemMapping:
         """Store Album Artist info."""
-        db_artist: Artist | ItemMapping = None
+        db_artist: Artist | ItemMapping
         if artist.provider == "library":
             db_artist = artist
         elif existing := await self.mass.music.artists.get_library_item_by_prov_id(
             artist.item_id, artist.provider
         ):
             db_artist = existing
-
-        if not db_artist or overwrite:
+        elif isinstance(artist, Artist):
             db_artist = await self.mass.music.artists.add_item_to_library(
                 artist, overwrite_existing=overwrite
             )
+        else:
+            db_artist = artist
         # write (or update) record in album_artists table
+        assert self.mass.music.database is not None
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_ALBUM_ARTISTS,
             {
@@ -468,6 +482,7 @@ class AlbumsController(MediaControllerBase[Album]):
     async def _set_album_track(self, db_id: int, db_track_id: int, track: Track) -> None:
         """Store Album Track info."""
         # write (or update) record in album_tracks table
+        assert self.mass.music.database is not None
         await self.mass.music.database.insert_or_replace(
             DB_TABLE_ALBUM_TRACKS,
             {
@@ -489,7 +504,7 @@ class AlbumsController(MediaControllerBase[Album]):
             return  # guard
         artist_name = db_album.artists[0].name
 
-        async def find_prov_match(provider: MusicProvider):
+        async def find_prov_match(provider: MusicProvider) -> bool:
             self.logger.debug(
                 "Trying to match album %s on provider %s", db_album.name, provider.name
             )
