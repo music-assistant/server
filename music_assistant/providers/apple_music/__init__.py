@@ -21,6 +21,7 @@ import os
 import pathlib
 import re
 import time
+import unicodedata
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
@@ -289,6 +290,26 @@ class AppleMusicProvider(MusicProvider):
     # rate limiter needs to be specified on provider-level,
     # so make it an instance attribute
     throttler = ThrottlerManager(rate_limit=1, period=2, initial_backoff=15)
+
+    @staticmethod
+    def _normalize_unicode(value: str | None) -> str | None:
+        """Normalize Unicode strings to NFC form for consistent handling.
+
+        This ensures that Unicode characters like "é" are stored as single
+        codepoints rather than "e" + combining accent mark, which prevents
+        issues with string comparisons and memory bloat.
+
+        Args:
+            value: String to normalize, or None
+
+        Returns:
+            Normalized string, or None if input was None
+        """
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return str(value)
+        return unicodedata.normalize("NFC", value)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -704,7 +725,7 @@ class AppleMusicProvider(MusicProvider):
             )
         artist = Artist(
             item_id=artist_id,
-            name=attributes.get("name"),
+            name=self._normalize_unicode(attributes.get("name")),
             provider=self.domain,
             provider_mappings={
                 ProviderMapping(
@@ -765,7 +786,7 @@ class AppleMusicProvider(MusicProvider):
         album = Album(
             item_id=album_id,
             provider=self.domain,
-            name=attributes.get("name"),
+            name=self._normalize_unicode(attributes.get("name")),
             provider_mappings={
                 ProviderMapping(
                     item_id=album_id,
@@ -785,7 +806,7 @@ class AppleMusicProvider(MusicProvider):
                         media_type=MediaType.ARTIST,
                         provider=self.lookup_key,
                         item_id=artist_name,
-                        name=artist_name,
+                        name=self._normalize_unicode(artist_name),
                     )
                 ]
             )
@@ -851,7 +872,7 @@ class AppleMusicProvider(MusicProvider):
         track = Track(
             item_id=track_id,
             provider=self.domain,
-            name=attributes.get("name"),
+            name=self._normalize_unicode(attributes.get("name")),
             duration=attributes.get("durationInMillis", 0) / 1000,
             provider_mappings={
                 ProviderMapping(
@@ -880,7 +901,7 @@ class AppleMusicProvider(MusicProvider):
                     media_type=MediaType.ARTIST,
                     item_id=artist_name,
                     provider=self.lookup_key,
-                    name=artist_name,
+                    name=self._normalize_unicode(artist_name),
                 )
             ]
         if albums := relationships.get("albums"):
