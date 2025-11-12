@@ -57,7 +57,7 @@ CONF_VBAN_QUEUE_SIZE = "vban_queue_size"
 
 VBAN_QUEUE_STRATEGIES = {
     "Clear entire queue": BackPressureStrategy.DROP,
-    "Clear the oldest half of queue": BackPressureStrategy.DRAIN_OLDEST,
+    "Clear the oldest half of the queue": BackPressureStrategy.DRAIN_OLDEST,
     "Remove single oldest queue entry": BackPressureStrategy.POP,
 }
 
@@ -73,9 +73,9 @@ def _get_supported_pcm_formats() -> dict[str, int]:
     return pcm_formats
 
 
-def _get_vban_sample_rates() -> list[str]:
+def _get_vban_sample_rates() -> list[int]:
     """Return supported VBAN sample rates."""
-    return [member.split("_")[1] for member in VBANSampleRate.__members__]
+    return [int(member.split("_")[1]) for member in VBANSampleRate.__members__]
 
 
 async def setup(
@@ -152,9 +152,9 @@ async def get_config_entries(
         ),
         ConfigEntry(
             key=CONF_PCM_SAMPLE_RATE,
-            type=ConfigEntryType.STRING,
+            type=ConfigEntryType.INTEGER,
             default_value=DEFAULT_PCM_SAMPLE_RATE,
-            options=[ConfigValueOption(x, x) for x in _get_vban_sample_rates()],
+            options=[ConfigValueOption(str(x), x) for x in _get_vban_sample_rates()],
             label="PCM sample rate",
             description="The VBAN PCM sample rate to expect from the remote VBAN sender. "
             "This MUST match what the remote VBAN sender has set otherwise audio streaming "
@@ -165,6 +165,7 @@ async def get_config_entries(
             key=CONF_AUDIO_CHANNELS,
             type=ConfigEntryType.INTEGER,
             default_value=DEFAULT_AUDIO_CHANNELS,
+            options=[ConfigValueOption(str(x), x) for x in list(range(1, 9))],
             label="Channels",
             description="The number of audio channels",
             required=True,
@@ -197,8 +198,8 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             default_value=AsyncVBANClientMod.default_queue_size,
             label="Receiver: VBAN packets queue size",
-            description="Possibly increase if MA is running on a very low power device, "
-            "otherwise should not need changed.",
+            description="This can be increased if MA is running on a very low power device, "
+            "otherwise this should not need to be changed.",
             category="advanced",
             required=True,
         ),
@@ -250,11 +251,6 @@ class VBANReceiverProvider(PluginProvider):
             ),
             stream_type=StreamType.CUSTOM,
         )
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {ProviderFeature.AUDIO_SOURCE}
 
     @property
     def instance_name_postfix(self) -> str | None:
