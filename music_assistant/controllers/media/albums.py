@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -348,6 +348,9 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _add_library_item(self, item: Album, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
+        if not isinstance(item, Album):  # TODO: Remove this once the codebase is fully typed
+            msg = "Not a valid Album object (ItemMapping can not be added to db)"  # type: ignore[unreachable]
+            raise InvalidDataError(msg)
         assert self.mass.music.database is not None
         db_id = await self.mass.music.database.insert(
             self.db_table,
