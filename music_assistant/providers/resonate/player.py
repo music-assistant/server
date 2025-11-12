@@ -357,10 +357,6 @@ class ResonatePlayer(Player):
             self._attr_group_members.append(player_id)
         self.update_state()
 
-    def _update_media_art(self, image_data: bytes) -> None:
-        image = Image.open(BytesIO(image_data))
-        self.api.group.set_media_art(image)
-
     async def _on_queue_update(self, event: MassEvent) -> None:
         """Extract and send current media metadata to resonate players on queue updates."""
         queue = self.mass.player_queues.get_active_queue(self.player_id)
@@ -408,7 +404,8 @@ class ResonatePlayer(Player):
                     current_item.media_item
                 )
                 if image_data is not None:
-                    await asyncio.to_thread(self._update_media_art, image_data)
+                    image = await asyncio.to_thread(Image.open, BytesIO(image_data))
+                    await self.api.group.set_media_art(image)
             # TODO: null media art if not set?
 
         track_duration = current_item.duration
