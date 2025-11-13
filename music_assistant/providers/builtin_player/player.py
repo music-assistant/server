@@ -227,8 +227,6 @@ class BuiltinPlayer(Player):
         """Serve the flow stream audio to a player."""
         player_id = request.path.rsplit(".")[0].rsplit("/")[-1]
         format_str = request.path.rsplit(".")[-1]
-        # bitrate = request.query.get("bitrate")
-        queue = self.mass.player_queues.get(player_id)
         self.logger.debug("Serving audio stream to %s", player_id)
 
         if not (player := self.mass.players.get(player_id)):
@@ -256,16 +254,8 @@ class BuiltinPlayer(Player):
             # on iOS devices with Home Assistant OS installations.
 
         media = player._current_media
-        if queue is None or media is None:
-            raise web.HTTPNotFound(reason="No active queue or media found!")
-
-        if media.source_id is None:
-            raise web.HTTPError  # TODO: better error
-
-        queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-
-        if queue_item is None:
-            raise web.HTTPError  # TODO: better error
+        if media is None:
+            raise web.HTTPNotFound(reason="No active media found!")
 
         # TODO: set encoding quality using a bitrate parameter,
         # maybe even dynamic with auto/semiauto switching with bad network?
@@ -280,12 +270,10 @@ class BuiltinPlayer(Player):
             bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
             channels=INTERNAL_PCM_FORMAT.channels,
         )
+
         async for chunk in get_ffmpeg_stream(
-            audio_input=self.mass.streams.get_queue_flow_stream(
-                queue=queue,
-                start_queue_item=queue_item,
-                pcm_format=pcm_format,
-            ),
+            # Use get_stream helper which handles all media types including UGP streams
+            audio_input=self.mass.streams.get_stream(media, pcm_format),
             input_format=pcm_format,
             output_format=stream_format,
             # Apple ignores "Accept-Ranges=none" on iOS and iPadOS for some reason,
