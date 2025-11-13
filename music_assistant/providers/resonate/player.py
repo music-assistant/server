@@ -523,9 +523,7 @@ class ResonatePlayer(Player):
             year=year,
             track=track,
             track_duration=track_duration * 1000 if track_duration is not None else None,
-            track_progress=int(self._attr_elapsed_time * 1000)
-            if self._attr_elapsed_time is not None
-            else 0,
+            track_progress=int(queue.corrected_elapsed_time * 1000),
             playback_speed=1000,
             repeat=repeat,
             shuffle=shuffle,
