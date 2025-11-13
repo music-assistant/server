@@ -9,7 +9,7 @@ from io import BytesIO
 from typing import TYPE_CHECKING, cast
 
 from aioresonate.models import MediaCommand
-from aioresonate.models.types import PlaybackStateType
+from aioresonate.models.types import ArtworkSource, PlaybackStateType
 from aioresonate.models.types import RepeatMode as ResonateRepeatMode
 from aioresonate.server import AudioFormat as ResonateAudioFormat
 from aioresonate.server import (
@@ -241,8 +241,6 @@ class ResonatePlayer(Player):
                         await self.mass.players.cmd_next_track(self.player_id)
                     case MediaCommand.PREVIOUS:
                         await self.mass.players.cmd_previous_track(self.player_id)
-                    case MediaCommand.SEEK:
-                        raise NotImplementedError("TODO: not supported by spec yet")
                     case MediaCommand.VOLUME:
                         assert volume is not None
                         await self.mass.players.cmd_group_volume(self.player_id, volume)
@@ -450,7 +448,7 @@ class ResonatePlayer(Player):
                 )
                 if image_data is not None:
                     image = await asyncio.to_thread(Image.open, BytesIO(image_data))
-                    await self.api.group.set_media_art(image)
+                    await self.api.group.set_media_art(image, source=ArtworkSource.ALBUM)
             # TODO: null media art if not set?
 
         track_duration = current_item.duration
@@ -471,8 +469,11 @@ class ResonatePlayer(Player):
             artwork_url=artwork_url,
             year=year,
             track=track,
-            track_duration=track_duration,
-            playback_speed=1,
+            track_duration=track_duration * 1000 if track_duration is not None else None,
+            track_progress=int(self._attr_elapsed_time * 1000)
+            if self._attr_elapsed_time is not None
+            else 0,
+            playback_speed=1000,
             repeat=repeat,
             shuffle=shuffle,
         )
