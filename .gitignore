@@ -18,3 +18,4 @@ venv/
 .history
 .idea
 .coverage
+uv.lock

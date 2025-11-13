@@ -24,6 +24,7 @@ colorlog==6.10.1
 cryptography==46.0.3
 deezer-python-async==0.3.0
 defusedxml==0.7.1
+deno==2.5.6
 duration-parser==1.0.1
 get-mac==0.9.2
 gql[all]==4.0.0
