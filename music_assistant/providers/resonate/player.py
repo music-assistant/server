@@ -187,6 +187,8 @@ class ResonatePlayer(Player):
         self._attr_supported_features = {
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.MULTI_DEVICE_DSP,
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
         }
         self._attr_can_group_with = {provider.lookup_key}
         self._attr_power_control = PLAYER_CONTROL_NONE
