@@ -33,6 +33,7 @@ from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ContentType,
     EventType,
+    ImageType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -56,6 +57,7 @@ from .timed_client_stream import TimedClientStream
 if TYPE_CHECKING:
     from aioresonate.server.client import ResonateClient
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.queue_item import QueueItem
 
     from .provider import ResonateProvider
 
@@ -164,6 +166,7 @@ class ResonatePlayer(Player):
     unsub_event_cb: Callable[[], None]
     unsub_group_event_cb: Callable[[], None]
     last_sent_artwork_url: str | None = None
+    last_sent_artist_artwork_url: str | None = None
     _playback_task: asyncio.Task[None] | None = None
     timed_client_stream: TimedClientStream | None = None
 
@@ -400,6 +403,65 @@ class ResonatePlayer(Player):
             await self.api.group.add_client(player.api)
         # self.group_members will be updated by the group event callback
 
+    async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
+        """
+        Send album artwork to the resonate group.
+
+        Args:
+            current_item: The current queue item.
+        """
+        artwork_url = None
+        if current_item.image is not None:
+            artwork_url = self.mass.metadata.get_image_url(current_item.image)
+
+        if artwork_url != self.last_sent_artwork_url:
+            # Image changed, resend the artwork
+            self.last_sent_artwork_url = artwork_url
+            if artwork_url is not None and current_item.media_item is not None:
+                image_data = await self.mass.metadata.get_image_data_for_item(
+                    current_item.media_item
+                )
+                if image_data is not None:
+                    image = await asyncio.to_thread(Image.open, BytesIO(image_data))
+                    await self.api.group.set_media_art(image, source=ArtworkSource.ALBUM)
+            else:
+                # Clear artwork if none available
+                await self.api.group.set_media_art(None, source=ArtworkSource.ALBUM)
+
+        return artwork_url
+
+    async def _send_artist_artwork(self, current_item: QueueItem) -> None:
+        """
+        Send artist artwork to the resonate group.
+
+        Args:
+            current_item: The current queue item.
+        """
+        # Extract primary artist if available
+        artist_artwork_url = None
+        if current_item.media_item is not None and hasattr(current_item.media_item, "artists"):
+            artists = getattr(current_item.media_item, "artists", None)
+            if artists and len(artists) > 0:
+                primary_artist = artists[0]
+                if hasattr(primary_artist, "image"):
+                    artist_image = getattr(primary_artist, "image", None)
+                    if artist_image is not None:
+                        artist_artwork_url = self.mass.metadata.get_image_url(artist_image)
+
+        if artist_artwork_url != self.last_sent_artist_artwork_url:
+            # Artist image changed, resend the artwork
+            self.last_sent_artist_artwork_url = artist_artwork_url
+            if artist_artwork_url is not None:
+                artist_image_data = await self.mass.metadata.get_image_data_for_item(
+                    primary_artist, img_type=ImageType.THUMB
+                )
+                if artist_image_data is not None:
+                    artist_image = await asyncio.to_thread(Image.open, BytesIO(artist_image_data))
+                    await self.api.group.set_media_art(artist_image, source=ArtworkSource.ARTIST)
+            else:
+                # Clear artist artwork if none available
+                await self.api.group.set_media_art(None, source=ArtworkSource.ARTIST)
+
     async def _on_queue_update(self, event: MassEvent) -> None:
         """Extract and send current media metadata to resonate players on queue updates."""
         queue = self.mass.player_queues.get_active_queue(self.player_id)
@@ -436,20 +498,9 @@ class ResonatePlayer(Player):
             if _track_number := getattr(media_item, "track_number", None):
                 track = _track_number
 
-        if current_item.image is not None:
-            artwork_url = self.mass.metadata.get_image_url(current_item.image)
-
-        if artwork_url != self.last_sent_artwork_url:
-            # Image changed, resend the artwork
-            self.last_sent_artwork_url = artwork_url
-            if artwork_url is not None and current_item.media_item is not None:
-                image_data = await self.mass.metadata.get_image_data_for_item(
-                    current_item.media_item
-                )
-                if image_data is not None:
-                    image = await asyncio.to_thread(Image.open, BytesIO(image_data))
-                    await self.api.group.set_media_art(image, source=ArtworkSource.ALBUM)
-            # TODO: null media art if not set?
+        # Send album and artist artwork
+        artwork_url = await self._send_album_artwork(current_item)
+        await self._send_artist_artwork(current_item)
 
         track_duration = current_item.duration
 
