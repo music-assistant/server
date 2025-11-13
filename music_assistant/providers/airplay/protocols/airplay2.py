@@ -129,13 +129,11 @@ class AirPlay2Stream(AirPlayProtocol):
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
-            # TODO @bradkeifer make cliap2 work this way - done
-            # need to test and confirm all working
-            if "set pause" in line or "Pause at" in line:
+            if "Pause at" in line:
                 player.set_state_from_stream(state=PlaybackState.PAUSED)
-            if "Restarted at" in line or "restarting w/ pause" in line:
+            if "Restarted at" in line:
                 player.set_state_from_stream(state=PlaybackState.PLAYING)
-            if "restarting w/o pause" in line:
+            if "Starting at" in line:
                 # streaming has started
                 player.set_state_from_stream(state=PlaybackState.PLAYING, elapsed_time=0)
             if "put delay detected" in line:
