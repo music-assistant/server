@@ -89,7 +89,7 @@ class MusicAssistantMediaStream(MediaStream):
         self.audio_codec = audio_codec
 
     async def player_channel(
-        self: MusicAssistantMediaStream,
+        self,
         player_id: str,
         preferred_format: ResonateAudioFormat | None = None,
         position_us: int = 0,
