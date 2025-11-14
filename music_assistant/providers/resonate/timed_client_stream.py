@@ -86,7 +86,7 @@ class TimedClientStream:
         first_chunk_timestamp = self.chunk_buffer[0][1]
         return self.current_position - first_chunk_timestamp
 
-    async def _cleanup_old_chunks(self) -> None:
+    def _cleanup_old_chunks(self) -> None:
         """Remove old chunks when all subscribers read them and min duration exceeded."""
         # Find the oldest position still needed by any subscriber
         if self.subscriber_positions:
@@ -183,7 +183,7 @@ class TimedClientStream:
                 self.subscriber_positions[subscriber_id] = position + 1
 
                 # Cleanup old chunks that no one needs
-                await self._cleanup_old_chunks()
+                self._cleanup_old_chunks()
                 return chunk_data
             if self.stream_ended:
                 # Stream ended and we've read all buffered chunks
