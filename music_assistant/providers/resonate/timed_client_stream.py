@@ -145,9 +145,11 @@ class TimedClientStream:
                 self.stream_ended = True
             raise
 
-    async def _check_buffer_after_source_lock(self, subscriber_id: UUID) -> bool | None:
+    async def _check_buffer(self, subscriber_id: UUID) -> bool | None:
         """
-        Check if buffer has grown or stream ended after acquiring source lock.
+        Check if buffer has grown or stream ended.
+
+        REQUIRES: Caller must hold self.source_read_lock before calling.
 
         Returns:
             True if should continue reading loop (chunk found in buffer),
@@ -289,7 +291,7 @@ class TimedClientStream:
                         # Use source_read_lock to ensure only one subscriber reads at a time
                         async with self.source_read_lock:
                             # Check again if buffer has grown or stream ended while waiting
-                            check_result = await self._check_buffer_after_source_lock(subscriber_id)
+                            check_result = await self._check_buffer(subscriber_id)
                             if check_result is True:
                                 # Another subscriber already read the chunk
                                 continue
